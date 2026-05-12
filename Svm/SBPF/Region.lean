@@ -11,11 +11,11 @@
 -- once and uses two-premise frame lemmas (h_r + h_w) instead of trying
 -- 20+ lemma alternatives with omega for each write layer.
 
-import QEDGen.Solana.SBPF.Memory
+import Svm.SBPF.Memory
 
-namespace QEDGen.Solana.SBPF.Region
+namespace Svm.SBPF.Region
 
-open QEDGen.Solana.SBPF.Memory
+open Svm.SBPF.Memory
 
 /-! ## Chain frame: strip N writes in one shot
 
@@ -123,4 +123,4 @@ macro_rules
       | rw [readU32_writeU32_same _ _ _ (by first | simp | omega)]
       | rw [readU8_writeU8_same   _ _ _ (by first | simp | omega)])))
 
-end QEDGen.Solana.SBPF.Region
+end Svm.SBPF.Region

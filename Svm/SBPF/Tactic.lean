@@ -2,9 +2,9 @@
 --
 -- Provides simp improvements for effectiveAddr and readByWidth.
 
-import QEDGen.Solana.SBPF.Execute
+import Svm.SBPF.Execute
 
-namespace QEDGen.Solana.SBPF
+namespace Svm.SBPF
 
 open Memory
 
@@ -19,4 +19,4 @@ open Memory
 -- Make readByWidth auto-simplify (dispatches to readU8/readU16/readU32/readU64)
 attribute [simp] Memory.readByWidth
 
-end QEDGen.Solana.SBPF
+end Svm.SBPF

@@ -9,11 +9,11 @@
 --
 -- Programs receive a pointer to the input buffer in r1 at entry.
 
-import QEDGen.Solana.SBPF.ISA
+import Svm.SBPF.ISA
 
-namespace QEDGen.Solana.SBPF.Memory
+namespace Svm.SBPF.Memory
 
-open QEDGen.Solana.SBPF
+open Svm.SBPF
 
 /-! ## Memory type -/
 
@@ -106,14 +106,14 @@ def writeU64 (mem : Mem) (addr val : Nat) : Mem :=
 /-! ## Generic read/write by width -/
 
 /-- Read N bytes from memory according to width -/
-def readByWidth (mem : Mem) (addr : Nat) : QEDGen.Solana.SBPF.Width → Nat
+def readByWidth (mem : Mem) (addr : Nat) : Svm.SBPF.Width → Nat
   | .byte  => readU8 mem addr
   | .half  => readU16 mem addr
   | .word  => readU32 mem addr
   | .dword => readU64 mem addr
 
 /-- Write N bytes to memory according to width -/
-def writeByWidth (mem : Mem) (addr val : Nat) : QEDGen.Solana.SBPF.Width → Mem
+def writeByWidth (mem : Mem) (addr val : Nat) : Svm.SBPF.Width → Mem
   | .byte  => writeU8 mem addr val
   | .half  => writeU16 mem addr val
   | .word  => writeU32 mem addr val
@@ -291,4 +291,4 @@ def standardAccountLayout : AccountLayout where
   dataLen  := 0x50
   data     := 0x58
 
-end QEDGen.Solana.SBPF.Memory
+end Svm.SBPF.Memory

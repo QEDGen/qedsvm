@@ -5,7 +5,7 @@
 --
 -- Reference: https://github.com/anza-xyz/sbpf
 
-namespace QEDGen.Solana.SBPF
+namespace Svm.SBPF
 
 /-- 64-bit word modulus for wrapping arithmetic -/
 def U64_MODULUS : Nat := 2 ^ 64
@@ -158,4 +158,4 @@ def toSigned64 (v : Nat) : Int :=
 @[simp, reducible] def toU64 (v : Int) : Nat :=
   (v % (2^64 : Int)).toNat
 
-end QEDGen.Solana.SBPF
+end Svm.SBPF

@@ -7,9 +7,9 @@
 -- Register disjointness hypotheses are dischargeable by `decide` at
 -- call sites since the caller always has concrete register names.
 
-import QEDGen.Solana.SBPF.Execute
+import Svm.SBPF.Execute
 
-namespace QEDGen.Solana.SBPF
+namespace Svm.SBPF
 
 open Memory
 
@@ -511,4 +511,4 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
       (by rw [ha0, hb0]; exact h_eq0) hfe1 hfe2 (by omega)
 
-end QEDGen.Solana.SBPF
+end Svm.SBPF

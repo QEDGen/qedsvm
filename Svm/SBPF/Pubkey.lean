@@ -2,16 +2,16 @@
 --
 -- sBPF programs compare pubkeys by loading four 8-byte chunks and branching
 -- on each pair. This module provides memory predicates and frame lemmas
--- for the unified Pubkey type (defined in QEDGen.Solana.Account).
+-- for the unified Pubkey type (defined in Svm.Account).
 
-import QEDGen.Solana.Account
-import QEDGen.Solana.SBPF.Memory
-import QEDGen.Solana.SBPF.Region
+import Svm.Account
+import Svm.SBPF.Memory
+import Svm.SBPF.Region
 
-namespace QEDGen.Solana.SBPF
+namespace Svm.SBPF
 
 open Memory
-open QEDGen.Solana.Account
+open Svm.Account
 
 /-! ## Memory predicates -/
 
@@ -80,4 +80,4 @@ theorem pubkeyAt_writeU64Chain_frame {mem : Mem} {base : Nat} {pk : Pubkey}
       fun p hp => h_w p (List.mem_cons_of_mem _ hp)
     exact ih (pubkeyAt_writeU64_frame h h_r (h_w hd (List.mem_cons_self ..))) h_tl
 
-end QEDGen.Solana.SBPF
+end Svm.SBPF

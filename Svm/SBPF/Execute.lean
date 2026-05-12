@@ -3,10 +3,10 @@
 -- Defines the machine state, register file, and the step function that gives
 -- operational semantics to each sBPF instruction.
 
-import QEDGen.Solana.SBPF.ISA
-import QEDGen.Solana.SBPF.Memory
+import Svm.SBPF.ISA
+import Svm.SBPF.Memory
 
-namespace QEDGen.Solana.SBPF
+namespace Svm.SBPF
 
 open Memory
 
@@ -563,4 +563,4 @@ theorem executeFn_eq_execSegment (fetch : Nat → Option Insn) (s : State) (fuel
         rw [heq]
         exact ih (execInsn insn s).2
 
-end QEDGen.Solana.SBPF
+end Svm.SBPF

@@ -3,9 +3,9 @@
 -- wp_exec: one-shot tactic for sBPF property proofs
 -- wp_step: single instruction step (for manual proofs)
 
-import QEDGen.Solana.SBPF.Execute
+import Svm.SBPF.Execute
 
-namespace QEDGen.Solana.SBPF
+namespace Svm.SBPF
 
 /-! ## wp_exec — one-shot sBPF verification
 
@@ -84,11 +84,11 @@ For hypotheses containing wrapAdd/toU64, normalize them first:
   strip_writes
 -/
 
-open QEDGen.Solana.SBPF.Memory in
+open Svm.SBPF.Memory in
 syntax "strip_writes" : tactic
 
 set_option hygiene false in
-open QEDGen.Solana.SBPF.Memory in
+open Svm.SBPF.Memory in
 macro_rules
   | `(tactic| strip_writes) => `(tactic| (
     try unfold STACK_START at *;
@@ -104,11 +104,11 @@ Like strip_writes but only unfolds STACK_START in the goal, not hypotheses.
 Use this when the context has many hypotheses (e.g., after 20+ wp_step calls)
 and `unfold STACK_START at *` causes timeout. -/
 
-open QEDGen.Solana.SBPF.Memory in
+open Svm.SBPF.Memory in
 syntax "strip_writes_goal" : tactic
 
 set_option hygiene false in
-open QEDGen.Solana.SBPF.Memory in
+open Svm.SBPF.Memory in
 macro_rules
   | `(tactic| strip_writes_goal) => `(tactic| (
     try unfold STACK_START;
@@ -135,7 +135,7 @@ syntax "rewrite_mem" "[" rwRule,* "]" : tactic
 
 set_option hygiene false in
 open Lean.Parser.Tactic in
-open QEDGen.Solana.SBPF.Memory in
+open Svm.SBPF.Memory in
 macro_rules
   | `(tactic| rewrite_mem [$[$ts:rwRule],*]) => `(tactic| (
       rw [$[$ts],*];
@@ -166,10 +166,10 @@ syntax "solve_read" "[" rwRule,* "]" term : tactic
 
 set_option hygiene false in
 open Lean.Parser.Tactic in
-open QEDGen.Solana.SBPF.Memory in
+open Svm.SBPF.Memory in
 macro_rules
   | `(tactic| solve_read [$[$ts:rwRule],*] $closing) => `(tactic| (
       rewrite_mem [$[$ts],*];
       exact $closing))
 
-end QEDGen.Solana.SBPF
+end Svm.SBPF

@@ -1,4 +1,4 @@
-namespace QEDGen.Solana.Account
+namespace Svm.Account
 
 /-- A 32-byte Solana public key as four little-endian U64 chunks.
     Matches sBPF VM representation: programs compare pubkeys via
@@ -116,23 +116,23 @@ axiom find_by_key_map_update_same
       if acc.key = p_key then p_f acc else acc)
     findByKey updated p_key = some (p_f p_original)
 
-end QEDGen.Solana.Account
+end Svm.Account
 
-namespace QEDGen.Solana
+namespace Svm
 
-abbrev Pubkey := QEDGen.Solana.Account.Pubkey
-abbrev U64 := QEDGen.Solana.Account.U64
-abbrev U128 := QEDGen.Solana.Account.U128
-abbrev I128 := QEDGen.Solana.Account.I128
-abbrev U8 := QEDGen.Solana.Account.U8
-abbrev Account := QEDGen.Solana.Account.Account
-abbrev canWrite := QEDGen.Solana.Account.canWrite
-abbrev findByKey := QEDGen.Solana.Account.findByKey
-abbrev findByAuthority := QEDGen.Solana.Account.findByAuthority
-abbrev find_map_pred_preserved := QEDGen.Solana.Account.find_map_pred_preserved
-abbrev find_map_update_other := QEDGen.Solana.Account.find_map_update_other
-abbrev find_map_update_same := QEDGen.Solana.Account.find_map_update_same
-abbrev find_by_key_map_update_other := QEDGen.Solana.Account.find_by_key_map_update_other
-abbrev find_by_key_map_update_same := QEDGen.Solana.Account.find_by_key_map_update_same
+abbrev Pubkey := Svm.Account.Pubkey
+abbrev U64 := Svm.Account.U64
+abbrev U128 := Svm.Account.U128
+abbrev I128 := Svm.Account.I128
+abbrev U8 := Svm.Account.U8
+abbrev Account := Svm.Account.Account
+abbrev canWrite := Svm.Account.canWrite
+abbrev findByKey := Svm.Account.findByKey
+abbrev findByAuthority := Svm.Account.findByAuthority
+abbrev find_map_pred_preserved := Svm.Account.find_map_pred_preserved
+abbrev find_map_update_other := Svm.Account.find_map_update_other
+abbrev find_map_update_same := Svm.Account.find_map_update_same
+abbrev find_by_key_map_update_other := Svm.Account.find_by_key_map_update_other
+abbrev find_by_key_map_update_same := Svm.Account.find_by_key_map_update_same
 
-end QEDGen.Solana
+end Svm

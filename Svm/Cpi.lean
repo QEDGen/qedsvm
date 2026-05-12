@@ -1,8 +1,8 @@
-import QEDGen.Solana.Account
+import Svm.Account
 
-namespace QEDGen.Solana.Cpi
+namespace Svm.Cpi
 
-open QEDGen.Solana.Account
+open Svm.Account
 
 /- ============================================================================
    CPI (Cross-Program Invocation) Modeling — Generic Envelope
@@ -159,59 +159,59 @@ def hasNAccounts (cpi : CpiInstruction) (n : Nat) : Prop :=
 def wellFormed (cpi : CpiInstruction) : Prop :=
   cpi.accounts.length > 0 ∧ cpi.data.length > 0
 
-end QEDGen.Solana.Cpi
+end Svm.Cpi
 
-namespace QEDGen.Solana
+namespace Svm
 
 -- Types
-abbrev AccountMeta := QEDGen.Solana.Cpi.AccountMeta
-abbrev CpiInstruction := QEDGen.Solana.Cpi.CpiInstruction
+abbrev AccountMeta := Svm.Cpi.AccountMeta
+abbrev CpiInstruction := Svm.Cpi.CpiInstruction
 
 -- Program IDs
-abbrev SYSTEM_PROGRAM_ID := QEDGen.Solana.Cpi.SYSTEM_PROGRAM_ID
-abbrev TOKEN_PROGRAM_ID := QEDGen.Solana.Cpi.TOKEN_PROGRAM_ID
-abbrev TOKEN_2022_PROGRAM_ID := QEDGen.Solana.Cpi.TOKEN_2022_PROGRAM_ID
-abbrev ASSOCIATED_TOKEN_PROGRAM_ID := QEDGen.Solana.Cpi.ASSOCIATED_TOKEN_PROGRAM_ID
-abbrev MEMO_PROGRAM_ID := QEDGen.Solana.Cpi.MEMO_PROGRAM_ID
-abbrev COMPUTE_BUDGET_PROGRAM_ID := QEDGen.Solana.Cpi.COMPUTE_BUDGET_PROGRAM_ID
-abbrev STAKE_PROGRAM_ID := QEDGen.Solana.Cpi.STAKE_PROGRAM_ID
+abbrev SYSTEM_PROGRAM_ID := Svm.Cpi.SYSTEM_PROGRAM_ID
+abbrev TOKEN_PROGRAM_ID := Svm.Cpi.TOKEN_PROGRAM_ID
+abbrev TOKEN_2022_PROGRAM_ID := Svm.Cpi.TOKEN_2022_PROGRAM_ID
+abbrev ASSOCIATED_TOKEN_PROGRAM_ID := Svm.Cpi.ASSOCIATED_TOKEN_PROGRAM_ID
+abbrev MEMO_PROGRAM_ID := Svm.Cpi.MEMO_PROGRAM_ID
+abbrev COMPUTE_BUDGET_PROGRAM_ID := Svm.Cpi.COMPUTE_BUDGET_PROGRAM_ID
+abbrev STAKE_PROGRAM_ID := Svm.Cpi.STAKE_PROGRAM_ID
 
 -- SPL Token discriminators
-abbrev DISC_TRANSFER := QEDGen.Solana.Cpi.DISC_TRANSFER
-abbrev DISC_TRANSFER_CHECKED := QEDGen.Solana.Cpi.DISC_TRANSFER_CHECKED
-abbrev DISC_MINT_TO := QEDGen.Solana.Cpi.DISC_MINT_TO
-abbrev DISC_MINT_TO_CHECKED := QEDGen.Solana.Cpi.DISC_MINT_TO_CHECKED
-abbrev DISC_BURN := QEDGen.Solana.Cpi.DISC_BURN
-abbrev DISC_BURN_CHECKED := QEDGen.Solana.Cpi.DISC_BURN_CHECKED
-abbrev DISC_CLOSE_ACCOUNT := QEDGen.Solana.Cpi.DISC_CLOSE_ACCOUNT
-abbrev DISC_APPROVE := QEDGen.Solana.Cpi.DISC_APPROVE
-abbrev DISC_APPROVE_CHECKED := QEDGen.Solana.Cpi.DISC_APPROVE_CHECKED
-abbrev DISC_REVOKE := QEDGen.Solana.Cpi.DISC_REVOKE
-abbrev DISC_SET_AUTHORITY := QEDGen.Solana.Cpi.DISC_SET_AUTHORITY
-abbrev DISC_FREEZE_ACCOUNT := QEDGen.Solana.Cpi.DISC_FREEZE_ACCOUNT
-abbrev DISC_THAW_ACCOUNT := QEDGen.Solana.Cpi.DISC_THAW_ACCOUNT
-abbrev DISC_INITIALIZE_MINT := QEDGen.Solana.Cpi.DISC_INITIALIZE_MINT
-abbrev DISC_INITIALIZE_MINT2 := QEDGen.Solana.Cpi.DISC_INITIALIZE_MINT2
-abbrev DISC_INITIALIZE_ACCOUNT := QEDGen.Solana.Cpi.DISC_INITIALIZE_ACCOUNT
-abbrev DISC_INITIALIZE_ACCOUNT3 := QEDGen.Solana.Cpi.DISC_INITIALIZE_ACCOUNT3
-abbrev DISC_SYNC_NATIVE := QEDGen.Solana.Cpi.DISC_SYNC_NATIVE
+abbrev DISC_TRANSFER := Svm.Cpi.DISC_TRANSFER
+abbrev DISC_TRANSFER_CHECKED := Svm.Cpi.DISC_TRANSFER_CHECKED
+abbrev DISC_MINT_TO := Svm.Cpi.DISC_MINT_TO
+abbrev DISC_MINT_TO_CHECKED := Svm.Cpi.DISC_MINT_TO_CHECKED
+abbrev DISC_BURN := Svm.Cpi.DISC_BURN
+abbrev DISC_BURN_CHECKED := Svm.Cpi.DISC_BURN_CHECKED
+abbrev DISC_CLOSE_ACCOUNT := Svm.Cpi.DISC_CLOSE_ACCOUNT
+abbrev DISC_APPROVE := Svm.Cpi.DISC_APPROVE
+abbrev DISC_APPROVE_CHECKED := Svm.Cpi.DISC_APPROVE_CHECKED
+abbrev DISC_REVOKE := Svm.Cpi.DISC_REVOKE
+abbrev DISC_SET_AUTHORITY := Svm.Cpi.DISC_SET_AUTHORITY
+abbrev DISC_FREEZE_ACCOUNT := Svm.Cpi.DISC_FREEZE_ACCOUNT
+abbrev DISC_THAW_ACCOUNT := Svm.Cpi.DISC_THAW_ACCOUNT
+abbrev DISC_INITIALIZE_MINT := Svm.Cpi.DISC_INITIALIZE_MINT
+abbrev DISC_INITIALIZE_MINT2 := Svm.Cpi.DISC_INITIALIZE_MINT2
+abbrev DISC_INITIALIZE_ACCOUNT := Svm.Cpi.DISC_INITIALIZE_ACCOUNT
+abbrev DISC_INITIALIZE_ACCOUNT3 := Svm.Cpi.DISC_INITIALIZE_ACCOUNT3
+abbrev DISC_SYNC_NATIVE := Svm.Cpi.DISC_SYNC_NATIVE
 
 -- System Program discriminators
-abbrev DISC_SYS_CREATE_ACCOUNT := QEDGen.Solana.Cpi.DISC_SYS_CREATE_ACCOUNT
-abbrev DISC_SYS_ASSIGN := QEDGen.Solana.Cpi.DISC_SYS_ASSIGN
-abbrev DISC_SYS_TRANSFER := QEDGen.Solana.Cpi.DISC_SYS_TRANSFER
-abbrev DISC_SYS_ALLOCATE := QEDGen.Solana.Cpi.DISC_SYS_ALLOCATE
+abbrev DISC_SYS_CREATE_ACCOUNT := Svm.Cpi.DISC_SYS_CREATE_ACCOUNT
+abbrev DISC_SYS_ASSIGN := Svm.Cpi.DISC_SYS_ASSIGN
+abbrev DISC_SYS_TRANSFER := Svm.Cpi.DISC_SYS_TRANSFER
+abbrev DISC_SYS_ALLOCATE := Svm.Cpi.DISC_SYS_ALLOCATE
 
 -- ATA discriminators
-abbrev DISC_ATA_CREATE := QEDGen.Solana.Cpi.DISC_ATA_CREATE
-abbrev DISC_ATA_CREATE_IDEMPOTENT := QEDGen.Solana.Cpi.DISC_ATA_CREATE_IDEMPOTENT
-abbrev DISC_ATA_RECOVER_NESTED := QEDGen.Solana.Cpi.DISC_ATA_RECOVER_NESTED
+abbrev DISC_ATA_CREATE := Svm.Cpi.DISC_ATA_CREATE
+abbrev DISC_ATA_CREATE_IDEMPOTENT := Svm.Cpi.DISC_ATA_CREATE_IDEMPOTENT
+abbrev DISC_ATA_RECOVER_NESTED := Svm.Cpi.DISC_ATA_RECOVER_NESTED
 
 -- Predicates
-abbrev targetsProgram := QEDGen.Solana.Cpi.targetsProgram
-abbrev accountAt := QEDGen.Solana.Cpi.accountAt
-abbrev hasDiscriminator := QEDGen.Solana.Cpi.hasDiscriminator
-abbrev hasNAccounts := QEDGen.Solana.Cpi.hasNAccounts
-abbrev cpiWellFormed := QEDGen.Solana.Cpi.wellFormed
+abbrev targetsProgram := Svm.Cpi.targetsProgram
+abbrev accountAt := Svm.Cpi.accountAt
+abbrev hasDiscriminator := Svm.Cpi.hasDiscriminator
+abbrev hasNAccounts := Svm.Cpi.hasNAccounts
+abbrev cpiWellFormed := Svm.Cpi.wellFormed
 
-end QEDGen.Solana
+end Svm

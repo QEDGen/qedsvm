@@ -1,16 +1,20 @@
 import Lake
 open Lake DSL
 
--- Base lean_solana package. Pure Lean 4; no Mathlib dependency.
--- Covers Account, Cpi, State, Valid, SBPF helpers — everything that
--- doesn't need `Fin → α` / BigOperators reasoning.
+-- formal-svm — Lean 4 reference semantics for the Solana Virtual Machine.
 --
--- The `IndexedState` module and anything else that needs Mathlib
--- lives in the sibling `lean_solana_mathlib/` package; programs that
--- need it depend on that one, which transitively pulls this.
-package qedgenSupport
+-- Pure Lean 4, no Mathlib dependency. Anything that needs Mathlib-level
+-- reasoning (`Fin → α`, `BigOperators`, ring/omega over closed forms)
+-- belongs in a downstream consumer, not here.
+--
+-- Scope (F1, reference semantics):
+--   Svm.Account — Pubkey and Account data model
+--   Svm.Cpi     — invoke_signed envelope, well-known program IDs, discriminators
+--   Svm.SBPF.*  — sBPF interpreter (ISA, Memory, Execute, WP tactic)
+--
+-- See README.md and docs/founding-rationale.md for scope and roadmap.
+package formalSvm
 
 @[default_target]
-lean_lib QEDGen where
-  roots := #[`QEDGen]
-
+lean_lib Svm where
+  roots := #[`Svm]
