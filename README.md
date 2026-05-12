@@ -59,7 +59,7 @@ Lean toolchain pin: see `lean-toolchain`.
 
 ## Origin
 
-This repo was extracted on 2026-05-12 from the [QEDGen](https://github.com/QEDGen) skill, which has used it as the runtime model for spec-driven verification of Solana programs since 2026. The split is to give the SVM model its own life as an ecosystem artifact rather than a QEDGen-internal dependency. Commit history is preserved.
+This repo was extracted on 2026-05-12 from [QEDGen/solana-skills](https://github.com/QEDGen/solana-skills), the skill that has used it as the runtime model for spec-driven verification of Solana programs since 2026. The split is to give the SVM model its own life as an ecosystem artifact rather than a QEDGen-internal dependency. Commit history is preserved.
 
 The strategic rationale — why a reference SVM, why now, what F1 (this) buys versus F2 (verified extractable replacement, explicitly out of scope) — is in `docs/founding-rationale.md`.
 
@@ -67,7 +67,7 @@ The strategic rationale — why a reference SVM, why now, what F1 (this) buys ve
 
 Phase 0 (axiom cleanup) and Phase 1 (CPI small-step semantics) are the near-term tracks. The full phased path is in `ROADMAP.md`.
 
-Honest framing: this repo is the executable-spec foundation for verification of Solana programs. It is not the verification tool itself. If you want spec-driven verification today, use [QEDGen](https://github.com/QEDGen). If you want the model `Svm` provides as a building block for your own tools — an audit framework, a zk-SVM circuit, a differential oracle, a Firedancer/Agave conformance reference — this is for you.
+Honest framing: this repo is the executable-spec foundation for verification of Solana programs. It is not the verification tool itself. If you want spec-driven verification today, use [QEDGen/solana-skills](https://github.com/QEDGen/solana-skills). If you want the model `Svm` provides as a building block for your own tools — an audit framework, a zk-SVM circuit, a differential oracle, a Firedancer/Agave conformance reference — this is for you.
 
 ## License
 
