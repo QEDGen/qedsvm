@@ -13,7 +13,7 @@ This is the **spec layer** the SVM is missing — an executable formal descripti
 
 **This is not** a verified replacement runtime. There is no plan to extract and ship executable Lean as a substitute for `solana-program-runtime`. If you want CompCert-for-Solana, this isn't it. The README is honest about scope on purpose — see `docs/founding-rationale.md` for the F1-vs-F2 distinction.
 
-**Don't ship this against mainnet value.** The sBPF instruction semantics here are hand-written and have not been differential-tested against Agave's `solana-sbpf` or Firedancer's VM. The `Svm.Account` list-update lemmas are still axioms. Closing both is on the roadmap; they are not closed today.
+**Don't ship this against mainnet value.** The sBPF instruction semantics here are hand-written and have not been differential-tested against Agave's `solana-sbpf` or Firedancer's VM. Closing that gap (Phase 4 / Phase 5 of the roadmap) is the load-bearing soundness question for any production use.
 
 ## What's in it
 
@@ -34,9 +34,9 @@ Svm/
     └── WPTactic.lean     — wp_exec weakest-precondition tactic
 ```
 
-Total: ~3k lines of Lean. Zero `sorry`. Five explicit axioms in `Svm/Account.lean` (list-update lemmas), all comments label "axiom for now — full proof would require more complex induction." They are provable in Mathlib and are slated for Phase 0 of the roadmap.
+Total: ~3k lines of Lean. **Zero `sorry`, zero `axiom`** as of v0.2.0 (Phase 0 — the five list-update lemmas in `Svm/Account.lean` are now real theorems proven in core Lean without Mathlib).
 
-The implicit trust base is larger than the explicit axiom count suggests — see `docs/founding-rationale.md` for the audit.
+The implicit trust base remains larger than the explicit axiom count suggests — see `docs/founding-rationale.md` for the audit. The sBPF ISA semantics, account loading model, and crypto primitives are the load-bearing trust assumptions, not list-induction lemmas.
 
 ## Use it
 
@@ -65,7 +65,7 @@ The strategic rationale — why a reference SVM, why now, what F1 (this) buys ve
 
 ## Status and roadmap
 
-Phase 0 (axiom cleanup) and Phase 1 (CPI small-step semantics) are the near-term tracks. The full phased path is in `ROADMAP.md`.
+Phase 0 (axiom cleanup) shipped in v0.2.0. Phase 1 (CPI small-step semantics) is the near-term track. The full phased path is in `ROADMAP.md`.
 
 Honest framing: this repo is the executable-spec foundation for verification of Solana programs. It is not the verification tool itself. If you want spec-driven verification today, use [QEDGen/solana-skills](https://github.com/QEDGen/solana-skills). If you want the model `Svm` provides as a building block for your own tools — an audit framework, a zk-SVM circuit, a differential oracle, a Firedancer/Agave conformance reference — this is for you.
 

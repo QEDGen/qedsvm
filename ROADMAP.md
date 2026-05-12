@@ -2,13 +2,11 @@
 
 The phased path to a usable F1 reference SVM. See `docs/founding-rationale.md` for the strategic frame and the F1-vs-F2 scope decision.
 
-## Phase 0 — Axiom cleanup
+## Phase 0 — Axiom cleanup (shipped in v0.2.0)
 
-Replace the five `axiom` declarations in `Svm/Account.lean` (`find_map_pred_preserved`, `find_map_update_other`, `find_map_update_same`, `find_by_key_map_update_other`, `find_by_key_map_update_same`) with Mathlib-backed proofs. These are standard `List.map` / `List.find?` interaction lemmas; the axiom labels are technical debt, not soundness commitments.
+The five `axiom` declarations in `Svm/Account.lean` (`find_map_pred_preserved`, `find_map_update_other`, `find_map_update_same`, `find_by_key_map_update_other`, `find_by_key_map_update_same`) are now real theorems proven in core Lean — `find_map_pred_preserved` reduces to `List.find?_map`, the four update lemmas use straight induction + `if_pos`/`if_neg` + `decide_eq_true`/`decide_eq_false`. No Mathlib dependency required.
 
-**Outcome**: `grep -r '^axiom' Svm/` returns nothing. Documentation pivots from "we axiomatize list operations" to "we axiomatize the sBPF ISA, account loading, and crypto syscalls (concretely listed)."
-
-**Estimate**: 3-5 days.
+`grep -r '^axiom' Svm/` returns nothing. Documentation has pivoted: the load-bearing trust assumptions are the sBPF ISA semantics, the account-loading model, and crypto primitives — concretely named in `Svm/SBPF/`, `Svm/Account.lean` comments, and Phase 6 of this roadmap respectively. List-induction lemmas no longer carry the trust load.
 
 ## Phase 1 — CPI small-step semantics
 
