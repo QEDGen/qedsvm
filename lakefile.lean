@@ -86,6 +86,21 @@ extern_lib leansecp256k1 pkg := do
   let oJob ← secp256k1_recover.o.fetch
   buildStaticLib (pkg.staticLibDir / name) #[oJob]
 
+-- Audit shim: exposes the agave-pinned `sha2` / `sha3` / `blake3`
+-- Rust crates to Lean for byte-equivalence testing against the
+-- production hash paths (`Sha256.hash`, `Keccak256.hash`,
+-- `Blake3.hash`). See Demo 28 in `RunnerDemo.lean`.
+target hash_bridge.o pkg : FilePath := do
+  let oFile := pkg.buildDir / "csrc" / "hash_bridge.o"
+  let srcJob ← inputTextFile <| pkg.dir / "csrc" / "hash_bridge.c"
+  let weakArgs := #["-I", (← getLeanIncludeDir).toString]
+  buildO oFile srcJob weakArgs #["-fPIC", "-O2", "-Wall"] "cc"
+
+extern_lib leanhashbridge pkg := do
+  let name := nameToStaticLib "leanhashbridge"
+  let oJob ← hash_bridge.o.fetch
+  buildStaticLib (pkg.staticLibDir / name) #[oJob]
+
 @[default_target]
 lean_lib Svm where
   roots := #[`Svm]

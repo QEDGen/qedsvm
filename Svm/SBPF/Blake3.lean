@@ -24,5 +24,11 @@ namespace Blake3
 @[extern "lean_blake3"]
 opaque hash (data : @& ByteArray) : ByteArray
 
+/-- Agave-conformance audit hook. Calls the `blake3 = 1.8.5` crate
+    (agave's master pin) via `rust-bridge`. Byte-equivalence with
+    `hash` is verified by Demo 28 in `RunnerDemo.lean`. -/
+@[extern "lean_blake3_agave"]
+opaque hashAgave (data : @& ByteArray) : ByteArray
+
 end Blake3
 end Svm.SBPF

@@ -19,6 +19,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use core::slice;
+use sha2::Digest as _;
 
 // ───────────────────────────────────────────────────────────────────
 // secp256k1_recover (matches agave/syscalls/src/lib.rs SyscallSecp256k1Recover)
@@ -67,4 +68,59 @@ pub unsafe extern "C" fn formal_svm_secp256k1_recover(
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, 64) };
     out.copy_from_slice(&serialized[1..65]);
     0
+}
+
+// ───────────────────────────────────────────────────────────────────
+// Hash functions — agave-conformance audit shims.
+//
+// These match the crates agave's `solana-{sha256,keccak,blake3}-hasher`
+// wrappers use:
+//   - sha256: `sha2 = 0.10.8` (default-features-off)
+//   - keccak: `sha3 = 0.10.8` → `sha3::Keccak256` (NOT SHA-3; the
+//             `sha3` crate exposes original Keccak under that name)
+//   - blake3: `blake3 = 1.8.5` (agave master pin)
+//
+// Each writes exactly 32 bytes to `out_ptr`. Used by the audit demos
+// in `Svm/SBPF/RunnerDemo.lean` to prove byte-equivalence with the
+// vendored-C / pure-Lean implementations.
+// ───────────────────────────────────────────────────────────────────
+
+/// SHA-256 (`sha2` 0.10.8). Output is exactly 32 bytes at `out_ptr`.
+#[no_mangle]
+pub unsafe extern "C" fn formal_svm_sha256(
+    in_ptr: *const u8,
+    in_len: usize,
+    out_ptr: *mut u8,
+) {
+    let input = unsafe { slice::from_raw_parts(in_ptr, in_len) };
+    let digest = sha2::Sha256::digest(input);
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 32) };
+    out.copy_from_slice(&digest);
+}
+
+/// Keccak-256 (`sha3::Keccak256`, original Keccak with 0x01 padding —
+/// Solana's variant, not FIPS-202 SHA-3 which uses 0x06).
+#[no_mangle]
+pub unsafe extern "C" fn formal_svm_keccak256(
+    in_ptr: *const u8,
+    in_len: usize,
+    out_ptr: *mut u8,
+) {
+    let input = unsafe { slice::from_raw_parts(in_ptr, in_len) };
+    let digest = sha3::Keccak256::digest(input);
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 32) };
+    out.copy_from_slice(&digest);
+}
+
+/// BLAKE3 (`blake3` 1.8.5). Default hashing mode, 32-byte output.
+#[no_mangle]
+pub unsafe extern "C" fn formal_svm_blake3(
+    in_ptr: *const u8,
+    in_len: usize,
+    out_ptr: *mut u8,
+) {
+    let input = unsafe { slice::from_raw_parts(in_ptr, in_len) };
+    let digest = blake3::hash(input);
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 32) };
+    out.copy_from_slice(digest.as_bytes());
 }

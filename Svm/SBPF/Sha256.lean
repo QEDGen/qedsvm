@@ -180,5 +180,15 @@ example : Sha256.hash ⟨#[0x61, 0x62, 0x63]⟩ = ⟨#[
   0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
   0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad ]⟩ := by native_decide
 
+/-! ## Agave-conformance audit hook
+
+`hashAgave` calls the same `sha2 = 0.10.8` crate agave's runtime uses
+(via `rust-bridge`). Byte-equivalence between `hash` (pure-Lean
+FIPS-180-4) and `hashAgave` is verified on a sweep of inputs by Demo
+28 in `RunnerDemo.lean`. The production path remains `hash`; this is
+a safety net to catch any future divergence. -/
+@[extern "lean_sha256_agave"]
+opaque hashAgave (data : @& ByteArray) : ByteArray
+
 end Sha256
 end Svm.SBPF

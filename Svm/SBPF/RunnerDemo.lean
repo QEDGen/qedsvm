@@ -1057,4 +1057,71 @@ example :
     Runner.runForExit secp256k1Demo { input := secp256k1DemoInput } = some 0x84 := by
   native_decide
 
+/-! ## Demo 28 — agave-conformance audit for SHA-256 / Keccak-256 / BLAKE3
+
+For each of the three production hash paths we ship — pure-Lean
+SHA-256, vendored-C Keccak-256, vendored-C BLAKE3 — assert byte
+equivalence with the same hash computed by agave's own crate
+(`sha2 = 0.10.8`, `sha3 = 0.10.8`, `blake3 = 1.8.5`, all routed
+through `rust-bridge`) on a sweep of inputs:
+
+- empty buffer
+- single byte
+- "abc"
+- "The quick brown fox jumps over the lazy dog"
+- 256 bytes (multi-block territory for SHA-256 / Keccak)
+- 1025 bytes (forces BLAKE3 onto its two-chunk path)
+- 4096 bytes (multi-block-stride sanity)
+
+`native_decide` makes the kernel commit to both digests on these
+inputs and check structural equality. A failure here is a divergence
+between our production path and agave's runtime hashing call chain —
+exactly the kind of bug a reference interpreter must not have.
+
+The production paths *call* the pure-Lean / vendored-C
+implementations (not `hashAgave`); these demos confirm that choice
+is observationally indistinguishable from calling agave's crates. -/
+
+private def auditInput0   : ByteArray := ByteArray.empty
+private def auditInput1   : ByteArray := ⟨#[0x5a]⟩
+private def auditInputAbc : ByteArray := ⟨#[0x61, 0x62, 0x63]⟩
+private def auditInputFox : ByteArray :=
+  -- "The quick brown fox jumps over the lazy dog"
+  ⟨#[0x54, 0x68, 0x65, 0x20, 0x71, 0x75, 0x69, 0x63,
+     0x6b, 0x20, 0x62, 0x72, 0x6f, 0x77, 0x6e, 0x20,
+     0x66, 0x6f, 0x78, 0x20, 0x6a, 0x75, 0x6d, 0x70,
+     0x73, 0x20, 0x6f, 0x76, 0x65, 0x72, 0x20, 0x74,
+     0x68, 0x65, 0x20, 0x6c, 0x61, 0x7a, 0x79, 0x20,
+     0x64, 0x6f, 0x67]⟩
+private def auditInput256  : ByteArray :=
+  ⟨((List.range 256).map (·.toUInt8)).toArray⟩
+private def auditInput1025 : ByteArray :=
+  ⟨((List.range 1025).map (fun i => (i % 251).toUInt8)).toArray⟩
+private def auditInput4096 : ByteArray :=
+  ⟨((List.range 4096).map (fun i => (i % 251).toUInt8)).toArray⟩
+
+example : Sha256.hash auditInput0    = Sha256.hashAgave auditInput0    := by native_decide
+example : Sha256.hash auditInput1    = Sha256.hashAgave auditInput1    := by native_decide
+example : Sha256.hash auditInputAbc  = Sha256.hashAgave auditInputAbc  := by native_decide
+example : Sha256.hash auditInputFox  = Sha256.hashAgave auditInputFox  := by native_decide
+example : Sha256.hash auditInput256  = Sha256.hashAgave auditInput256  := by native_decide
+example : Sha256.hash auditInput1025 = Sha256.hashAgave auditInput1025 := by native_decide
+example : Sha256.hash auditInput4096 = Sha256.hashAgave auditInput4096 := by native_decide
+
+example : Keccak256.hash auditInput0    = Keccak256.hashAgave auditInput0    := by native_decide
+example : Keccak256.hash auditInput1    = Keccak256.hashAgave auditInput1    := by native_decide
+example : Keccak256.hash auditInputAbc  = Keccak256.hashAgave auditInputAbc  := by native_decide
+example : Keccak256.hash auditInputFox  = Keccak256.hashAgave auditInputFox  := by native_decide
+example : Keccak256.hash auditInput256  = Keccak256.hashAgave auditInput256  := by native_decide
+example : Keccak256.hash auditInput1025 = Keccak256.hashAgave auditInput1025 := by native_decide
+example : Keccak256.hash auditInput4096 = Keccak256.hashAgave auditInput4096 := by native_decide
+
+example : Blake3.hash auditInput0    = Blake3.hashAgave auditInput0    := by native_decide
+example : Blake3.hash auditInput1    = Blake3.hashAgave auditInput1    := by native_decide
+example : Blake3.hash auditInputAbc  = Blake3.hashAgave auditInputAbc  := by native_decide
+example : Blake3.hash auditInputFox  = Blake3.hashAgave auditInputFox  := by native_decide
+example : Blake3.hash auditInput256  = Blake3.hashAgave auditInput256  := by native_decide
+example : Blake3.hash auditInput1025 = Blake3.hashAgave auditInput1025 := by native_decide
+example : Blake3.hash auditInput4096 = Blake3.hashAgave auditInput4096 := by native_decide
+
 end Svm.SBPF.RunnerDemo

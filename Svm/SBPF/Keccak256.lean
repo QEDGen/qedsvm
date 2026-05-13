@@ -25,5 +25,12 @@ namespace Keccak256
 @[extern "lean_keccak256"]
 opaque hash (data : @& ByteArray) : ByteArray
 
+/-- Agave-conformance audit hook. Calls `sha3::Keccak256` from the
+    `sha3 = 0.10.8` crate (the same crate agave's
+    `solana-keccak-hasher` wraps) via `rust-bridge`. Byte-equivalence
+    with `hash` is verified by Demo 28 in `RunnerDemo.lean`. -/
+@[extern "lean_keccak256_agave"]
+opaque hashAgave (data : @& ByteArray) : ByteArray
+
 end Keccak256
 end Svm.SBPF
