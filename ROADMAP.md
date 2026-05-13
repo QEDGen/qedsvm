@@ -83,7 +83,7 @@ Each ships as: an sBPF macro (in Lean), a Hoare triple (with separation logic ov
 
 **Estimate**: 12–20 weeks.
 
-### Phase F — Differential testing *(infrastructure shipped; coverage scaling)*
+### Phase F — Differential testing *(byte-for-byte cross-engine agreement on real cargo-build-sbf output)*
 
 Extract the sBPF semantics (`Svm.SBPF.Execute`) to executable Lean / native and oracle-align against:
 - Firedancer's `vm-fuzz` corpus
@@ -92,19 +92,24 @@ Extract the sBPF semantics (`Svm.SBPF.Execute`) to executable Lean / native and 
 
 Every disagreement is either a bug in our semantics or evidence of cross-client divergence worth surfacing. This is the empirical answer to the "is the hand-written ISA correct" question — until it passes, every Phase-E spec inherits this uncertainty.
 
-**What's shipped (2026-05-13):**
+**What's shipped (through 2026-05-14):**
 - `formal-svm-rs/` Rust crate exposes the Lean runner via a Mollusk-shaped API (`Svm::process_instruction(&ix, &accounts) -> InstructionResult`). Same types as published agave-master pins (`solana-pubkey`, `solana-instruction`, `solana-account`), so Mollusk tests can swap engines by changing one type name.
 - Agave-conformant input-buffer serializer with round-trip test against `solana_program_entrypoint::deserialize`, plus byte-level known-offset checks.
-- CU accounting that matches agave's reported count (verified against `mollusk_svm::Mollusk` on a real `cargo-build-sbf` noop).
 - Thread-safe Lean runtime access (process-wide `Mutex`, stress-tested at 8 threads × 50 iters × varied input sizes).
 - `tests/diff_mollusk.rs` (gated `--features diff-mollusk`): runs the same `Instruction` through `formal_svm::Svm` and `mollusk_svm::Mollusk`, asserting equality on `program_result`, `return_data`, `resulting_accounts`, `compute_units_consumed`.
+- **Five real `cargo-build-sbf` fixtures pass byte-for-byte cross-engine equality**: minimal noop (CU=2), `solana_program::entrypoint!` noop (CU=98), `msg!("hi")` logger (CU=202), incrementer that mutates `accounts[0].data` and writes back (CU=321), and noop+instruction-data. The incrementer is the strongest end-to-end conformance claim: `entrypoint!()` deserializes input, `try_borrow_mut_data()` succeeds, `u64+1` write-back is byte-identical to mollusk's resulting accounts.
+- ELF + decoder coverage for actual `cargo-build-sbf` (3.1.11 / platform-tools v1.52) output: `e_entry` honored, `R_BPF_64_32` Murmur3 relocations applied, `0x85` call decoder is src-agnostic (syscall hash lookup first, else `.call_local` PC-relative), `0x8d callx` (indirect call) decoded.
+- **V0 stack frames** (`solana-sbpf::Interpreter::push_frame` semantics): `.call_local` pushes a `CallFrame(retPc, savedR6..savedR10)` and bumps `r10 += 0x2000` (stack_frame_gaps); `.exit` restores all six fields. Without this LLVM-emitted entrypoint deserializers iterate forever because their loop counter spills to the same `r10 + const` offset across sub-calls.
 
 **What's left:**
-- ELF + decoder coverage for the full sBPF feature set used by `cargo-build-sbf`-produced programs (`R_BPF_64_RELATIVE` relocations; the syscalls real programs actually invoke). Today's smallest real fixture is a hand-written `extern "C" fn entrypoint(_:*mut u8) -> u64 { 0 }`, which emits exactly `mov64 r0, 0; exit` — the only `cargo-build-sbf` output formal-svm parses end-to-end.
-- Fuzz/sweep harness over generated `Vec<Insn>` programs to drive both engines on randomized inputs (the diff plumbing is in place; just needs a generator).
-- Firedancer comparison (separate language, separate harness — deferred until agave-side diff is on a richer fixture corpus).
+- More real-program fixtures (SPL Token, Associated Token Account, Pinocchio-style escrow). Cheap test surface, high catch rate for regressions. Apache-2.0 `.so` files harvestable from blueshift-gg/sbpf.
+- `R_BPF_64_RELATIVE` relocations (shift `.rodata` to `MM_PROGRAM_START + sh_addr`, patch `lddw` imms).
+- SBPF V1/V2 manual stack-frame bump (SIMD-0166) — current emit by cargo-build-sbf 3.1.11 is V0, so unblocked.
+- Region bounds enforcement: `Mem` is total; agave faults on OOR access. Most observable on adversarial inputs.
+- Fuzz/sweep harness over generated `Vec<Insn>` programs.
+- Firedancer comparison at the primitive level via `fd_ballet` FFI (per-hash, per-curve diff). Syscall-level diff vs agave is already covered by mollusk fixtures.
 
-**Remaining estimate**: 2–4 weeks for ELF/decoder coverage of common cargo-build-sbf output; the diff harness is the easy part.
+**Remaining estimate**: 1–2 weeks for additional fixture coverage + `R_BPF_64_RELATIVE`; the diff harness itself is done.
 
 ### Phase G — ELF loader + arbitrary program execution *(architectural deliverable shipped)*
 
@@ -166,36 +171,58 @@ trip, memcpy / memset / memcmp byte-level verification, log content
 inspection, return-data round trip, stack-height query, and
 clock-sysvar zero-fill.
 
-**What's left to call Phase G done-done** (each is scope-bounded):
+**What's shipped since the original Phase-G writeup (through 2026-05-14):**
 
-- **CPI** (`sol_invoke_signed_c`, `sol_invoke_signed_rust`): defaults to
-  `r0 := 0` (success but no actual cross-call). Real semantics needs a
-  program registry, instruction-context construction, and recursive
-  `executeFn` invocation — this overlaps Phase D/E (Solana program
-  library) and is best landed there.
+- **Hash syscalls**: `sol_sha256` (pure-Lean FIPS-180-4, kernel-reducible),
+  `sol_sha512` / `sol_keccak256` / `sol_blake3` (rust-bridge to the same
+  crates agave uses — `sha2`, `sha3`, `blake3`). All four produce real
+  digests via `readSlices` + `writeBytes` helpers in `Svm/SBPF/Machine.lean`.
+- **Curve syscalls**: `sol_secp256k1_recover` (paritytech `libsecp256k1`),
+  full `sol_curve_*` family for Curve25519 (validate / group_op / MSM),
+  `sol_curve_decompress` + `sol_curve_pairing_map` for BLS12-381,
+  `sol_alt_bn128_group_op` + `sol_alt_bn128_compression` for BN254.
+- **`sol_big_mod_exp`** via `num-bigint::modpow` (matches agave's
+  `solana-big-mod-exp`).
+- **`sol_poseidon`** via `light-poseidon` + `ark-bn254`.
 - **PDA derivation** (`sol_create_program_address`,
-  `sol_try_find_program_address`): defaults to `r0 := 0`. Needs real
-  SHA-256 to compute the program address.
-- **Crypto syscalls** (`sol_sha256`, `sol_keccak256`, `sol_blake3`,
-  `sol_secp256k1_recover`): defaults to `r0 := 0`. Each needs a
-  verified-correct implementation of the underlying primitive — a
-  separate, substantial project (Phase H).
-- **Relocations** (R_BPF_64_32, R_BPF_64_64): not applied. Pinocchio is
-  largely relocation-free; Anchor / native-Rust binaries depend on them
-  for absolute-address lookups into `.rodata`. Implement as a separate
-  pass between ELF parse and decode.
-- **`.bss` mapping**: not blocking — our default `Mem` returns 0 for
-  un-overlaid addresses, which matches `.bss` semantics. Adding
-  explicit handling is cosmetic for future memory representations.
+  `sol_try_find_program_address`): real implementation backed by the
+  pure-Lean SHA-256, with on-curve rejection via Curve25519 validate.
+- **R_BPF_64_32 relocations** applied at ELF load: writes
+  `Murmur3-32(symbol_name)` into the instruction imm at `r_offset + 4`.
+- **Per-syscall CU table** mirroring agave's
+  `SVMTransactionExecutionCost::default()`. Variable-length syscalls
+  read length args from `State.regs`. Cross-engine CU equality verified
+  against mollusk on 5 fixtures.
+- **Syscall colocation refactor**: every `Syscall` variant now dispatches
+  to a per-module `exec` / `cu` defined next to its primitive.
+  `Execute.lean` shrank from 1332 to 640 lines; `execSyscall` and
+  `syscallCu` are pure 50-line dispatchers. New file
+  `Svm/SBPF/Machine.lean` carries `State`, `RegFile`, `CallFrame`, and
+  the shared body helpers; new directory `Svm/Syscalls/` hosts the
+  previously-inline syscalls (logging, mem ops, sysvar, return data,
+  abort, misc, CPI).
+
+**What's left to call Phase G done-done:**
+
+- **CPI** (`sol_invoke_signed_c`, `sol_invoke_signed_rust`): still a stub
+  (`r0 := 0`), now in `Svm/Syscalls/Cpi.lean`. Real semantics needs a
+  program registry, instruction-context construction, and recursive
+  `executeFn` invocation — overlaps Phase D/E and is best landed there.
+- **R_BPF_64_RELATIVE relocations** (shift `.rodata` mapping to
+  `MM_PROGRAM_START + sh_addr`, patch `lddw` imms).
+- **Region bounds enforcement**: `Mem` is total; agave faults on OOR
+  access. Honest programs unaffected.
+- **Per-byte hashing CU refinement** (`sha256_byte_cost = 1`, etc.):
+  fixed-cost today.
 - **PT_LOAD program headers**: alternative section-free load path used
   by some stripped ELFs.
 - **`@[implemented_by]` native compilation**: `executeFn` runs through
   Lean's kernel for `native_decide`; for real CLI throughput, wire the
   hot functions to compiled C/Rust implementations.
 
-**Estimate to "done-done"**: ~4 weeks of focused work for relocations +
-PT_LOAD + CPI stub-with-recursion + native compile hookups. Real
-crypto (Phase H) is its own multi-month project.
+**Estimate to "done-done"**: 1–2 weeks for `R_BPF_64_RELATIVE` + region
+bounds + CPI stub-with-recursion + per-byte CU. Pure-Lean kernel/zk
+crypto is Phase H.
 
 ### Phase H — Crypto syscalls + zkSVM target
 
