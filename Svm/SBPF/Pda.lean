@@ -20,9 +20,11 @@
   succeeds.
 
   Wired to `.sol_create_program_address` and
-  `.sol_try_find_program_address` in `Execute.lean`.
+  `.sol_try_find_program_address` via `execCreate` / `execTryFind`
+  below.
 -/
 
+import Svm.SBPF.Machine
 import Svm.SBPF.Sha256
 import Svm.SBPF.Curve25519
 
@@ -88,6 +90,61 @@ private def tryFindLoop (seeds : List ByteArray) (programId : ByteArray)
 def tryFindProgramAddress (seeds : List ByteArray) (programId : ByteArray)
     : Option (ByteArray × UInt8) :=
   tryFindLoop seeds programId 256 255
+
+/-! ## Syscall bindings -/
+
+/-- CU charge for both PDA syscalls. `try_find` is charged once per
+    iteration in agave; we currently approximate by charging the
+    single-attempt cost. -/
+def cu : Nat := 1_500
+
+/-- Read `n` seeds from a `VmSlice` array as a `List ByteArray`.
+    Mirrors `readSlices` from Machine.lean but keeps each seed as a
+    separate list element — `createProgramAddress` /
+    `tryFindProgramAddress` need the structured form. -/
+@[simp] def readSeeds (mem : Memory.Mem) (seedsA n : Nat) : List ByteArray :=
+  (List.range n).map (fun i =>
+    let descAddr := seedsA + i * 16
+    let ptr := Memory.readU64 mem descAddr
+    let len := Memory.readU64 mem (descAddr + 8)
+    readBytes mem ptr len)
+
+/-- Execute `sol_create_program_address`.
+    ABI: r1 = `*const [VmSlice; N]`, r2 = N, r3 = `*const [u8; 32]`
+    program_id, r4 = `*mut [u8; 32]` out. r0 = 0/1. -/
+@[simp] def execCreate (s : State) : State :=
+  let seeds  := readSeeds s.mem s.regs.r1 s.regs.r2
+  let pid    := readBytes s.mem s.regs.r3 32
+  let result := createProgramAddress seeds pid
+  commitOptional s s.regs.r4 32 result
+
+/-- Execute `sol_try_find_program_address`.
+    Same as `execCreate` plus r5 = `*mut [u8; 1]` bump output. The
+    extra bump byte means we hand-roll the commit rather than reuse
+    `commitOptional`. -/
+def execTryFind (s : State) : State :=
+  let outA   := s.regs.r4
+  let bumpA  := s.regs.r5
+  let seeds  := readSeeds s.mem s.regs.r1 s.regs.r2
+  let pid    := readBytes s.mem s.regs.r3 32
+  let result := tryFindProgramAddress seeds pid
+  match result with
+  | some (pda, bump) =>
+    let mem' : Memory.Mem := fun a =>
+      if a = bumpA then bump.toNat
+      else writeBytes s.mem outA 32 pda a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | none => { s with regs := s.regs.set .r0 1 }
+
+/-- `execTryFind` preserves r10 in both match arms. Marked `@[simp]`
+    so `execSyscall_preserves_r10`'s blanket simp closes the
+    `sol_try_find_program_address` arm without case-splitting on
+    `result`. (`execTryFind` itself isn't `@[simp]` because simp would
+    then try to unfold the whole body inside this very proof.) -/
+@[simp] theorem execTryFind_preserves_r10 (s : State) :
+    (execTryFind s).regs.r10 = s.regs.r10 := by
+  simp only [execTryFind]
+  split <;> simp
 
 end Pda
 end Svm.SBPF

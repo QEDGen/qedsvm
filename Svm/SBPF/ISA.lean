@@ -175,8 +175,28 @@ inductive Insn
   | jset  (dst : Reg) (src : Src) (target : Nat)
   -- Unconditional jump
   | ja    (target : Nat)
-  -- Syscall
+  -- Syscall (`call <imm32>` where imm32 = Murmur3 hash of syscall name,
+  -- opcode 0x85 with `src = 0`)
   | call  (syscall : Syscall)
+  -- Internal call (`call <imm32>` with `src = 1`, opcode 0x85). The
+  -- 32-bit immediate is a signed slot-offset from the next
+  -- instruction; the decoder resolves it to an absolute logical PC.
+  -- Semantics: push the return PC onto `State.callStack`, jump to
+  -- target. `.exit` pops the stack instead of terminating when the
+  -- stack is non-empty. Callee-saved register preservation (r6–r9 /
+  -- r10) is *not* modeled — programs that rely on r6–r9 surviving
+  -- across the call will misbehave (real sBPF writes those + r10 to
+  -- the new frame; full frame modeling is Phase D).
+  | call_local (target : Nat)
+  -- Indirect call (`callx <reg>`, opcode 0x8d) — call target is the
+  -- runtime value of `reg`, interpreted as a logical PC. Cargo-built
+  -- Solana programs emit this for tail-call dispatch and for
+  -- panic/error paths in Rust's codegen.
+  --
+  -- v1 semantics: jump to `regs[reg]`. Like `.call_local`, no
+  -- call-frame return stack push (an exit would terminate, not
+  -- return). Most occurrences are in unreachable error branches.
+  | callx (reg : Reg)
   -- Program exit (exit code = value in r0)
   | exit
   deriving Repr, DecidableEq

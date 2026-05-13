@@ -10,8 +10,10 @@
   of BLAKE3's tree / compression structure is downstream work — its
   own project.
 
-  Wired to the `.sol_blake3` syscall in `Execute.lean`.
+  Wired to the `.sol_blake3` syscall via `Blake3.exec` below.
 -/
+
+import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace Blake3
@@ -21,6 +23,17 @@ namespace Blake3
     Implemented in Rust (`rust-bridge`) calling `blake3::hash`. -/
 @[extern "lean_blake3"]
 opaque hash (data : @& ByteArray) : ByteArray
+
+/-! ## `sol_blake3` syscall
+
+Same `SliceDesc`-list ABI and base cost as `sol_sha256`. -/
+
+def cu : Nat := 85
+
+@[simp] def exec (s : State) : State :=
+  let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)
+  { s with regs := s.regs.set .r0 0
+           mem  := writeBytes s.mem s.regs.r3 32 digest }
 
 end Blake3
 end Svm.SBPF

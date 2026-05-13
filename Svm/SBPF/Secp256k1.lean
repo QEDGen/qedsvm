@@ -17,8 +17,10 @@
   We deliberately do **not** ship a pure-Lean spec here. Verification of
   curve arithmetic is downstream work — its own project.
 
-  Wired to `.sol_secp256k1_recover` in `Execute.lean`.
+  Wired to `.sol_secp256k1_recover` via `Secp256k1.exec` below.
 -/
+
+import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace Secp256k1
@@ -58,6 +60,33 @@ inductive RecoverResult where
     `native_decide` will (via `ofReduceBool`). -/
 @[extern "lean_secp256k1_recover"]
 opaque recover (hash : @& ByteArray) (recoveryId : UInt8) (sig : @& ByteArray) : RecoverResult
+
+/-! ## `sol_secp256k1_recover` syscall
+
+ABI: r1 = `*const [u8; 32]` hash, r2 = recovery_id (≥4 rejected),
+r3 = `*const [u8; 64]` sig (r || s), r4 = `*mut [u8; 64]` out.
+r0 = 0/1/2/3 (success / invalid hash / invalid recovery id / invalid sig). -/
+
+def cu : Nat := 25_000
+
+@[simp] def exec (s : State) : State :=
+  let recId  := s.regs.r2
+  let outA   := s.regs.r4
+  let result : RecoverResult :=
+    if recId > 3 then .invalidRecoveryId
+    else recover (readBytes s.mem s.regs.r1 32) recId.toUInt8
+                  (readBytes s.mem s.regs.r3 64)
+  let errCode : Nat :=
+    match result with
+    | .success _         => 0
+    | .invalidHash       => 1
+    | .invalidRecoveryId => 2
+    | .invalidSignature  => 3
+  let mem' : Memory.Mem :=
+    match result with
+    | .success pubkey => writeBytes s.mem outA 64 pubkey
+    | _               => s.mem
+  { s with regs := s.regs.set .r0 errCode, mem := mem' }
 
 end Secp256k1
 end Svm.SBPF

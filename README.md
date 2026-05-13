@@ -108,7 +108,14 @@ Honest framing — the substrate is built; the verification machinery on top is 
 
 - **Bounded Hoare triples / spec layer.** `Svm/SBPF/{SepLogic,CPSSpec,InstructionSpecs}.lean` define `cuTripleWithin`, frame, seq, weaken, and the first per-instruction triple (`mov64_imm_spec`). Most of the spec library is ahead. `Svm/SBPF/MacroDemo.lean` shows two verified two-instruction macros as a proof of pattern.
 - **13 axioms in `Svm/SBPF/Memory.lean`** for the flat-memory coherence lemmas. These disappear with the byte-level separation-logic migration (Phase A); they're not load-bearing in the spec layer.
-- **No differential test against agave or Firedancer** has been run. The audit work proves we call the same *crates* agave's runtime calls (a structural guarantee), but a sweeping execution-trace comparison against the live agave VM is the gold standard and is Phase F.
+- **Differential test against agave shipped end-to-end.** `formal-svm-rs/tests/diff_mollusk.rs` runs the same `Instruction` through `formal_svm::Svm` and `mollusk_svm::Mollusk`. Three program shapes cross-checked, each asserting byte-for-byte equality on `program_result`, `return_data`, `resulting_accounts`, *and* `compute_units_consumed`:
+  - **Minimal noop** (`mov64 r0, 0; exit`, 2 instructions) — CU 2 on both sides.
+  - **Real `solana_program::entrypoint!` noop** (~1923 sBPF instructions, full input-buffer deserializer macro) — CU 98 on both sides. Exercises proper call/return through the `.call_local`/`.exit` push-PC/pop-PC plumbing.
+  - **Logger** (`msg!("hi")` → `sol_log_`) — CU 202 on both sides. Exercises:
+    - `R_BPF_64_32` relocation patching: imm gets overwritten with `Murmur3-32("sol_log_") = 0x207559bd` at load time
+    - the unified function-key decoder (0x85 → if `SyscallHash.fromHash imm` is a known syscall, route to `.call syscall`; else `.call_local`)
+    - the agave-conformant per-syscall CU table (`syscall_base_cost = 100`, with variable-length-aware costs for `sol_log_`, `sol_memcpy_`, sha256/keccak/blake3, secp256k1, BLS12-381, alt_bn128, big_mod_exp, Poseidon, PDA derivation, CPI, sysvars).
+- **Call-frame caveat.** The return stack tracks return PCs only; callee-saved register preservation (r6–r9, r10 / frame-pointer arithmetic) is *not* modeled. Programs that rely on r6–r9 surviving across a call (rather than spilling them explicitly, which `cargo-build-sbf` typically does) will misbehave — full call-frame modeling is Phase D.
 - **`sol_get_processed_sibling_instruction`** — needs an instruction-trace state we don't model (single-instruction execution today).
 - **`sol_get_sysvar` (generic accessor)** — needs a sysvar registry keyed by sysvar-id.
 - **CPI v2 deferments**: no `SolInstruction` reader, no callee account-input serialization, no account write-back, no PDA-signer seed validation, no CU-budget split, no stack-depth tracking. Today's CPI works for tests that pass program-id as a `Nat` directly via `r1`.
@@ -163,7 +170,7 @@ Svm/
     ├── Tactic.lean             — misc tactics
     └── WPTactic.lean           — wp_exec (legacy, for concrete programs)
 
-rust-bridge/                   — cargo staticlib pinning agave's crypto crates
+rust-bridge/                   — cargo staticlib called BY Lean for crypto syscalls
 ├── Cargo.toml                  — pinned versions matching agave master
 ├── Cargo.lock                  — checked in for reproducibility
 ├── build.rs                    — compiles lean_glue.c via cc-rs
@@ -172,6 +179,22 @@ rust-bridge/                   — cargo staticlib pinning agave's crypto crates
 └── src/
     ├── lib.rs                  — extern "C" functions, one per @[extern] decl
     └── lean_ffi.rs             — Rust bindings to Lean's lean_object ABI
+
+Svm/Ffi.lean                   — @[export formal_svm_run_elf_buffer] entry
+                                  (ByteArray wire format the Rust crate decodes)
+
+formal-svm-rs/                 — cargo crate that CALLS Lean — runs programs
+                                  against the formal-svm via a Mollusk-shape API
+├── Cargo.toml                  — solana-pubkey/instruction/account pinned to
+│                                agave master; mollusk-svm optional
+├── build.rs                    — auto-enumerates Lake's 33 dylib outputs
+├── csrc/init_glue.c            — wrappers for Lean's static-inline init/IO helpers
+└── src/
+    ├── ffi.rs                  — Lean runtime lock + alloc/dec_ref/init
+    ├── wire.rs                 — decode the Lean-side ByteArray result
+    ├── serialize.rs            — accounts → BPF input buffer (agave-conformant)
+    ├── deserialize.rs          — post-execution buffer → modified accounts
+    └── svm.rs                  — Svm::process_instruction → InstructionResult
 ```
 
 ## Lean as several things at once
@@ -196,7 +219,7 @@ theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat) :
 
 (1) is shipped end-to-end. (3) and (4) work for the small handful of instruction specs in `InstructionSpecs.lean` plus the two macros in `MacroDemo.lean`; growing that library to full ISA coverage is Phase B.
 
-## Use it
+## Use it — from Lean
 
 ```lean
 require formalSvm from git
@@ -208,6 +231,40 @@ Then `import Svm` (or import selectively, e.g. `import Svm.SBPF.Runner`).
 Standalone build: `lake build`. Lean toolchain pin: `lean-toolchain`.
 
 **Build prerequisites:** Lean (per `lean-toolchain`, fetched by `elan`) and `cargo` / `rustc` (any stable toolchain). Lake invokes `cargo build --release` automatically during `lake build`. No system crypto libraries required.
+
+## Use it — from Rust (`formal-svm-rs`)
+
+A sibling crate exposes the Lean runner via a Mollusk-shaped API for differential testing of Solana programs against the formal semantics.
+
+```rust
+use formal_svm::{ProgramResult, Svm};
+use solana_instruction::Instruction;
+use solana_pubkey::Pubkey;
+
+let mut svm = Svm::default();
+svm.add_program(&program_id, elf_bytes);
+
+let result = svm.process_instruction(&instruction, &accounts)?;
+assert_eq!(result.program_result, ProgramResult::Success);
+assert_eq!(result.compute_units_consumed, 2);
+```
+
+Types (`Pubkey`, `Instruction`, `AccountMeta`, `AccountSharedData`) are the published `solana-pubkey` / `solana-instruction` / `solana-account` crates pinned to agave master, so a real Mollusk test can pass its `Vec<(Pubkey, AccountSharedData)>` and `Instruction` straight in. The crate handles:
+
+- agave-conformant input-buffer serialization (round-trip-tested against `solana_program_entrypoint::deserialize`)
+- post-execution buffer parsing into `resulting_accounts`
+- CU accounting (per-instruction, matches Mollusk's reported count)
+- thread-safe Lean runtime access (process-wide Mutex)
+
+Differential testing against Mollusk (gated behind `--features diff-mollusk`):
+
+```bash
+cd formal-svm-rs && cargo test --features diff-mollusk
+```
+
+`tests/diff_mollusk.rs` runs a real `cargo-build-sbf`-produced ELF through both engines and asserts equality on `(program_result, return_data, resulting_accounts, compute_units_consumed)`.
+
+**Prerequisites:** `lake build` has run at least once in the repo root (the build script auto-enumerates the 33 `formalSvm_*.dylib` outputs from `.lake/build/`).
 
 ## Roadmap
 

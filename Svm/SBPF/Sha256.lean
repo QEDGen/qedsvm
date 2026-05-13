@@ -18,6 +18,8 @@
   - Agave: `solana-bpf-loader-program/src/syscalls/mod.rs` (`SyscallSha256`).
 -/
 
+import Svm.SBPF.Machine
+
 namespace Svm.SBPF
 namespace Sha256
 
@@ -191,6 +193,37 @@ net to catch any future divergence between our independently-built
 spec and agave's runtime call chain. -/
 @[extern "lean_sha256_agave"]
 opaque hashAgave (data : @& ByteArray) : ByteArray
+
+/-! ## `sol_sha256` syscall
+
+Body and CU charge for the `sol_sha256` syscall. Lives here, next to
+the FIPS-180-4 primitive, so `Execute.lean::execSyscall` can stay a
+thin dispatcher.
+
+ABI:
+  r1 = `*const SliceDesc` (vals)
+  r2 = `u64`              (n_vals)
+  r3 = `*mut [u8; 32]`    (out)
+where `SliceDesc = { ptr: u64, len: u64 }` (16 bytes LE). The
+implementation gathers all slice bytes, hashes once with the
+pure-Lean `hash`, and writes the 32-byte big-endian digest to `*r3`.
+`r0` is set to 0 on success. -/
+
+/-- CU charge for `sol_sha256`. Agave's `sha256_base_cost = 85`.
+    The per-byte cost (`sha256_byte_cost = 1`) is not yet modeled —
+    it requires reading the slice descriptor list to learn the
+    total byte count and re-reading state in `syscallCu`. -/
+def cu : Nat := 85
+
+/-- Execute `sol_sha256` against the supplied state.
+
+    `@[simp]` so the original `execSyscall_preserves_r10` proof,
+    which case-splits on `Syscall` and rewrites with
+    `simp [execSyscall]`, still discharges the sha256 arm. -/
+@[simp] def exec (s : State) : State :=
+  let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)
+  { s with regs := s.regs.set .r0 0
+           mem  := writeBytes s.mem s.regs.r3 32 digest }
 
 end Sha256
 end Svm.SBPF

@@ -9,12 +9,15 @@
   Solana program that needs BLS pairings (e.g., aggregate signature
   verification).
 
-  Wired to `.sol_curve_decompress` and `.sol_curve_pairing_map` in
-  `Execute.lean`. Note: these two syscalls are dispatched on `curve_id`
-  in the BLS12-381 ID space (`4..=6 | 0x80`), distinct from the
-  curve25519 IDs (`0..1`). Earlier sessions discovered that despite
-  the `sol_curve_*` naming these syscalls are BLS12-381 only.
+  Wired to `.sol_curve_decompress` and `.sol_curve_pairing_map` via
+  `Bls12_381.execDecompress` and `Bls12_381.execPairing` below. Note:
+  these two syscalls are dispatched on `curve_id` in the BLS12-381 ID
+  space (`4..=6 | 0x80`), distinct from the curve25519 IDs (`0..1`).
+  Earlier sessions discovered that despite the `sol_curve_*` naming
+  these syscalls are BLS12-381 only.
 -/
+
+import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace Bls12_381
@@ -53,6 +56,46 @@ opaque g2Decompress (input : @& ByteArray) (endianness : UInt8) : Option ByteArr
 @[extern "lean_bls12_381_pairing_map"]
 opaque pairingMap (g1Points g2Points : @& ByteArray) (n : UInt64) (endianness : UInt8)
     : Option ByteArray
+
+/-! ## Syscall bindings -/
+
+/-- `sol_curve_decompress` CU charge. Mirrors agave's BLS12-381
+    `g1_decompress` cost. -/
+def cuDecompress : Nat := 2_100
+/-- `sol_curve_pairing_map` CU charge. Mirrors agave's
+    `bls12_381_one_pair`; real cost scales with `n`. -/
+def cuPairing    : Nat := 25_445
+
+/-- Execute `sol_curve_decompress`. BLS12-381 only.
+    ABI: r1 = curve_id (G1_LE/G1_BE/G2_LE/G2_BE), r2 = compressed in,
+    r3 = uncompressed out. r0 = 0/1 (incl. unsupported curve_id). -/
+@[simp] def execDecompress (s : State) : State :=
+  let curveId := s.regs.r1
+  let result : Option ByteArray :=
+    if curveId = BLS12_381_G1_LE then g1Decompress (readBytes s.mem s.regs.r2 48) 1
+    else if curveId = BLS12_381_G1_BE then g1Decompress (readBytes s.mem s.regs.r2 48) 0
+    else if curveId = BLS12_381_G2_LE then g2Decompress (readBytes s.mem s.regs.r2 96) 1
+    else if curveId = BLS12_381_G2_BE then g2Decompress (readBytes s.mem s.regs.r2 96) 0
+    else none
+  let outputSize : Nat :=
+    if curveId = BLS12_381_G1_LE ∨ curveId = BLS12_381_G1_BE then 96
+    else if curveId = BLS12_381_G2_LE ∨ curveId = BLS12_381_G2_BE then 192
+    else 0
+  commitOptional s s.regs.r3 outputSize result
+
+/-- Execute `sol_curve_pairing_map`. BLS12-381 only.
+    ABI: r1 = curve_id (BLS12_381_LE/BE), r2 = n (1..=8), r3 = G1 ptr,
+    r4 = G2 ptr, r5 = `*mut PodGtElement` (576 bytes). r0 = 0/1. -/
+@[simp] def execPairing (s : State) : State :=
+  let curveId := s.regs.r1
+  let nPairs  := s.regs.r2
+  let g1B := readBytes s.mem s.regs.r3 (96 * nPairs)
+  let g2B := readBytes s.mem s.regs.r4 (192 * nPairs)
+  let result : Option ByteArray :=
+    if curveId = BLS12_381_LE then pairingMap g1B g2B nPairs.toUInt64 1
+    else if curveId = BLS12_381_BE then pairingMap g1B g2B nPairs.toUInt64 0
+    else none
+  commitOptional s s.regs.r5 576 result
 
 end Bls12_381
 end Svm.SBPF

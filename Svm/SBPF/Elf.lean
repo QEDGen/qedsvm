@@ -26,6 +26,7 @@
 -/
 
 import Svm.SBPF.Decode
+import Svm.SBPF.Murmur3
 
 namespace Svm.SBPF
 namespace Elf
@@ -141,6 +142,12 @@ def textName : ByteArray := ⟨#[0x2e, 0x74, 0x65, 0x78, 0x74]⟩  -- ".text"
     (Anchor discriminator tables, string constants, IDL fragments, etc.). -/
 def rodataName : ByteArray := ⟨#[0x2e, 0x72, 0x6f, 0x64, 0x61, 0x74, 0x61]⟩  -- ".rodata"
 
+/-- `.dynstr` section name — strings for dynamic-symbol entries
+    (used to resolve syscall names referenced by `R_BPF_64_32`
+    relocations). -/
+def dynstrName : ByteArray :=
+  ⟨#[0x2e, 0x64, 0x79, 0x6e, 0x73, 0x74, 0x72]⟩  -- ".dynstr"
+
 /-! ## Symbols and relocations
 
 We model the minimal subset needed to patch `R_BPF_64_64` relocations,
@@ -244,32 +251,66 @@ def applyRel64 (textBytes : ByteArray) (textVA target : Nat) (relOff : Nat) :
   let b1 := writeU32LE textBytes (off + 4) lo
   writeU32LE b1 (off + 12) hi
 
-/-- Apply all `R_BPF_64_64` relocations from the ELF to the loaded text.
+/-- Apply a single `R_BPF_64_32` relocation. The patch site `relOff`
+    points at the *start* of the 8-byte instruction (typically `0x85`);
+    the imm to overwrite is at `relOff + 4`. The patched value is the
+    Murmur3-32 hash of the symbol name (Solana's convention for
+    resolving syscall and internal-function references). -/
+def applyRel32 (textBytes : ByteArray) (textVA hash : Nat) (relOff : Nat) :
+    ByteArray :=
+  let off := if relOff ≥ textVA then relOff - textVA else relOff
+  writeU32LE textBytes (off + 4) hash
 
-    Looks up `.dynsym` (or `SHT_SYMTAB`) and the first `SHT_REL` section,
-    iterates relocations, and patches the text in place. Returns the
-    original bytes unchanged if no symbol/relocation tables are present
-    (this is the no-relocations fast path for hand-assembled ELFs). -/
+/-- Read a null-terminated string from `bytes` starting at `off`. Used
+    for resolving `.dynstr` symbol names. Capped at 128 bytes to keep
+    Lean's termination checker happy for runaway inputs. -/
+def readCString (bytes : ByteArray) (off : Nat) : ByteArray :=
+  go 0 128 #[]
+where
+  go (i fuel : Nat) (acc : Array UInt8) : ByteArray :=
+    match fuel with
+    | 0 => ⟨acc⟩
+    | fuel' + 1 =>
+      let b := readU8 bytes (off + i)
+      if b = 0 then ⟨acc⟩ else go (i + 1) fuel' (acc.push b.toUInt8)
+
+/-- Apply `R_BPF_64_64` and `R_BPF_64_32` relocations from the ELF to
+    the loaded `.text`. Returns the original bytes unchanged if no
+    symbol/relocation tables are present (fast path for
+    hand-assembled fixtures).
+
+    - `R_BPF_64_64`: patches a 64-bit symbol address into an `lddw`'s
+      split immediate fields. Used for pointers into `.rodata` etc.
+    - `R_BPF_64_32`: patches the Murmur3-32 hash of the symbol name
+      into a `call`/`call_local` instruction's 32-bit imm at
+      `relOff + 4`. After patching, the imm IS the function key —
+      either a syscall hash (decoder routes to `.call syscall`) or
+      an internal-function hash (decoder falls back to
+      `.call_local`). -/
 def applyRelocations (elfBytes : ByteArray) (h : Header)
     (textVA : Nat) (textBytes : ByteArray) : ByteArray :=
   match findSectionByType elfBytes h SHT_DYNSYM,
-        findSectionByType elfBytes h SHT_REL with
-  | some symtab, some reltab =>
+        findSectionByType elfBytes h SHT_REL,
+        findSection elfBytes h dynstrName with
+  | some symtab, some reltab, some dynstr =>
     let nRels := reltab.size / 16
     let symBase := symtab.offset
+    let dynstrBase := dynstr.offset
     (List.range nRels).foldl (fun acc i =>
       let rel := parseRelocationEntry elfBytes (reltab.offset + i * 16)
       if rel.type = R_BPF_64_64 then
         let sym := parseSymbolEntry elfBytes (symBase + rel.sym * 24)
-        -- Resolve the symbol's runtime address: section base + sym.value.
-        -- For a synthetic ELF with `.rodata` at shndx 2, sec.addr is the
-        -- VA assigned to that section (typically 0x100000000 for rodata).
         let symSec := parseSectionHeader elfBytes h sym.shndx
         let target := symSec.addr + sym.value
         applyRel64 acc textVA target rel.offset
+      else if rel.type = R_BPF_64_32 then
+        let sym := parseSymbolEntry elfBytes (symBase + rel.sym * 24)
+        let name := readCString elfBytes (dynstrBase + sym.nameOff)
+        let hash := Murmur3.hash name 0
+        applyRel32 acc textVA hash rel.offset
       else
         acc) textBytes
-  | _, _ => textBytes
+  | _, _, _ => textBytes
 
 /-- Extract the `.text` section (the bytecode) from a Solana sBPF ELF.
     Returns `none` if the header is malformed or there is no `.text`. -/

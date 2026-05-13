@@ -83,7 +83,7 @@ Each ships as: an sBPF macro (in Lean), a Hoare triple (with separation logic ov
 
 **Estimate**: 12–20 weeks.
 
-### Phase F — Differential testing
+### Phase F — Differential testing *(infrastructure shipped; coverage scaling)*
 
 Extract the sBPF semantics (`Svm.SBPF.Execute`) to executable Lean / native and oracle-align against:
 - Firedancer's `vm-fuzz` corpus
@@ -92,7 +92,19 @@ Extract the sBPF semantics (`Svm.SBPF.Execute`) to executable Lean / native and 
 
 Every disagreement is either a bug in our semantics or evidence of cross-client divergence worth surfacing. This is the empirical answer to the "is the hand-written ISA correct" question — until it passes, every Phase-E spec inherits this uncertainty.
 
-**Estimate**: 4–6 weeks. Can run partially in parallel with Phase B/C.
+**What's shipped (2026-05-13):**
+- `formal-svm-rs/` Rust crate exposes the Lean runner via a Mollusk-shaped API (`Svm::process_instruction(&ix, &accounts) -> InstructionResult`). Same types as published agave-master pins (`solana-pubkey`, `solana-instruction`, `solana-account`), so Mollusk tests can swap engines by changing one type name.
+- Agave-conformant input-buffer serializer with round-trip test against `solana_program_entrypoint::deserialize`, plus byte-level known-offset checks.
+- CU accounting that matches agave's reported count (verified against `mollusk_svm::Mollusk` on a real `cargo-build-sbf` noop).
+- Thread-safe Lean runtime access (process-wide `Mutex`, stress-tested at 8 threads × 50 iters × varied input sizes).
+- `tests/diff_mollusk.rs` (gated `--features diff-mollusk`): runs the same `Instruction` through `formal_svm::Svm` and `mollusk_svm::Mollusk`, asserting equality on `program_result`, `return_data`, `resulting_accounts`, `compute_units_consumed`.
+
+**What's left:**
+- ELF + decoder coverage for the full sBPF feature set used by `cargo-build-sbf`-produced programs (`R_BPF_64_RELATIVE` relocations; the syscalls real programs actually invoke). Today's smallest real fixture is a hand-written `extern "C" fn entrypoint(_:*mut u8) -> u64 { 0 }`, which emits exactly `mov64 r0, 0; exit` — the only `cargo-build-sbf` output formal-svm parses end-to-end.
+- Fuzz/sweep harness over generated `Vec<Insn>` programs to drive both engines on randomized inputs (the diff plumbing is in place; just needs a generator).
+- Firedancer comparison (separate language, separate harness — deferred until agave-side diff is on a richer fixture corpus).
+
+**Remaining estimate**: 2–4 weeks for ELF/decoder coverage of common cargo-build-sbf output; the diff harness is the easy part.
 
 ### Phase G — ELF loader + arbitrary program execution *(architectural deliverable shipped)*
 

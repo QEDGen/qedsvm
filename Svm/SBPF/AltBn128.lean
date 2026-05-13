@@ -11,8 +11,10 @@
   `0x80` = little-endian). See `LE_FLAG`.
 
   Wired to `.sol_alt_bn128_group_op` and `.sol_alt_bn128_compression`
-  in `Execute.lean`.
+  via `AltBn128.execGroupOp` and `AltBn128.execCompression` below.
 -/
+
+import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace AltBn128
@@ -74,6 +76,46 @@ opaque groupOp (opId : UInt64) (input : @& ByteArray) : Option ByteArray
     Returns `none` on invalid op_id, malformed input, or any error. -/
 @[extern "lean_alt_bn128_compression"]
 opaque compression (opId : UInt64) (input : @& ByteArray) : Option ByteArray
+
+/-! ## Syscall bindings -/
+
+/-- `sol_alt_bn128_group_op` CU charge. Mirrors agave's
+    `bn128_g1_addition` baseline; real cost varies per op. -/
+def cuGroupOp     : Nat := 334
+/-- `sol_alt_bn128_compression` CU charge (g1_compress baseline). -/
+def cuCompression : Nat := 30
+
+/-- Output buffer size for a given group-op `op_id`. -/
+@[simp] def groupOpOutSize (opId : Nat) : Nat :=
+  if opId = ALT_BN128_PAIRING_BE ∨ opId = ALT_BN128_PAIRING_LE then 32
+  else if opId = ALT_BN128_G2_ADD_BE ∨ opId = ALT_BN128_G2_ADD_LE
+       ∨ opId = ALT_BN128_G2_MUL_BE ∨ opId = ALT_BN128_G2_MUL_LE then 128
+  else if opId = ALT_BN128_G1_ADD_BE ∨ opId = ALT_BN128_G1_ADD_LE
+       ∨ opId = ALT_BN128_G1_MUL_BE ∨ opId = ALT_BN128_G1_MUL_LE then 64
+  else 0
+
+/-- Output buffer size for a given compression `op_id`. -/
+@[simp] def compressionOutSize (opId : Nat) : Nat :=
+  if opId = ALT_BN128_G1_COMPRESS_BE ∨ opId = ALT_BN128_G1_COMPRESS_LE then 32
+  else if opId = ALT_BN128_G1_DECOMPRESS_BE ∨ opId = ALT_BN128_G1_DECOMPRESS_LE then 64
+  else if opId = ALT_BN128_G2_COMPRESS_BE ∨ opId = ALT_BN128_G2_COMPRESS_LE then 64
+  else if opId = ALT_BN128_G2_DECOMPRESS_BE ∨ opId = ALT_BN128_G2_DECOMPRESS_LE then 128
+  else 0
+
+/-- Execute `sol_alt_bn128_group_op`.
+    ABI: r1 = op_id, r2 = input, r3 = input_size, r4 = out. r0 = 0/1. -/
+@[simp] def execGroupOp (s : State) : State :=
+  let opId   := s.regs.r1
+  let inputB := readBytes s.mem s.regs.r2 s.regs.r3
+  let result := groupOp opId.toUInt64 inputB
+  commitOptional s s.regs.r4 (groupOpOutSize opId) result
+
+/-- Execute `sol_alt_bn128_compression`. Same ABI shape as `execGroupOp`. -/
+@[simp] def execCompression (s : State) : State :=
+  let opId   := s.regs.r1
+  let inputB := readBytes s.mem s.regs.r2 s.regs.r3
+  let result := compression opId.toUInt64 inputB
+  commitOptional s s.regs.r4 (compressionOutSize opId) result
 
 end AltBn128
 end Svm.SBPF

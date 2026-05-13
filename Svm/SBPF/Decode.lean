@@ -207,12 +207,31 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
   | 0xbd => match dst?, src? with | some d, some s => some (.jle  d (.reg s) targetPc, 8) | _, _ => none
   | 0xcd => match dst?, src? with | some d, some s => some (.jslt d (.reg s) targetPc, 8) | _, _ => none
   | 0xdd => match dst?, src? with | some d, some s => some (.jsle d (.reg s) targetPc, 8) | _, _ => none
-  -- Call (syscall by Murmur3 32-bit hash). The 32-bit immediate is
-  -- Murmur3(name, 0). We translate known hashes to their typed
-  -- `Syscall` variant; unknown hashes pass through as `Syscall.unknown`.
+  -- Call (opcode 0x85). After R_BPF_64_32 relocation has run
+  -- (`Svm.SBPF.Elf.applyRelocations`), the imm field is one of:
+  --   - a known syscall's Murmur3 hash (e.g. `sol_log_` → 0x207559bd)
+  --   - a small signed offset (raw compiler output for an internal
+  --     function call; the function name's hash *isn't* in our
+  --     syscall registry)
+  --
+  -- Disambiguation: try `SyscallHash.fromHash`. If known → syscall.
+  -- Otherwise treat imm as a signed slot-offset from the next
+  -- instruction (internal call). The `src` field is *not* used for
+  -- disambiguation — both src=0 (static syscall) and src=1 (dynamic
+  -- syscall, post-relocation) decode the same way.
   | 0x85 =>
-    let hash := readU32LE bytes (off + 4)
-    some (.call (SyscallHash.fromHash hash), 8)
+    let immU := readU32LE bytes (off + 4)
+    match SyscallHash.fromHash immU with
+    | .unknown _ =>
+      let targetSlotInt : Int := currentSlot + 1 + imm
+      let targetPcLocal : Nat :=
+        let n := targetSlotInt.toNat
+        if h : n < slotMap.size then slotMap[n]'h else 0
+      some (.call_local targetPcLocal, 8)
+    | sc => some (.call sc, 8)
+  -- Indirect call: `callx <reg>`. The target is the runtime value of
+  -- the src register (sBPF convention: src field of the opcode word).
+  | 0x8d => src?.map fun s => (.callx s, 8)
   -- Exit
   | 0x95 => some (.exit, 8)
   -- Load/store (memory operations)

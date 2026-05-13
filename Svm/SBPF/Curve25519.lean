@@ -14,8 +14,11 @@
   We deliberately do **not** ship a pure-Lean curve25519 spec.
   Verification of the field/group arithmetic is downstream work.
 
-  Wired to `.sol_curve_validate_point` in `Execute.lean`.
+  Wired to `.sol_curve_validate_point`, `.sol_curve_group_op`, and
+  `.sol_curve_multiscalar_mul` via the three `exec*` functions below.
 -/
+
+import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace Curve25519
@@ -98,6 +101,67 @@ Agave caps `n ≤ 512` at the syscall boundary; we enforce that in the
 opaque edwardsMSM   (scalars points : @& ByteArray) : Option ByteArray
 @[extern "lean_curve_ristretto_msm"]
 opaque ristrettoMSM (scalars points : @& ByteArray) : Option ByteArray
+
+/-! ## Syscall bindings -/
+
+/-- `sol_curve_validate_point` CU charge. -/
+def cuValidatePoint : Nat := 159
+/-- `sol_curve_group_op` CU charge (ed25519 add baseline; varies). -/
+def cuGroupOp       : Nat := 473
+/-- `sol_curve_multiscalar_mul` CU charge (ed25519 msm_base; varies). -/
+def cuMSM           : Nat := 2_273
+
+/-- Execute `sol_curve_validate_point`.
+    ABI: r1 = curve_id, r2 = `*const [u8; 32]` point.
+    r0 = 0 valid / 1 invalid / 2 unsupported curve_id. -/
+@[simp] def execValidate (s : State) : State :=
+  let curveId  := s.regs.r1
+  let pointA   := s.regs.r2
+  let pointB   := readBytes s.mem pointA 32
+  let errCode  : Nat :=
+    if curveId = CURVE25519_EDWARDS then
+      if validateEdwards pointB then 0 else 1
+    else if curveId = CURVE25519_RISTRETTO then
+      if validateRistretto pointB then 0 else 1
+    else 2
+  { s with regs := s.regs.set .r0 errCode }
+
+/-- Execute `sol_curve_group_op`.
+    ABI: r1 = curve_id, r2 = op_id (0=ADD/1=SUB/2=MUL),
+    r3 = left ptr, r4 = right ptr, r5 = out. r0 = 0/1. -/
+@[simp] def execGroupOp (s : State) : State :=
+  let curveId := s.regs.r1
+  let opId    := s.regs.r2
+  let leftB   := readBytes s.mem s.regs.r3 32
+  let rightB  := readBytes s.mem s.regs.r4 32
+  let result : Option ByteArray :=
+    if curveId = CURVE25519_EDWARDS then
+      if opId = OP_ADD then edwardsAdd leftB rightB
+      else if opId = OP_SUB then edwardsSub leftB rightB
+      else if opId = OP_MUL then edwardsMul leftB rightB
+      else none
+    else if curveId = CURVE25519_RISTRETTO then
+      if opId = OP_ADD then ristrettoAdd leftB rightB
+      else if opId = OP_SUB then ristrettoSub leftB rightB
+      else if opId = OP_MUL then ristrettoMul leftB rightB
+      else none
+    else none
+  commitOptional s s.regs.r5 32 result
+
+/-- Execute `sol_curve_multiscalar_mul`.
+    ABI: r1 = curve_id, r2 = `*const PodScalar*`,
+    r3 = `*const PodPoint*`, r4 = n (≤ 512), r5 = out. r0 = 0/1. -/
+@[simp] def execMSM (s : State) : State :=
+  let curveId   := s.regs.r1
+  let pointsLen := s.regs.r4
+  let scalarsB  := readBytes s.mem s.regs.r2 (32 * pointsLen)
+  let pointsB   := readBytes s.mem s.regs.r3 (32 * pointsLen)
+  let result : Option ByteArray :=
+    if pointsLen = 0 ∨ pointsLen > 512 then none
+    else if curveId = CURVE25519_EDWARDS then edwardsMSM scalarsB pointsB
+    else if curveId = CURVE25519_RISTRETTO then ristrettoMSM scalarsB pointsB
+    else none
+  commitOptional s s.regs.r5 32 result
 
 end Curve25519
 end Svm.SBPF

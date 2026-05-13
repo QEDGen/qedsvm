@@ -6,8 +6,10 @@
   4.0 uses internally. Used by zk-friendly applications on Solana
   (privacy-preserving programs, ZK proof verification).
 
-  Wired to `.sol_poseidon` in `Execute.lean`.
+  Wired to `.sol_poseidon` via `Poseidon.exec` below.
 -/
+
+import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace Poseidon
@@ -35,6 +37,19 @@ def LITTLE_ENDIAN : Nat := 1
 @[extern "lean_poseidon"]
 opaque hash (parameters endianness : UInt8) (inputs : @& ByteArray) (n : UInt64)
     : Option ByteArray
+
+/-! ## `sol_poseidon` syscall
+
+ABI: r1 = parameters, r2 = endianness, r3 = `*const [VmSlice; n]`,
+r4 = n (1..=12), r5 = `*mut [u8; 32]`. r0 = 0 success / 1 failure. -/
+
+def cu : Nat := 603
+
+@[simp] def exec (s : State) : State :=
+  let result := hash s.regs.r1.toUInt8 s.regs.r2.toUInt8
+                     (readSlices s.mem s.regs.r3 s.regs.r4)
+                     s.regs.r4.toUInt64
+  commitOptional s s.regs.r5 32 result
 
 end Poseidon
 end Svm.SBPF

@@ -12,8 +12,10 @@
   of Keccak's algebraic properties is downstream work — its own
   project — and shouldn't gate the runner.
 
-  Wired to the `.sol_keccak256` syscall in `Execute.lean`.
+  Wired to the `.sol_keccak256` syscall via `Keccak256.exec` below.
 -/
+
+import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace Keccak256
@@ -25,6 +27,17 @@ namespace Keccak256
     0x06 padding. -/
 @[extern "lean_keccak256"]
 opaque hash (data : @& ByteArray) : ByteArray
+
+/-! ## `sol_keccak256` syscall
+
+Same `SliceDesc`-list ABI and base cost as `sol_sha256`. -/
+
+def cu : Nat := 85
+
+@[simp] def exec (s : State) : State :=
+  let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)
+  { s with regs := s.regs.set .r0 0
+           mem  := writeBytes s.mem s.regs.r3 32 digest }
 
 end Keccak256
 end Svm.SBPF

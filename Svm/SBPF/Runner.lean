@@ -89,16 +89,29 @@ v1 simplifications (tracked in `docs/next-session-plan.md`):
 - PDA signer seeds (`r4` / `r5`) are ignored.
 - The full caller CU budget is passed to the callee (no proportional
   split). Re-entrant CPI is supported transparently by the recursion. -/
-def executeFnCpi (registry : Nat → Option ByteArray)
-    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
+/-- CU-accounting variant of `executeFnCpi`. Returns the final state
+    plus the remaining fuel — `cuConsumed = initial_fuel - returned_fuel`.
+
+    Each step (including a CPI invocation) consumes one unit of the
+    caller's fuel. The callee runs under its own copy of the caller's
+    remaining budget and its consumption is *not* deducted from the
+    caller — matching the v1 CPI semantics already documented at
+    `executeFnCpi`. (Proper proportional CU split is a CPI v2
+    concern, tracked alongside `programRegistry`-by-`Pubkey`.)
+
+    The early-exit arms (`some _` already-exited, `ERR_INVALID_PC`
+    on decode failure) preserve the remaining fuel at the moment of
+    exit, so the consumed count correctly excludes the no-op tail. -/
+def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
+    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State × Nat :=
   match fuel with
-  | 0 => s
+  | 0 => (s, 0)
   | fuel' + 1 =>
     match s.exitCode with
-    | some _ => s
+    | some _ => (s, fuel)
     | none =>
       match fetch s.pc with
-      | none => { s with exitCode := some ERR_INVALID_PC }
+      | none => ({ s with exitCode := some ERR_INVALID_PC }, fuel')
       | some insn =>
         let s' : State :=
           match insn with
@@ -119,14 +132,24 @@ def executeFnCpi (registry : Nat → Option ByteArray)
                     exitCode   := none
                     log        := s.log
                     returnData := ByteArray.empty }
+                -- Callee runs to completion under its own budget;
+                -- we discard its fuel-remaining (v1 semantics).
                 let subFinal :=
-                  executeFnCpi registry (fetchFromArray calleeInsns) subS fuel'
+                  (executeFnCpiWithFuel registry (fetchFromArray calleeInsns) subS fuel').1
                 { s with regs       := s.regs.set .r0 (subFinal.exitCode.getD 1)
                          pc         := s.pc + 1
                          log        := subFinal.log
                          returnData := subFinal.returnData }
           | _ => step insn s
-        executeFnCpi registry fetch s' fuel'
+        executeFnCpiWithFuel registry fetch s' fuel'
+
+/-- Original signature, preserved for existing callers (demos +
+    `Runner.run` / `Runner.runElf`). A thin wrapper around
+    `executeFnCpiWithFuel` that discards the fuel-remaining
+    component. -/
+def executeFnCpi (registry : Nat → Option ByteArray)
+    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
+  (executeFnCpiWithFuel registry fetch s fuel).1
 
 /-! ## Entrypoints -/
 
@@ -191,6 +214,54 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
 /-- Convenience: ELF run returning only the exit code. -/
 def runElfForExit (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option Nat :=
   (runElf elfBytes cfg).bind (·.exitCode)
+
+/-- ELF entrypoint that also surfaces remaining fuel, for CU accounting
+    in downstream consumers (e.g. the Rust harness in `formal-svm-rs`).
+
+    Returns `none` on ELF parse / decode failure, `some (state, remaining)`
+    otherwise. The caller computes `cuConsumed = cfg.cuBudget - remaining`.
+    Note: on out-of-budget, `state.exitCode = none` and `remaining = 0`.
+    On clean exit, `remaining` is whatever fuel was unspent at the
+    moment `exit` ran.
+
+    Honors the ELF's `e_entry` field: execution starts at the
+    instruction index `(e_entry - .text.sh_addr) / 8`. For hand-
+    assembled fixtures with `e_entry = 0` we start at PC=0. For real
+    `cargo-build-sbf` output we start wherever the linker placed the
+    Rust `entrypoint` symbol — typically not at the front of `.text`. -/
+def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
+    Option (State × Nat) :=
+  match Elf.parseHeader elfBytes with
+  | none => none
+  | some header =>
+    match Elf.findSection elfBytes header Elf.textName with
+    | none => none
+    | some textSec =>
+      let rawText   := Elf.extractSection elfBytes textSec
+      let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
+      match Decode.decodeProgram textBytes with
+      | none => none
+      | some insns =>
+        let baseMem := loadInput emptyMem cfg.input
+        let mem := match Elf.findSection elfBytes header Elf.rodataName with
+          | some sec => loadBytesAt baseMem (Elf.extractSection elfBytes sec) sec.addr
+          | none => baseMem
+        -- Convert `e_entry` (virtual address) to logical PC. The
+        -- byte offset within `.text` is `e_entry - textSec.addr`;
+        -- divided by 8 (sBPF slot size) yields the slot index, which
+        -- matches the logical PC for single-slot instructions and
+        -- the *first* slot of `lddw` for the 16-byte one — the
+        -- decoder's two-pass slot map handles either case.
+        let entryByteOff := if header.entry ≥ textSec.addr
+                           then header.entry - textSec.addr
+                           else 0
+        let entryPc := entryByteOff / 8
+        let s : State :=
+          { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+            mem     := mem
+            pc      := entryPc
+            exitCode := none }
+        some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 end Runner
 end Svm.SBPF
