@@ -13,6 +13,7 @@ import Svm.SBPF.Poseidon
 import Svm.SBPF.Secp256k1
 import Svm.SBPF.Curve25519
 import Svm.SBPF.Bls12_381
+import Svm.SBPF.AltBn128
 import Svm.SBPF.Pda
 
 namespace Svm.SBPF
@@ -484,6 +485,64 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
       match result with
       | some pda =>
         if a ≥ outA ∧ a - outA < 32 then (pda.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_alt_bn128_group_op =>
+    -- ABI:
+    --   r1 = u64   group_op (encodes operation + endianness)
+    --   r2 = *const [u8]   input bytes (length r3)
+    --   r3 = u64   input_size
+    --   r4 = *mut  [u8]   result buffer (size depends on op)
+    --   r0 = 0 success / 1 failure
+    -- Matches agave's `SyscallAltBn128`. The output size varies per
+    -- op (G1 → 64, G2 → 128, PAIRING → 32). Caller is responsible
+    -- for allocating the correct buffer.
+    let opId      := s.regs.r1
+    let inputA    := s.regs.r2
+    let inputSize := s.regs.r3
+    let outA      := s.regs.r4
+    let inputB    := readBytes s.mem inputA inputSize
+    let result    := AltBn128.groupOp opId.toUInt64 inputB
+    let outSize : Nat :=
+      if opId = AltBn128.ALT_BN128_PAIRING_BE ∨ opId = AltBn128.ALT_BN128_PAIRING_LE then 32
+      else if opId = AltBn128.ALT_BN128_G2_ADD_BE ∨ opId = AltBn128.ALT_BN128_G2_ADD_LE
+           ∨ opId = AltBn128.ALT_BN128_G2_MUL_BE ∨ opId = AltBn128.ALT_BN128_G2_MUL_LE then 128
+      else if opId = AltBn128.ALT_BN128_G1_ADD_BE ∨ opId = AltBn128.ALT_BN128_G1_ADD_LE
+           ∨ opId = AltBn128.ALT_BN128_G1_MUL_BE ∨ opId = AltBn128.ALT_BN128_G1_MUL_LE then 64
+      else 0
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some out =>
+        if a ≥ outA ∧ a - outA < outSize then (out.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_alt_bn128_compression =>
+    -- ABI:
+    --   r1 = u64   op_id
+    --   r2 = *const [u8]   input
+    --   r3 = u64   input_size
+    --   r4 = *mut  [u8]    output
+    --   r0 = 0 / 1
+    let opId      := s.regs.r1
+    let inputA    := s.regs.r2
+    let inputSize := s.regs.r3
+    let outA      := s.regs.r4
+    let inputB    := readBytes s.mem inputA inputSize
+    let result    := AltBn128.compression opId.toUInt64 inputB
+    let outSize : Nat :=
+      if opId = AltBn128.ALT_BN128_G1_COMPRESS_BE ∨ opId = AltBn128.ALT_BN128_G1_COMPRESS_LE then 32
+      else if opId = AltBn128.ALT_BN128_G1_DECOMPRESS_BE ∨ opId = AltBn128.ALT_BN128_G1_DECOMPRESS_LE then 64
+      else if opId = AltBn128.ALT_BN128_G2_COMPRESS_BE ∨ opId = AltBn128.ALT_BN128_G2_COMPRESS_LE then 64
+      else if opId = AltBn128.ALT_BN128_G2_DECOMPRESS_BE ∨ opId = AltBn128.ALT_BN128_G2_DECOMPRESS_LE then 128
+      else 0
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some out =>
+        if a ≥ outA ∧ a - outA < outSize then (out.get! (a - outA)).toNat
         else s.mem a
       | none => s.mem a
     { s with regs := s.regs.set .r0 errCode, mem := mem' }

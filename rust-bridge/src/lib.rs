@@ -530,6 +530,121 @@ fn some_bytearray_slice(bytes: &[u8]) -> lean_obj_res {
     some
 }
 
+// ───────────────────────────────────────────────────────────────────
+// alt_bn128 (BN254) — Ethereum precompile parity.
+//
+// Backed by `solana-bn254 = 3.2.1` (agave's master pin). The op_id
+// space carries both the operation and the endianness (high bit
+// 0x80 = LE). Op_ids match `solana_bn254::*` constants:
+//   group_op:
+//     G1_ADD_BE=0, G1_ADD_LE=0x80, G1_MUL_BE=2, G1_MUL_LE=0x82,
+//     PAIRING_BE=3, PAIRING_LE=0x83, G2_ADD_BE=4, G2_ADD_LE=0x84,
+//     G2_MUL_BE=6, G2_MUL_LE=0x86
+//   compression:
+//     G1_COMPRESS_BE=0, G1_COMPRESS_LE=0x80, G1_DECOMPRESS_BE=1,
+//     G1_DECOMPRESS_LE=0x81, G2_COMPRESS_BE=2, G2_COMPRESS_LE=0x82,
+//     G2_DECOMPRESS_BE=3, G2_DECOMPRESS_LE=0x83
+//
+// Per-version choices match agave's call sites (addition: V0,
+// multiplication: V1, pairing: V1).
+// ───────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn lean_alt_bn128_group_op(
+    op_id: u64,
+    input: b_lean_obj_arg,
+) -> lean_obj_res {
+    use solana_bn254::versioned::{
+        alt_bn128_versioned_g1_addition, alt_bn128_versioned_g1_multiplication,
+        alt_bn128_versioned_g2_addition, alt_bn128_versioned_g2_multiplication,
+        alt_bn128_versioned_pairing, Endianness, VersionedG1Addition,
+        VersionedG1Multiplication, VersionedG2Addition, VersionedG2Multiplication,
+        VersionedPairing, ALT_BN128_G1_ADD_BE, ALT_BN128_G1_ADD_LE, ALT_BN128_G1_MUL_BE,
+        ALT_BN128_G1_MUL_LE, ALT_BN128_G2_ADD_BE, ALT_BN128_G2_ADD_LE,
+        ALT_BN128_G2_MUL_BE, ALT_BN128_G2_MUL_LE, ALT_BN128_PAIRING_BE,
+        ALT_BN128_PAIRING_LE,
+    };
+    let bytes = unsafe { sarray_as_slice(input) };
+    let result = match op_id {
+        ALT_BN128_G1_ADD_BE =>
+            alt_bn128_versioned_g1_addition(VersionedG1Addition::V0, bytes, Endianness::BE),
+        ALT_BN128_G1_ADD_LE =>
+            alt_bn128_versioned_g1_addition(VersionedG1Addition::V0, bytes, Endianness::LE),
+        ALT_BN128_G2_ADD_BE =>
+            alt_bn128_versioned_g2_addition(VersionedG2Addition::V0, bytes, Endianness::BE),
+        ALT_BN128_G2_ADD_LE =>
+            alt_bn128_versioned_g2_addition(VersionedG2Addition::V0, bytes, Endianness::LE),
+        ALT_BN128_G1_MUL_BE =>
+            alt_bn128_versioned_g1_multiplication(VersionedG1Multiplication::V1, bytes, Endianness::BE),
+        ALT_BN128_G1_MUL_LE =>
+            alt_bn128_versioned_g1_multiplication(VersionedG1Multiplication::V1, bytes, Endianness::LE),
+        ALT_BN128_G2_MUL_BE =>
+            alt_bn128_versioned_g2_multiplication(VersionedG2Multiplication::V0, bytes, Endianness::BE),
+        ALT_BN128_G2_MUL_LE =>
+            alt_bn128_versioned_g2_multiplication(VersionedG2Multiplication::V0, bytes, Endianness::LE),
+        ALT_BN128_PAIRING_BE =>
+            alt_bn128_versioned_pairing(VersionedPairing::V1, bytes, Endianness::BE),
+        ALT_BN128_PAIRING_LE =>
+            alt_bn128_versioned_pairing(VersionedPairing::V1, bytes, Endianness::LE),
+        _ => return none_obj(),
+    };
+    match result {
+        Ok(out) => some_bytearray_slice(&out),
+        Err(_) => none_obj(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lean_alt_bn128_compression(
+    op_id: u64,
+    input: b_lean_obj_arg,
+) -> lean_obj_res {
+    use solana_bn254::compression::prelude::{
+        alt_bn128_g1_compress_be, alt_bn128_g1_compress_le, alt_bn128_g1_decompress_be,
+        alt_bn128_g1_decompress_le, alt_bn128_g2_compress_be, alt_bn128_g2_compress_le,
+        alt_bn128_g2_decompress_be, alt_bn128_g2_decompress_le, ALT_BN128_G1_COMPRESS_BE,
+        ALT_BN128_G1_COMPRESS_LE, ALT_BN128_G1_DECOMPRESS_BE, ALT_BN128_G1_DECOMPRESS_LE,
+        ALT_BN128_G2_COMPRESS_BE, ALT_BN128_G2_COMPRESS_LE, ALT_BN128_G2_DECOMPRESS_BE,
+        ALT_BN128_G2_DECOMPRESS_LE,
+    };
+    let bytes = unsafe { sarray_as_slice(input) };
+    match op_id {
+        ALT_BN128_G1_COMPRESS_BE => match alt_bn128_g1_compress_be(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        ALT_BN128_G1_COMPRESS_LE => match alt_bn128_g1_compress_le(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        ALT_BN128_G1_DECOMPRESS_BE => match alt_bn128_g1_decompress_be(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        ALT_BN128_G1_DECOMPRESS_LE => match alt_bn128_g1_decompress_le(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        ALT_BN128_G2_COMPRESS_BE => match alt_bn128_g2_compress_be(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        ALT_BN128_G2_COMPRESS_LE => match alt_bn128_g2_compress_le(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        ALT_BN128_G2_DECOMPRESS_BE => match alt_bn128_g2_decompress_be(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        ALT_BN128_G2_DECOMPRESS_LE => match alt_bn128_g2_decompress_le(bytes) {
+            Ok(o) => some_bytearray_slice(&o),
+            Err(_) => none_obj(),
+        },
+        _ => none_obj(),
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn lean_poseidon(
     parameters: u8,

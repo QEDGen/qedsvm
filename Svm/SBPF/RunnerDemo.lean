@@ -14,6 +14,7 @@ import Svm.SBPF.Runner
 import Svm.SBPF.Pda
 import Svm.SBPF.Poseidon
 import Svm.SBPF.Bls12_381
+import Svm.SBPF.AltBn128
 
 namespace Svm.SBPF.RunnerDemo
 
@@ -1804,5 +1805,121 @@ example :
 -- Negative tests
 example : Bls12_381.pairingMap ByteArray.empty ByteArray.empty 0 0 = none := by native_decide
 example : Bls12_381.pairingMap ByteArray.empty ByteArray.empty 9 0 = none := by native_decide  -- >MAX_PAIRING_LENGTH
+
+/-! ## Demo 36 — `sol_alt_bn128_group_op` + `sol_alt_bn128_compression`
+
+BN254 (alt_bn128) Ethereum-precompile-parity operations. Backed by
+`solana-bn254 = 3.2.1` via `rust-bridge`.
+
+Standard test point: G1 generator at `(x=1, y=2)` (affine on BN254).
+BE encoding = 32 zero-padded x bytes ‖ 32 zero-padded y bytes
+= `00…01 || 00…02` (64 bytes).
+
+`ADD(g1, g1) BE` = `030644e7 … 5a18a2c4` (64 bytes, first byte 0x03 —
+this is the standard BN254 doubled-generator). `MUL(g1, 2) BE`
+produces the same result. `compress(g1) BE` = `00…01` (32 bytes;
+y=2 has even parity so no sign bit is set). -/
+
+private def bn254G1BeBp : ByteArray :=
+  ⟨Array.replicate 31 0 ++ #[0x01] ++ Array.replicate 31 0 ++ #[0x02]⟩
+
+private def bn254G1DoubledBe : ByteArray := ⟨#[
+  0x03, 0x06, 0x44, 0xe7, 0x2e, 0x13, 0x1a, 0x02,
+  0x9b, 0x85, 0x04, 0x5b, 0x68, 0x18, 0x15, 0x85,
+  0xd9, 0x78, 0x16, 0xa9, 0x16, 0x87, 0x1c, 0xa8,
+  0xd3, 0xc2, 0x08, 0xc1, 0x6d, 0x87, 0xcf, 0xd3,
+  0x15, 0xed, 0x73, 0x8c, 0x0e, 0x0a, 0x7c, 0x92,
+  0xe7, 0x84, 0x5f, 0x96, 0xb2, 0xae, 0x9c, 0x0a,
+  0x68, 0xa6, 0xa4, 0x49, 0xe3, 0x53, 0x8f, 0xc7,
+  0xff, 0x3e, 0xbf, 0x7a, 0x5a, 0x18, 0xa2, 0xc4]⟩
+
+private def bn254G1BeCompressed : ByteArray :=
+  ⟨Array.replicate 31 0 ++ #[0x01]⟩
+
+private def bn254G1AddInput : ByteArray := bn254G1BeBp ++ bn254G1BeBp
+
+private def bn254G1MulInput : ByteArray :=
+  -- 64-byte G1 + 32-byte scalar (=2, BE)
+  bn254G1BeBp ++ ⟨Array.replicate 31 0 ++ #[0x02]⟩
+
+-- group_op tests
+example :
+    AltBn128.groupOp (AltBn128.ALT_BN128_G1_ADD_BE).toUInt64 bn254G1AddInput
+    = some bn254G1DoubledBe := by native_decide
+
+example :
+    AltBn128.groupOp (AltBn128.ALT_BN128_G1_MUL_BE).toUInt64 bn254G1MulInput
+    = some bn254G1DoubledBe := by native_decide
+
+-- Unknown op id
+example :
+    AltBn128.groupOp 0xff bn254G1AddInput = none := by native_decide
+
+/-- Empty input on G1 ADD is *not* an error — BN254 zero-pads the
+    input to 128 bytes, treating it as `inf + inf = inf`. The result
+    is the point at infinity (`0…00`, 64 bytes). This matches the
+    Ethereum precompile spec. -/
+example :
+    AltBn128.groupOp (AltBn128.ALT_BN128_G1_ADD_BE).toUInt64 ByteArray.empty
+    = some ⟨Array.replicate 64 0⟩ := by native_decide
+
+-- compression: G1 BP compresses to BE x-coordinate
+example :
+    AltBn128.compression (AltBn128.ALT_BN128_G1_COMPRESS_BE).toUInt64 bn254G1BeBp
+    = some bn254G1BeCompressed := by native_decide
+
+-- compression round-trip
+example :
+    AltBn128.compression (AltBn128.ALT_BN128_G1_DECOMPRESS_BE).toUInt64 bn254G1BeCompressed
+    = some bn254G1BeBp := by native_decide
+
+example :
+    AltBn128.compression 0xff bn254G1BeBp = none := by native_decide
+
+/-- Runner demo. Computes G1+G1 = 2·G1 on BN254 BE.
+Input layout (128 bytes total): two copies of G1 BP = 64 + 64 bytes.
+Output (64 bytes) at offset 128. Exit with first byte = `0x03`.
+
+```
+  mov64 r1, 0                   ; op_id = G1_ADD_BE
+  mov64 r3, 128                 ; input_size
+  mov64 r2, r10                  ; — placeholder, we'll set up below
+  ; Actually: r1 starts at INPUT_START. Re-plumb the registers:
+  ; r6 = INPUT_START (save aside).
+  mov64 r6, r1
+  mov64 r1, 0                   ; op = G1_ADD_BE
+  mov64 r2, r6                  ; r2 = input_addr = INPUT_START
+  mov64 r3, 128                 ; input_size = 128
+  mov64 r4, r6                  ; r4 = INPUT_START
+  add64 r4, 128                 ; r4 = INPUT_START + 128 = output addr
+  call sol_alt_bn128_group_op
+  ldxb r0, [r4 + 0]             ; first byte
+  exit
+```
+-/
+def altBn128AddDemo : ByteArray :=
+  let h := SyscallHash.sol_alt_bn128_group_op_hash
+  ⟨#[
+    -- mov64 r6, r1   (save INPUT_START)
+    0xbf, 0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r1, 0    (op = G1_ADD_BE)
+    0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r2, r6
+    0xbf, 0x62, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r3, 128
+    0xb7, 0x03, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
+    -- mov64 r4, r6; add64 r4, 128
+    0xbf, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x04, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00
+  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- ldxb r0, [r4 + 0]
+    0x71, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit altBn128AddDemo { input := bn254G1AddInput } = some 0x03 := by
+  native_decide
 
 end Svm.SBPF.RunnerDemo
