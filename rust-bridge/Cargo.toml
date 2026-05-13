@@ -1,0 +1,31 @@
+[package]
+name = "formal-svm-bridge"
+description = "Rust shim layer exposing agave's exact crypto crate calls to the formal-svm Lean runtime via a C ABI"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "formal_svm_bridge"
+crate-type = ["staticlib"]
+
+# All versions pinned to match agave's workspace pins
+# (anza-xyz/agave master Cargo.toml, queried 2026-05-13).
+# When agave bumps a version, bump here in lockstep — that is the
+# whole point of this crate.
+[dependencies]
+libsecp256k1 = { version = "0.7.2", default-features = false, features = [
+    "std",
+    "static-context",
+] }
+
+[profile.release]
+# Reproducibility + minimal binary footprint.
+codegen-units = 1
+lto = "thin"
+strip = "symbols"
+panic = "abort"
+opt-level = 3
+
+[profile.dev]
+panic = "abort"

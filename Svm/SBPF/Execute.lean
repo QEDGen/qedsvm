@@ -5,6 +5,10 @@
 
 import Svm.SBPF.ISA
 import Svm.SBPF.Memory
+import Svm.SBPF.Sha256
+import Svm.SBPF.Keccak256
+import Svm.SBPF.Blake3
+import Svm.SBPF.Secp256k1
 
 namespace Svm.SBPF
 
@@ -77,6 +81,13 @@ structure State where
   pc : Nat
   /-- Exit status: None if running, Some n if exited with code n -/
   exitCode : Option Nat := none
+  /-- Side channel: messages written via `sol_log_*` syscalls.
+      Each entry is one message. Observable from the runner; not owned
+      by any separation-logic assertion. -/
+  log : Array ByteArray := #[]
+  /-- Side channel: return-data buffer set by `sol_set_return_data` and
+      read by `sol_get_return_data`. -/
+  returnData : ByteArray := ByteArray.empty
   deriving Inhabited
 
 /-- Is the machine still running? -/
@@ -116,14 +127,215 @@ def U32_MODULUS : Nat := 2 ^ 32
 
 /-! ## Syscall execution -/
 
-/-- Execute a syscall. Default: set r0 = 0 (success). -/
+/-- Read `len` bytes from `mem` starting at `addr` into a `ByteArray`. -/
+def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
+  ⟨(List.range len).foldl
+    (fun acc i => acc.push (mem (addr + i) % 256).toUInt8) #[]⟩
+
+/-- Execute a syscall.
+
+    Logging syscalls (`sol_log_*`) write into `State.log` as observable
+    side effects — `sol_log_` and `sol_log_pubkey` log their bytes
+    verbatim; `sol_log_64_` / `sol_log_compute_units_` / `sol_log_data`
+    push an empty marker (their formatted encoding is TODO).
+
+    Memory syscalls (`sol_memcpy_*`, `sol_memmove_*`, `sol_memset_*`,
+    `sol_memcmp_*`) are implemented with their actual byte-moving / byte-
+    comparison semantics on `Mem`.
+
+    `sol_set_return_data` / `sol_get_return_data` use `State.returnData`.
+
+    Unmodeled syscalls fall through to the default arm (set `r0 := 0`). -/
+
 @[simp] def execSyscall (sc : Syscall) (s : State) : State :=
   match sc with
-  | .sol_log_ | .sol_log_64_ | .sol_log_compute_units_
-  | .sol_log_pubkey | .sol_log_data =>
-    { s with regs := s.regs.set .r0 0 }
-  | .sol_remaining_compute_units | .sol_get_stack_height =>
-    s  -- r0 gets an opaque runtime value
+  | .sol_log_ =>
+    let ptr := s.regs.r1
+    let len := s.regs.r2
+    { s with regs := s.regs.set .r0 0
+             log  := s.log.push (readBytes s.mem ptr len) }
+  | .sol_log_pubkey =>
+    let ptr := s.regs.r1
+    { s with regs := s.regs.set .r0 0
+             log  := s.log.push (readBytes s.mem ptr 32) }
+  | .sol_log_64_ | .sol_log_compute_units_ | .sol_log_data =>
+    -- Push an empty marker into the log; full encoding of these is TODO
+    { s with regs := s.regs.set .r0 0
+             log  := s.log.push ByteArray.empty }
+  | .sol_set_return_data =>
+    let ptr := s.regs.r1
+    let len := s.regs.r2
+    { s with regs := s.regs.set .r0 0
+             returnData := readBytes s.mem ptr len }
+  | .sol_get_return_data =>
+    -- Copies up to `r2` bytes of `returnData` to `*r1`. Returns the
+    -- actual length (NOT the truncated length). `r3` is `*Pubkey` of the
+    -- program that set the data — we don't track this, write zeros.
+    let outA    := s.regs.r1
+    let maxLen  := s.regs.r2
+    let pkA     := s.regs.r3
+    let dataLen := s.returnData.size
+    let copyLen := if dataLen ≤ maxLen then dataLen else maxLen
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < copyLen then
+        (s.returnData.get! (a - outA)).toNat
+      else if a ≥ pkA ∧ a - pkA < 32 then 0
+      else s.mem a
+    { s with regs := s.regs.set .r0 dataLen, mem := mem' }
+  | .sol_get_stack_height =>
+    { s with regs := s.regs.set .r0 1 }  -- top-level: depth 1
+  | .sol_remaining_compute_units =>
+    s  -- r0 gets an opaque runtime value (we don't track remaining CU here)
+  -- Sysvar getters: zero-fill the output buffer at *r1. Real sysvar
+  -- values vary by epoch/slot and aren't tracked in our model; zero
+  -- is the safe default that lets dependent programs continue.
+  | .sol_get_clock_sysvar =>
+    -- Clock layout: 40 bytes (slot, epoch_start_ts, epoch, leader_epoch, unix_ts)
+    let outA := s.regs.r1
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < 40 then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_get_rent_sysvar =>
+    -- Rent: 17 bytes (lamports_per_byte_year, exemption_threshold, burn_percent)
+    let outA := s.regs.r1
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < 17 then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_get_epoch_schedule_sysvar =>
+    -- EpochSchedule: 33 bytes
+    let outA := s.regs.r1
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < 33 then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_get_last_restart_slot =>
+    -- u64: 8 bytes
+    let outA := s.regs.r1
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < 8 then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_memcpy | .sol_memmove =>
+    let dst := s.regs.r1
+    let src := s.regs.r2
+    let n   := s.regs.r3
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ dst ∧ a - dst < n then s.mem (src + (a - dst)) % 256
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_memset =>
+    let dst := s.regs.r1
+    let val := s.regs.r2 % 256
+    let n   := s.regs.r3
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ dst ∧ a - dst < n then val
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_memcmp =>
+    -- Compare n bytes from r1 and r2, write -1/0/+1 (as i32) to *r4.
+    let p1   := s.regs.r1
+    let p2   := s.regs.r2
+    let n    := s.regs.r3
+    let outA := s.regs.r4
+    let cmp : Int := (List.range n).foldl (fun acc i =>
+      if acc ≠ 0 then acc
+      else
+        let va := s.mem (p1 + i) % 256
+        let vb := s.mem (p2 + i) % 256
+        if va < vb then -1
+        else if va > vb then 1
+        else 0) 0
+    let cmpU32 : Nat :=
+      if cmp = 0 then 0
+      else if cmp < 0 then 0xFFFFFFFF  -- -1 as u32 (two's complement)
+      else 1
+    let mem' := Memory.writeU32 s.mem outA cmpU32
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_sha256 =>
+    -- ABI: sol_sha256(vals: *const SliceDesc, nVals: u64, result: *mut [u8; 32])
+    -- where SliceDesc = { ptr : u64, len : u64 } (16 bytes, little-endian).
+    let valsA   := s.regs.r1
+    let nVals   := s.regs.r2
+    let resultA := s.regs.r3
+    let allBytes : ByteArray :=
+      (List.range nVals).foldl (fun acc i =>
+        let descAddr := valsA + i * 16
+        let ptr := Memory.readU64 s.mem descAddr
+        let len := Memory.readU64 s.mem (descAddr + 8)
+        acc ++ readBytes s.mem ptr len) ByteArray.empty
+    let digest := Sha256.hash allBytes
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ resultA ∧ a - resultA < 32 then (digest.get! (a - resultA)).toNat
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_keccak256 =>
+    -- Same ABI as `sol_sha256`. Hash is computed via FFI in `csrc/keccak256.c`.
+    let valsA   := s.regs.r1
+    let nVals   := s.regs.r2
+    let resultA := s.regs.r3
+    let allBytes : ByteArray :=
+      (List.range nVals).foldl (fun acc i =>
+        let descAddr := valsA + i * 16
+        let ptr := Memory.readU64 s.mem descAddr
+        let len := Memory.readU64 s.mem (descAddr + 8)
+        acc ++ readBytes s.mem ptr len) ByteArray.empty
+    let digest := Keccak256.hash allBytes
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ resultA ∧ a - resultA < 32 then (digest.get! (a - resultA)).toNat
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_blake3 =>
+    -- Same ABI as `sol_sha256` / `sol_keccak256`. Hash is computed via
+    -- FFI in `csrc/blake3.c` (default mode, 32-byte output).
+    let valsA   := s.regs.r1
+    let nVals   := s.regs.r2
+    let resultA := s.regs.r3
+    let allBytes : ByteArray :=
+      (List.range nVals).foldl (fun acc i =>
+        let descAddr := valsA + i * 16
+        let ptr := Memory.readU64 s.mem descAddr
+        let len := Memory.readU64 s.mem (descAddr + 8)
+        acc ++ readBytes s.mem ptr len) ByteArray.empty
+    let digest := Blake3.hash allBytes
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ resultA ∧ a - resultA < 32 then (digest.get! (a - resultA)).toNat
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_secp256k1_recover =>
+    -- ABI:
+    --   r1 = *const [u8; 32]   message hash
+    --   r2 = u64               recovery_id (Solana rejects ≥ 4)
+    --   r3 = *const [u8; 64]   compact signature (r || s)
+    --   r4 = *mut [u8; 64]     output: x || y, no 0x04 prefix
+    --   r0 = u64               0 success / 1 InvalidHash /
+    --                          2 InvalidRecoveryId / 3 InvalidSignature
+    --
+    -- Implementation delegates to `Secp256k1.recover` (rust-bridge →
+    -- paritytech `libsecp256k1` 0.7.2, same as agave). The recId > 3
+    -- check matches agave's `u8::try_from + RecoveryId::parse` pair
+    -- (both collapse to InvalidRecoveryId for any out-of-range value).
+    -- The final state is structured as a single unconditional record
+    -- update so `execSyscall_preserves_r10` goes through by simp alone.
+    let hashA := s.regs.r1
+    let recId := s.regs.r2
+    let sigA  := s.regs.r3
+    let outA  := s.regs.r4
+    let result : Secp256k1.RecoverResult :=
+      if recId > 3 then .invalidRecoveryId
+      else Secp256k1.recover (readBytes s.mem hashA 32)
+                              recId.toUInt8
+                              (readBytes s.mem sigA 64)
+    let errCode : Nat :=
+      match result with
+      | .success _         => 0
+      | .invalidHash       => 1
+      | .invalidRecoveryId => 2
+      | .invalidSignature  => 3
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | .success pubkey =>
+        if a ≥ outA ∧ a - outA < 64 then (pubkey.get! (a - outA)).toNat
+        else s.mem a
+      | _ => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
   | _ => { s with regs := s.regs.set .r0 0 }
 
 /-! ## Single-step semantics -/

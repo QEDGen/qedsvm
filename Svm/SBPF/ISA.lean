@@ -48,7 +48,14 @@ def Width.mask : Width → Nat
   | .dword => 2 ^ 64 - 1
 
 /-- sBPF syscall identifiers (Solana runtime).
-    These map to the sol_* functions available to on-chain programs. -/
+    These map to the sol_* functions available to on-chain programs.
+
+    The full registered set is mirrored from
+    `anza-xyz/agave/syscalls/src/lib.rs`. Several variants are
+    activation-gated in agave; we list them all here regardless of
+    feature flag, since modeling activation is a separate concern from
+    decoding. Variants whose semantics are not yet implemented in
+    `execSyscall` fall through to the default arm (`r0 := 0`). -/
 inductive Syscall
   -- Logging
   | sol_log_
@@ -56,34 +63,61 @@ inductive Syscall
   | sol_log_compute_units_
   | sol_log_pubkey
   | sol_log_data
+  -- Panic / abort
+  | abort
+  | sol_panic_
+  -- Allocator (deprecated; programs typically ship their own allocator)
+  | sol_alloc_free_
   -- PDA derivation
   | sol_create_program_address
   | sol_try_find_program_address
   -- Cross-program invocation
   | sol_invoke_signed
   | sol_invoke_signed_c
-  -- Sysvars
+  -- Sysvars (specific getters + generic accessor)
   | sol_get_clock_sysvar
   | sol_get_rent_sysvar
   | sol_get_epoch_schedule_sysvar
   | sol_get_last_restart_slot
+  | sol_get_fees_sysvar
+  | sol_get_epoch_rewards_sysvar
+  | sol_get_sysvar
+  | sol_get_epoch_stake
   -- Introspection
   | sol_remaining_compute_units
   | sol_get_stack_height
+  | sol_get_processed_sibling_instruction
   -- Hashing
   | sol_sha256
+  | sol_sha512
   | sol_keccak256
   | sol_blake3
+  | sol_poseidon
   -- Memory operations
   | sol_memcpy
   | sol_memmove
   | sol_memcmp
   | sol_memset
-  -- Crypto
+  -- Crypto: secp256k1
   | sol_secp256k1_recover
+  -- Crypto: curve25519 / ristretto family
+  | sol_curve_validate_point
+  | sol_curve_group_op
+  | sol_curve_multiscalar_mul
+  | sol_curve_decompress
+  | sol_curve_pairing_map
+  -- Crypto: alt-bn128 (Ethereum precompile parity)
+  | sol_alt_bn128_group_op
+  | sol_alt_bn128_compression
+  -- Big integer arithmetic
+  | sol_big_mod_exp
   -- Return data
   | sol_get_return_data
   | sol_set_return_data
+  -- A syscall whose name → hash mapping we don't (yet) know. The decoder
+  -- emits this for any `call <hash>` whose 32-bit hash isn't in our
+  -- syscall hash table.
+  | unknown (hash : Nat)
   deriving Repr, DecidableEq
 
 /-- sBPF instructions.

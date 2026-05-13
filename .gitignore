@@ -1,2 +1,4 @@
 .lake/
 build/
+docs/
+rust-bridge/target/

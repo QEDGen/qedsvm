@@ -6,3 +6,16 @@ import Svm.SBPF.WPTactic
 import Svm.SBPF.Pubkey
 import Svm.SBPF.Patterns
 import Svm.SBPF.Region
+import Svm.SBPF.SepLogic
+import Svm.SBPF.CPSSpec
+import Svm.SBPF.InstructionSpecs
+import Svm.SBPF.MacroDemo
+import Svm.SBPF.Murmur3
+import Svm.SBPF.Sha256
+import Svm.SBPF.Keccak256
+import Svm.SBPF.Blake3
+import Svm.SBPF.Secp256k1
+import Svm.SBPF.SyscallHash
+import Svm.SBPF.Decode
+import Svm.SBPF.Elf
+import Svm.SBPF.Runner
