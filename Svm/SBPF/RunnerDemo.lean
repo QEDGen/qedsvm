@@ -1191,4 +1191,223 @@ example :
     Runner.runForExit curveValidateDemo { input := invalidPoint32 } = some 1 := by
   native_decide
 
+/-! ## Demo 30 — `sol_curve_group_op` (Edwards + Ristretto)
+
+Direct FFI tests against test vectors locked in from
+`curve25519-dalek = 4.1.3` (the same crate agave's
+`solana-curve25519` v4.0.0 wraps):
+
+```
+                                Edwards            Ristretto
+BP                              5866…66            e2f2…76
+BP+BP (2·BP)                    c9a3…6022          6a49…3b919
+BP-BP (identity)                0100…00            0000…00
+0·BP (identity, via MUL)        0100…00            0000…00
+1·BP                            (= BP)             (= BP)
+identity encoding               0100…00            0000…00
+```
+
+Scalars are 32-byte little-endian canonical encodings (< ℓ).
+`Scalar::from(2u64) = 02 00 ... 00`. -/
+
+private def ed25519Identity : ByteArray := ⟨#[
+  0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]⟩
+
+private def ristrettoIdentity : ByteArray := ⟨Array.replicate 32 0⟩
+
+private def ed25519Doubled : ByteArray := ⟨#[
+  0xc9, 0xa3, 0xf8, 0x6a, 0xae, 0x46, 0x5f, 0x0e,
+  0x56, 0x51, 0x38, 0x64, 0x51, 0x0f, 0x39, 0x97,
+  0x56, 0x1f, 0xa2, 0xc9, 0xe8, 0x5e, 0xa2, 0x1d,
+  0xc2, 0x29, 0x23, 0x09, 0xf3, 0xcd, 0x60, 0x22]⟩
+
+private def ristrettoDoubled : ByteArray := ⟨#[
+  0x6a, 0x49, 0x32, 0x10, 0xf7, 0x49, 0x9c, 0xd1,
+  0x7f, 0xec, 0xb5, 0x10, 0xae, 0x0c, 0xea, 0x23,
+  0xa1, 0x10, 0xe8, 0xd5, 0xb9, 0x01, 0xf8, 0xac,
+  0xad, 0xd3, 0x09, 0x5c, 0x73, 0xa3, 0xb9, 0x19]⟩
+
+private def scalarZero : ByteArray := ⟨Array.replicate 32 0⟩
+private def scalarOne  : ByteArray :=
+  ⟨#[0x01] ++ Array.replicate 31 0⟩
+private def scalarTwo  : ByteArray :=
+  ⟨#[0x02] ++ Array.replicate 31 0⟩
+private def scalarThree : ByteArray :=
+  ⟨#[0x03] ++ Array.replicate 31 0⟩
+
+-- Edwards group ops
+example : Curve25519.edwardsAdd ed25519Basepoint ed25519Basepoint
+  = some ed25519Doubled := by native_decide
+example : Curve25519.edwardsSub ed25519Basepoint ed25519Basepoint
+  = some ed25519Identity := by native_decide
+example : Curve25519.edwardsMul scalarOne ed25519Basepoint
+  = some ed25519Basepoint := by native_decide
+example : Curve25519.edwardsMul scalarTwo ed25519Basepoint
+  = some ed25519Doubled := by native_decide
+example : Curve25519.edwardsMul scalarZero ed25519Basepoint
+  = some ed25519Identity := by native_decide
+/-- ADD on a bad point fails. -/
+example : Curve25519.edwardsAdd invalidPoint32 ed25519Basepoint
+  = none := by native_decide
+
+-- Ristretto group ops
+example : Curve25519.ristrettoAdd ristrettoBasepoint ristrettoBasepoint
+  = some ristrettoDoubled := by native_decide
+example : Curve25519.ristrettoSub ristrettoBasepoint ristrettoBasepoint
+  = some ristrettoIdentity := by native_decide
+example : Curve25519.ristrettoMul scalarOne ristrettoBasepoint
+  = some ristrettoBasepoint := by native_decide
+example : Curve25519.ristrettoMul scalarTwo ristrettoBasepoint
+  = some ristrettoDoubled := by native_decide
+example : Curve25519.ristrettoMul scalarZero ristrettoBasepoint
+  = some ristrettoIdentity := by native_decide
+
+/-- Runner demo. Input layout (96 bytes):
+    -   0..31 : left input (point or scalar depending on op)
+    -  32..63 : right input (always a point)
+    -  64..95 : 32 bytes of zero scratch (will be the result region)
+
+```
+  ; r1 = curve_id (already 0 = Edwards in this demo — set by program)
+  mov64 r2, 0                ; op_id = ADD
+  mov64 r3, r1                ; r3 = INPUT_START (left)
+  mov64 r4, r1                ; r4 = INPUT_START
+  add64 r4, 32                ; r4 = INPUT_START + 32 (right)
+  mov64 r5, r1                ; r5 = INPUT_START
+  add64 r5, 64                ; r5 = INPUT_START + 64 (output)
+  mov64 r1, 0                 ; curve_id = Edwards
+  call sol_curve_group_op
+  ldxb r0, [r5 + 0]           ; first byte of result
+  exit
+```
+With input `BP || BP`, ADD returns `2*BP`. First byte = `0xc9`. -/
+def curveGroupOpAddDemo : ByteArray :=
+  let h := SyscallHash.sol_curve_group_op_hash
+  ⟨#[
+    -- mov64 r2, 0  (op = ADD)
+    0xb7, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r3, r1
+    0xbf, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r4, r1; add64 r4, 32
+    0xbf, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x04, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
+    -- mov64 r5, r1; add64 r5, 64
+    0xbf, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x05, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+    -- mov64 r1, 0  (curve_id = Edwards)
+    0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- ldxb r0, [r5 + 0]   (src=5, dst=0 → byte1 = (5<<4)|0 = 0x50)
+    0x71, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit curveGroupOpAddDemo { input := ed25519Basepoint ++ ed25519Basepoint }
+    = some 0xc9 := by
+  native_decide
+
+/-! ## Demo 31 — `sol_curve_multiscalar_mul` (Edwards + Ristretto)
+
+Direct FFI tests:
+
+```
+MSM(N=1, scalars=[1],   points=[BP])      = BP
+MSM(N=2, scalars=[1,1], points=[BP,BP])   = 2·BP
+MSM(N=2, scalars=[2,3], points=[BP,BP])   = 5·BP
+```
+
+We verify the first two against known basepoint/doubled-basepoint
+values; the third checks distinct scalars combine correctly. -/
+
+example :
+    Curve25519.edwardsMSM
+      scalarOne
+      ed25519Basepoint
+    = some ed25519Basepoint := by native_decide
+
+example :
+    Curve25519.edwardsMSM
+      (scalarOne ++ scalarOne)
+      (ed25519Basepoint ++ ed25519Basepoint)
+    = some ed25519Doubled := by native_decide
+
+example :
+    Curve25519.ristrettoMSM
+      scalarOne
+      ristrettoBasepoint
+    = some ristrettoBasepoint := by native_decide
+
+example :
+    Curve25519.ristrettoMSM
+      (scalarOne ++ scalarOne)
+      (ristrettoBasepoint ++ ristrettoBasepoint)
+    = some ristrettoDoubled := by native_decide
+
+/-- N=2 with distinct scalars: `[2,3]·[BP,BP] = 5·BP =
+    edc876d6831fd2105d0b4389ca2e283166469289146e2ce06faefe98b22548df`. -/
+example :
+    Curve25519.edwardsMSM
+      (scalarTwo ++ scalarThree)
+      (ed25519Basepoint ++ ed25519Basepoint)
+    = some ⟨#[
+        0xed, 0xc8, 0x76, 0xd6, 0x83, 0x1f, 0xd2, 0x10,
+        0x5d, 0x0b, 0x43, 0x89, 0xca, 0x2e, 0x28, 0x31,
+        0x66, 0x46, 0x92, 0x89, 0x14, 0x6e, 0x2c, 0xe0,
+        0x6f, 0xae, 0xfe, 0x98, 0xb2, 0x25, 0x48, 0xdf]⟩ := by
+  native_decide
+
+/-- Empty MSM fails. -/
+example : Curve25519.edwardsMSM ByteArray.empty ByteArray.empty = none := by
+  native_decide
+
+/-- Runner demo: N=2, scalars=[1,1], points=[BP,BP], result = 2·BP.
+    Input layout (128 bytes): 32+32 scalars, then 32+32 points.
+    First byte of 2·BP (Edwards) = `0xc9`.
+
+```
+  ; r1 starts at INPUT_START
+  mov64 r2, r1                  ; r2 = INPUT_START (scalars ptr)
+  mov64 r3, r1                  ; r3 = INPUT_START
+  add64 r3, 64                  ; r3 = INPUT_START + 64 (points ptr)
+  mov64 r4, 2                   ; n = 2
+  mov64 r5, r1                  ; r5 = INPUT_START
+  add64 r5, 128                 ; r5 = result ptr (after inputs)
+  mov64 r1, 0                   ; curve_id = Edwards
+  call sol_curve_multiscalar_mul
+  ldxb r0, [r5 + 0]             ; first byte of result
+  exit
+``` -/
+def curveMsmDemo : ByteArray :=
+  let h := SyscallHash.sol_curve_multiscalar_mul_hash
+  ⟨#[
+    -- mov64 r2, r1
+    0xbf, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r3, r1; add64 r3, 64
+    0xbf, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x03, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+    -- mov64 r4, 2
+    0xb7, 0x04, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+    -- mov64 r5, r1; add64 r5, 128
+    0xbf, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x05, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
+    -- mov64 r1, 0   (curve_id = Edwards)
+    0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- ldxb r0, [r5 + 0]
+    0x71, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit curveMsmDemo {
+      input := scalarOne ++ scalarOne ++ ed25519Basepoint ++ ed25519Basepoint
+    } = some 0xc9 := by
+  native_decide
+
 end Svm.SBPF.RunnerDemo

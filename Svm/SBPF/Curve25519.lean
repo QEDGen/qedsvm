@@ -25,6 +25,11 @@ namespace Curve25519
 def CURVE25519_EDWARDS   : Nat := 0
 def CURVE25519_RISTRETTO : Nat := 1
 
+/-- Solana ABI group-operation identifiers for `sol_curve_group_op`. -/
+def OP_ADD : Nat := 0
+def OP_SUB : Nat := 1
+def OP_MUL : Nat := 2
+
 /-- True iff `point` (32 bytes) is a valid compressed Edwards point on
     the ed25519 curve.
 
@@ -48,6 +53,51 @@ opaque validateEdwards (point : @& ByteArray) : Bool
     `curve25519-dalek::ristretto::CompressedRistretto`. -/
 @[extern "lean_curve_validate_ristretto"]
 opaque validateRistretto (point : @& ByteArray) : Bool
+
+/-! ## Group operations (`sol_curve_group_op`)
+
+Each takes two 32-byte ByteArrays and returns `some <32-byte
+compressed point>` on success or `none` on any decode/decompression
+failure (or non-canonical scalar for `MUL`). The operations exactly
+mirror `solana-curve25519`'s `add_*` / `subtract_*` / `multiply_*`
+free functions, which in turn delegate to `curve25519-dalek`'s
+operator overloads.
+
+For `MUL`: the first argument is a canonical scalar (32 bytes LE,
+strictly < the curve25519 subgroup order `ℓ`); the second is a
+compressed point on the curve. `Scalar::from_canonical_bytes`
+rejects scalars ≥ `ℓ`, matching `PodScalar -> Scalar`. -/
+
+@[extern "lean_curve_edwards_add"]
+opaque edwardsAdd (left right : @& ByteArray) : Option ByteArray
+@[extern "lean_curve_edwards_sub"]
+opaque edwardsSub (left right : @& ByteArray) : Option ByteArray
+@[extern "lean_curve_edwards_mul"]
+opaque edwardsMul (scalar point : @& ByteArray) : Option ByteArray
+
+@[extern "lean_curve_ristretto_add"]
+opaque ristrettoAdd (left right : @& ByteArray) : Option ByteArray
+@[extern "lean_curve_ristretto_sub"]
+opaque ristrettoSub (left right : @& ByteArray) : Option ByteArray
+@[extern "lean_curve_ristretto_mul"]
+opaque ristrettoMul (scalar point : @& ByteArray) : Option ByteArray
+
+/-! ## Multiscalar multiplication (`sol_curve_multiscalar_mul`)
+
+Variable-length input: scalars (32n bytes) and points (32n bytes) are
+each a concatenated `n`-element buffer. The Lean caller is responsible
+for pre-concatenating them; this maps naturally to
+`readBytes mem ptr (32 * n)`.
+
+Returns `some <32-byte compressed result>` on success, `none` if any
+scalar is non-canonical, any point fails decompression, or `n = 0`.
+Agave caps `n ≤ 512` at the syscall boundary; we enforce that in the
+`.sol_curve_multiscalar_mul` arm rather than here. -/
+
+@[extern "lean_curve_edwards_msm"]
+opaque edwardsMSM   (scalars points : @& ByteArray) : Option ByteArray
+@[extern "lean_curve_ristretto_msm"]
+opaque ristrettoMSM (scalars points : @& ByteArray) : Option ByteArray
 
 end Curve25519
 end Svm.SBPF

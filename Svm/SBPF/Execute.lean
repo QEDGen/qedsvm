@@ -361,6 +361,78 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
         if Curve25519.validateRistretto pointB then 0 else 1
       else 2
     { s with regs := s.regs.set .r0 errCode }
+  | .sol_curve_group_op =>
+    -- ABI:
+    --   r1 = u64               curve_id (0 = Edwards, 1 = Ristretto)
+    --   r2 = u64               op_id (0 = ADD, 1 = SUB, 2 = MUL)
+    --   r3 = *const [u8; 32]   left input (point; or scalar for MUL)
+    --   r4 = *const [u8; 32]   right input (always a point)
+    --   r5 = *mut   [u8; 32]   result (compressed point)
+    --   r0 = u64               0 success / 1 failure
+    -- Matches agave's `SyscallCurveGroupOps`. Edwards/Ristretto only;
+    -- BLS12-381 group ops live in different syscalls. Failure on
+    -- malformed inputs, non-canonical scalars, or any unsupported
+    -- (curve_id, op_id) combination.
+    let curveId  := s.regs.r1
+    let opId     := s.regs.r2
+    let leftA    := s.regs.r3
+    let rightA   := s.regs.r4
+    let outA     := s.regs.r5
+    let leftB    := readBytes s.mem leftA  32
+    let rightB   := readBytes s.mem rightA 32
+    let result : Option ByteArray :=
+      if curveId = Curve25519.CURVE25519_EDWARDS then
+        if opId = Curve25519.OP_ADD then Curve25519.edwardsAdd leftB rightB
+        else if opId = Curve25519.OP_SUB then Curve25519.edwardsSub leftB rightB
+        else if opId = Curve25519.OP_MUL then Curve25519.edwardsMul leftB rightB
+        else none
+      else if curveId = Curve25519.CURVE25519_RISTRETTO then
+        if opId = Curve25519.OP_ADD then Curve25519.ristrettoAdd leftB rightB
+        else if opId = Curve25519.OP_SUB then Curve25519.ristrettoSub leftB rightB
+        else if opId = Curve25519.OP_MUL then Curve25519.ristrettoMul leftB rightB
+        else none
+      else none
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some pt =>
+        if a ≥ outA ∧ a - outA < 32 then (pt.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_curve_multiscalar_mul =>
+    -- ABI:
+    --   r1 = u64               curve_id (0 = Edwards, 1 = Ristretto)
+    --   r2 = *const [PodScalar; n]   n × 32-byte canonical scalars
+    --   r3 = *const [PodPoint;  n]   n × 32-byte compressed points
+    --   r4 = u64               n = number of (scalar, point) pairs
+    --   r5 = *mut   [u8; 32]   result (compressed point)
+    --   r0 = u64               0 success / 1 failure / 1 if n > 512
+    -- Matches agave's `SyscallCurveMultiscalarMultiplication`. The
+    -- 512 cap matches agave's `points_len > 512 ⇒ InvalidLength`.
+    -- `n = 0` is also a failure (no points to combine).
+    let curveId   := s.regs.r1
+    let scalarsA  := s.regs.r2
+    let pointsA   := s.regs.r3
+    let pointsLen := s.regs.r4
+    let outA      := s.regs.r5
+    let scalarsB  := readBytes s.mem scalarsA (32 * pointsLen)
+    let pointsB   := readBytes s.mem pointsA  (32 * pointsLen)
+    let result : Option ByteArray :=
+      if pointsLen = 0 ∨ pointsLen > 512 then none
+      else if curveId = Curve25519.CURVE25519_EDWARDS then
+        Curve25519.edwardsMSM scalarsB pointsB
+      else if curveId = Curve25519.CURVE25519_RISTRETTO then
+        Curve25519.ristrettoMSM scalarsB pointsB
+      else none
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some pt =>
+        if a ≥ outA ∧ a - outA < 32 then (pt.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
   | _ => { s with regs := s.regs.set .r0 0 }
 
 /-! ## Single-step semantics -/

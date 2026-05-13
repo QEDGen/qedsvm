@@ -161,3 +161,215 @@ pub extern "C" fn lean_curve_validate_ristretto(point: b_lean_obj_arg) -> u8 {
         _ => 0,
     }
 }
+
+// ───────────────────────────────────────────────────────────────────
+// curve25519 group operations — ADD/SUB/MUL on Edwards + Ristretto.
+//
+// Each function takes two 32-byte ByteArrays and returns
+// `Option ByteArray` (Lean side: `some <32-byte compressed point>` on
+// success, `none` on any decode/decompression failure or non-canonical
+// scalar).
+//
+// For ADD / SUB: both inputs are compressed points on the relevant
+// curve. For MUL: `left` is a canonical 32-byte scalar (little-endian,
+// must be < ell where ell is the curve25519 subgroup order); `right`
+// is a compressed point.
+//
+// Exactly mirrors agave's `PodEdwardsPoint::{add,subtract,multiply}`
+// and `PodRistrettoPoint::{add,subtract,multiply}`, which delegate to
+// curve25519-dalek's `+`, `-`, scalar `*` operators.
+// ───────────────────────────────────────────────────────────────────
+
+use curve25519_dalek::{
+    edwards::{CompressedEdwardsY, EdwardsPoint},
+    ristretto::{CompressedRistretto, RistrettoPoint},
+    scalar::Scalar,
+};
+
+/// Returns `Some(point)` if the 32 bytes decode and decompress to a
+/// valid Edwards point; otherwise `None`.
+fn decompress_edwards(bytes: &[u8]) -> Option<EdwardsPoint> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    CompressedEdwardsY::from_slice(bytes).ok()?.decompress()
+}
+
+fn decompress_ristretto(bytes: &[u8]) -> Option<RistrettoPoint> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    CompressedRistretto::from_slice(bytes).ok()?.decompress()
+}
+
+/// Returns `Some(scalar)` if the 32 bytes are a canonical scalar
+/// (i.e. strictly less than the subgroup order `ell`); otherwise
+/// `None`. Matches `PodScalar -> Scalar` via
+/// `Scalar::from_canonical_bytes` in solana-curve25519.
+fn parse_canonical_scalar(bytes: &[u8]) -> Option<Scalar> {
+    if bytes.len() != 32 {
+        return None;
+    }
+    let array: [u8; 32] = bytes.try_into().ok()?;
+    Scalar::from_canonical_bytes(array).into()
+}
+
+/// Wrap a 32-byte point as Lean's `Option ByteArray = .some bytes`.
+fn some_bytearray(bytes: &[u8; 32]) -> lean_obj_res {
+    let arr = alloc_bytearray(bytes);
+    let some = unsafe { lean_alloc_ctor(1, 1, 0) };
+    unsafe { lean_ctor_set(some as lean_obj_arg, 0, arr as lean_obj_arg) };
+    some
+}
+
+#[inline]
+fn none_obj() -> lean_obj_res {
+    unsafe { lean_box(0) }
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_edwards_add(
+    left: b_lean_obj_arg, right: b_lean_obj_arg,
+) -> lean_obj_res {
+    let l = unsafe { sarray_as_slice(left) };
+    let r = unsafe { sarray_as_slice(right) };
+    let (Some(lp), Some(rp)) = (decompress_edwards(l), decompress_edwards(r)) else {
+        return none_obj();
+    };
+    let result = (lp + rp).compress().to_bytes();
+    some_bytearray(&result)
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_edwards_sub(
+    left: b_lean_obj_arg, right: b_lean_obj_arg,
+) -> lean_obj_res {
+    let l = unsafe { sarray_as_slice(left) };
+    let r = unsafe { sarray_as_slice(right) };
+    let (Some(lp), Some(rp)) = (decompress_edwards(l), decompress_edwards(r)) else {
+        return none_obj();
+    };
+    let result = (lp - rp).compress().to_bytes();
+    some_bytearray(&result)
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_edwards_mul(
+    scalar: b_lean_obj_arg, point: b_lean_obj_arg,
+) -> lean_obj_res {
+    let s = unsafe { sarray_as_slice(scalar) };
+    let p = unsafe { sarray_as_slice(point) };
+    let (Some(sc), Some(pt)) = (parse_canonical_scalar(s), decompress_edwards(p)) else {
+        return none_obj();
+    };
+    let result = (sc * pt).compress().to_bytes();
+    some_bytearray(&result)
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_ristretto_add(
+    left: b_lean_obj_arg, right: b_lean_obj_arg,
+) -> lean_obj_res {
+    let l = unsafe { sarray_as_slice(left) };
+    let r = unsafe { sarray_as_slice(right) };
+    let (Some(lp), Some(rp)) = (decompress_ristretto(l), decompress_ristretto(r)) else {
+        return none_obj();
+    };
+    let result = (lp + rp).compress().to_bytes();
+    some_bytearray(&result)
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_ristretto_sub(
+    left: b_lean_obj_arg, right: b_lean_obj_arg,
+) -> lean_obj_res {
+    let l = unsafe { sarray_as_slice(left) };
+    let r = unsafe { sarray_as_slice(right) };
+    let (Some(lp), Some(rp)) = (decompress_ristretto(l), decompress_ristretto(r)) else {
+        return none_obj();
+    };
+    let result = (lp - rp).compress().to_bytes();
+    some_bytearray(&result)
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_ristretto_mul(
+    scalar: b_lean_obj_arg, point: b_lean_obj_arg,
+) -> lean_obj_res {
+    let s = unsafe { sarray_as_slice(scalar) };
+    let p = unsafe { sarray_as_slice(point) };
+    let (Some(sc), Some(pt)) = (parse_canonical_scalar(s), decompress_ristretto(p)) else {
+        return none_obj();
+    };
+    let result = (sc * pt).compress().to_bytes();
+    some_bytearray(&result)
+}
+
+// ───────────────────────────────────────────────────────────────────
+// curve25519 multiscalar multiplication.
+//
+// Inputs: concatenated 32-byte scalars (32n bytes) and concatenated
+// 32-byte points (32n bytes). N is derived from the lengths. Mirrors
+// agave's `multiscalar_multiply_{edwards,ristretto}` via
+// `EdwardsPoint::vartime_multiscalar_mul` / its ristretto analogue.
+//
+// Returns `Some(32-byte result)` or `None` if any input is malformed
+// (non-canonical scalar, undecompressable point, mismatched lengths,
+// zero N, or non-multiple-of-32 lengths). Agave's syscall arm caps
+// `points_len` at 512; we do not enforce that here — it's the
+// syscall arm's job (matches Solana's per-callsite policy).
+// ───────────────────────────────────────────────────────────────────
+
+use curve25519_dalek::traits::VartimeMultiscalarMul;
+
+fn msm_decode_scalars_points<F, P>(
+    scalars: &[u8], points: &[u8], decompress: F,
+) -> Option<(Vec<Scalar>, Vec<P>)>
+where
+    F: Fn(&[u8]) -> Option<P>,
+{
+    if scalars.is_empty() || scalars.len() != points.len() {
+        return None;
+    }
+    if scalars.len() % 32 != 0 {
+        return None;
+    }
+    let n = scalars.len() / 32;
+    let mut sc = Vec::with_capacity(n);
+    let mut pt = Vec::with_capacity(n);
+    for i in 0..n {
+        sc.push(parse_canonical_scalar(&scalars[i * 32..(i + 1) * 32])?);
+        pt.push(decompress(&points[i * 32..(i + 1) * 32])?);
+    }
+    Some((sc, pt))
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_edwards_msm(
+    scalars: b_lean_obj_arg, points: b_lean_obj_arg,
+) -> lean_obj_res {
+    let s = unsafe { sarray_as_slice(scalars) };
+    let p = unsafe { sarray_as_slice(points) };
+    let Some((sc, pt)) = msm_decode_scalars_points(s, p, decompress_edwards) else {
+        return none_obj();
+    };
+    let result = EdwardsPoint::vartime_multiscalar_mul(sc, pt)
+        .compress()
+        .to_bytes();
+    some_bytearray(&result)
+}
+
+#[no_mangle]
+pub extern "C" fn lean_curve_ristretto_msm(
+    scalars: b_lean_obj_arg, points: b_lean_obj_arg,
+) -> lean_obj_res {
+    let s = unsafe { sarray_as_slice(scalars) };
+    let p = unsafe { sarray_as_slice(points) };
+    let Some((sc, pt)) = msm_decode_scalars_points(s, p, decompress_ristretto) else {
+        return none_obj();
+    };
+    let result = RistrettoPoint::vartime_multiscalar_mul(sc, pt)
+        .compress()
+        .to_bytes();
+    some_bytearray(&result)
+}
