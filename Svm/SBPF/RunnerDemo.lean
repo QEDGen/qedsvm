@@ -598,17 +598,16 @@ example :
     Runner.runForExit sha256Demo { input := sha256DemoInput } = some 0xba := by
   native_decide
 
-/-! ## Demo 23 — `sol_keccak256` via FFI
+/-! ## Demo 23 — `sol_keccak256` via the Rust bridge
 
-Keccak-256 is the first cryptographic syscall served through C FFI
-(`csrc/keccak256.c`). Same ABI as `sol_sha256`. We exit with the first
-byte of `keccak256("abc")` = `0x4e`.
+Routed through `rust-bridge` → `sha3 = 0.10.8` (agave's pin). Same ABI
+as `sol_sha256`. We exit with the first byte of `keccak256("abc")` =
+`0x4e`.
 
-This demo exercises the full stack: `native_decide` compiles the runner
-+ syscall path, which calls the precompiled C library at runtime. Trust
-chain: the digest correctness is anchored on (a) Lean's `ofReduceBool`
-axiom, (b) the C implementation in the repo, (c) the vendored Keccak
-constants. The pure-Lean SHA-256 demo above does not need (b).
+Trust chain: the digest correctness is anchored on (a) Lean's
+`ofReduceBool` axiom, (b) the `sha3` crate at the pinned version,
+(c) `rust-bridge/lean_glue.c`'s Lean-runtime trampolines. The
+pure-Lean SHA-256 demo above does not need (b)/(c).
 -/
 
 /-- Direct sanity check on the FFI — independent of the runner. -/
@@ -858,14 +857,15 @@ example :
     Runner.runForExit cpiCallerBytes = some 1 := by
   native_decide
 
-/-! ## Demo 26 — `sol_blake3` via FFI
+/-! ## Demo 26 — `sol_blake3` via the Rust bridge
 
-BLAKE3 is wired through C FFI (`csrc/blake3.c`) using the same shape as
-`sol_sha256` / `sol_keccak256`. The same `SliceDesc { ptr, len }` ABI
-applies. We exit with the first byte of `blake3("abc")` = `0x64`.
+BLAKE3 is wired through `rust-bridge` → `blake3 = 1.8.5` (agave's
+pin) using the same shape as `sol_sha256` / `sol_keccak256`. The same
+`SliceDesc { ptr, len }` ABI applies. We exit with the first byte of
+`blake3("abc")` = `0x64`.
 
-The C reference passes the official BLAKE3 test vectors for empty,
-"abc", 1024-byte (single full chunk), 1025-byte (two-chunk tree), and
+The official BLAKE3 test vectors for empty, "abc", 1024-byte (single
+full chunk), 1025-byte (two-chunk tree), and
 2048-byte (two full chunks) inputs — verified against the `b3sum` CLI
 during development. -/
 
@@ -905,11 +905,11 @@ example :
     Runner.runForExit blake3Demo { input := sha256DemoInput } = some 0x64 := by
   native_decide
 
-/-! ## Demo 27 — `sol_secp256k1_recover` via FFI
+/-! ## Demo 27 — `sol_secp256k1_recover` via the Rust bridge
 
-ECDSA public-key recovery on the secp256k1 curve, wired through C FFI
-(`csrc/secp256k1_recover.c` → Homebrew's `libsecp256k1` with the
-`recovery` module). Solana ABI:
+ECDSA public-key recovery on the secp256k1 curve, wired through
+`rust-bridge` → paritytech's `libsecp256k1 = 0.7.2` (same crate +
+version agave uses on master). Solana ABI:
 ```
 sol_secp256k1_recover(
   hash:        *const [u8; 32],
@@ -1057,30 +1057,30 @@ example :
     Runner.runForExit secp256k1Demo { input := secp256k1DemoInput } = some 0x84 := by
   native_decide
 
-/-! ## Demo 28 — agave-conformance audit for SHA-256 / Keccak-256 / BLAKE3
+/-! ## Demo 28 — agave-conformance audit for SHA-256
 
-For each of the three production hash paths we ship — pure-Lean
-SHA-256, vendored-C Keccak-256, vendored-C BLAKE3 — assert byte
-equivalence with the same hash computed by agave's own crate
-(`sha2 = 0.10.8`, `sha3 = 0.10.8`, `blake3 = 1.8.5`, all routed
-through `rust-bridge`) on a sweep of inputs:
+The pure-Lean `Sha256.hash` is the production path for `sol_sha256`.
+This demo proves byte-equivalence with `Sha256.hashAgave`, which calls
+the same `sha2 = 0.10.8` crate agave's runtime uses (via `rust-bridge`)
+on a sweep of inputs:
 
 - empty buffer
 - single byte
 - "abc"
 - "The quick brown fox jumps over the lazy dog"
-- 256 bytes (multi-block territory for SHA-256 / Keccak)
-- 1025 bytes (forces BLAKE3 onto its two-chunk path)
+- 256 bytes (multi-block territory)
+- 1025 bytes
 - 4096 bytes (multi-block-stride sanity)
 
 `native_decide` makes the kernel commit to both digests on these
 inputs and check structural equality. A failure here is a divergence
-between our production path and agave's runtime hashing call chain —
+between our pure-Lean spec and agave's runtime hashing call chain —
 exactly the kind of bug a reference interpreter must not have.
 
-The production paths *call* the pure-Lean / vendored-C
-implementations (not `hashAgave`); these demos confirm that choice
-is observationally indistinguishable from calling agave's crates. -/
+Keccak-256 and BLAKE3 no longer have separate audit hooks: the
+production paths `Keccak256.hash` and `Blake3.hash` go through
+`rust-bridge` directly (calling the same `sha3` / `blake3` crates
+agave uses), so an audit would be a tautology. -/
 
 private def auditInput0   : ByteArray := ByteArray.empty
 private def auditInput1   : ByteArray := ⟨#[0x5a]⟩
@@ -1108,20 +1108,87 @@ example : Sha256.hash auditInput256  = Sha256.hashAgave auditInput256  := by nat
 example : Sha256.hash auditInput1025 = Sha256.hashAgave auditInput1025 := by native_decide
 example : Sha256.hash auditInput4096 = Sha256.hashAgave auditInput4096 := by native_decide
 
-example : Keccak256.hash auditInput0    = Keccak256.hashAgave auditInput0    := by native_decide
-example : Keccak256.hash auditInput1    = Keccak256.hashAgave auditInput1    := by native_decide
-example : Keccak256.hash auditInputAbc  = Keccak256.hashAgave auditInputAbc  := by native_decide
-example : Keccak256.hash auditInputFox  = Keccak256.hashAgave auditInputFox  := by native_decide
-example : Keccak256.hash auditInput256  = Keccak256.hashAgave auditInput256  := by native_decide
-example : Keccak256.hash auditInput1025 = Keccak256.hashAgave auditInput1025 := by native_decide
-example : Keccak256.hash auditInput4096 = Keccak256.hashAgave auditInput4096 := by native_decide
+/-! ## Demo 29 — `sol_curve_validate_point` (Edwards + Ristretto)
 
-example : Blake3.hash auditInput0    = Blake3.hashAgave auditInput0    := by native_decide
-example : Blake3.hash auditInput1    = Blake3.hashAgave auditInput1    := by native_decide
-example : Blake3.hash auditInputAbc  = Blake3.hashAgave auditInputAbc  := by native_decide
-example : Blake3.hash auditInputFox  = Blake3.hashAgave auditInputFox  := by native_decide
-example : Blake3.hash auditInput256  = Blake3.hashAgave auditInput256  := by native_decide
-example : Blake3.hash auditInput1025 = Blake3.hashAgave auditInput1025 := by native_decide
-example : Blake3.hash auditInput4096 = Blake3.hashAgave auditInput4096 := by native_decide
+First slice of the curve25519 syscall family. Backed by
+`curve25519-dalek = 4.1.3` via `rust-bridge` (same crate +
+same version agave's `solana-curve25519` v4.0.0 uses internally).
+
+The Edwards basepoint compressed encoding:
+  `5866666666666666666666666666666666666666666666666666666666666666`
+The Ristretto basepoint compressed encoding (Decaf-style):
+  `e2f2ae0a6abc4e71a884a961c500515f58e30b6aa582dd8db6a65945e08d2d76`
+
+Both should validate. An all-`0xff` 32-byte buffer is not a valid
+y-coordinate (≥ field modulus `p = 2^255 − 19`), so both validators
+reject it.
+
+The cross-reject sanity check (an Edwards-valid point that is NOT a
+valid Ristretto encoding) confirms the two validators are doing
+different work — they're not just delegating to the same decompression.
+-/
+
+private def ed25519Basepoint : ByteArray := ⟨#[
+  0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+  0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+  0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+  0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66]⟩
+
+private def ristrettoBasepoint : ByteArray := ⟨#[
+  0xe2, 0xf2, 0xae, 0x0a, 0x6a, 0xbc, 0x4e, 0x71,
+  0xa8, 0x84, 0xa9, 0x61, 0xc5, 0x00, 0x51, 0x5f,
+  0x58, 0xe3, 0x0b, 0x6a, 0xa5, 0x82, 0xdd, 0x8d,
+  0xb6, 0xa6, 0x59, 0x45, 0xe0, 0x8d, 0x2d, 0x76]⟩
+
+/-- `y = 2` with sign bit 0 — confirmed invalid for both Edwards and
+    Ristretto via a direct curve25519-dalek 4.1.3 sweep. (Lots of
+    "random-looking" 32-byte values happen to be valid encodings —
+    you have to construct invalidity, not assume it.) -/
+private def invalidPoint32 : ByteArray := ⟨#[
+  0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]⟩
+
+example : Curve25519.validateEdwards ed25519Basepoint     = true  := by native_decide
+example : Curve25519.validateRistretto ristrettoBasepoint = true  := by native_decide
+example : Curve25519.validateEdwards invalidPoint32       = false := by native_decide
+example : Curve25519.validateRistretto invalidPoint32     = false := by native_decide
+/-- The ed25519 basepoint is a valid Edwards point but is **not** a
+    valid Ristretto encoding (Ristretto rejects points whose order
+    isn't a divisor of the prime-order subgroup; the ed25519 basepoint
+    has order 8 · prime-order, so its Edwards encoding fails Ristretto's
+    canonicalization rules). -/
+example : Curve25519.validateRistretto ed25519Basepoint   = false := by native_decide
+
+/-- Runner demo. r1 = curve_id (0 = Edwards), r2 = pointer to a
+    32-byte point at INPUT_START. Exit with r0 = result.
+```
+  mov64 r2, r1     ; r2 := INPUT_START
+  mov64 r1, 0      ; curve_id = Edwards
+  call sol_curve_validate_point
+  exit             ; r0 = 0 on valid
+```
+With the Edwards basepoint loaded at INPUT_START, the syscall sets
+r0 := 0 and we exit clean. -/
+def curveValidateDemo : ByteArray :=
+  let h := SyscallHash.sol_curve_validate_point_hash
+  ⟨#[
+    -- mov64 r2, r1   (src=1, dst=2 → byte1 = (1<<4)|2 = 0x12)
+    0xbf, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r1, 0
+    0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit curveValidateDemo { input := ed25519Basepoint } = some 0 := by
+  native_decide
+
+example :
+    Runner.runForExit curveValidateDemo { input := invalidPoint32 } = some 1 := by
+  native_decide
 
 end Svm.SBPF.RunnerDemo

@@ -90,9 +90,13 @@ Standalone build: `lake build`. Lean toolchain pin: `lean-toolchain`.
 and `cargo` / `rustc` (any stable toolchain). The Rust bridge in
 `rust-bridge/` pulls the exact crates agave's runtime uses
 (`libsecp256k1 = "0.7.2"` paritytech, `curve25519-dalek = "4.1.3"`,
-etc.) and exposes them to the Lean side via the C ABI through thin
-shims in `csrc/`. Lake invokes `cargo build --release` automatically
-during `lake build`. No system crypto libraries are required.
+`sha2`, `sha3`, `blake3`) and exposes each crypto syscall to Lean
+via its `@[extern "lean_*"]` declaration directly — no intermediate
+C shim layer. (A tiny `rust-bridge/lean_glue.c` re-exports six
+`static inline` Lean runtime helpers so Rust can call them at the
+FFI boundary; that's the only C in the project.) Lake invokes
+`cargo build --release` automatically during `lake build`. No system
+crypto libraries required.
 
 ## Roadmap (re-scoped for v0.3+)
 

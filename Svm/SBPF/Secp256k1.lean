@@ -1,11 +1,11 @@
 /-
   secp256k1 ECDSA public-key recovery.
 
-  Calls into `rust-bridge/` which uses paritytech's pure-Rust
+  Calls directly into `rust-bridge/` which uses paritytech's pure-Rust
   `libsecp256k1` crate (version 0.7.2) — the *exact* crate agave's
-  `SyscallSecp256k1Recover` uses. The wrapper code in
-  `csrc/secp256k1_recover.c` translates between Lean's `lean_object`
-  representation and the bridge's raw-pointer C ABI.
+  `SyscallSecp256k1Recover` uses. The Rust side constructs the four-
+  ctor `RecoverResult` inductive directly via Lean's runtime ABI; no
+  intermediate C shim layer.
 
   Why match agave verbatim: paritytech's `libsecp256k1` has subtly
   different behavior from Bitcoin Core's `libsecp256k1` C library
@@ -53,9 +53,8 @@ inductive RecoverResult where
     agave's `Secp256k1RecoverError` discriminants. Recovery_id > 3 ⇒
     `invalidRecoveryId`. Bad/high-S signature ⇒ `invalidSignature`.
 
-    Implemented in C (`csrc/secp256k1_recover.c`) calling Rust
-    (`rust-bridge/src/lib.rs::formal_svm_secp256k1_recover`). Treated
-    as opaque to the kernel: `decide` cannot reduce it, but
+    Implemented in Rust (`rust-bridge/src/lib.rs::lean_secp256k1_recover`).
+    Treated as opaque to the kernel: `decide` cannot reduce it, but
     `native_decide` will (via `ofReduceBool`). -/
 @[extern "lean_secp256k1_recover"]
 opaque recover (hash : @& ByteArray) (recoveryId : UInt8) (sig : @& ByteArray) : RecoverResult

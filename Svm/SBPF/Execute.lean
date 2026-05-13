@@ -9,6 +9,7 @@ import Svm.SBPF.Sha256
 import Svm.SBPF.Keccak256
 import Svm.SBPF.Blake3
 import Svm.SBPF.Secp256k1
+import Svm.SBPF.Curve25519
 
 namespace Svm.SBPF
 
@@ -267,7 +268,7 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
       else s.mem a
     { s with regs := s.regs.set .r0 0, mem := mem' }
   | .sol_keccak256 =>
-    -- Same ABI as `sol_sha256`. Hash is computed via FFI in `csrc/keccak256.c`.
+    -- Same ABI as `sol_sha256`. Hash is computed via `rust-bridge` (sha3 = 0.10.8).
     let valsA   := s.regs.r1
     let nVals   := s.regs.r2
     let resultA := s.regs.r3
@@ -284,7 +285,7 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
     { s with regs := s.regs.set .r0 0, mem := mem' }
   | .sol_blake3 =>
     -- Same ABI as `sol_sha256` / `sol_keccak256`. Hash is computed via
-    -- FFI in `csrc/blake3.c` (default mode, 32-byte output).
+    -- `rust-bridge` (blake3 = 1.8.5, default mode, 32-byte output).
     let valsA   := s.regs.r1
     let nVals   := s.regs.r2
     let resultA := s.regs.r3
@@ -336,6 +337,30 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
         else s.mem a
       | _ => s.mem a
     { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_curve_validate_point =>
+    -- ABI:
+    --   r1 = u64  curve_id (0 = Edwards, 1 = Ristretto; BLS12-381 ids
+    --             feature-gated in agave, return error here)
+    --   r2 = *const [u8; 32]   compressed point
+    --   r0 = u64  0 on valid point, 1 on invalid, 2 on unsupported curve_id
+    --
+    -- Agave: feature-gated BLS12-381 ids (2..=5) raise
+    -- `SyscallError::InvalidAttribute`; here we collapse "unsupported"
+    -- to r0 := 2 (matching the typical Solana convention of non-zero
+    -- = error). The two supported ids dispatch to
+    -- `Curve25519.validate{Edwards,Ristretto}` via rust-bridge →
+    -- `curve25519-dalek = 4.1.3`, exactly matching agave's
+    -- `solana_curve25519::{edwards,ristretto}::validate_*`.
+    let curveId  := s.regs.r1
+    let pointA   := s.regs.r2
+    let pointB   := readBytes s.mem pointA 32
+    let errCode  : Nat :=
+      if curveId = Curve25519.CURVE25519_EDWARDS then
+        if Curve25519.validateEdwards pointB then 0 else 1
+      else if curveId = Curve25519.CURVE25519_RISTRETTO then
+        if Curve25519.validateRistretto pointB then 0 else 1
+      else 2
+    { s with regs := s.regs.set .r0 errCode }
   | _ => { s with regs := s.regs.set .r0 0 }
 
 /-! ## Single-step semantics -/
