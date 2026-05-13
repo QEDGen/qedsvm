@@ -10,6 +10,7 @@ import Svm.SBPF.Keccak256
 import Svm.SBPF.Blake3
 import Svm.SBPF.Secp256k1
 import Svm.SBPF.Curve25519
+import Svm.SBPF.Pda
 
 namespace Svm.SBPF
 
@@ -430,6 +431,70 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
       match result with
       | some pt =>
         if a ≥ outA ∧ a - outA < 32 then (pt.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_create_program_address =>
+    -- ABI:
+    --   r1 = *const [VmSlice; N]   each VmSlice = { ptr: u64, len: u64 }
+    --   r2 = u64                   N (number of seeds)
+    --   r3 = *const [u8; 32]       program_id
+    --   r4 = *mut   [u8; 32]       output PDA
+    --   r0 = u64                   0 success / 1 failure
+    -- Matches agave's `SyscallCreateProgramAddress`. The VmSlice
+    -- layout (16-byte ptr+len pair) is the same as the SliceDesc used
+    -- by `sol_sha256` / `sol_keccak256` / `sol_blake3`. We read each
+    -- seed via its descriptor, then call the pure-Lean
+    -- `Pda.createProgramAddress`.
+    let seedsA   := s.regs.r1
+    let seedsLen := s.regs.r2
+    let pidA     := s.regs.r3
+    let outA     := s.regs.r4
+    let seeds : List ByteArray :=
+      (List.range seedsLen).map (fun i =>
+        let descAddr := seedsA + i * 16
+        let ptr := Memory.readU64 s.mem descAddr
+        let len := Memory.readU64 s.mem (descAddr + 8)
+        readBytes s.mem ptr len)
+    let pid := readBytes s.mem pidA 32
+    let result : Option ByteArray := Pda.createProgramAddress seeds pid
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some pda =>
+        if a ≥ outA ∧ a - outA < 32 then (pda.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_try_find_program_address =>
+    -- ABI:
+    --   r1 = *const [VmSlice; N]   seed descriptors
+    --   r2 = u64                   N (number of seeds, BEFORE the bump)
+    --   r3 = *const [u8; 32]       program_id
+    --   r4 = *mut   [u8; 32]       output PDA
+    --   r5 = *mut   [u8; 1]        output bump
+    --   r0 = u64                   0 success / 1 failure
+    -- Same seed-reading shape as `sol_create_program_address`, plus
+    -- iteration over bump values inside `Pda.tryFindProgramAddress`.
+    let seedsA   := s.regs.r1
+    let seedsLen := s.regs.r2
+    let pidA     := s.regs.r3
+    let outA     := s.regs.r4
+    let bumpA    := s.regs.r5
+    let seeds : List ByteArray :=
+      (List.range seedsLen).map (fun i =>
+        let descAddr := seedsA + i * 16
+        let ptr := Memory.readU64 s.mem descAddr
+        let len := Memory.readU64 s.mem (descAddr + 8)
+        readBytes s.mem ptr len)
+    let pid := readBytes s.mem pidA 32
+    let result : Option (ByteArray × UInt8) := Pda.tryFindProgramAddress seeds pid
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some (pda, bump) =>
+        if a = bumpA then bump.toNat
+        else if a ≥ outA ∧ a - outA < 32 then (pda.get! (a - outA)).toNat
         else s.mem a
       | none => s.mem a
     { s with regs := s.regs.set .r0 errCode, mem := mem' }

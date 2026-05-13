@@ -11,6 +11,7 @@
 -/
 
 import Svm.SBPF.Runner
+import Svm.SBPF.Pda
 
 namespace Svm.SBPF.RunnerDemo
 
@@ -1408,6 +1409,173 @@ example :
     Runner.runForExit curveMsmDemo {
       input := scalarOne ++ scalarOne ++ ed25519Basepoint ++ ed25519Basepoint
     } = some 0xc9 := by
+  native_decide
+
+/-! ## Demo 32 — `sol_create_program_address` / `sol_try_find_program_address`
+
+Pure-Lean PDA derivation, built on `Sha256.hash` (pure FIPS-180-4) and
+`Curve25519.validateEdwards` (rust-bridge → curve25519-dalek). No new
+bridge code; the entire syscall is composed of primitives already
+verified.
+
+Test vector from `solana-sdk/address` (well-known):
+```
+seeds      = [b"Talking", b"Squirrels"]
+program_id = BPFLoaderUpgradeab1e1...   (32 bytes)
+
+CPA(seeds, program_id)                = 2fnQrngrQT4SeLcdToJAD96phoEjNL2man2kfRLCASVk
+                                      = 18cb1abd … 60968aff   (first byte 0x18)
+find_program_address(seeds, pid)      = HTqKuCuTUMwRJV4ceegG2CwYRxub4qjpj9DEg3nz1NGF
+                                      = f49abbed … c4499818   (first byte 0xf4, bump=255)
+``` -/
+
+private def bpfLoaderUpgradeableId : ByteArray := ⟨#[
+  0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0xb0,
+  0xe2, 0x10, 0x15, 0x3e, 0xf7, 0x63, 0xae, 0x2b,
+  0x00, 0xc2, 0xb9, 0x3d, 0x16, 0xc1, 0x24, 0xd2,
+  0xc0, 0x53, 0x7a, 0x10, 0x04, 0x80, 0x00, 0x00]⟩
+
+private def seedTalking   : ByteArray := ⟨#[0x54, 0x61, 0x6c, 0x6b, 0x69, 0x6e, 0x67]⟩  -- "Talking"
+private def seedSquirrels : ByteArray :=
+  ⟨#[0x53, 0x71, 0x75, 0x69, 0x72, 0x72, 0x65, 0x6c, 0x73]⟩                              -- "Squirrels"
+
+private def expectedPda : ByteArray := ⟨#[
+  0x18, 0xcb, 0x1a, 0xbd, 0x44, 0x05, 0xba, 0xf9,
+  0x11, 0x9d, 0x11, 0xe4, 0x69, 0x77, 0xc2, 0x10,
+  0x06, 0x3d, 0x6a, 0x8d, 0xfa, 0xc7, 0x67, 0xef,
+  0x67, 0x1c, 0xf7, 0xe8, 0x60, 0x96, 0x8a, 0xff]⟩
+
+private def expectedFindPda : ByteArray := ⟨#[
+  0xf4, 0x9a, 0xbb, 0xed, 0x0b, 0xfa, 0x1d, 0x39,
+  0xa7, 0x57, 0xe4, 0x7b, 0x48, 0xd4, 0x54, 0x6a,
+  0x7d, 0x4e, 0x44, 0xa2, 0x1f, 0x0f, 0x36, 0x71,
+  0x79, 0xcc, 0xb7, 0xcc, 0xc4, 0x49, 0x98, 0x18]⟩
+
+-- Direct CPA test vector
+example :
+    Pda.createProgramAddress [seedTalking, seedSquirrels] bpfLoaderUpgradeableId
+    = some expectedPda := by
+  native_decide
+
+-- Direct try_find test vector (with bump = 255)
+example :
+    Pda.tryFindProgramAddress [seedTalking, seedSquirrels] bpfLoaderUpgradeableId
+    = some (expectedFindPda, 255) := by
+  native_decide
+
+-- Negative test: 17 seeds exceeds MAX_SEEDS.
+example :
+    Pda.createProgramAddress (List.replicate 17 seedTalking) bpfLoaderUpgradeableId
+    = none := by
+  native_decide
+
+-- Negative test: seed longer than 32 bytes.
+example :
+    Pda.createProgramAddress [⟨Array.replicate 33 0⟩] bpfLoaderUpgradeableId
+    = none := by
+  native_decide
+
+-- Negative test: malformed program_id (wrong length).
+example :
+    Pda.createProgramAddress [seedTalking] ByteArray.empty = none := by
+  native_decide
+
+/-- Runner demo for `sol_create_program_address`.
+
+Input layout (length 80):
+- bytes 0..15  : SliceDesc 0 = ptr=INPUT_START+48, len=7        ("Talking")
+- bytes 16..31 : SliceDesc 1 = ptr=INPUT_START+55, len=9        ("Squirrels")
+- bytes 32..47 : 16 bytes of padding (reserved for output area)
+- bytes 48..54 : "Talking"
+- bytes 55..63 : "Squirrels"
+- bytes 64..95 : program_id (BPFLoaderUpgradeable)
+- bytes 96..127: output buffer (PDA writes here)
+
+`INPUT_START = 0x400000000`. SliceDesc.ptr values are big numbers
+(64-bit LE) — see `pdaInput` below.
+
+```
+  ; r1 starts at INPUT_START (seeds_addr)
+  mov64 r2, 2                  ; seeds_len = 2
+  mov64 r3, r1
+  add64 r3, 64                 ; r3 = pid_addr
+  mov64 r4, r1
+  add64 r4, 96                 ; r4 = pda_out_addr
+  call sol_create_program_address
+  ldxb r0, [r4 + 0]            ; first byte of PDA
+  exit
+```
+Exit code = first byte of expected PDA = `0x18`. -/
+
+private def le64 (n : Nat) : Array UInt8 :=
+  Array.range 8 |>.map (fun i => ((n >>> (i * 8)) % 256).toUInt8)
+
+def pdaInput : ByteArray :=
+  let inputStart := 0x400000000
+  ⟨-- SliceDesc 0: ptr = INPUT_START + 48, len = 7
+   le64 (inputStart + 48) ++ le64 7 ++
+   -- SliceDesc 1: ptr = INPUT_START + 55, len = 9
+   le64 (inputStart + 55) ++ le64 9 ++
+   -- 16-byte gap (padding so the actual seed/pid bytes start at offset 48)
+   Array.replicate 16 0 ++
+   -- "Talking"
+   #[0x54, 0x61, 0x6c, 0x6b, 0x69, 0x6e, 0x67] ++
+   -- "Squirrels"
+   #[0x53, 0x71, 0x75, 0x69, 0x72, 0x72, 0x65, 0x6c, 0x73] ++
+   -- BPFLoaderUpgradeable program_id (32 bytes)
+   #[0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0xb0,
+     0xe2, 0x10, 0x15, 0x3e, 0xf7, 0x63, 0xae, 0x2b,
+     0x00, 0xc2, 0xb9, 0x3d, 0x16, 0xc1, 0x24, 0xd2,
+     0xc0, 0x53, 0x7a, 0x10, 0x04, 0x80, 0x00, 0x00]⟩
+
+def pdaCreateDemo : ByteArray :=
+  let h := SyscallHash.sol_create_program_address_hash
+  ⟨#[
+    -- mov64 r2, 2   (seeds_len)
+    0xb7, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+    -- mov64 r3, r1; add64 r3, 64
+    0xbf, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x03, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+    -- mov64 r4, r1; add64 r4, 96
+    0xbf, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x04, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00
+  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- ldxb r0, [r4 + 0]
+    0x71, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit pdaCreateDemo { input := pdaInput } = some 0x18 := by
+  native_decide
+
+/-- Runner demo for `sol_try_find_program_address`. Same input layout
+    plus a bump-output byte after the PDA. Exit code = first byte of
+    `find_program_address` PDA = `0xf4`. -/
+def pdaTryFindDemo : ByteArray :=
+  let h := SyscallHash.sol_try_find_program_address_hash
+  ⟨#[
+    -- mov64 r2, 2
+    0xb7, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+    -- mov64 r3, r1; add64 r3, 64
+    0xbf, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x03, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
+    -- mov64 r4, r1; add64 r4, 96
+    0xbf, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x04, 0x00, 0x00, 0x60, 0x00, 0x00, 0x00,
+    -- mov64 r5, r1; add64 r5, 128
+    0xbf, 0x15, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x05, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00
+  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- ldxb r0, [r4 + 0]   (first byte of PDA)
+    0x71, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit pdaTryFindDemo { input := pdaInput } = some 0xf4 := by
   native_decide
 
 end Svm.SBPF.RunnerDemo

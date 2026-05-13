@@ -16,6 +16,7 @@ import Svm.SBPF.Keccak256
 import Svm.SBPF.Blake3
 import Svm.SBPF.Secp256k1
 import Svm.SBPF.Curve25519
+import Svm.SBPF.Pda
 import Svm.SBPF.SyscallHash
 import Svm.SBPF.Decode
 import Svm.SBPF.Elf
