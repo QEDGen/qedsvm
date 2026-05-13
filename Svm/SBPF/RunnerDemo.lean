@@ -1922,4 +1922,20 @@ example :
     Runner.runForExit altBn128AddDemo { input := bn254G1AddInput } = some 0x03 := by
   native_decide
 
+/-! ## Demo 37 — hygiene-pass syscalls
+
+`abort` and `sol_panic_` terminate with `ERR_ABORT` (a distinct
+non-zero exit code). `sol_panic_` also logs the panic message into
+`State.log`. -/
+
+def abortDemo : ByteArray :=
+  let h := SyscallHash.abort_hash
+  ⟨#[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- exit (unreachable — abort sets exitCode before this)
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit abortDemo = some Svm.SBPF.ERR_ABORT := by native_decide
+
 end Svm.SBPF.RunnerDemo

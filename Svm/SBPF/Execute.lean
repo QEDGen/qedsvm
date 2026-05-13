@@ -115,6 +115,11 @@ success. -/
 
 def ERR_DIVIDE_BY_ZERO : Nat := 0xFFFFFFFFFFFFFFFE
 def ERR_INVALID_PC     : Nat := 0xFFFFFFFFFFFFFFFF
+/-- Exit code for `abort` / `sol_panic_`. Solana's runtime maps these
+    to `InstructionError::ProgramFailedToComplete`; we represent that
+    as a distinct non-zero exit code so callers can distinguish program
+    aborts from clean exits. -/
+def ERR_ABORT          : Nat := 0xFFFFFFFFFFFFFFFD
 
 /-! ## Wrapping 64-bit arithmetic -/
 
@@ -219,6 +224,47 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
     let mem' : Memory.Mem := fun a =>
       if a ≥ outA ∧ a - outA < 8 then 0 else s.mem a
     { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_get_fees_sysvar =>
+    -- Deprecated. `Fees { fee_calculator: FeeCalculator
+    -- { lamports_per_signature: u64 } }` = 8 bytes. Zero-fill.
+    let outA := s.regs.r1
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < 8 then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_get_epoch_rewards_sysvar =>
+    -- `EpochRewards`: 81 bytes (distribution_starting_block_height u64,
+    -- num_partitions u64, parent_blockhash [u8;32], total_points u128,
+    -- total_rewards u64, distributed_rewards u64, active bool).
+    -- Zero-fill: `active = false`, no rewards distributed.
+    let outA := s.regs.r1
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < 81 then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_get_epoch_stake =>
+    -- ABI: r1 = *const Pubkey (vote-account pubkey). Returns the
+    -- active stake amount delegated to that vote account as r0.
+    -- We don't model the staking system; return 0 (no stake) for
+    -- any query. Programs gating on stake should handle this.
+    { s with regs := s.regs.set .r0 0 }
+  | .sol_alloc_free_ =>
+    -- Deprecated. Modern Solana programs ship their own allocator;
+    -- agave's runtime returns 0 for any caller that still uses this
+    -- syscall. Matches that behavior.
+    { s with regs := s.regs.set .r0 0 }
+  | .abort =>
+    -- Terminates execution with `ProgramFailedToComplete`. No args.
+    -- Models the syscall as setting `exitCode := some ERR_ABORT`;
+    -- callers distinguish from clean exit via the non-zero value.
+    { s with exitCode := some ERR_ABORT }
+  | .sol_panic_ =>
+    -- Like `abort`, but with an attached panic message. ABI: r1 = msg
+    -- ptr, r2 = msg len, r3/r4 = file ptr+len, r5 = line. We log the
+    -- message (file/line dropped) so downstream consumers can see
+    -- *why* a panic happened.
+    let ptr := s.regs.r1
+    let len := s.regs.r2
+    { s with exitCode := some ERR_ABORT
+             log      := s.log.push (readBytes s.mem ptr len) }
   | .sol_memcpy | .sol_memmove =>
     let dst := s.regs.r1
     let src := s.regs.r2
