@@ -9,6 +9,7 @@ import Svm.SBPF.Sha256
 import Svm.SBPF.Sha512
 import Svm.SBPF.Keccak256
 import Svm.SBPF.Blake3
+import Svm.SBPF.Poseidon
 import Svm.SBPF.Secp256k1
 import Svm.SBPF.Curve25519
 import Svm.SBPF.Pda
@@ -482,6 +483,38 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
       match result with
       | some pda =>
         if a ≥ outA ∧ a - outA < 32 then (pda.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_poseidon =>
+    -- ABI:
+    --   r1 = u64                       parameters (0 = Bn254X5)
+    --   r2 = u64                       endianness (0 = BE, 1 = LE)
+    --   r3 = *const [VmSlice; n]       per-input slice descriptors
+    --   r4 = u64                       n (1..=12)
+    --   r5 = *mut [u8; 32]             result
+    --   r0 = u64                       0 success / 1 failure
+    -- We require each input to be 32 bytes (modern agave's
+    -- `poseidon_enforce_padding` semantics). Inputs whose length ≠ 32
+    -- collapse to `none` via the bridge's length check.
+    let parameters := s.regs.r1
+    let endianness := s.regs.r2
+    let valsA      := s.regs.r3
+    let valsLen    := s.regs.r4
+    let outA       := s.regs.r5
+    let concatBytes : ByteArray :=
+      (List.range valsLen).foldl (fun acc i =>
+        let descAddr := valsA + i * 16
+        let ptr := Memory.readU64 s.mem descAddr
+        let len := Memory.readU64 s.mem (descAddr + 8)
+        acc ++ readBytes s.mem ptr len) ByteArray.empty
+    let result : Option ByteArray :=
+      Poseidon.hash parameters.toUInt8 endianness.toUInt8 concatBytes valsLen.toUInt64
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some digest =>
+        if a ≥ outA ∧ a - outA < 32 then (digest.get! (a - outA)).toNat
         else s.mem a
       | none => s.mem a
     { s with regs := s.regs.set .r0 errCode, mem := mem' }

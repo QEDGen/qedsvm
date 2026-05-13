@@ -386,3 +386,60 @@ pub extern "C" fn lean_curve_ristretto_msm(
         .to_bytes();
     some_bytearray(&result)
 }
+
+// ───────────────────────────────────────────────────────────────────
+// Poseidon (BN254 curve, x^5 S-box).
+//
+// Matches agave's `SyscallPoseidon` byte-for-byte: uses
+// `light-poseidon = 0.4.0` with `ark-bn254 = 0.5.0` (agave's master
+// pins). The `parameters` byte selects the curve config (only `0` =
+// `Bn254X5` is currently defined). `endianness`: `0` = BigEndian,
+// `1` = LittleEndian — controls both how input bytes are interpreted
+// as field elements and the byte order of the output hash.
+//
+// Inputs are passed as a single concatenated buffer; the syscall arm
+// is responsible for reading per-input slices via VmSlice descriptors
+// and joining them. n must satisfy `1 ≤ n ≤ 12` (agave's
+// `vals_len > 12 ⇒ InvalidLength`). For modern agave with
+// `poseidon_enforce_padding`, each input must be exactly 32 bytes;
+// we encode that constraint by treating the input buffer as `32n`
+// bytes split into `n` 32-byte chunks.
+// ───────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn lean_poseidon(
+    parameters: u8,
+    endianness: u8,
+    inputs_concat: b_lean_obj_arg,
+    n: u64,
+) -> lean_obj_res {
+    use ark_bn254::Fr;
+    use light_poseidon::{Poseidon, PoseidonBytesHasher};
+
+    if n == 0 || n > 12 {
+        return none_obj();
+    }
+    if parameters != 0 {
+        return none_obj();
+    }
+    if endianness > 1 {
+        return none_obj();
+    }
+    let bytes = unsafe { sarray_as_slice(inputs_concat) };
+    let expected = (n as usize) * 32;
+    if bytes.len() != expected {
+        return none_obj();
+    }
+    let chunks: Vec<&[u8]> = bytes.chunks_exact(32).collect();
+    let Ok(mut hasher) = Poseidon::<Fr>::new_circom(n as usize) else {
+        return none_obj();
+    };
+    let result = match endianness {
+        0 => hasher.hash_bytes_be(&chunks),
+        _ => hasher.hash_bytes_le(&chunks),
+    };
+    let Ok(hash) = result else {
+        return none_obj();
+    };
+    some_bytearray(&hash)
+}

@@ -12,6 +12,7 @@
 
 import Svm.SBPF.Runner
 import Svm.SBPF.Pda
+import Svm.SBPF.Poseidon
 
 namespace Svm.SBPF.RunnerDemo
 
@@ -1631,6 +1632,98 @@ def sha512Demo : ByteArray :=
 
 example :
     Runner.runForExit sha512Demo { input := sha256DemoInput } = some 0xdd := by
+  native_decide
+
+/-! ## Demo 34 — `sol_poseidon` (BN254 x^5)
+
+Poseidon hash via the Rust bridge → `light-poseidon = 0.4.0` /
+`ark-bn254 = 0.5.0` (agave's master pins).
+
+Test vector from `solana-poseidon`'s rustdoc:
+```
+inputs = [[1u8; 32], [2u8; 32]]
+poseidon(Bn254X5, BigEndian,    inputs) = 0d54 e193 … 2982 1990   (32 bytes)
+poseidon(Bn254X5, LittleEndian, inputs) = 9019 8229 … e154 0d   (= reverse)
+```
+First byte of BigEndian result = `0x0d`.
+First byte of LittleEndian result = `0x90`. -/
+
+private def poseidonInputOne  : ByteArray := ⟨Array.replicate 32 0x01⟩
+private def poseidonInputTwo  : ByteArray := ⟨Array.replicate 32 0x02⟩
+private def poseidonTwoInputs : ByteArray := poseidonInputOne ++ poseidonInputTwo
+
+example :
+    Poseidon.hash 0 0 poseidonTwoInputs 2 = some ⟨#[
+      0x0d, 0x54, 0xe1, 0x93, 0x8f, 0x8a, 0x8c, 0x1c,
+      0x7d, 0xeb, 0x5e, 0x03, 0x55, 0xf2, 0x63, 0x19,
+      0x20, 0x7b, 0x84, 0xfe, 0x9c, 0xa2, 0xce, 0x1b,
+      0x26, 0xe7, 0x35, 0xc8, 0x29, 0x82, 0x19, 0x90 ]⟩ := by
+  native_decide
+
+example :
+    Poseidon.hash 0 1 poseidonTwoInputs 2 = some ⟨#[
+      0x90, 0x19, 0x82, 0x29, 0xc8, 0x35, 0xe7, 0x26,
+      0x1b, 0xce, 0xa2, 0x9c, 0xfe, 0x84, 0x7b, 0x20,
+      0x19, 0x63, 0xf2, 0x55, 0x03, 0x5e, 0xeb, 0x7d,
+      0x1c, 0x8c, 0x8a, 0x8f, 0x93, 0xe1, 0x54, 0x0d ]⟩ := by
+  native_decide
+
+-- Negative tests
+example : Poseidon.hash 0 0 poseidonTwoInputs 0  = none := by native_decide
+example : Poseidon.hash 0 0 poseidonTwoInputs 13 = none := by native_decide
+example : Poseidon.hash 1 0 poseidonTwoInputs 2  = none := by native_decide  -- bad parameters
+example : Poseidon.hash 0 2 poseidonTwoInputs 2  = none := by native_decide  -- bad endianness
+
+/-- Runner demo. Input layout (96 bytes):
+- 0..15  : SliceDesc 0 = ptr=INPUT_START+32, len=32   (0x01 × 32)
+- 16..31 : SliceDesc 1 = ptr=INPUT_START+64, len=32   (0x02 × 32)
+- 32..63 : 32 × 0x01
+- 64..95 : 32 × 0x02
+
+```
+  ; r1 starts at INPUT_START (which we want as vals_addr in r3)
+  mov64 r3, r1
+  mov64 r1, 0                ; parameters = Bn254X5
+  mov64 r2, 0                ; endianness = BigEndian
+  mov64 r4, 2                ; n = 2
+  mov64 r5, r3
+  add64 r5, 128              ; result buffer at offset 128
+  call sol_poseidon
+  ldxb r0, [r5 + 0]
+  exit
+```
+Exit code = first byte of BE Poseidon(BN254 x^5)([1×32, 2×32]) = `0x0d`. -/
+def poseidonDemo : ByteArray :=
+  let h := SyscallHash.sol_poseidon_hash
+  ⟨#[
+    -- mov64 r3, r1
+    0xbf, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r1, 0 (parameters)
+    0xb7, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r2, 0 (endianness = BE)
+    0xb7, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- mov64 r4, 2 (n)
+    0xb7, 0x04, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
+    -- mov64 r5, r3; add64 r5, 128
+    0xbf, 0x35, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x07, 0x05, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00
+  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- ldxb r0, [r5 + 0]
+    0x71, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+private def poseidonRunnerInput : ByteArray :=
+  -- SliceDesc 0: ptr = INPUT_START + 32, len = 32
+  let inputStart := 0x400000000
+  ⟨le64 (inputStart + 32) ++ le64 32 ++
+   le64 (inputStart + 64) ++ le64 32 ++
+   Array.replicate 32 0x01 ++
+   Array.replicate 32 0x02⟩
+
+example :
+    Runner.runForExit poseidonDemo { input := poseidonRunnerInput } = some 0x0d := by
   native_decide
 
 end Svm.SBPF.RunnerDemo
