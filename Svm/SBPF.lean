@@ -21,6 +21,7 @@ import Svm.SBPF.Sha512
 import Svm.SBPF.Poseidon
 import Svm.SBPF.Bls12_381
 import Svm.SBPF.AltBn128
+import Svm.SBPF.BigModExp
 import Svm.SBPF.SyscallHash
 import Svm.SBPF.Decode
 import Svm.SBPF.Elf

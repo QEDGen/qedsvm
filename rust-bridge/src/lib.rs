@@ -594,6 +594,28 @@ pub extern "C" fn lean_alt_bn128_group_op(
     }
 }
 
+// ───────────────────────────────────────────────────────────────────
+// Big-integer modular exponentiation (`solana-big-mod-exp = 3.0.0`).
+//
+// Inputs: BE-encoded `base`, `exponent`, `modulus`. Returns the BE
+// result padded with leading zeros to `modulus.len()` bytes. Matches
+// agave's `SyscallBigModExp` minus the per-arg-length 512-byte cap
+// (the syscall arm in `Execute.lean` enforces that bound).
+// ───────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn lean_big_mod_exp(
+    base: b_lean_obj_arg,
+    exponent: b_lean_obj_arg,
+    modulus: b_lean_obj_arg,
+) -> lean_obj_res {
+    let base_b = unsafe { sarray_as_slice(base) };
+    let exp_b  = unsafe { sarray_as_slice(exponent) };
+    let mod_b  = unsafe { sarray_as_slice(modulus) };
+    let out = solana_big_mod_exp::big_mod_exp(base_b, exp_b, mod_b);
+    alloc_bytearray(&out)
+}
+
 #[no_mangle]
 pub extern "C" fn lean_alt_bn128_compression(
     op_id: u64,

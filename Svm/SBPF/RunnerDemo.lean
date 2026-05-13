@@ -15,6 +15,7 @@ import Svm.SBPF.Pda
 import Svm.SBPF.Poseidon
 import Svm.SBPF.Bls12_381
 import Svm.SBPF.AltBn128
+import Svm.SBPF.BigModExp
 
 namespace Svm.SBPF.RunnerDemo
 
@@ -1937,5 +1938,37 @@ def abortDemo : ByteArray :=
 
 example :
     Runner.runForExit abortDemo = some Svm.SBPF.ERR_ABORT := by native_decide
+
+/-! ## Demo 38 — `sol_big_mod_exp`
+
+`base^exponent mod modulus` over BE byte strings, padded with leading
+zeros to `modulus.size` bytes. Test vectors:
+```
+3^2 mod 5     = 4
+2^10 mod 1000 = 24
+1^N mod M     = 1 (left-padded)
+N^0 mod M     = 1 (left-padded; for M > 1)
+0^X mod M     = 0 (any X > 0)
+```
+-/
+
+example :
+    BigModExp.modpow ⟨#[0x03]⟩ ⟨#[0x02]⟩ ⟨#[0x05]⟩ = ⟨#[0x04]⟩ := by native_decide
+
+/-- `2^10 mod 1000 = 1024 mod 1000 = 24 = 0x18`. With a 2-byte modulus
+    the output is also 2 bytes, padded with a leading zero. -/
+example :
+    BigModExp.modpow ⟨#[0x02]⟩ ⟨#[0x0a]⟩ ⟨#[0x03, 0xe8]⟩  -- mod 1000
+    = ⟨#[0x00, 0x18]⟩ := by native_decide
+
+/-- `1^anything mod M = 1` (left-padded). -/
+example :
+    BigModExp.modpow ⟨#[0x01]⟩ ⟨#[0xff, 0xff]⟩ ⟨#[0xff, 0xff, 0xff]⟩
+    = ⟨#[0x00, 0x00, 0x01]⟩ := by native_decide
+
+/-- Modulus = 0 ⇒ zeros (well-defined; matches num-bigint behavior). -/
+example :
+    BigModExp.modpow ⟨#[0x07]⟩ ⟨#[0x03]⟩ ⟨#[0x00, 0x00, 0x00]⟩
+    = ⟨#[0x00, 0x00, 0x00]⟩ := by native_decide
 
 end Svm.SBPF.RunnerDemo

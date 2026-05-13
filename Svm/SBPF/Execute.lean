@@ -14,6 +14,7 @@ import Svm.SBPF.Secp256k1
 import Svm.SBPF.Curve25519
 import Svm.SBPF.Bls12_381
 import Svm.SBPF.AltBn128
+import Svm.SBPF.BigModExp
 import Svm.SBPF.Pda
 
 namespace Svm.SBPF
@@ -531,6 +532,41 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
       match result with
       | some pda =>
         if a ≥ outA ∧ a - outA < 32 then (pda.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_big_mod_exp =>
+    -- ABI:
+    --   r1 = *const BigModExpParams  (48 bytes; 6 × u64 LE):
+    --        { base, base_len, exponent, exponent_len, modulus, modulus_len }
+    --   r2 = *mut [u8; modulus_len]   output buffer
+    --   r0 = 0 success / 1 failure (lens > 512)
+    -- Matches agave's `SyscallBigModExp`. The 512-byte cap is the
+    -- only failure mode we surface; the underlying `num-bigint`
+    -- modpow handles edge cases (modulus = 0 / 1, etc.) by emitting
+    -- a zeroed result of length `modulus_len`.
+    let paramsA := s.regs.r1
+    let outA    := s.regs.r2
+    let basePtr  := Memory.readU64 s.mem  paramsA
+    let baseLen  := Memory.readU64 s.mem (paramsA + 8)
+    let expPtr   := Memory.readU64 s.mem (paramsA + 16)
+    let expLen   := Memory.readU64 s.mem (paramsA + 24)
+    let modPtr   := Memory.readU64 s.mem (paramsA + 32)
+    let modLen   := Memory.readU64 s.mem (paramsA + 40)
+    let valid := baseLen ≤ BigModExp.MAX_INPUT_LEN
+              ∧ expLen  ≤ BigModExp.MAX_INPUT_LEN
+              ∧ modLen  ≤ BigModExp.MAX_INPUT_LEN
+    let result : Option ByteArray :=
+      if valid then
+        some (BigModExp.modpow (readBytes s.mem basePtr baseLen)
+                               (readBytes s.mem expPtr  expLen)
+                               (readBytes s.mem modPtr  modLen))
+      else none
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some out =>
+        if a ≥ outA ∧ a - outA < modLen then (out.get! (a - outA)).toNat
         else s.mem a
       | none => s.mem a
     { s with regs := s.regs.set .r0 errCode, mem := mem' }
