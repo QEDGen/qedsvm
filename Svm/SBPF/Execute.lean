@@ -6,6 +6,7 @@
 import Svm.SBPF.ISA
 import Svm.SBPF.Memory
 import Svm.SBPF.Sha256
+import Svm.SBPF.Sha512
 import Svm.SBPF.Keccak256
 import Svm.SBPF.Blake3
 import Svm.SBPF.Secp256k1
@@ -266,6 +267,24 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
     let digest := Sha256.hash allBytes
     let mem' : Memory.Mem := fun a =>
       if a ≥ resultA ∧ a - resultA < 32 then (digest.get! (a - resultA)).toNat
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
+  | .sol_sha512 =>
+    -- Same ABI as `sol_sha256` but 64-byte output. Hash via
+    -- `rust-bridge` → `sha2::Sha512` (matches agave's
+    -- `solana-sha512-hasher` with the `sha2` feature).
+    let valsA   := s.regs.r1
+    let nVals   := s.regs.r2
+    let resultA := s.regs.r3
+    let allBytes : ByteArray :=
+      (List.range nVals).foldl (fun acc i =>
+        let descAddr := valsA + i * 16
+        let ptr := Memory.readU64 s.mem descAddr
+        let len := Memory.readU64 s.mem (descAddr + 8)
+        acc ++ readBytes s.mem ptr len) ByteArray.empty
+    let digest := Sha512.hash allBytes
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ resultA ∧ a - resultA < 64 then (digest.get! (a - resultA)).toNat
       else s.mem a
     { s with regs := s.regs.set .r0 0, mem := mem' }
   | .sol_keccak256 =>

@@ -44,6 +44,19 @@ pub extern "C" fn lean_sha256_agave(input: b_lean_obj_arg) -> lean_obj_res {
 }
 
 // ───────────────────────────────────────────────────────────────────
+// SHA-512 (`sha2 = 0.10.8`). Output is 64 bytes — same crate /
+// underlying impl agave's `solana-sha512-hasher` wraps with the
+// `sha2` feature. Production path for `Svm.SBPF.Sha512.hash`.
+// ───────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn lean_sha512(input: b_lean_obj_arg) -> lean_obj_res {
+    let bytes = unsafe { sarray_as_slice(input) };
+    let digest = sha2::Sha512::digest(bytes);
+    alloc_bytearray(&digest)
+}
+
+// ───────────────────────────────────────────────────────────────────
 // Keccak-256 (`sha3::Keccak256`, original Keccak with 0x01 padding —
 // Solana's variant, NOT FIPS-202 SHA-3 which uses 0x06).
 // Production path for `Keccak256.hash`.
