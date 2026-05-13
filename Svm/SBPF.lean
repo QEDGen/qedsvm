@@ -19,6 +19,7 @@ import Svm.SBPF.Curve25519
 import Svm.SBPF.Pda
 import Svm.SBPF.Sha512
 import Svm.SBPF.Poseidon
+import Svm.SBPF.Bls12_381
 import Svm.SBPF.SyscallHash
 import Svm.SBPF.Decode
 import Svm.SBPF.Elf

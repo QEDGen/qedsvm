@@ -406,6 +406,130 @@ pub extern "C" fn lean_curve_ristretto_msm(
 // bytes split into `n` 32-byte chunks.
 // ───────────────────────────────────────────────────────────────────
 
+// ───────────────────────────────────────────────────────────────────
+// BLS12-381 decompress + pairing_map.
+//
+// Backed by `solana-bls12-381-syscall = 0.1.0` (agave's master pin) —
+// the same crate agave's `SyscallCurveDecompress` /
+// `SyscallCurvePairingMap` arms use.
+//
+// Sizes (from solana_bls12_381_syscall::encoding):
+//   G1_COMPRESSED   = 48 bytes (FQ_SIZE)
+//   G1_UNCOMPRESSED = 96 bytes (2 × FQ)
+//   G2_COMPRESSED   = 96 bytes (FQ2_SIZE)
+//   G2_UNCOMPRESSED = 192 bytes (2 × FQ2)
+//   GT              = 576 bytes (12 × FQ)
+//   MAX_PAIRING_LENGTH = 8
+//
+// Endianness: `0` = BE (canonical Zcash/IETF), `1` = LE (per-FQ-chunk
+// byte reversal). Bytes beyond 1 are rejected.
+// ───────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn lean_bls12_381_g1_decompress(
+    input: b_lean_obj_arg,
+    endianness: u8,
+) -> lean_obj_res {
+    use solana_bls12_381_syscall::{
+        bls12_381_g1_decompress, Endianness, PodG1Compressed, Version,
+    };
+    let bytes = unsafe { sarray_as_slice(input) };
+    if bytes.len() != 48 {
+        return none_obj();
+    }
+    let mut arr = [0u8; 48];
+    arr.copy_from_slice(bytes);
+    let endian = match endianness {
+        0 => Endianness::BE,
+        1 => Endianness::LE,
+        _ => return none_obj(),
+    };
+    match bls12_381_g1_decompress(Version::V0, &PodG1Compressed(arr), endian) {
+        Some(p) => some_bytearray_slice(&p.0),
+        None => none_obj(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lean_bls12_381_g2_decompress(
+    input: b_lean_obj_arg,
+    endianness: u8,
+) -> lean_obj_res {
+    use solana_bls12_381_syscall::{
+        bls12_381_g2_decompress, Endianness, PodG2Compressed, Version,
+    };
+    let bytes = unsafe { sarray_as_slice(input) };
+    if bytes.len() != 96 {
+        return none_obj();
+    }
+    let mut arr = [0u8; 96];
+    arr.copy_from_slice(bytes);
+    let endian = match endianness {
+        0 => Endianness::BE,
+        1 => Endianness::LE,
+        _ => return none_obj(),
+    };
+    match bls12_381_g2_decompress(Version::V0, &PodG2Compressed(arr), endian) {
+        Some(p) => some_bytearray_slice(&p.0),
+        None => none_obj(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn lean_bls12_381_pairing_map(
+    g1_points: b_lean_obj_arg,
+    g2_points: b_lean_obj_arg,
+    n: u64,
+    endianness: u8,
+) -> lean_obj_res {
+    use solana_bls12_381_syscall::{
+        bls12_381_pairing_map, Endianness, PodG1Point, PodG2Point, Version,
+    };
+    if n == 0 || n > 8 {
+        return none_obj();
+    }
+    let g1_bytes = unsafe { sarray_as_slice(g1_points) };
+    let g2_bytes = unsafe { sarray_as_slice(g2_points) };
+    if g1_bytes.len() != (n as usize) * 96 || g2_bytes.len() != (n as usize) * 192 {
+        return none_obj();
+    }
+    let endian = match endianness {
+        0 => Endianness::BE,
+        1 => Endianness::LE,
+        _ => return none_obj(),
+    };
+
+    let g1_vec: Vec<PodG1Point> = g1_bytes
+        .chunks_exact(96)
+        .map(|c| {
+            let mut a = [0u8; 96];
+            a.copy_from_slice(c);
+            PodG1Point(a)
+        })
+        .collect();
+    let g2_vec: Vec<PodG2Point> = g2_bytes
+        .chunks_exact(192)
+        .map(|c| {
+            let mut a = [0u8; 192];
+            a.copy_from_slice(c);
+            PodG2Point(a)
+        })
+        .collect();
+
+    match bls12_381_pairing_map(Version::V0, &g1_vec, &g2_vec, endian) {
+        Some(gt) => some_bytearray_slice(&gt.0),
+        None => none_obj(),
+    }
+}
+
+/// Variant of `some_bytearray` for arbitrary-length payloads.
+fn some_bytearray_slice(bytes: &[u8]) -> lean_obj_res {
+    let arr = alloc_bytearray(bytes);
+    let some = unsafe { lean_alloc_ctor(1, 1, 0) };
+    unsafe { lean_ctor_set(some as lean_obj_arg, 0, arr as lean_obj_arg) };
+    some
+}
+
 #[no_mangle]
 pub extern "C" fn lean_poseidon(
     parameters: u8,

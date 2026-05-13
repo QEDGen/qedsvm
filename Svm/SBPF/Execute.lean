@@ -12,6 +12,7 @@ import Svm.SBPF.Blake3
 import Svm.SBPF.Poseidon
 import Svm.SBPF.Secp256k1
 import Svm.SBPF.Curve25519
+import Svm.SBPF.Bls12_381
 import Svm.SBPF.Pda
 
 namespace Svm.SBPF
@@ -483,6 +484,70 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
       match result with
       | some pda =>
         if a ≥ outA ∧ a - outA < 32 then (pda.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_curve_decompress =>
+    -- ABI (BLS12-381 only — curve25519 has no separate decompress):
+    --   r1 = u64   curve_id (5 = G1_LE, 0x85 = G1_BE,
+    --                        6 = G2_LE, 0x86 = G2_BE)
+    --   r2 = *const compressed   (48 bytes G1, 96 bytes G2)
+    --   r3 = *mut   uncompressed (96 bytes G1, 192 bytes G2)
+    --   r0 = 0 success / 1 failure (incl. unsupported curve_id)
+    -- Matches agave's `SyscallCurveDecompress` arm: dispatches on
+    -- curve_id, calls `solana-bls12-381-syscall::bls12_381_g1/g2_decompress`
+    -- with the appropriate `Endianness`.
+    let curveId := s.regs.r1
+    let pointA  := s.regs.r2
+    let outA    := s.regs.r3
+    let result : Option ByteArray :=
+      if curveId = Bls12_381.BLS12_381_G1_LE then
+        Bls12_381.g1Decompress (readBytes s.mem pointA 48) 1
+      else if curveId = Bls12_381.BLS12_381_G1_BE then
+        Bls12_381.g1Decompress (readBytes s.mem pointA 48) 0
+      else if curveId = Bls12_381.BLS12_381_G2_LE then
+        Bls12_381.g2Decompress (readBytes s.mem pointA 96) 1
+      else if curveId = Bls12_381.BLS12_381_G2_BE then
+        Bls12_381.g2Decompress (readBytes s.mem pointA 96) 0
+      else none
+    let outputSize : Nat :=
+      if curveId = Bls12_381.BLS12_381_G1_LE ∨ curveId = Bls12_381.BLS12_381_G1_BE then 96
+      else if curveId = Bls12_381.BLS12_381_G2_LE ∨ curveId = Bls12_381.BLS12_381_G2_BE then 192
+      else 0
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some out =>
+        if a ≥ outA ∧ a - outA < outputSize then (out.get! (a - outA)).toNat
+        else s.mem a
+      | none => s.mem a
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  | .sol_curve_pairing_map =>
+    -- ABI (BLS12-381 only; pairing isn't defined on curve25519):
+    --   r1 = u64   curve_id (4 = BLS12_381_LE, 0x84 = BLS12_381_BE)
+    --   r2 = u64   num_pairs (1..=8 per agave's MAX_PAIRING_LENGTH)
+    --   r3 = *const [PodG1Point; n]   N × 96 bytes
+    --   r4 = *const [PodG2Point; n]   N × 192 bytes
+    --   r5 = *mut   PodGtElement      576 bytes
+    --   r0 = 0 success / 1 failure
+    let curveId := s.regs.r1
+    let nPairs  := s.regs.r2
+    let g1A     := s.regs.r3
+    let g2A     := s.regs.r4
+    let outA    := s.regs.r5
+    let g1B := readBytes s.mem g1A (96 * nPairs)
+    let g2B := readBytes s.mem g2A (192 * nPairs)
+    let result : Option ByteArray :=
+      if curveId = Bls12_381.BLS12_381_LE then
+        Bls12_381.pairingMap g1B g2B nPairs.toUInt64 1
+      else if curveId = Bls12_381.BLS12_381_BE then
+        Bls12_381.pairingMap g1B g2B nPairs.toUInt64 0
+      else none
+    let errCode : Nat := if result.isSome then 0 else 1
+    let mem' : Memory.Mem := fun a =>
+      match result with
+      | some gt =>
+        if a ≥ outA ∧ a - outA < 576 then (gt.get! (a - outA)).toNat
         else s.mem a
       | none => s.mem a
     { s with regs := s.regs.set .r0 errCode, mem := mem' }
