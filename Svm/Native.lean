@@ -36,6 +36,7 @@ import Svm.Native.ComputeBudget
 import Svm.Native.AddressLookupTable
 import Svm.Native.Config
 import Svm.Native.Precompiles
+import Svm.Native.BpfLoaderUpgradeable
 
 namespace Svm.Native
 
@@ -44,11 +45,16 @@ open Svm.SBPF.Memory
 /-- Top-level native dispatch. Tries each native program in priority
     order; returns the first match.
 
-    Implemented: System (all 13 variants), ComputeBudget (no-op +
-    150 CU), AddressLookupTable (all 5 variants), Config (the single
-    `Store` instruction), and the three sig-verify precompiles
-    (ed25519, secp256k1, secp256r1). Still missing: Stake, Vote, the
-    BPF Loaders, ZK ElGamal Proof. -/
+    Implemented:
+      - System (all 13 variants)
+      - ComputeBudget (no-op + 150 CU)
+      - AddressLookupTable (all 5 variants)
+      - Config (the single `Store` instruction)
+      - BPF Loader v3 Upgradeable (5 of 8 variants — see
+        [[native-programs-design]] for the deferred 3)
+      - The three sig-verify precompiles (ed25519, secp256k1,
+        secp256r1)
+    Still missing: Stake, Vote, ZK ElGamal Proof, BPF Loader v1/v2/v4. -/
 def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
     (mem : Mem) : Option NativeResult :=
   if pid = System.PROGRAM_ID then
@@ -59,6 +65,8 @@ def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
     AddressLookupTable.dispatch ixData accts mem
   else if pid = Config.PROGRAM_ID then
     some (Config.dispatch ixData accts mem)
+  else if pid = BpfLoaderUpgradeable.PROGRAM_ID then
+    BpfLoaderUpgradeable.dispatch ixData accts mem
   else
     Precompiles.dispatch pid ixData accts mem
 
