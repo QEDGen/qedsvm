@@ -82,6 +82,12 @@ const CPI_TWO_ACCOUNT_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_two_accoun
 /// diverge from mollusk on return_data. Source in
 /// `rodata_addr_returner_src/`.
 const RODATA_ADDR_RETURNER_SO: &[u8] = include_bytes!("fixtures/rodata_addr_returner.so");
+/// Calls `sol_try_find_program_address(&[b"vault"], program_id)` and
+/// writes the resulting (PDA, bump) as 33-byte return_data. Exercises
+/// the per-iteration CU charge for `sol_try_find_program_address`
+/// (agave charges 1500 per bump attempt: initial + each failed iter).
+/// Source in `pda_finder_src/`.
+const PDA_FINDER_SO: &[u8] = include_bytes!("fixtures/pda_finder.so");
 
 fn pid(seed: u64) -> Pubkey {
     let mut b = [0u8; 32];
@@ -1073,16 +1079,61 @@ fn rodata_addr_returner_matches_mollusk() {
     );
 }
 
-// NOTE: a `pda_finder` diff-mollusk fixture was drafted in this
-// session but is blocked on a separate latent bug: invoking
-// `Curve25519.validateEdwards` (and thereby `Pda.createProgramAddress`)
-// through Lean's compiled-native runtime FFI from inside
-// `Svm.process_instruction` SIGSEGVs. The same call works via
-// `native_decide` (see Demo 29 / 32 in `RunnerDemo.lean`), so the
-// pure-Lean semantics are sound — only the *runtime* FFI dispatch is
-// broken. Once that's diagnosed, a `pda_finder` fixture that calls
-// `Pubkey::find_program_address(&[b"vault"], program_id)` and asserts
-// byte+CU equality against mollusk will close the loop for
-// `sol_try_find_program_address` (the per-iteration CU charge added
-// in `Pda.cuTryFind` is already correct; it's untested via diff-mollusk
-// until the FFI bug is fixed).
+/// Exercises `sol_try_find_program_address` end-to-end with one seed
+/// (`b"vault"`) and a hard-coded program_id. Asserts:
+/// - Both engines reach `Success`.
+/// - The 33-byte `return_data` (PDA + bump) is byte-identical — so
+///   the PDA derivation itself matches agave.
+/// - CU consumed is equal — load-bearing for the
+///   `Pda.cuTryFind`-via-`syscallCu` per-iteration charge.
+///
+/// This fixture also exercises `lean_curve_validate_edwards` through
+/// the compiled-native runtime FFI; it was blocked by a missing
+/// dynamic-symbol-table export (build.rs FFI symbol pull-in) until
+/// that fix landed alongside this test.
+#[test]
+fn pda_finder_matches_mollusk() {
+    let program_id = pid(50);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, PDA_FINDER_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("formal-svm runs pda_finder");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        PDA_FINDER_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.return_data      = {:?}", fs_r.return_data);
+    eprintln!("mol.return_data     = {:?}", m_r.return_data);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+    if fs_r.return_data.len() == 33 {
+        eprintln!("fs.bump             = {}", fs_r.return_data[32]);
+    }
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    assert_eq!(fs_r.return_data, m_r.return_data,
+        "return_data diverged: fs={:?} mol={:?}", fs_r.return_data, m_r.return_data);
+    assert_eq!(fs_r.return_data.len(), 33,
+        "expected 33-byte return_data (32-byte PDA + 1-byte bump)");
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged: ours={} mollusk={} — Pda.cuTryFind per-iteration \
+         charge must match agave's per-attempt model",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
