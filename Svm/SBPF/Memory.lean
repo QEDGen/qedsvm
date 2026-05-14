@@ -273,6 +273,42 @@ theorem readU8_writeU8_frame (mem : Mem) (rAddr wAddr val : Nat)
 /-- Input region [base, base + bound) lies entirely below STACK_START -/
 def belowStack (base bound : Nat) : Prop := base + bound ≤ STACK_START
 
+/-! ## Region table — runtime bounds enforcement
+
+`Mem := Nat → Nat` is a total function, so a stray read/write past a
+program's mapped regions silently succeeds (returns zero / writes
+to nothing). Agave fails such accesses with `AccessViolation`.
+
+We close that gap with a parallel bounds-check layer: a `RegionTable`
+listing the valid `[start, start + size)` intervals plus their
+writability. The Lean `step` consults the table on `.ldx` / `.st` /
+`.stx` and routes a miss to `ERR_ACCESS_VIOLATION`.
+
+Total `Mem` is preserved, so the 13 SepLogic axioms above stay sound. -/
+
+structure Region where
+  start    : Nat
+  size     : Nat
+  writable : Bool
+  deriving Inhabited, Repr
+
+/-- A region table is just the list of mapped regions. Order is
+    irrelevant for correctness; the check folds over the whole list. -/
+abbrev RegionTable := List Region
+
+/-- Does the half-open access `[addr, addr + len)` lie entirely
+    within this region? -/
+def Region.contains (r : Region) (addr len : Nat) : Bool :=
+  decide (r.start ≤ addr ∧ addr + len ≤ r.start + r.size)
+
+/-- Is `[addr, addr + len)` covered by *some* region in the table? -/
+def RegionTable.containsRange (rt : RegionTable) (addr len : Nat) : Bool :=
+  rt.any (·.contains addr len)
+
+/-- Is `[addr, addr + len)` covered by a *writable* region? -/
+def RegionTable.containsWritable (rt : RegionTable) (addr len : Nat) : Bool :=
+  rt.any (fun r => r.writable && r.contains addr len)
+
 /-! ## Input buffer layout helpers
 
 The Solana runtime serializes accounts into the input buffer with a fixed

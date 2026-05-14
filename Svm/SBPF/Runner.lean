@@ -23,6 +23,7 @@
 
 import Svm.SBPF.Decode
 import Svm.SBPF.Elf
+import Svm.Native
 
 namespace Svm.SBPF
 namespace Runner
@@ -67,6 +68,73 @@ def loadInput (mem : Mem) (input : ByteArray) : Mem :=
 /-- Build a `fetch` function from a decoded instruction array. -/
 def fetchFromArray (insns : Array Insn) : Nat → Option Insn :=
   fun pc => if h : pc < insns.size then some (insns[pc]'h) else none
+
+/-! ## Region table construction
+
+The `step` function consults `s.regions` on every `.ldx`/`.st`/`.stx`
+and traps a miss to `ERR_ACCESS_VIOLATION`. The Runner is the one
+place we have enough information (ELF sections + runtime memory
+layout) to build a faithful region table.
+
+Sizes mirror agave with `FeatureSet::all_enabled()` (mollusk's
+default):
+- Stack: `MAX_CALL_DEPTH (64) × stack_frame_size (0x1000) = 0x40000`
+  (`enable_stack_frame_gaps = false` under
+  `virtual_address_space_adjustments`).
+- Heap: default 32 KiB. Programs may request up to 256 KiB via
+  ComputeBudget; we don't model the request, so the default applies. -/
+
+/-- Total stack region size (256 KiB). -/
+def STACK_SIZE : Nat := 0x40000
+
+/-- Default heap region size (32 KiB). Matches agave's
+    `compute_budget::DEFAULT_HEAP_COST`-paired allocation. -/
+def DEFAULT_HEAP_SIZE : Nat := 0x8000
+
+/-- The fixed runtime regions (stack + heap + input) WITHOUT
+    per-account writable subdivision. Used when the caller doesn't
+    supply an account-formatted input (bare bytecode demos), or as a
+    fallback when input parsing fails. Stack/heap stay writable,
+    input is one big writable region.
+
+    Prefer `runtimeRegionsForInput` for ELF-driven and CPI paths —
+    it splits the input into per-account regions so writes past
+    `MAX_PERMITTED_DATA_INCREASE` boundaries and writes to
+    read-only accounts trap to `ERR_ACCESS_VIOLATION` (Tier-2 #9 +
+    read-only enforcement). -/
+def runtimeRegions (inputLen : Nat) : Memory.RegionTable :=
+  [ { start := STACK_START, size := STACK_SIZE,        writable := true }
+  , { start := HEAP_START,  size := DEFAULT_HEAP_SIZE, writable := true }
+  , { start := INPUT_START, size := inputLen,          writable := true } ]
+
+/-- The read-only program region for an ELF: spans `MM_REGION_SIZE` up
+    to the end of the highest loaded section (text / rodata /
+    data.rel.ro). Matches agave's single contiguous program region
+    in `solana-sbpf`. -/
+def programRegionElf (elfBytes : ByteArray) (header : Elf.Header)
+    (textSec : Elf.SectionHeader) : Memory.Region :=
+  let textEnd := Elf.relocateSecAddr textSec.addr + textSec.size
+  let rodataEnd := match Elf.findSection elfBytes header Elf.rodataName with
+    | some sec => Elf.relocateSecAddr sec.addr + sec.size
+    | none => 0
+  let dataRelRoEnd := match Elf.findSection elfBytes header Elf.dataRelRoName with
+    | some sec => Elf.relocateSecAddr sec.addr + sec.size
+    | none => 0
+  let programEnd := max textEnd (max rodataEnd dataRelRoEnd)
+  let programSize := programEnd - MM_REGION_SIZE
+  { start := MM_REGION_SIZE, size := programSize, writable := false }
+
+/-- Full region table for an ELF-loaded run. One big writable input
+    region — per-account write boundaries (Tier-2 #9) and read-only
+    write detection are enforced as *post-instruction* validation in
+    the Rust harness, not via memory-region traps. Agave does the
+    same: programs can write anywhere in the serialized input during
+    execution; the runtime validates pre/post invariants at
+    instruction exit (data_len ≤ pre + 10240, read-only accounts
+    unchanged, etc.). -/
+def elfRegions (elfBytes : ByteArray) (header : Elf.Header)
+    (textSec : Elf.SectionHeader) (inputLen : Nat) : Memory.RegionTable :=
+  programRegionElf elfBytes header textSec :: runtimeRegions inputLen
 
 /-! ## CPI sub-input construction
 
@@ -150,6 +218,7 @@ structure ParsedAcct where
   ownerPtr        : Nat  -- where `owner` bytes live in caller mem
   lamportsRefAddr : Nat  -- where the lamports u64 lives in caller mem
   dataPtr         : Nat  -- where `data` bytes live in caller mem
+  dataLenRefAddr  : Nat  -- where the data slice's `len` u64 lives in caller mem
 
 /-- Parse one `AccountInfo` struct at `addr` in `mem`, following the
     `Rc<RefCell<…>>` chains to the underlying bytes. Layout assumed
@@ -182,13 +251,14 @@ def parseAccountInfo (mem : Mem) (addr : Nat) : ParsedAcct :=
   let lamportsRefAddr := Memory.readU64 mem (lamportsRcPtr + 24)
   let lamports        := Memory.readU64 mem lamportsRefAddr
   let dataPtr         := Memory.readU64 mem (dataRcPtr + 24)
-  let dataLen         := Memory.readU64 mem (dataRcPtr + 32)
+  let dataLenRefAddr  := dataRcPtr + 32
+  let dataLen         := Memory.readU64 mem dataLenRefAddr
   let key             := readMemBytes mem keyPtr 32
   let owner           := readMemBytes mem ownerPtr 32
   let data            := readMemBytes mem dataPtr dataLen
   { key, owner, lamports, dataLen, data,
     isSigner, isWritable, executable, rentEpoch,
-    ownerPtr, lamportsRefAddr, dataPtr }
+    ownerPtr, lamportsRefAddr, dataPtr, dataLenRefAddr }
 
 /-- `MAX_PERMITTED_DATA_INCREASE` from the Solana ABI. Number of zero
     bytes the serializer reserves after each account's data so the
@@ -277,7 +347,8 @@ def buildAcctSlots (parsed : List ParsedAcct) : List AcctSlot :=
     { key := ByteArray.empty, owner := ByteArray.empty, lamports := 0,
       dataLen := 0, data := ByteArray.empty, isSigner := false,
       isWritable := false, executable := false, rentEpoch := 0,
-      ownerPtr := 0, lamportsRefAddr := 0, dataPtr := 0 }
+      ownerPtr := 0, lamportsRefAddr := 0, dataPtr := 0,
+      dataLenRefAddr := 0 }
   ((List.range n).foldl (fun (acc, off) i =>
     let p := parsedArr.getD i dflt
     -- Find first j < i with the same key (linear scan).
@@ -445,6 +516,60 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             -- layout (Vec @ +0 → (ptr,cap,len) → len @ +16) and C's
             -- `SolInstruction` (program_id*@0, accounts*@8, account_len@16).
             let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
+            -- Parse the caller's `AccountInfo` array once — both the
+            -- BPF sub-VM marshaling and the native dispatch path
+            -- consume it. (Previously this was parsed inside
+            -- `runCallee`; hoisted out so `Native.dispatch` can see
+            -- the same list.)
+            let parsedAccts : List ParsedAcct :=
+              parseAccountInfos s.mem s.regs.r2 accountCount
+            -- Tier-2 #8 — account aliasing detection. Agave's loader
+            -- errors out if the same pubkey appears in
+            -- `Instruction.accounts` with mismatched `is_writable`
+            -- (the borrow checker can't reconcile a writable + a
+            -- read-only handle to the same account). We mirror it by
+            -- walking pairs (i, j) i < j and flagging any aliased
+            -- meta with diverging writability.
+            let parsedArr : Array ParsedAcct := parsedAccts.toArray
+            let aliasedWritability : Bool :=
+              (List.range parsedArr.size).any (fun i =>
+                (List.range i).any (fun j =>
+                  let pi := parsedArr.getD i (parsedArr.getD 0
+                    { key := ByteArray.empty, owner := ByteArray.empty,
+                      lamports := 0, dataLen := 0, data := ByteArray.empty,
+                      isSigner := false, isWritable := false,
+                      executable := false, rentEpoch := 0,
+                      ownerPtr := 0, lamportsRefAddr := 0,
+                      dataPtr := 0, dataLenRefAddr := 0 })
+                  let pj := parsedArr.getD j (parsedArr.getD 0
+                    { key := ByteArray.empty, owner := ByteArray.empty,
+                      lamports := 0, dataLen := 0, data := ByteArray.empty,
+                      isSigner := false, isWritable := false,
+                      executable := false, rentEpoch := 0,
+                      ownerPtr := 0, lamportsRefAddr := 0,
+                      dataPtr := 0, dataLenRefAddr := 0 })
+                  pi.key == pj.key && pi.isWritable ≠ pj.isWritable))
+            -- Read the instruction data. Two ABIs:
+            --   Rust  `&Instruction`     : `data: Vec<u8>` @ r1+24
+            --                              (ptr@+24, cap@+32, len@+40)
+            --   C     `SolInstruction *` : data ptr @ r1+24, data len @ r1+32.
+            -- (`accounts.len` is u64 LE at r1+16 in both, see above.)
+            let ixDataPtr : Nat := Memory.readU64 s.mem (s.regs.r1 + 24)
+            let ixDataLen : Nat := match sc with
+              | .sol_invoke_signed   => Memory.readU64 s.mem (s.regs.r1 + 40)
+              | .sol_invoke_signed_c => Memory.readU64 s.mem (s.regs.r1 + 32)
+              | _ => 0
+            let ixData : ByteArray := readMemBytes s.mem ixDataPtr ixDataLen
+            -- Convert parsed `AccountInfo`s into the trimmed view
+            -- native handlers consume. The CPI handler still keeps
+            -- the full `ParsedAcct` for BPF marshaling.
+            let nativeAccts : List Native.AcctInput := parsedAccts.map (fun p =>
+              { key := p.key, owner := p.owner, lamports := p.lamports,
+                dataLen := p.dataLen, isSigner := p.isSigner,
+                isWritable := p.isWritable,
+                lamportsRefAddr := p.lamportsRefAddr,
+                ownerPtr := p.ownerPtr, dataPtr := p.dataPtr,
+                dataLenRefAddr := p.dataLenRefAddr })
             -- The registry stores full ELF blobs (not raw text). We
             -- mirror `runElfWithFuel`'s loader pipeline (parse header,
             -- find `.text`, apply relocations, decode) before handing
@@ -453,7 +578,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             -- the outer code can propagate both observable effects
             -- (r0, log, return_data via subFinal) and account
             -- mutations (callerMem) in one go.
-            let runCallee (calleeBytes : ByteArray) : Option (State × Mem) :=
+            let runCallee (calleeBytes : ByteArray) : Option (State × Mem × Nat) :=
               let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader) := do
                 let h ← Elf.parseHeader calleeBytes
                 let textSec ← Elf.findSection calleeBytes h Elf.textName
@@ -467,13 +592,12 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                   | some (tb, h, ts) => (tb, some h, some ts)
                   | none => (calleeBytes, none, none)
                 let calleeInsns ← Decode.decodeProgram textBytes
-                -- Phase 3-N: parse all N AccountInfos at `r2` (stride 48),
-                -- build the slot table (with dup detection), and emit a
-                -- full N-account sub-input. Works uniformly for N ∈ {0, 1,
-                -- 2, …} — N=0 yields just the trailer, N=1 a single block,
-                -- N≥2 N blocks with potential dup-marker compression.
-                let parsedAccts : List ParsedAcct :=
-                  parseAccountInfos s.mem s.regs.r2 accountCount
+                -- Phase 3-N: build the slot table (with dup detection)
+                -- from the parsed AccountInfos hoisted to the enclosing
+                -- scope, and emit a full N-account sub-input. Works
+                -- uniformly for N ∈ {0, 1, 2, …} — N=0 yields just the
+                -- trailer, N=1 a single block, N≥2 N blocks with
+                -- potential dup-marker compression.
                 let slots : List AcctSlot := buildAcctSlots parsedAccts
                 let subInput : ByteArray :=
                   buildCpiSubInputN slots pidBytes ByteArray.empty
@@ -506,15 +630,21 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                     let slot := byteOff / 8
                     if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
                   | _, _ => 0
+                let subRegions : Memory.RegionTable :=
+                  match headerOpt, textSecOpt with
+                  | some h, some textSec =>
+                    elfRegions calleeBytes h textSec subInput.size
+                  | _, _ => runtimeRegions subInput.size
                 let subS : State :=
                   { regs       := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
                     mem        := subMem
+                    regions    := subRegions
                     pc         := entryPc
                     exitCode   := none
                     log        := s.log
                     returnData := ByteArray.empty }
-                let subFinal := (executeFnCpiWithFuel registry
-                  (fetchFromArray calleeInsns) subS fuel').1
+                let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
+                  (fetchFromArray calleeInsns) subS fuel'
                 -- Phase 3-N write-back. Loop over slots. For each
                 -- non-dup slot, read the (possibly mutated) data /
                 -- lamports / owner from the sub-mem at the slot's
@@ -538,20 +668,68 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                     let newOwner := readMemBytes subFinal.mem
                       (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
                     loadBytesAt m2 newOwner p.ownerPtr) s.mem
-                some (subFinal, newCallerMem)
+                some (subFinal, newCallerMem, subFuelRemaining)
+            -- Native dispatch comes before the BPF registry lookup.
+            -- If the program-id matches a known native program
+            -- (System, in the first slice), the call is satisfied
+            -- here without sub-VM execution. Returning `some`
+            -- consumes the call deterministically — including
+            -- "unimplemented variant" cases — so we never silently
+            -- fall through to the BPF path for a recognized native
+            -- program-id.
+            -- Every CPI charges `Cpi.cu` (946) for the syscall itself,
+            -- on top of whatever the callee consumes. The regular
+            -- `.call` arm in `step` does this via `syscallCu`; the
+            -- CPI handler here builds its own state and has to add it
+            -- explicitly.
+            if aliasedWritability then
+              { s with regs := s.regs.set .r0 1
+                       pc   := s.pc + 1
+                       cuConsumed := s.cuConsumed + Cpi.cu }
+            else
+            match Native.dispatch pid ixData nativeAccts s.mem with
+            | some nr =>
+              { s with regs       := s.regs.set .r0 nr.r0
+                       mem        := nr.mem
+                       pc         := s.pc + 1
+                       cuConsumed := s.cuConsumed + Cpi.cu + nr.cu }
+            | none =>
             match registry pid with
             | none =>
-              { s with regs := s.regs.set .r0 1, pc := s.pc + 1 }
+              { s with regs := s.regs.set .r0 1
+                       pc := s.pc + 1
+                       cuConsumed := s.cuConsumed + Cpi.cu }
             | some calleeElf =>
               match runCallee calleeElf with
               | none =>
-                { s with regs := s.regs.set .r0 1, pc := s.pc + 1 }
-              | some (subFinal, newMem) =>
+                { s with regs := s.regs.set .r0 1
+                         pc := s.pc + 1
+                         cuConsumed := s.cuConsumed + Cpi.cu }
+              | some (subFinal, newMem, subFuelRemaining) =>
+                -- Tier-2 #7 — proportional CU split. The caller's
+                -- meter absorbs the callee's spend in two parts:
+                --   * `subFinal.cuConsumed`: callee's syscall extras
+                --     (already bumped into the callee's State during
+                --     its own execution).
+                --   * `fuel' - subFuelRemaining`: the callee's step
+                --     count (each callee step decremented its local
+                --     fuel by one; the diff equals the number of
+                --     callee steps).
+                -- Both flow into the caller's `cuConsumed`. The
+                -- caller's own fuel still decrements by one for this
+                -- CPI step itself (the `.call sol_invoke_signed`
+                -- instruction), mirroring the regular `.call` arm in
+                -- `step`. Total CU surfaced at the top via
+                -- `(initial_fuel - final_fuel) + cuConsumed` matches
+                -- agave's shared-meter semantics.
                 { s with regs       := s.regs.set .r0 (subFinal.exitCode.getD 1)
                          mem        := newMem
                          pc         := s.pc + 1
                          log        := subFinal.log
-                         returnData := subFinal.returnData }
+                         returnData := subFinal.returnData
+                         cuConsumed := s.cuConsumed + Cpi.cu
+                                                    + subFinal.cuConsumed
+                                                    + (fuel' - subFuelRemaining) }
           | _ => step insn s
         if TRACE_STEPS then
           dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
@@ -582,6 +760,7 @@ def run (bytes : ByteArray) (cfg : RunConfig := {}) : Option State := do
   let s : State :=
     { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
       mem     := mem
+      regions := runtimeRegions cfg.input.size
       pc      := 0
       exitCode := none }
   return executeFnCpi cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget
@@ -630,6 +809,7 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
         let s : State :=
           { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
             mem     := mem
+            regions := elfRegions elfBytes header textSec cfg.input.size
             pc      := 0
             exitCode := none }
         some (executeFnCpi cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
@@ -701,6 +881,7 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
         let s : State :=
           { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
             mem     := mem
+            regions := elfRegions elfBytes header textSec cfg.input.size
             pc      := entryPc
             exitCode := none }
         some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)

@@ -12,12 +12,12 @@ namespace Logging
 
 /-! ## CU charges (agave's `SVMTransactionExecutionCost::default()`). -/
 
-/-- `sol_log_`: `max(syscall_base_cost = 100, message_length / cpi_bytes_per_unit)`.
-    Per agave: `syscall_base_cost.max(message_byte_count / cpi_bytes_per_unit)`
-    where `cpi_bytes_per_unit = 250`. Messages under 25_000 bytes round to 0,
-    so the floor of 100 always wins for typical `msg!()` calls; the
-    division is what makes very large logs still tractable. -/
-@[simp] def cuLog (s : State) : Nat := Nat.max 100 (s.regs.r2 / 250)
+/-- `sol_log_`: `max(syscall_base_cost = 100, msg_len)`. Per agave's
+    syscall (mirrored in `blueshift/sbpf::syscalls/log.rs::sol_log`):
+    `compute.consume(costs.syscall_base_cost.max(msg_len))`. Note this is
+    `max(BASE, msg_len)` — *not* `msg_len / cpi_bytes_per_unit`; only the
+    memory-op and CPI paths divide by 250. -/
+@[simp] def cuLog (s : State) : Nat := Nat.max 100 s.regs.r2
 /-- `sol_log_64_units`. -/
 def cuLog64 : Nat := 100
 /-- `sol_log_compute_units` baseline (`syscall_base_cost`). -/

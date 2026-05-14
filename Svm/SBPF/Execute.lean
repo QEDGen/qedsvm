@@ -57,19 +57,19 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_sha512                                  => Sha512.cu s
   | .sol_keccak256                               => Keccak256.cu s
   | .sol_blake3                                  => Blake3.cu s
-  | .sol_poseidon                                => Poseidon.cu
+  | .sol_poseidon                                => Poseidon.cu s
   -- Memory ops
   | .sol_memcpy  | .sol_memmove
   | .sol_memcmp  | .sol_memset                   => MemOps.cu s
   -- Curve / crypto
   | .sol_secp256k1_recover                       => Secp256k1.cu
-  | .sol_curve_validate_point                    => Curve25519.cuValidatePoint
-  | .sol_curve_group_op                          => Curve25519.cuGroupOp
-  | .sol_curve_multiscalar_mul                   => Curve25519.cuMSM
+  | .sol_curve_validate_point                    => Curve25519.cuValidatePoint s
+  | .sol_curve_group_op                          => Curve25519.cuGroupOp s
+  | .sol_curve_multiscalar_mul                   => Curve25519.cuMSM s
   | .sol_curve_decompress                        => Bls12_381.cuDecompress
   | .sol_curve_pairing_map                       => Bls12_381.cuPairing
-  | .sol_alt_bn128_group_op                      => AltBn128.cuGroupOp
-  | .sol_alt_bn128_compression                   => AltBn128.cuCompression
+  | .sol_alt_bn128_group_op                      => AltBn128.cuGroupOp s
+  | .sol_alt_bn128_compression                   => AltBn128.cuCompression s
   | .sol_big_mod_exp                             => BigModExp.cu
   -- PDA. `create` is a fixed `cuPerAttempt`; `try_find` scales
   -- per bump-loop iteration (matches agave's pre-loop + per-failed
@@ -90,9 +90,9 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_get_epoch_rewards_sysvar                => Sysvar.cuEpochRewards
   | .sol_get_sysvar                              => Sysvar.cu
   | .sol_get_epoch_stake                         => Sysvar.cu
-  -- Return data
-  | .sol_set_return_data
-  | .sol_get_return_data                         => ReturnData.cu
+  -- Return data — per-byte, see `ReturnData.cuSet` / `ReturnData.cuGet`.
+  | .sol_set_return_data                         => ReturnData.cuSet s
+  | .sol_get_return_data                         => ReturnData.cuGet s
   -- Abort / panic
   | .abort | .sol_panic_                         => Abort.cu
   -- Misc (alloc, remaining CU, stack height, sibling instr, unknown)
@@ -188,18 +188,27 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
 
   | .ldx w dst src off =>
     let addr := effectiveAddr (rf.get src) off
-    let val := readByWidth mem addr w
-    { s with regs := rf.set dst val, pc := pc' }
+    if s.regions.containsRange addr w.bytes then
+      let val := readByWidth mem addr w
+      { s with regs := rf.set dst val, pc := pc' }
+    else
+      { s with exitCode := some ERR_ACCESS_VIOLATION }
 
   | .st w dst off imm =>
     let addr := effectiveAddr (rf.get dst) off
-    let val := (toU64 imm) % (2 ^ (w.bytes * 8))
-    { s with mem := writeByWidth mem addr val w, pc := pc' }
+    if s.regions.containsWritable addr w.bytes then
+      let val := (toU64 imm) % (2 ^ (w.bytes * 8))
+      { s with mem := writeByWidth mem addr val w, pc := pc' }
+    else
+      { s with exitCode := some ERR_ACCESS_VIOLATION }
 
   | .stx w dst off src =>
     let addr := effectiveAddr (rf.get dst) off
-    let val := rf.get src % (2 ^ (w.bytes * 8))
-    { s with mem := writeByWidth mem addr val w, pc := pc' }
+    if s.regions.containsWritable addr w.bytes then
+      let val := rf.get src % (2 ^ (w.bytes * 8))
+      { s with mem := writeByWidth mem addr val w, pc := pc' }
+    else
+      { s with exitCode := some ERR_ACCESS_VIOLATION }
 
   | .add64 dst src =>
     { s with regs := rf.set dst (wrapAdd (rf.get dst) (resolveSrc rf src)), pc := pc' }
@@ -368,19 +377,25 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
       | none => { s with exitCode := some ERR_INVALID_PC }
       | some insn => executeFn fetch (step insn s) fuel'
 
-/-- Create an initial machine state with r1 pointing to the input buffer -/
-@[simp] def initState (inputAddr : Nat) (mem : Mem) : State where
+/-- Create an initial machine state with r1 pointing to the input buffer.
+    `regions` is the memory map the program runs under — `.ldx`/`.st`/`.stx`
+    check accesses against this table and trap with `ERR_ACCESS_VIOLATION`
+    on a miss. -/
+@[simp] def initState (inputAddr : Nat) (mem : Mem) (regions : RegionTable) : State where
   regs := { r1 := inputAddr, r10 := STACK_START + 0x1000 }
   mem := mem
+  regions := regions
   pc := 0
 
 /-- Two-pointer initial state for SIMD-0321 programs.
     r1 = input buffer, r2 = instruction data pointer.
     `entryPc` allows starting at a non-zero entrypoint (e.g. when error
     handlers are laid out before the entrypoint). -/
-@[simp] def initState2 (inputAddr insnAddr : Nat) (mem : Mem) (entryPc : Nat := 0) : State where
+@[simp] def initState2 (inputAddr insnAddr : Nat) (mem : Mem) (regions : RegionTable)
+    (entryPc : Nat := 0) : State where
   regs := { r1 := inputAddr, r2 := insnAddr, r10 := STACK_START + 0x1000 }
   mem := mem
+  regions := regions
   pc := entryPc
 
 /-! ## Execution unrolling lemmas -/
@@ -438,6 +453,48 @@ record syntax, not `RegFile.set`, so the no-op axiom is untouched. -/
     (execSyscall sc s).regs.r10 = s.regs.r10 := by
   cases sc <;> simp [execSyscall]
 
+/-! ## Region table — execution invariant
+
+The `step` function never mutates `s.regions`: the field stays fixed
+once the runner has built it. Pattern proofs that compose multiple
+steps need this to discharge a "bounds in the new state" obligation
+from the original bound.
+
+Each syscall body is a record-update over `s` that doesn't mention
+`regions`, so `(execSyscall sc s).regions = s.regions` reduces by
+definitional unfolding once `sc` is concrete (i.e. after `cases sc`).
+`step`'s ALU/jump arms are pure record-updates too; the branchy arms
+(`ldx`/`st`/`stx`/`div*`/`mod*` and `exit`) require a `split` or a
+match-case to surface the underlying record-update. -/
+
+@[simp] theorem execSyscall_preserves_regions (sc : Syscall) (s : State) :
+    (execSyscall sc s).regions = s.regions := by
+  cases sc <;> first | rfl | simp [execSyscall]
+
+@[simp] theorem step_preserves_regions (insn : Insn) (s : State) :
+    (step insn s).regions = s.regions := by
+  cases insn <;>
+    first
+    | rfl
+    | (simp only [step]; rfl)
+    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; cases s.callStack <;> rfl)
+    | (simp only [step]; exact execSyscall_preserves_regions _ _)
+
+@[simp] theorem executeFn_preserves_regions
+    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
+    (executeFn fetch s fuel).regions = s.regions := by
+  induction fuel generalizing s with
+  | zero => rfl
+  | succ n ih =>
+    unfold executeFn
+    cases h : s.exitCode with
+    | some _ => rfl
+    | none =>
+      cases hf : fetch s.pc with
+      | none => rfl
+      | some insn => rw [ih (step insn s), step_preserves_regions]
+
 /-! ## Paired execution (for tactic automation)
 
 `execInsn` and `execSegment` mirror `step` and `executeFn` exactly but
@@ -464,18 +521,27 @@ abbrev Step := State → PUnit × State
 
   | .ldx w dst src off =>
     let addr := effectiveAddr (rf.get src) off
-    let val := readByWidth mem addr w
-    ((), { s with regs := rf.set dst val, pc := pc' })
+    if s.regions.containsRange addr w.bytes then
+      let val := readByWidth mem addr w
+      ((), { s with regs := rf.set dst val, pc := pc' })
+    else
+      ((), { s with exitCode := some ERR_ACCESS_VIOLATION })
 
   | .st w dst off imm =>
     let addr := effectiveAddr (rf.get dst) off
-    let val := (toU64 imm) % (2 ^ (w.bytes * 8))
-    ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
+    if s.regions.containsWritable addr w.bytes then
+      let val := (toU64 imm) % (2 ^ (w.bytes * 8))
+      ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
+    else
+      ((), { s with exitCode := some ERR_ACCESS_VIOLATION })
 
   | .stx w dst off src =>
     let addr := effectiveAddr (rf.get dst) off
-    let val := rf.get src % (2 ^ (w.bytes * 8))
-    ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
+    if s.regions.containsWritable addr w.bytes then
+      let val := rf.get src % (2 ^ (w.bytes * 8))
+      ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
+    else
+      ((), { s with exitCode := some ERR_ACCESS_VIOLATION })
 
   | .add64 dst src =>
     ((), { s with regs := rf.set dst (wrapAdd (rf.get dst) (resolveSrc rf src)), pc := pc' })

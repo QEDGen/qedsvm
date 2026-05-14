@@ -145,6 +145,24 @@ impl Svm {
     ) -> Result<InstructionResult, SvmError> {
         let elf = self.programs.get(&instruction.program_id)
             .ok_or_else(|| SvmError::UnknownProgram(instruction.program_id))?;
+
+        // Sysvar read-only enforcement. Agave's loader rejects an
+        // instruction that marks a known sysvar account as writable.
+        // We mirror by inspecting `ix.accounts` *before* serializing
+        // (cheaper than catching after exec). Failures surface as
+        // ProgramResult::Failure with the post-state sentinel.
+        if let Some(bad) = ix_accounts_writable_sysvar(instruction) {
+            return Ok(InstructionResult {
+                program_result: ProgramResult::Failure {
+                    exit_code: ERR_INVALID_POSTSTATE,
+                },
+                compute_units_consumed: 0,
+                logs: vec![],
+                return_data: vec![],
+                resulting_accounts: accounts.to_vec(),
+            });
+        }
+
         let input = serialize_parameters(instruction, accounts, &instruction.program_id)?;
 
         // Build a CPI registry of all *other* programs registered with
@@ -182,6 +200,21 @@ impl Svm {
                 .map_err(SvmError::BufferParse)?
         };
 
+        // Tier-2 post-instruction soundness validation. Runs only on
+        // successful program returns — failed programs already have
+        // their state semantically rolled back at the harness level
+        // (we don't write back to the caller's accounts), so the
+        // invariants don't apply. Any violation downgrades the
+        // outcome to `Failure { exit_code: ERR_INVALID_POSTSTATE }`.
+        let program_result = if matches!(program_result, ProgramResult::Success) {
+            match validate_post_state(instruction, accounts, &resulting_accounts) {
+                Ok(()) => program_result,
+                Err(_) => ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE },
+            }
+        } else {
+            program_result
+        };
+
         Ok(InstructionResult {
             program_result,
             compute_units_consumed: raw.compute_units_consumed,
@@ -191,4 +224,131 @@ impl Svm {
         })
     }
 
+}
+
+/// Sentinel exit code returned when a program returns successfully
+/// from the BPF interpreter but violates a post-instruction
+/// invariant. Mirrors the family of agave's `InstructionError`
+/// variants for these checks (`ExternalAccountDataModified`,
+/// `ExternalAccountLamportChange`, `ExecutableModified`,
+/// `RentEpochModified`, `UnbalancedInstruction`,
+/// `MaxAccountsDataAllocationsExceeded`). We collapse them to a
+/// single sentinel since our `ProgramResult` is u64-keyed; the
+/// individual checks live in `validate_post_state` below.
+pub const ERR_INVALID_POSTSTATE: u64 = 0xFFFFFFFFFFFFFFFB;
+
+/// Returns `Some(pubkey)` if any AccountMeta in `instruction.accounts`
+/// references a known sysvar pubkey with `is_writable = true`.
+/// Sysvar accounts are read-only by design — the runtime maintains
+/// their contents — and agave's loader rejects an instruction that
+/// marks one as writable.
+///
+/// All sysvar pubkeys (Clock, Rent, EpochSchedule, SlotHashes,
+/// SlotHistory, StakeHistory, RecentBlockhashes, Fees, Instructions,
+/// EpochRewards, LastRestartSlot) share a fixed 4-byte prefix in
+/// their *decoded* form: `[0x06, 0xa7, 0xd5, 0x17]`. This comes from
+/// the base58 namespacing of `Sysvar...` pubkeys and is unique to
+/// the sysvar program (the byte pattern is astronomically unlikely
+/// for any non-sysvar pubkey).
+fn ix_accounts_writable_sysvar(instruction: &Instruction) -> Option<Pubkey> {
+    const SYSVAR_DISCRIMINATOR: [u8; 4] = [0x06, 0xa7, 0xd5, 0x17];
+    for meta in &instruction.accounts {
+        if meta.is_writable {
+            let bytes = meta.pubkey.to_bytes();
+            if bytes.starts_with(&SYSVAR_DISCRIMINATOR) {
+                return Some(meta.pubkey);
+            }
+        }
+    }
+    None
+}
+
+/// Per-account / cross-account invariants agave enforces at
+/// instruction exit. Failures are mapped to a single sentinel
+/// `ERR_INVALID_POSTSTATE` exit code at the program-result level.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostStateError {
+    /// A read-only account's lamports, data, or owner changed.
+    ReadOnlyAccountModified(Pubkey),
+    /// `executable` flag flipped after the instruction.
+    ExecutableModified(Pubkey),
+    /// `rent_epoch` field changed (programs may not mutate it).
+    RentEpochModified(Pubkey),
+    /// Sum of lamports across all listed accounts changed.
+    /// Caller wouldn't be able to mint or destroy lamports.
+    LamportConservationViolated { pre_sum: u128, post_sum: u128 },
+    /// Account data grew past `pre_len + MAX_PERMITTED_DATA_INCREASE`.
+    DataLengthOverflow { pubkey: Pubkey, pre: usize, post: usize },
+}
+
+fn validate_post_state(
+    instruction: &Instruction,
+    pre: &[(Pubkey, AccountSharedData)],
+    post: &[(Pubkey, AccountSharedData)],
+) -> Result<(), PostStateError> {
+    use solana_account::ReadableAccount;
+
+    const MAX_PERMITTED_DATA_INCREASE: usize = 10240;
+
+    // Lamport conservation across the *per-call* account list — what
+    // the instruction's serialized input region observably owns. The
+    // BPF program can move lamports between these accounts but not
+    // mint or burn. (System program's create_account / transfer are
+    // implemented as redistributions of existing lamports, so this
+    // invariant holds even when System mutates balances.)
+    let pre_sum: u128  = pre.iter().map(|(_, a)| u128::from(a.lamports())).sum();
+    let post_sum: u128 = post.iter().map(|(_, a)| u128::from(a.lamports())).sum();
+    if pre_sum != post_sum {
+        return Err(PostStateError::LamportConservationViolated { pre_sum, post_sum });
+    }
+
+    // Per-account checks. Index alignment between pre/post is
+    // guaranteed by `deserialize_account_writes` — it emits one
+    // entry per AccountMeta in `instruction.accounts` in order.
+    for ((pre_pk, pre_acct), (post_pk, post_acct)) in pre.iter().zip(post.iter()) {
+        debug_assert_eq!(pre_pk, post_pk);
+        let pk = *post_pk;
+
+        // executable: monotone — once true, must stay true. agave is
+        // stricter (no flip in either direction during a normal ix);
+        // we mirror.
+        if pre_acct.executable() != post_acct.executable() {
+            return Err(PostStateError::ExecutableModified(pk));
+        }
+        // rent_epoch: programs can't mutate; the runtime owns it.
+        if pre_acct.rent_epoch() != post_acct.rent_epoch() {
+            return Err(PostStateError::RentEpochModified(pk));
+        }
+
+        // Read-only enforcement: find this pubkey's AccountMeta. If
+        // it's marked `is_writable = false`, lamports / data / owner
+        // must all be unchanged. (A program can mutate the
+        // `original_data_len` header field via the
+        // `entrypoint!`-macro deserializer, but that's not surfaced
+        // through `deserialize_account_writes` — we only see the
+        // logical fields.)
+        let meta_writable = instruction.accounts.iter()
+            .find(|m| m.pubkey == pk)
+            .map(|m| m.is_writable)
+            .unwrap_or(true);  // not in ix.accounts → no constraint
+        if !meta_writable {
+            if pre_acct.lamports() != post_acct.lamports()
+                || pre_acct.data() != post_acct.data()
+                || pre_acct.owner() != post_acct.owner()
+            {
+                return Err(PostStateError::ReadOnlyAccountModified(pk));
+            }
+        }
+
+        // Per-account data-growth bound (Tier-2 #9).
+        let pre_len  = pre_acct.data().len();
+        let post_len = post_acct.data().len();
+        if post_len > pre_len + MAX_PERMITTED_DATA_INCREASE {
+            return Err(PostStateError::DataLengthOverflow {
+                pubkey: pk, pre: pre_len, post: post_len,
+            });
+        }
+    }
+
+    Ok(())
 }

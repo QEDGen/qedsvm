@@ -91,6 +91,10 @@ structure State where
   regs : RegFile
   /-- Byte-addressable memory -/
   mem : Mem
+  /-- Mapped regions (program, stack, heap, input). Memory accesses
+      outside these regions trap to `ERR_ACCESS_VIOLATION`. Total `mem`
+      is preserved underneath; the table is a parallel bounds layer. -/
+  regions : Memory.RegionTable
   /-- Program counter: index into the instruction array -/
   pc : Nat
   /-- Exit status: None if running, Some n if exited with code n -/
@@ -117,6 +121,12 @@ structure State where
       Top-level CU reporting in `Svm/Ffi.lean` is
       `(cuBudget - fuelRemaining) + s.cuConsumed`. -/
   cuConsumed : Nat := 0
+  /-- Bump-allocator pointer for `sol_alloc_free_`. Starts at
+      `MM_HEAP_START` (`0x300000000`) and grows upward as allocations
+      happen. Tier-2 #6 — the BPF program-local heap. Reset to
+      `MM_HEAP_START` on each CPI sub-state since agave allocates the
+      heap fresh per invocation. -/
+  heapNext : Nat := 0x300000000
   deriving Inhabited
 
 /-- Is the machine still running? -/
@@ -143,6 +153,11 @@ def ERR_INVALID_PC     : Nat := 0xFFFFFFFFFFFFFFFF
     as a distinct non-zero exit code so callers can distinguish program
     aborts from clean exits. -/
 def ERR_ABORT          : Nat := 0xFFFFFFFFFFFFFFFD
+/-- Exit code for an out-of-region memory access. Agave raises
+    `EbpfError::AccessViolation` (a `MemoryError::AddressLoad` /
+    `AddressStore` under the hood); we surface it as a sentinel exit
+    code so the harness can map it to a `Failure` outcome. -/
+def ERR_ACCESS_VIOLATION : Nat := 0xFFFFFFFFFFFFFFFC
 
 /-! ## Wrapping 64-bit arithmetic -/
 
@@ -184,13 +199,23 @@ def readSlices (mem : Memory.Mem) (descsAddr n : Nat) : ByteArray :=
 
 /-- Sum the `len` fields across `n` `SliceDesc { ptr, len }` descriptors
     starting at `descsAddr`. Cheaper than `readSlices …  |>.size` because
-    it skips dereferencing the slice bytes — used for per-byte CU
-    accounting (`sha256_byte_cost = 1`, etc.) where the body length is
-    all that matters. -/
+    it skips dereferencing the slice bytes. -/
 def sumSliceLens (mem : Memory.Mem) (descsAddr n : Nat) : Nat :=
   (List.range n).foldl (fun acc i =>
     let descAddr := descsAddr + i * 16
     acc + Memory.readU64 mem (descAddr + 8)) 0
+
+/-- Per-slice cost used by the hash family (sha256 / sha512 / keccak /
+    blake3). Mirrors agave's
+    `mem_op_base_cost.max(sha256_byte_cost.saturating_mul(len / 2))`
+    applied to each slice individually — *not* a sum-of-lengths
+    multiplied by byte_cost. Sum is then added to the syscall's
+    base cost (85). See `blueshift/sbpf/crates/runtime/src/syscalls/crypto.rs:83-86`. -/
+def hashSliceCost (mem : Memory.Mem) (descsAddr n : Nat) : Nat :=
+  (List.range n).foldl (fun acc i =>
+    let descAddr := descsAddr + i * 16
+    let len := Memory.readU64 mem (descAddr + 8)
+    acc + Nat.max 10 (len / 2)) 0
 
 /-- Memory update that writes the first `len` bytes of `bs` to address
     `out`, leaving everything else untouched. Equivalent to the
@@ -225,6 +250,15 @@ def commitOptional (s : State) (out outSize : Nat)
 @[simp] theorem commitOptional_preserves_r10 (s : State) (out outSize : Nat)
     (result : Option ByteArray) :
     (commitOptional s out outSize result).regs.r10 = s.regs.r10 := by
+  cases result <;> simp [commitOptional]
+
+/-- `commitOptional` preserves the region table in both arms. Same
+    shape as `commitOptional_preserves_r10` — marked `@[simp]` so the
+    region-bounds invariant flows through any syscall ending in
+    `commitOptional` (PDA, curve ops, big-mod-exp, poseidon, …). -/
+@[simp] theorem commitOptional_preserves_regions (s : State) (out outSize : Nat)
+    (result : Option ByteArray) :
+    (commitOptional s out outSize result).regions = s.regions := by
   cases result <;> simp [commitOptional]
 
 end Svm.SBPF

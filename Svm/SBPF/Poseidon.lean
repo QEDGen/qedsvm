@@ -43,7 +43,13 @@ opaque hash (parameters endianness : UInt8) (inputs : @& ByteArray) (n : UInt64)
 ABI: r1 = parameters, r2 = endianness, r3 = `*const [VmSlice; n]`,
 r4 = n (1..=12), r5 = `*mut [u8; 32]`. r0 = 0 success / 1 failure. -/
 
-def cu : Nat := 603
+/-- Agave's poseidon cost is input-count-quadratic:
+    `(coefficient_a (61) * n + coefficient_c (542)) * n` where `n` is
+    the input slice count (`r4`, in 1..=12). For n=1 this evaluates to
+    603. Source: `blueshift/sbpf/crates/runtime/src/config.rs:120-121`. -/
+@[simp] def cu (s : State) : Nat :=
+  let n := s.regs.r4
+  (61 * n + 542) * n
 
 @[simp] def exec (s : State) : State :=
   let result := hash s.regs.r1.toUInt8 s.regs.r2.toUInt8

@@ -104,12 +104,42 @@ opaque ristrettoMSM (scalars points : @& ByteArray) : Option ByteArray
 
 /-! ## Syscall bindings -/
 
-/-- `sol_curve_validate_point` CU charge. -/
-def cuValidatePoint : Nat := 159
-/-- `sol_curve_group_op` CU charge (ed25519 add baseline; varies). -/
-def cuGroupOp       : Nat := 473
-/-- `sol_curve_multiscalar_mul` CU charge (ed25519 msm_base; varies). -/
-def cuMSM           : Nat := 2_273
+/-! ## CU charges (per agave's `SVMTransactionExecutionCost::default()`,
+mirrored at `blueshift/sbpf/crates/runtime/src/config.rs:96-107`).
+
+Each cost depends on the curve_id in `r1` (and for `group_op` also the
+op_id in `r2`); unknown variants charge the cheapest path so the
+caller still pays *something*. -/
+
+/-- `sol_curve_validate_point`: 159 (edwards) / 169 (ristretto). -/
+@[simp] def cuValidatePoint (s : State) : Nat :=
+  if s.regs.r1 = CURVE25519_EDWARDS then 159
+  else if s.regs.r1 = CURVE25519_RISTRETTO then 169
+  else 159
+
+/-- `sol_curve_group_op`. Per-curve × per-op: edwards add=473/sub=475/mul=2177,
+    ristretto add=521/sub=519/mul=2208. -/
+@[simp] def cuGroupOp (s : State) : Nat :=
+  if s.regs.r1 = CURVE25519_EDWARDS then
+    if s.regs.r2 = OP_ADD then 473
+    else if s.regs.r2 = OP_SUB then 475
+    else if s.regs.r2 = OP_MUL then 2_177
+    else 473
+  else if s.regs.r1 = CURVE25519_RISTRETTO then
+    if s.regs.r2 = OP_ADD then 521
+    else if s.regs.r2 = OP_SUB then 519
+    else if s.regs.r2 = OP_MUL then 2_208
+    else 521
+  else 473
+
+/-- `sol_curve_multiscalar_mul`. Base + n × incremental:
+    edwards = 2273 + n·758, ristretto = 2303 + n·788. `n` is the
+    point count in `r4`. -/
+@[simp] def cuMSM (s : State) : Nat :=
+  let n := s.regs.r4
+  if s.regs.r1 = CURVE25519_EDWARDS then 2_273 + n * 758
+  else if s.regs.r1 = CURVE25519_RISTRETTO then 2_303 + n * 788
+  else 2_273
 
 /-- Execute `sol_curve_validate_point`.
     ABI: r1 = curve_id, r2 = `*const [u8; 32]` point.

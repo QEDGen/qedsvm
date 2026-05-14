@@ -6,6 +6,13 @@
 -- All theorems are parameterized over the fetch function and registers.
 -- Register disjointness hypotheses are dischargeable by `decide` at
 -- call sites since the caller always has concrete register names.
+--
+-- Every `ldx`-bearing pattern carries a `h_b*` premise asserting the
+-- accessed `[addr, addr + w.bytes)` window lies in some region of
+-- `s.regions`. Without it, `step` traps to `ERR_ACCESS_VIOLATION` and
+-- the pattern's "exited normally" conclusion no longer holds.
+-- Compositions discharge the downstream bounds via
+-- `executeFn_preserves_regions` (`@[simp]`).
 
 import Svm.SBPF.Execute
 
@@ -46,13 +53,14 @@ theorem dup_pass (fetch : Nat → Option Insn) (s : State)
     (h_exit : s.exitCode = none)
     (h_f1 : fetch s.pc = some (.ldx .byte dstReg addrReg off))
     (h_f2 : fetch (s.pc + 1) = some (.jne dstReg (.imm dupImm) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get addrReg) off) 1 = true)
     (h_eq : readU8 s.mem (effectiveAddr (s.regs.get addrReg) off) = toU64 dupImm) :
     let s' := executeFn fetch s 2
     s'.exitCode = none ∧ s'.pc = s.pc + 2 ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstReg → s'.regs.get r = s.regs.get r) := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
-    h_exit, h_f1, h_f2, h_eq]
+    h_exit, h_f1, h_f2, h_b1, h_eq, if_true]
   refine ⟨trivial, by simp, trivial, fun r hr => ?_⟩
   simp only [RegFile.get_set_diff _ _ _ _ hr]
 
@@ -63,13 +71,14 @@ theorem dup_fail (fetch : Nat → Option Insn) (s : State)
     (h_exit : s.exitCode = none)
     (h_f1 : fetch s.pc = some (.ldx .byte dstReg addrReg off))
     (h_f2 : fetch (s.pc + 1) = some (.jne dstReg (.imm dupImm) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get addrReg) off) 1 = true)
     (h_ne : readU8 s.mem (effectiveAddr (s.regs.get addrReg) off) ≠ toU64 dupImm) :
     let s' := executeFn fetch s 2
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstReg → s'.regs.get r = s.regs.get r) := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
-    h_exit, h_f1, h_f2]
+    h_exit, h_f1, h_f2, h_b1, if_true]
   refine ⟨trivial, if_pos h_ne, trivial, fun r hr => ?_⟩
   simp only [RegFile.get_set_diff _ _ _ _ hr]
 
@@ -92,18 +101,20 @@ theorem chunk_eq_mem (fetch : Nat → Option Insn) (s : State)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA offA))
     (h_f2 : fetch (s.pc + 1) = some (.ldx .dword dstB srcB offB))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA) 8 = true)
+    (h_b2 : s.regions.containsRange (effectiveAddr (s.regs.get srcB) offB) 8 = true)
     (h_eq : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA) =
             readU64 s.mem (effectiveAddr (s.regs.get srcB) offB)) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = s.pc + 3 ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstA → r ≠ dstB → s'.regs.get r = s.regs.get r) ∧
     s'.callStack = s.callStack := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_srcB_ne_dstA,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_eq]
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_b2, h_eq, if_true]
   refine ⟨trivial, by simp, trivial, ?_, trivial⟩
   intro r hr1 hr2
   simp only [RegFile.get_set_diff _ _ _ _ hr2, RegFile.get_set_diff _ _ _ _ hr1]
@@ -119,17 +130,19 @@ theorem chunk_ne_mem (fetch : Nat → Option Insn) (s : State)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA offA))
     (h_f2 : fetch (s.pc + 1) = some (.ldx .dword dstB srcB offB))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA) 8 = true)
+    (h_b2 : s.regions.containsRange (effectiveAddr (s.regs.get srcB) offB) 8 = true)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA) ≠
             readU64 s.mem (effectiveAddr (s.regs.get srcB) offB)) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
     s'.callStack = s.callStack := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_srcB_ne_dstA,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3]
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_b2, if_true]
   exact ⟨trivial, if_pos h_ne, trivial, trivial⟩
 
 /-! ## Chunk comparison: ldx + lddw + jne (memory vs 64-bit immediate)
@@ -152,16 +165,17 @@ theorem chunk_eq_imm (fetch : Nat → Option Insn) (s : State)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.lddw dstB val))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) off) 8 = true)
     (h_eq : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) = toU64 val) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = s.pc + 3 ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstA → r ≠ dstB → s'.regs.get r = s.regs.get r) ∧
     s'.callStack = s.callStack := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_eq]
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_eq, if_true]
   refine ⟨trivial, by simp, trivial, ?_, trivial⟩
   intro r hr1 hr2
   simp only [RegFile.get_set_diff _ _ _ _ hr2, RegFile.get_set_diff _ _ _ _ hr1]
@@ -176,15 +190,16 @@ theorem chunk_ne_imm (fetch : Nat → Option Insn) (s : State)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.lddw dstB val))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) off) 8 = true)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) ≠ toU64 val) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
     s'.callStack = s.callStack := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3]
+    h_exit, h_f1, h_f2, h_f3, h_b1, if_true]
   exact ⟨trivial, if_pos h_ne, trivial, trivial⟩
 
 /-! ## Chunk comparison: ldx + mov32 + jne (memory vs 32-bit immediate)
@@ -202,16 +217,17 @@ theorem chunk_eq_imm32 (fetch : Nat → Option Insn) (s : State)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.mov32 dstB (.imm val)))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) off) 8 = true)
     (h_eq : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) = toU64 val % U32_MODULUS) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = s.pc + 3 ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstA → r ≠ dstB → s'.regs.get r = s.regs.get r) ∧
     s'.callStack = s.callStack := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_eq]
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_eq, if_true]
   refine ⟨trivial, by simp, trivial, ?_, trivial⟩
   intro r hr1 hr2
   simp only [RegFile.get_set_diff _ _ _ _ hr2, RegFile.get_set_diff _ _ _ _ hr1]
@@ -226,15 +242,16 @@ theorem chunk_ne_imm32 (fetch : Nat → Option Insn) (s : State)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.mov32 dstB (.imm val)))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) off) 8 = true)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) ≠ toU64 val % U32_MODULUS) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
     s'.callStack = s.callStack := by
-  simp only [executeFn, step, readByWidth, resolveSrc,
+  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3]
+    h_exit, h_f1, h_f2, h_f3, h_b1, if_true]
   exact ⟨trivial, if_pos h_ne, trivial, trivial⟩
 
 /-! ## Composition: chunk mismatch → error exit
@@ -254,6 +271,8 @@ theorem chunk_ne_mem_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA offA))
     (h_f2 : fetch (s.pc + 1) = some (.ldx .dword dstB srcB offB))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA) 8 = true)
+    (h_b2 : s.regions.containsRange (effectiveAddr (s.regs.get srcB) offB) 8 = true)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA) ≠
             readU64 s.mem (effectiveAddr (s.regs.get srcB) offB))
     (h_err1 : fetch target = some (.mov32 .r0 (.imm errorCode)))
@@ -263,7 +282,7 @@ theorem chunk_ne_mem_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
   rw [show n = 5 + (n - 5) from by omega, executeFn_compose]
   obtain ⟨he, hp, _, hcs⟩ := chunk_ne_mem fetch s dstA dstB srcA srcB offA offB target
     h_dstA_ne_dstB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10
-    h_exit h_f1 h_f2 h_f3 h_ne
+    h_exit h_f1 h_f2 h_f3 h_b1 h_b2 h_ne
   rw [show (5 : Nat) = 3 + 2 from rfl, executeFn_compose]
   have h5 := error_exit fetch _ errorCode he (by rw [hcs]; exact h_cs)
     (by rwa [hp]) (by rwa [hp])
@@ -285,6 +304,7 @@ theorem chunk_ne_imm_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.lddw dstB val))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) off) 8 = true)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) ≠ toU64 val)
     (h_err1 : fetch target = some (.mov32 .r0 (.imm errorCode)))
     (h_err2 : fetch (target + 1) = some .exit)
@@ -293,7 +313,7 @@ theorem chunk_ne_imm_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
   rw [show n = 5 + (n - 5) from by omega, executeFn_compose]
   obtain ⟨he, hp, _, hcs⟩ := chunk_ne_imm fetch s dstA dstB srcA off val target
     h_dstA_ne_dstB h_dstA_ne_r10 h_dstB_ne_r10
-    h_exit h_f1 h_f2 h_f3 h_ne
+    h_exit h_f1 h_f2 h_f3 h_b1 h_ne
   rw [show (5 : Nat) = 3 + 2 from rfl, executeFn_compose]
   have h5 := error_exit fetch _ errorCode he (by rw [hcs]; exact h_cs)
     (by rwa [hp]) (by rwa [hp])
@@ -310,6 +330,7 @@ theorem chunk_ne_imm32_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.mov32 dstB (.imm val)))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
+    (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) off) 8 = true)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) ≠ toU64 val % U32_MODULUS)
     (h_err1 : fetch target = some (.mov32 .r0 (.imm errorCode)))
     (h_err2 : fetch (target + 1) = some .exit)
@@ -318,7 +339,7 @@ theorem chunk_ne_imm32_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
   rw [show n = 5 + (n - 5) from by omega, executeFn_compose]
   obtain ⟨he, hp, _, hcs⟩ := chunk_ne_imm32 fetch s dstA dstB srcA off val target
     h_dstA_ne_dstB h_dstA_ne_r10 h_dstB_ne_r10
-    h_exit h_f1 h_f2 h_f3 h_ne
+    h_exit h_f1 h_f2 h_f3 h_b1 h_ne
   rw [show (5 : Nat) = 3 + 2 from rfl, executeFn_compose]
   have h5 := error_exit fetch _ errorCode he (by rw [hcs]; exact h_cs)
     (by rwa [hp]) (by rwa [hp])
@@ -333,7 +354,13 @@ results in error exit when at least one chunk mismatches. Each chunk is
 
 Two variants:
 - `pubkey_compare_mem`: both sides memory reads (ldx + ldx + jne)
-- `pubkey_compare_imm`: source=memory, ref=constant (3× lddw + 1× mov32) -/
+- `pubkey_compare_imm`: source=memory, ref=constant (3× lddw + 1× mov32)
+
+The `hb*` premises bound each `ldx` access at the *initial* state. The
+intermediate states arising between chunks have `.regions` equal to the
+initial state's (via `executeFn_preserves_regions`, `@[simp]`) and the
+`srcA`/`srcB` registers preserved (via the chunk's `hreg`). The local
+`bound` helper threads both rewrites mechanically. -/
 
 set_option maxHeartbeats 8000000 in
 theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
@@ -360,6 +387,14 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
     (hf11 : fetch (pc + 11) = some (.jne dstA (.reg dstB) target))
     (hfe1 : fetch target = some (.mov32 .r0 (.imm errorCode)))
     (hfe2 : fetch (target + 1) = some .exit)
+    (hbA0 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA0) 8 = true)
+    (hbA1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA1) 8 = true)
+    (hbA2 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA2) 8 = true)
+    (hbA3 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA3) 8 = true)
+    (hbB0 : s.regions.containsRange (effectiveAddr (s.regs.get srcB) offB0) 8 = true)
+    (hbB1 : s.regions.containsRange (effectiveAddr (s.regs.get srcB) offB1) 8 = true)
+    (hbB2 : s.regions.containsRange (effectiveAddr (s.regs.get srcB) offB2) 8 = true)
+    (hbB3 : s.regions.containsRange (effectiveAddr (s.regs.get srcB) offB3) 8 = true)
     (ha0 : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA0) = a0)
     (hb0 : readU64 s.mem (effectiveAddr (s.regs.get srcB) offB0) = b0)
     (ha1 : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA1) = a1)
@@ -376,6 +411,7 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
     obtain ⟨he1, hp1, hm1, hreg1, hcs1⟩ := chunk_eq_mem fetch s dstA dstB srcA srcB offA0 offB0 target
       h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 h_exit
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
+      hbA0 hbB0
       (by rw [ha0, hb0]; exact h_eq0)
     by_cases h_eq1 : a1 = b1
     · simp [h_eq1] at h_ne
@@ -385,6 +421,10 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
         (by simp only [hp1, h_pc]; exact hf5)
+        (by simp only [executeFn_preserves_regions,
+              hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA1)
+        (by simp only [executeFn_preserves_regions,
+              hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB]; exact hbB1)
         (by rw [hm1, hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha1,
                 hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB, hb1]; exact h_eq1)
       by_cases h_eq2 : a2 = b2
@@ -395,6 +435,12 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
           (by simp only [hp2, hp1, h_pc]; exact hf8)
+          (by simp only [executeFn_preserves_regions,
+                hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA2)
+          (by simp only [executeFn_preserves_regions,
+                hreg2 srcB h_srcB_ne_dstA h_srcB_ne_dstB,
+                hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB]; exact hbB2)
           (by rw [hm2, hm1,
                   hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
                   hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha2,
@@ -406,6 +452,14 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf9)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf10)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf11)
+          (by simp only [executeFn_preserves_regions,
+                hreg3 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA3)
+          (by simp only [executeFn_preserves_regions,
+                hreg3 srcB h_srcB_ne_dstA h_srcB_ne_dstB,
+                hreg2 srcB h_srcB_ne_dstA h_srcB_ne_dstB,
+                hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB]; exact hbB3)
           (by rw [hm3, hm2, hm1,
                   hreg3 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
                   hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
@@ -420,6 +474,12 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
           (by simp only [hp2, hp1, h_pc]; exact hf8)
+          (by simp only [executeFn_preserves_regions,
+                hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA2)
+          (by simp only [executeFn_preserves_regions,
+                hreg2 srcB h_srcB_ne_dstA h_srcB_ne_dstB,
+                hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB]; exact hbB2)
           (by rw [hm2, hm1,
                   hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
                   hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha2,
@@ -432,12 +492,17 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
         (by simp only [hp1, h_pc]; exact hf5)
+        (by simp only [executeFn_preserves_regions,
+              hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA1)
+        (by simp only [executeFn_preserves_regions,
+              hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB]; exact hbB1)
         (by rw [hm1, hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha1,
                 hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB, hb1]; exact h_eq1)
         hfe1 hfe2 (by omega)
   · exact chunk_ne_mem_error fetch s 14 dstA dstB srcA srcB offA0 offB0 target errorCode
       h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 h_exit h_cs
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
+      hbA0 hbB0
       (by rw [ha0, hb0]; exact h_eq0) hfe1 hfe2 (by omega)
 
 set_option maxHeartbeats 8000000 in
@@ -465,6 +530,10 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
     (hf11 : fetch (pc + 11) = some (.jne dstA (.reg dstB) target))
     (hfe1 : fetch target = some (.mov32 .r0 (.imm errorCode)))
     (hfe2 : fetch (target + 1) = some .exit)
+    (hbA0 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA0) 8 = true)
+    (hbA1 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA1) 8 = true)
+    (hbA2 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA2) 8 = true)
+    (hbA3 : s.regions.containsRange (effectiveAddr (s.regs.get srcA) offA3) 8 = true)
     (ha0 : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA0) = a0)
     (ha1 : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA1) = a1)
     (ha2 : readU64 s.mem (effectiveAddr (s.regs.get srcA) offA2) = a2)
@@ -479,6 +548,7 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
     obtain ⟨he1, hp1, hm1, hreg1, hcs1⟩ := chunk_eq_imm fetch s dstA dstB srcA offA0 val0 target
       h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 h_exit
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
+      hbA0
       (by rw [ha0, hb0]; exact h_eq0)
     by_cases h_eq1 : a1 = b1
     · simp [h_eq1] at h_ne
@@ -488,6 +558,8 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
         (by simp only [hp1, h_pc]; exact hf5)
+        (by simp only [executeFn_preserves_regions,
+              hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA1)
         (by rw [hm1, hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha1, hb1]; exact h_eq1)
       by_cases h_eq2 : a2 = b2
       · simp [h_eq2] at h_ne
@@ -497,6 +569,9 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
           (by simp only [hp2, hp1, h_pc]; exact hf8)
+          (by simp only [executeFn_preserves_regions,
+                hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA2)
           (by rw [hm2, hm1,
                   hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
                   hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha2, hb2]; exact h_eq2)
@@ -506,6 +581,10 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf9)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf10)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf11)
+          (by simp only [executeFn_preserves_regions,
+                hreg3 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA3)
           (by rw [hm3, hm2, hm1,
                   hreg3 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
                   hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
@@ -517,6 +596,9 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
           (by simp only [hp2, hp1, h_pc]; exact hf8)
+          (by simp only [executeFn_preserves_regions,
+                hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
+                hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA2)
           (by rw [hm2, hm1,
                   hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
                   hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha2, hb2]; exact h_eq2)
@@ -527,11 +609,14 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
         (by simp only [hp1, h_pc]; exact hf5)
+        (by simp only [executeFn_preserves_regions,
+              hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB]; exact hbA1)
         (by rw [hm1, hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha1, hb1]; exact h_eq1)
         hfe1 hfe2 (by omega)
   · exact chunk_ne_imm_error fetch s 14 dstA dstB srcA offA0 val0 target errorCode
       h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 h_exit h_cs
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
+      hbA0
       (by rw [ha0, hb0]; exact h_eq0) hfe1 hfe2 (by omega)
 
 end Svm.SBPF

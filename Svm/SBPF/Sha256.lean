@@ -209,10 +209,12 @@ implementation gathers all slice bytes, hashes once with the
 pure-Lean `hash`, and writes the 32-byte big-endian digest to `*r3`.
 `r0` is set to 0 on success. -/
 
-/-- CU charge for `sol_sha256`. Agave: `sha256_base_cost (85) +
-    sha256_byte_cost (1) * total_bytes`, where `total_bytes` sums
-    the `len` field across all `SliceDesc` descriptors in `*r1`. -/
-@[simp] def cu (s : State) : Nat := 85 + sumSliceLens s.mem s.regs.r1 s.regs.r2
+/-- CU charge for `sol_sha256`. Agave consumes `sha256_base_cost
+    (85)` once, then per slice `max(mem_op_base_cost (10),
+    sha256_byte_cost (1) * len / 2)` — *not* a flat
+    `byte_cost * total_bytes`. See
+    `blueshift/sbpf/crates/runtime/src/syscalls/crypto.rs:83-86`. -/
+@[simp] def cu (s : State) : Nat := 85 + hashSliceCost s.mem s.regs.r1 s.regs.r2
 
 /-- Execute `sol_sha256` against the supplied state.
 

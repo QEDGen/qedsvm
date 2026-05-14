@@ -186,5 +186,14 @@ def execTryFind (s : State) : State :=
   simp only [execTryFind]
   split <;> simp
 
+/-- `execTryFind` preserves the region table in both match arms.
+    Companion to `execTryFind_preserves_r10`; lets the blanket
+    `execSyscall_preserves_regions` close `sol_try_find_program_address`
+    without case-splitting on `result`. -/
+@[simp] theorem execTryFind_preserves_regions (s : State) :
+    (execTryFind s).regions = s.regions := by
+  simp only [execTryFind]
+  split <;> simp
+
 end Pda
 end Svm.SBPF

@@ -84,8 +84,44 @@ def cu : Nat := 100
     else if a = outA + 16 then 50    -- burn_percent = 50
     else s.mem a
   { s with regs := s.regs.set .r0 0, mem := mem' }
-/-- `sol_get_epoch_schedule_sysvar`: 33 bytes. -/
-@[simp] def execEpochSchedule  (s : State) : State := zeroFillR1 s 33
+/-- `sol_get_epoch_schedule_sysvar`: 40 bytes (`size_of::<EpochSchedule>()`
+    with repr(C) alignment padding). Mollusk's default is
+    `EpochSchedule::without_warmup()` — `slots_per_epoch =
+    DEFAULT_SLOTS_PER_EPOCH = 432_000`, `leader_schedule_slot_offset =
+    DEFAULT_LEADER_SCHEDULE_SLOT_OFFSET = 432_000`, `warmup = false`,
+    `first_normal_epoch = 0`, `first_normal_slot = 0`. Layout:
+    ```
+    [0..8)   slots_per_epoch              : u64 LE = 432_000
+    [8..16)  leader_schedule_slot_offset  : u64 LE = 432_000
+    [16]     warmup                        : u8 = 0
+    [17..24) padding                       : 7 bytes of zero
+    [24..32) first_normal_epoch            : u64 LE = 0
+    [32..40) first_normal_slot             : u64 LE = 0
+    ```
+    432_000 = 0x69780 → little-endian bytes `[0x80, 0x97, 0x06, 0, 0, 0, 0, 0]`. -/
+@[simp] def execEpochSchedule  (s : State) : State :=
+  let outA := s.regs.r1
+  -- 432_000 = 0x69780 → 0x80, 0x97, 0x06 in LE; remaining 5 bytes zero.
+  let mem' : Memory.Mem := fun a =>
+    if      a = outA + 0  then 0x80
+    else if a = outA + 1  then 0x97
+    else if a = outA + 2  then 0x06
+    else if a = outA + 3  then 0
+    else if a = outA + 4  then 0
+    else if a = outA + 5  then 0
+    else if a = outA + 6  then 0
+    else if a = outA + 7  then 0
+    else if a = outA + 8  then 0x80
+    else if a = outA + 9  then 0x97
+    else if a = outA + 10 then 0x06
+    else if a = outA + 11 then 0
+    else if a = outA + 12 then 0
+    else if a = outA + 13 then 0
+    else if a = outA + 14 then 0
+    else if a = outA + 15 then 0
+    else if a ≥ outA + 16 ∧ a < outA + 40 then 0  -- warmup + padding + remaining u64s
+    else s.mem a
+  { s with regs := s.regs.set .r0 0, mem := mem' }
 /-- `sol_get_last_restart_slot`: u64. -/
 @[simp] def execLastRestartSlot (s : State) : State := zeroFillR1 s 8
 /-- `sol_get_fees_sysvar` (deprecated): 8 bytes. -/

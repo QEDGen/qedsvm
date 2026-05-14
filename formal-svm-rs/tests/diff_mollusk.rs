@@ -88,6 +88,39 @@ const RODATA_ADDR_RETURNER_SO: &[u8] = include_bytes!("fixtures/rodata_addr_retu
 /// (agave charges 1500 per bump attempt: initial + each failed iter).
 /// Source in `pda_finder_src/`.
 const PDA_FINDER_SO: &[u8] = include_bytes!("fixtures/pda_finder.so");
+/// Dereferences `input.add(0x10000000)` — 256 MiB past the input
+/// pointer, well outside any mapped region for a zero-account /
+/// zero-data instruction. Surfaces the region-bounds gap: pre-fix
+/// formal-svm reads zero silently and returns Success; agave traps
+/// with `AccessViolation` and returns Failure. Source in
+/// `oob_read_src/`.
+const OOB_READ_SO: &[u8] = include_bytes!("fixtures/oob_read.so");
+/// BPF caller that invokes `system_instruction::transfer` between
+/// its first two account_infos. Companion fixture for Tier-1 #2
+/// (native programs). Source in `system_transfer_caller_src/`.
+const SYSTEM_TRANSFER_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/system_transfer_caller.so");
+/// BPF caller that invokes `system_instruction::create_account` to
+/// spawn `accounts[1]` from `accounts[0]`. Companion fixture for the
+/// second System variant under Tier-1 #2. Source in
+/// `system_create_account_caller_src/`.
+const SYSTEM_CREATE_ACCOUNT_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/system_create_account_caller.so");
+/// BPF caller that chains `Allocate` + `Assign` on one signer
+/// account. Exercises both simpler System variants in a single
+/// fixture (since each is a strict subset of CreateAccount). Source
+/// in `system_allocate_assign_caller_src/`.
+const SYSTEM_ALLOCATE_ASSIGN_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/system_allocate_assign_caller.so");
+/// BPF caller that invokes `system_instruction::create_account_with_seed`.
+/// Source in `system_create_account_with_seed_caller_src/`.
+const SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/system_create_account_with_seed_caller.so");
+/// BPF caller that CPIs into the ComputeBudget program. Source in
+/// `compute_budget_caller_src/`. Validates dispatch + 150-CU charge
+/// for the second native program.
+const COMPUTE_BUDGET_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/compute_budget_caller.so");
 
 fn pid(seed: u64) -> Pubkey {
     let mut b = [0u8; 32];
@@ -1134,6 +1167,608 @@ fn pda_finder_matches_mollusk() {
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged: ours={} mollusk={} — Pda.cuTryFind per-iteration \
          charge must match agave's per-attempt model",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Tier-1 #1 region bounds enforcement. The program dereferences
+/// `input.add(0x10000000)` — well outside any mapped region. Both
+/// engines must fail; pre-fix formal-svm let the read slide and
+/// returned Success.
+#[test]
+fn oob_read_fails_on_both() {
+    let program_id = pid(51);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_READ_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("formal-svm runs oob_read");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_READ_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    // Both engines must reject the OOB read.
+    assert!(
+        !matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm should fail on OOB read, got {:?}", fs_r.program_result,
+    );
+    assert!(
+        !matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk should fail on OOB read, got {:?}", m_r.program_result,
+    );
+}
+
+/// Tier-1 #2 native programs (System, foremost). A BPF caller does
+/// `invoke(&system_instruction::transfer(...), &[from, to])`. Mollusk
+/// has System registered by default; formal-svm's `Native.dispatch`
+/// recognises the all-zero program-id and routes to
+/// `System::execTransfer`. Both engines must end with
+/// `from -= n`, `to += n`.
+#[test]
+fn system_transfer_cpi_matches_mollusk() {
+    let caller_id = pid(60);
+    let from_pk   = pid(61);
+    let to_pk     = pid(62);
+
+    let lamports_to_send: u64 = 1_000;
+    let initial_from: u64 = 5_000_000;
+    let initial_to: u64   =   100_000;
+
+    // The System program's pubkey (all-zero). Passing it as a
+    // read-only AccountMeta on the outer ix registers it in the
+    // transaction's account-key set so agave can dispatch the CPI.
+    let system_program_id = Pubkey::new_from_array([0u8; 32]);
+
+    let ix = Instruction {
+        program_id: caller_id,
+        // System::Transfer wants accounts[0] = from (signer, writable),
+        // accounts[1] = to (writable), accounts[2] = system_program
+        // (read-only — needed for CPI dispatch registration only).
+        accounts: vec![
+            AccountMeta::new(from_pk, true),
+            AccountMeta::new(to_pk,   false),
+            AccountMeta::new_readonly(system_program_id, false),
+        ],
+        data: lamports_to_send.to_le_bytes().to_vec(),
+    };
+
+    // Lamport-bearing accounts are owned by the System program
+    // (all-zero pubkey).
+    let system_owner = Pubkey::new_from_array([0u8; 32]);
+
+    let from_pre = AccountSharedData::from(Account {
+        lamports: initial_from, data: vec![],
+        owner: system_owner, executable: false, rent_epoch: 0,
+    });
+    let to_pre = AccountSharedData::from(Account {
+        lamports: initial_to, data: vec![],
+        owner: system_owner, executable: false, rent_epoch: 0,
+    });
+    let from_pre_m = mollusk_account::Account {
+        lamports: initial_from, data: vec![],
+        owner: system_owner, executable: false, rent_epoch: 0,
+    };
+    let to_pre_m = mollusk_account::Account {
+        lamports: initial_to, data: vec![],
+        owner: system_owner, executable: false, rent_epoch: 0,
+    };
+
+    // Stub account for the System program. Both engines need this
+    // entry in the per-call accounts to satisfy the serializer's
+    // AccountMeta → AccountSharedData lookup; the program impl
+    // itself is registered separately (built-in in mollusk,
+    // `Native.dispatch` keyed on pubkey in formal-svm). Mirror
+    // mollusk's stub byte-for-byte so the resulting_accounts
+    // comparison stays clean.
+    let (mollusk_system_id, mollusk_system_acct) =
+        mollusk_svm::program::keyed_account_for_system_program();
+    let system_stub_fs = AccountSharedData::from(Account {
+        lamports: mollusk_system_acct.lamports,
+        data: mollusk_system_acct.data.clone(),
+        owner: mollusk_system_acct.owner,
+        executable: mollusk_system_acct.executable,
+        rent_epoch: mollusk_system_acct.rent_epoch,
+    });
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, SYSTEM_TRANSFER_CALLER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (from_pk, from_pre),
+        (to_pk,   to_pre),
+        (system_program_id, system_stub_fs),
+    ]).expect("formal-svm runs CPI → System::Transfer");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SYSTEM_TRANSFER_CALLER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (from_pk, from_pre_m),
+        (to_pk,   to_pre_m),
+        (mollusk_system_id, mollusk_system_acct),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    // Lamport equality between the two engines on each account.
+    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len(),
+        "resulting_accounts count diverged");
+    for ((k_a, a_a), (k_b, a_b)) in
+        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
+    {
+        assert_eq!(k_a, k_b, "pubkey order divergence");
+        assert_eq!(a_a.lamports(), a_b.lamports,
+            "lamports diverged for {k_a}: ours={} mollusk={}",
+            a_a.lamports(), a_b.lamports);
+    }
+
+    // Concrete post-state values both engines must agree on.
+    let fs_from = fs_r.resulting_accounts.iter().find(|(k, _)| *k == from_pk)
+        .expect("from account present").1.lamports();
+    let fs_to   = fs_r.resulting_accounts.iter().find(|(k, _)| *k == to_pk)
+        .expect("to account present").1.lamports();
+    assert_eq!(fs_from, initial_from - lamports_to_send,
+        "from balance: expected {}, got {}", initial_from - lamports_to_send, fs_from);
+    assert_eq!(fs_to,   initial_to   + lamports_to_send,
+        "to balance: expected {}, got {}", initial_to + lamports_to_send, fs_to);
+
+    // CU equality: caller's BPF insns + Cpi.cu (946 invoke_signed) +
+    // 150 (System::Transfer's per-instruction cost). Mollusk reports
+    // the same breakdown.
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for system_transfer CPI: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Tier-1 #2 native, variant 2: System::CreateAccount. A BPF caller
+/// CPIs `system_instruction::create_account(payer, newAcct,
+/// lamports, space, owner)`. Both engines must mutate `newAcct` from
+/// "uninitialized" (0 lamports, empty data, system-owned) to
+/// (lamports, `space` zero bytes, target owner). Payer's balance
+/// decrements by `lamports`.
+#[test]
+fn system_create_account_cpi_matches_mollusk() {
+    let caller_id  = pid(70);
+    let payer_pk   = pid(71);
+    let new_pk     = pid(72);
+    let target_owner = pid(73);  // arbitrary "program owner" for the new acct
+
+    let lamports_to_send: u64 = 2_000_000;
+    let space: u64 = 165;        // SPL Token's mint account size — common
+                                  // real-world value, exercises a non-zero
+                                  // space allocation through the syscall.
+    let initial_payer: u64 = 5_000_000;
+
+    let system_program_id = Pubkey::new_from_array([0u8; 32]);
+
+    // Outer ix.data: 8 B lamports | 8 B space | 32 B owner = 48 B.
+    let mut ix_data = Vec::with_capacity(48);
+    ix_data.extend_from_slice(&lamports_to_send.to_le_bytes());
+    ix_data.extend_from_slice(&space.to_le_bytes());
+    ix_data.extend_from_slice(&target_owner.to_bytes());
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(payer_pk, true),
+            AccountMeta::new(new_pk,   true),  // newAcct must sign too
+            AccountMeta::new_readonly(system_program_id, false),
+        ],
+        data: ix_data,
+    };
+
+    // pre-states: payer is funded + system-owned; newAcct is
+    // uninitialized (0 lamports, empty data, system-owned).
+    let payer_pre = AccountSharedData::from(Account {
+        lamports: initial_payer, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    });
+    let new_pre = AccountSharedData::from(Account {
+        lamports: 0, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    });
+    let payer_pre_m = mollusk_account::Account {
+        lamports: initial_payer, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    };
+    let new_pre_m = mollusk_account::Account {
+        lamports: 0, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    };
+
+    let (mollusk_system_id, mollusk_system_acct) =
+        mollusk_svm::program::keyed_account_for_system_program();
+    let system_stub_fs = AccountSharedData::from(Account {
+        lamports: mollusk_system_acct.lamports,
+        data: mollusk_system_acct.data.clone(),
+        owner: mollusk_system_acct.owner,
+        executable: mollusk_system_acct.executable,
+        rent_epoch: mollusk_system_acct.rent_epoch,
+    });
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, SYSTEM_CREATE_ACCOUNT_CALLER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (payer_pk, payer_pre),
+        (new_pk,   new_pre),
+        (system_program_id, system_stub_fs),
+    ]).expect("formal-svm runs CPI → System::CreateAccount");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SYSTEM_CREATE_ACCOUNT_CALLER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (payer_pk, payer_pre_m),
+        (new_pk,   new_pre_m),
+        (mollusk_system_id, mollusk_system_acct),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len(),
+        "resulting_accounts count diverged");
+    for ((k_a, a_a), (k_b, a_b)) in
+        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
+    {
+        assert_eq!(k_a, k_b, "pubkey order divergence");
+        assert_eq!(a_a.lamports(), a_b.lamports,
+            "lamports diverged for {k_a}: ours={} mollusk={}",
+            a_a.lamports(), a_b.lamports);
+        assert_eq!(a_a.data(), a_b.data.as_slice(),
+            "data diverged for {k_a}: ours.len={} mollusk.len={}",
+            a_a.data().len(), a_b.data.len());
+        assert_eq!(a_a.owner(), &a_b.owner,
+            "owner diverged for {k_a}");
+    }
+
+    // Concrete post-state checks for the new account.
+    let new_acct = fs_r.resulting_accounts.iter().find(|(k, _)| *k == new_pk)
+        .expect("newAcct present").1.clone();
+    assert_eq!(new_acct.lamports(), lamports_to_send,
+        "newAcct.lamports: expected {}, got {}", lamports_to_send, new_acct.lamports());
+    assert_eq!(new_acct.data().len(), space as usize,
+        "newAcct.data.len: expected {}, got {}", space, new_acct.data().len());
+    assert!(new_acct.data().iter().all(|&b| b == 0),
+        "newAcct.data should be all zeros");
+    assert_eq!(new_acct.owner(), &target_owner,
+        "newAcct.owner: expected {}, got {}", target_owner, new_acct.owner());
+
+    let payer = fs_r.resulting_accounts.iter().find(|(k, _)| *k == payer_pk)
+        .expect("payer present").1.clone();
+    assert_eq!(payer.lamports(), initial_payer - lamports_to_send,
+        "payer.lamports: expected {}, got {}",
+        initial_payer - lamports_to_send, payer.lamports());
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for system_create_account CPI: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Tier-1 #2 native, variants 3 + 4: `System::Allocate` and
+/// `System::Assign`. A BPF caller chains both on the same signer
+/// account: Allocate(space) then Assign(owner). After: data.len() =
+/// space (zeros), owner = target. Each CPI charges
+/// `Cpi.cu + 150`, so the chain is 2 * (946 + 150) = 2192 atop the
+/// caller's BPF insns.
+#[test]
+fn system_allocate_assign_cpi_matches_mollusk() {
+    let caller_id    = pid(80);
+    let acct_pk      = pid(81);
+    let target_owner = pid(82);
+
+    let space: u64 = 165;
+    let initial_lamports: u64 = 7_000_000;  // not touched by either op
+
+    let system_program_id = Pubkey::new_from_array([0u8; 32]);
+
+    let mut ix_data = Vec::with_capacity(40);
+    ix_data.extend_from_slice(&space.to_le_bytes());
+    ix_data.extend_from_slice(&target_owner.to_bytes());
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(acct_pk, true),  // signer for both ops
+            AccountMeta::new_readonly(system_program_id, false),
+        ],
+        data: ix_data,
+    };
+
+    // Pre-state: uninitialized (data_len=0, system-owned). Lamports
+    // are non-zero — Allocate doesn't require a zero balance, only
+    // the data + owner predicates.
+    let acct_pre = AccountSharedData::from(Account {
+        lamports: initial_lamports, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    });
+    let acct_pre_m = mollusk_account::Account {
+        lamports: initial_lamports, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    };
+
+    let (mollusk_system_id, mollusk_system_acct) =
+        mollusk_svm::program::keyed_account_for_system_program();
+    let system_stub_fs = AccountSharedData::from(Account {
+        lamports: mollusk_system_acct.lamports,
+        data: mollusk_system_acct.data.clone(),
+        owner: mollusk_system_acct.owner,
+        executable: mollusk_system_acct.executable,
+        rent_epoch: mollusk_system_acct.rent_epoch,
+    });
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, SYSTEM_ALLOCATE_ASSIGN_CALLER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct_pk, acct_pre),
+        (system_program_id, system_stub_fs),
+    ]).expect("formal-svm runs CPI → Allocate + Assign");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SYSTEM_ALLOCATE_ASSIGN_CALLER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct_pk, acct_pre_m),
+        (mollusk_system_id, mollusk_system_acct),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len());
+    for ((k_a, a_a), (k_b, a_b)) in
+        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
+    {
+        assert_eq!(k_a, k_b);
+        assert_eq!(a_a.lamports(), a_b.lamports,
+            "lamports diverged for {k_a}: ours={} mollusk={}",
+            a_a.lamports(), a_b.lamports);
+        assert_eq!(a_a.data(), a_b.data.as_slice(),
+            "data diverged for {k_a}");
+        assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
+    }
+
+    let post = fs_r.resulting_accounts.iter().find(|(k, _)| *k == acct_pk)
+        .expect("acct present").1.clone();
+    assert_eq!(post.lamports(), initial_lamports, "lamports should be unchanged");
+    assert_eq!(post.data().len(), space as usize,
+        "expected {} bytes, got {}", space, post.data().len());
+    assert!(post.data().iter().all(|&b| b == 0), "data should be all zeros");
+    assert_eq!(post.owner(), &target_owner, "owner should be reassigned");
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for allocate+assign chain: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Tier-1 #2 native, variant 5: `System::CreateAccountWithSeed`.
+/// The derived account address must equal `SHA256(base || seed ||
+/// owner)` — this is the deterministic-PDA-like pattern most vault
+/// programs use to spawn per-user accounts without an extra signer
+/// keypair. Verifies the seed-derivation arithmetic agrees with
+/// agave's `Pubkey::create_with_seed`.
+#[test]
+fn system_create_account_with_seed_cpi_matches_mollusk() {
+    let caller_id    = pid(90);
+    let payer_pk     = pid(91);
+    let base_pk      = pid(92);
+    let target_owner = pid(93);
+
+    let seed = "vault";
+    let lamports_to_send: u64 = 2_000_000;
+    let space: u64 = 64;
+    let initial_payer: u64 = 5_000_000;
+
+    // Derive the seed account address the same way agave / our
+    // execCreateAccountWithSeed will:
+    let derived_pk = Pubkey::create_with_seed(&base_pk, seed, &target_owner)
+        .expect("create_with_seed");
+
+    let system_program_id = Pubkey::new_from_array([0u8; 32]);
+
+    let mut ix_data = Vec::with_capacity(52 + seed.len());
+    ix_data.extend_from_slice(&lamports_to_send.to_le_bytes());
+    ix_data.extend_from_slice(&space.to_le_bytes());
+    ix_data.extend_from_slice(&target_owner.to_bytes());
+    ix_data.extend_from_slice(&(seed.len() as u32).to_le_bytes());
+    ix_data.extend_from_slice(seed.as_bytes());
+
+    let ix = Instruction {
+        program_id: caller_id,
+        // Outer ix.accounts:
+        //   [0] payer        (signer, writable)
+        //   [1] derived      (writable; matches SHA256(base||seed||owner))
+        //   [2] base         (signer)
+        //   [3] system_program (read-only, dispatch registration)
+        accounts: vec![
+            AccountMeta::new(payer_pk, true),
+            AccountMeta::new(derived_pk, false),
+            AccountMeta::new_readonly(base_pk, true),
+            AccountMeta::new_readonly(system_program_id, false),
+        ],
+        data: ix_data,
+    };
+
+    let payer_pre = AccountSharedData::from(Account {
+        lamports: initial_payer, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    });
+    let derived_pre = AccountSharedData::from(Account {
+        lamports: 0, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    });
+    let base_pre = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    });
+    let payer_pre_m = mollusk_account::Account {
+        lamports: initial_payer, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    };
+    let derived_pre_m = mollusk_account::Account {
+        lamports: 0, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    };
+    let base_pre_m = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: system_program_id, executable: false, rent_epoch: 0,
+    };
+
+    let (mollusk_system_id, mollusk_system_acct) =
+        mollusk_svm::program::keyed_account_for_system_program();
+    let system_stub_fs = AccountSharedData::from(Account {
+        lamports: mollusk_system_acct.lamports,
+        data: mollusk_system_acct.data.clone(),
+        owner: mollusk_system_acct.owner,
+        executable: mollusk_system_acct.executable,
+        rent_epoch: mollusk_system_acct.rent_epoch,
+    });
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (payer_pk,   payer_pre),
+        (derived_pk, derived_pre),
+        (base_pk,    base_pre),
+        (system_program_id, system_stub_fs),
+    ]).expect("formal-svm runs CPI → CreateAccountWithSeed");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (payer_pk,   payer_pre_m),
+        (derived_pk, derived_pre_m),
+        (base_pk,    base_pre_m),
+        (mollusk_system_id, mollusk_system_acct),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    // Lamport + data + owner equality across all accounts.
+    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len());
+    for ((k_a, a_a), (k_b, a_b)) in
+        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
+    {
+        assert_eq!(k_a, k_b);
+        assert_eq!(a_a.lamports(), a_b.lamports,
+            "lamports diverged for {k_a}: ours={} mollusk={}",
+            a_a.lamports(), a_b.lamports);
+        assert_eq!(a_a.data(), a_b.data.as_slice(),
+            "data diverged for {k_a}");
+        assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
+    }
+
+    // Post-state of the derived account specifically.
+    let derived = fs_r.resulting_accounts.iter().find(|(k, _)| *k == derived_pk)
+        .expect("derived present").1.clone();
+    assert_eq!(derived.lamports(), lamports_to_send);
+    assert_eq!(derived.data().len(), space as usize);
+    assert!(derived.data().iter().all(|&b| b == 0));
+    assert_eq!(derived.owner(), &target_owner);
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for CreateAccountWithSeed: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Tier-1 #2: ComputeBudget native program. The CPI body is a
+/// no-op on agave's side (the runtime handles ComputeBudget at
+/// transaction-prepare time, not in-program); CPI through it just
+/// charges 150 CU and returns success. Both engines must agree.
+#[test]
+fn compute_budget_cpi_matches_mollusk() {
+    let caller_id = pid(100);
+
+    let units: u32 = 200_000;
+    let mut ix_data = Vec::with_capacity(4);
+    ix_data.extend_from_slice(&units.to_le_bytes());
+
+    let compute_budget_id = Pubkey::new_from_array([
+        0x03, 0x06, 0x46, 0x6f, 0xe5, 0x21, 0x17, 0x32,
+        0xff, 0xec, 0xad, 0xba, 0x72, 0xc3, 0x9b, 0xe7,
+        0xbc, 0x8c, 0xe5, 0xbb, 0xc5, 0xf7, 0x12, 0x6b,
+        0x2c, 0x43, 0x9b, 0x3a, 0x40, 0x00, 0x00, 0x00,
+    ]);
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            // ComputeBudget needs to be in the transaction's
+            // account-key set for the CPI's program-id lookup, even
+            // though the BPF caller doesn't pass it through `invoke`.
+            AccountMeta::new_readonly(compute_budget_id, false),
+        ],
+        data: ix_data,
+    };
+
+    // Mollusk's `keyed_account_for_builtin_program` only handles
+    // System / loader stubs. ComputeBudget is a built-in too; we
+    // construct an equivalent stub manually.
+    let cb_stub_fs = AccountSharedData::from(Account {
+        lamports: 1, data: b"compute_budget_program".to_vec(),
+        owner: solana_sdk_ids::native_loader::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let cb_stub_m = mollusk_account::Account {
+        lamports: 1, data: b"compute_budget_program".to_vec(),
+        owner: solana_sdk_ids::native_loader::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, COMPUTE_BUDGET_CALLER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (compute_budget_id, cb_stub_fs),
+    ]).expect("formal-svm runs CPI → ComputeBudget");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        COMPUTE_BUDGET_CALLER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (compute_budget_id, cb_stub_m),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for ComputeBudget CPI: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }

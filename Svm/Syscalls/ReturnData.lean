@@ -6,8 +6,19 @@ import Svm.SBPF.Machine
 namespace Svm.SBPF
 namespace ReturnData
 
-/-- CU charge for both syscalls (`syscall_base_cost = 100`). -/
-def cu : Nat := 100
+/-- `sol_set_return_data(ptr, len)`: `syscall_base_cost (100) +
+    len / cpi_bytes_per_unit (250)`. Source:
+    `blueshift/sbpf/crates/runtime/src/syscalls/return_data.rs:19-23`. -/
+@[simp] def cuSet (s : State) : Nat := 100 + s.regs.r2 / 250
+
+/-- `sol_get_return_data(out, max_len, pubkey_out)`: `syscall_base_cost
+    (100) + (min(max_len, data_len) + 32) / cpi_bytes_per_unit (250)`
+    when the copy length is non-zero — else just the base. Source:
+    `blueshift/sbpf/crates/runtime/src/syscalls/return_data.rs:52-66`. -/
+@[simp] def cuGet (s : State) : Nat :=
+  let copyLen := Nat.min s.regs.r2 s.returnData.size
+  if copyLen = 0 then 100
+  else 100 + (copyLen + 32) / 250
 
 /-- `sol_set_return_data(ptr, len)`: replace returnData with `ptr[..len]`. -/
 @[simp] def execSet (s : State) : State :=

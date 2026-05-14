@@ -22,7 +22,7 @@ solana-program-entrypoint = "3.1.1"  # for MAX_PERMITTED_DATA_INCREASE / BPF_ALI
 # Optional + feature-gated: only built and linked when
 # `cargo test --features diff-mollusk` is invoked. Otherwise zero
 # cost to the default build.
-mollusk-svm = { version = "0.12.1-agave-4.0", optional = true, features = ["register-tracing"] }
+mollusk-svm = { version = "0.12.1-agave-4.0", optional = true, features = ["register-tracing", "all-builtins"] }
 
 [dev-dependencies]
 # Round-trip oracle: agave's program-side deserializer (the one BPF

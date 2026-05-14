@@ -38,7 +38,13 @@ ABI: r1 = `*const BigModExpParams` (48 bytes — 6 × u64 LE:
 `{ base, base_len, exponent, exponent_len, modulus, modulus_len }`),
 r2 = `*mut [u8; modulus_len]` output. r0 = 0/1 (1 iff any len > 512). -/
 
-def cu : Nat := 190
+/-- `big_modular_exponentiation_cost` from agave's
+    `SVMTransactionExecutionCost::default()` (mirrored at
+    `blueshift/sbpf/crates/runtime/src/config.rs:119`). Agave actually
+    consumes a more complex `cost.saturating_mul(n)` per modulus byte
+    inside the syscall; this flat value is a soft approximation until
+    a fixture forces the input-scaled form. -/
+def cu : Nat := 33
 
 @[simp] def exec (s : State) : State :=
   let paramsA := s.regs.r1

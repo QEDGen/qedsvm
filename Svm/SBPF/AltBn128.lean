@@ -79,11 +79,43 @@ opaque compression (opId : UInt64) (input : @& ByteArray) : Option ByteArray
 
 /-! ## Syscall bindings -/
 
-/-- `sol_alt_bn128_group_op` CU charge. Mirrors agave's
-    `bn128_g1_addition` baseline; real cost varies per op. -/
-def cuGroupOp     : Nat := 334
-/-- `sol_alt_bn128_compression` CU charge (g1_compress baseline). -/
-def cuCompression : Nat := 30
+/-! ## CU charges
+
+Per agave's `SVMTransactionExecutionCost::default()`:
+
+| op                | cost                                                |
+|-------------------|-----------------------------------------------------|
+| G1/G2 ADD         | `alt_bn128_addition_cost = 334`                     |
+| G1/G2 MUL         | `alt_bn128_multiplication_cost = 3_840`             |
+| PAIRING           | `36_364 + (n-1) * 12_121`  (`n` ≥ 1 input pairs)    |
+| G1 COMPRESS       | 30                                                  |
+| G1 DECOMPRESS     | 398                                                 |
+| G2 COMPRESS       | 86                                                  |
+| G2 DECOMPRESS     | 13_610                                              |
+
+Source: `blueshift/sbpf/crates/runtime/src/config.rs:111-118`. The op_id
+lives in `r1`; pairing's `n` is derived from `r3` (input size / 192). -/
+
+/-- Strip the LE flag so we compare against the bare BE op number. -/
+private def baseOp (opId : Nat) : Nat := opId &&& (LE_FLAG - 1)
+
+@[simp] def cuGroupOp (s : State) : Nat :=
+  let opId := baseOp s.regs.r1
+  if opId = 0 ∨ opId = 4 then 334            -- G1/G2 ADD
+  else if opId = 2 ∨ opId = 6 then 3_840     -- G1/G2 MUL
+  else if opId = 3 then                       -- PAIRING (n = input_size / 192)
+    let n := s.regs.r3 / 192
+    if n ≤ 1 then 36_364
+    else 36_364 + (n - 1) * 12_121
+  else 334
+
+@[simp] def cuCompression (s : State) : Nat :=
+  let opId := baseOp s.regs.r1
+  if opId = 0 then 30          -- G1 COMPRESS
+  else if opId = 1 then 398    -- G1 DECOMPRESS
+  else if opId = 2 then 86     -- G2 COMPRESS
+  else if opId = 3 then 13_610 -- G2 DECOMPRESS
+  else 30
 
 /-- Output buffer size for a given group-op `op_id`. -/
 @[simp] def groupOpOutSize (opId : Nat) : Nat :=

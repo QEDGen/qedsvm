@@ -123,9 +123,25 @@ fn parse_non_dup_record(
         return Err(DeserializeError::DataLengthOverflow(data_len));
     }
     let data = r.read_bytes(data_len)?.to_vec();
-    // Skip alignment padding + realloc reserve + rent_epoch.
-    let align_pad = (8 - data_len % 8) % 8;
-    r.skip(align_pad + MAX_PERMITTED_DATA_INCREASE)?;
+    // The serializer reserved a fixed-size block per account:
+    //   data_len_pre + align_pad_pre + MAX_PERMITTED_DATA_INCREASE
+    // bytes for the [data | align | realloc-reserve] region. When the
+    // program grows the data, it consumes some of the realloc reserve
+    // — so the *remaining* pad after the new data + new align is
+    //   pre_data_len + pre_align - data_len_post - align_post
+    //   + MAX_PERMITTED_DATA_INCREASE.
+    // (Equivalently: 10240 - growth + alignment delta.)
+    let pre_data_len = pre_accounts
+        .iter()
+        .find(|(k, _)| *k == *meta_key)
+        .map(|(_, a)| a.data().len())
+        .unwrap_or(0);
+    let pre_align_pad = (8 - pre_data_len % 8) % 8;
+    let post_align_pad = (8 - data_len % 8) % 8;
+    let remaining_pad = pre_data_len + pre_align_pad
+        + MAX_PERMITTED_DATA_INCREASE
+        - data_len - post_align_pad;
+    r.skip(post_align_pad + remaining_pad)?;
     r.skip(8)?;  // rent_epoch
 
     // Build the post-execution account. We inherit `executable` and
