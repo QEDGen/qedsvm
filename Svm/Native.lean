@@ -33,11 +33,8 @@
 import Svm.Native.AcctInput
 import Svm.Native.System
 import Svm.Native.ComputeBudget
-import Svm.Native.AddressLookupTable
-import Svm.Native.Config
 import Svm.Native.Precompiles
 import Svm.Native.BpfLoaderUpgradeable
-import Svm.Native.Stake
 
 namespace Svm.Native
 
@@ -46,25 +43,55 @@ open Svm.SBPF.Memory
 /-- Top-level native dispatch. Tries each native program in priority
     order; returns the first match.
 
-    Implemented:
+    ## Scope alignment with Firedancer
+
+    Firedancer's builtin program registry
+    (`src/flamenco/runtime/program/fd_builtin_programs.c`) is the
+    second-client gauge of which native programs are still
+    load-bearing:
+
+    ```
+    SYSTEM_PROGRAM_BUILTIN,
+    VOTE_PROGRAM_BUILTIN,
+    LOADER_V4_BUILTIN,
+    BPF_LOADER_DEPRECATED_BUILTIN,
+    BPF_LOADER_BUILTIN,
+    BPF_LOADER_UPGRADEABLE_BUILTIN,
+    COMPUTE_BUDGET_PROGRAM_BUILTIN,
+    ZK_TOKEN_PROOF_PROGRAM_BUILTIN,
+    ZK_ELGAMAL_PROOF_PROGRAM_BUILTIN
+    ```
+
+    Native programs *absent* from this list (Stake, Config,
+    AddressLookupTable) have been migrated to Core BPF on mainnet:
+    the canonical semantics now live in the deployed BPF program
+    owned by `BPFLoaderUpgradeab1e…`, dispatched through the
+    standard BPF VM path — which is already covered by our BPF
+    interpreter + BPF Loader v3 Upgradeable native. Modeling them as
+    natives would be modeling dead code. We mirror Firedancer's
+    decision and don't ship native dispatchers for them.
+
+    ## Implemented
+
       - System (all 13 variants)
       - ComputeBudget (no-op + 150 CU)
-      - AddressLookupTable (all 5 variants)
-      - Config (the single `Store` instruction)
       - BPF Loader v3 Upgradeable (all 8 variants)
-      - Stake (foundation: 8 management variants + decoder for all 18;
-        operational variants DelegateStake/Split/Merge/Withdraw/
-        Deactivate/MoveStake/MoveLamports/AuthorizeWithSeed/
-        AuthorizeCheckedWithSeed/DeactivateDelinquent are decoded but
-        dispatch returns r0=1 — see [[native-programs-design]])
       - The three sig-verify precompiles (ed25519, secp256k1,
-        secp256r1)
+        secp256r1) — Firedancer's `fd_precompiles.c` mirror
 
-    **Intentionally unimplemented** (see
-    [[native-programs-scope-decision]]):
-      - Vote — SIMD-0387 is migrating it out of builtins.
-      - ZK ElGamal Proof — Token-2022 confidential transfers;
-        narrow utility, large math surface.
+    ## Not modeled (intentionally — see
+    [[native-programs-scope-decision]])
+
+      - **Stake, Config, AddressLookupTable** — migrated to Core
+        BPF; Firedancer doesn't ship native dispatchers either. Real
+        semantics live in the deployed BPF program at their
+        respective on-chain program-ids, handled by our BPF VM.
+      - **Vote** — SIMD-0387 is migrating it out of builtins.
+        Firedancer still has `VOTE_PROGRAM_BUILTIN` but the migration
+        is in progress; we skip until the dust settles.
+      - **ZK ElGamal Proof** — Token-2022 confidential transfers;
+        narrow utility, large math surface. Firedancer ships it
+        but our scope skips for now.
 
     Not yet covered: BPF Loader v1 (deprecated), v2, v4. -/
 def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
@@ -73,14 +100,8 @@ def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
     System.dispatch ixData accts mem
   else if pid = ComputeBudget.PROGRAM_ID then
     ComputeBudget.dispatch ixData accts mem
-  else if pid = AddressLookupTable.PROGRAM_ID then
-    AddressLookupTable.dispatch ixData accts mem
-  else if pid = Config.PROGRAM_ID then
-    some (Config.dispatch ixData accts mem)
   else if pid = BpfLoaderUpgradeable.PROGRAM_ID then
     BpfLoaderUpgradeable.dispatch ixData accts mem
-  else if pid = Stake.PROGRAM_ID then
-    Stake.dispatch ixData accts mem
   else
     Precompiles.dispatch pid ixData accts mem
 
