@@ -1772,3 +1772,4 @@ fn compute_budget_cpi_matches_mollusk() {
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }
+

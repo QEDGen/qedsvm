@@ -17,6 +17,7 @@
 -/
 
 import Svm.SBPF.Runner
+import Svm.Native.Precompiles
 
 namespace Svm.Ffi
 
@@ -193,5 +194,31 @@ def runWithRegistry (elf input registry : ByteArray) (cuBudget : UInt64)
   | some (s, fuelRemaining) =>
     let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
     encodeRun s input.size (UInt64.ofNat consumed)
+
+/-! ## Top-level precompile dispatch
+
+Agave's three sig-verify precompiles (`Ed25519SigVerify1111…`,
+`KeccakSecp256k11111…`, `Secp256r1SigVerify1111…`) never enter the
+BPF VM. Rust callers detect their pubkeys early in
+`process_instruction` and bypass the BPF path. This entrypoint runs
+the Lean spec (`Svm.Native.Precompiles.dispatch`) end-to-end against
+the instruction data and returns a compact `(r0, cu)` pair.
+
+Wire format of the returned `ByteArray` (16 bytes total):
+  bytes 0..8   u64 LE  r0 (0 = Success; 1 = failure)
+  bytes 8..16  u64 LE  CU consumed
+
+`pidBytes` is the 32-byte raw program pubkey; we LE-decode it into
+the same `Nat` representation the dispatch table keys on. Non-
+precompile pids return `(r0=1, cu=0)` — callers are expected to
+gate this entrypoint behind their own precompile check, but the
+fallback is safe. -/
+@[export formal_svm_precompile_dispatch]
+def precompileDispatch (pidBytes ixData : ByteArray) : ByteArray :=
+  let pid := pubkeyToNat pidBytes 0
+  let r := match Svm.Native.Precompiles.dispatch pid ixData [] (fun _ => 0) with
+           | some res => (UInt64.ofNat res.r0, UInt64.ofNat res.cu)
+           | none     => (1, 0)
+  encodeU64 r.1 ++ encodeU64 r.2
 
 end Svm.Ffi

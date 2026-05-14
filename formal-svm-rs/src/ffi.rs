@@ -82,6 +82,21 @@ extern "C" {
         cu_budget: u64,
     ) -> lean_obj_res;
 
+    /// Top-level dispatch for the three sig-verify precompiles
+    /// (ed25519 / secp256k1 / secp256r1). agave routes these without
+    /// entering the BPF VM; this entrypoint runs
+    /// `Svm.Native.Precompiles.dispatch` against the raw ix data.
+    ///
+    /// Inputs: `pid_bytes` (32-byte program pubkey) + `ix_data`
+    /// (the full instruction-data blob).
+    /// Output: a 16-byte ByteArray laid out as
+    ///   bytes 0..8   u64 LE  r0  (0 = Success; 1 = failure)
+    ///   bytes 8..16  u64 LE  cu_consumed
+    pub fn formal_svm_precompile_dispatch(
+        pid_bytes: lean_obj_arg,
+        ix_data: lean_obj_arg,
+    ) -> lean_obj_res;
+
     // ─ Out-of-line wrappers (csrc/init_glue.c). ───────────────────
     fn leanfsvm_io_result_is_error(r: b_lean_obj_arg) -> u8;
     fn leanfsvm_dec_ref(o: lean_obj_arg);

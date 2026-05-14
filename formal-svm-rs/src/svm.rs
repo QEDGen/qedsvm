@@ -143,6 +143,33 @@ impl Svm {
         instruction: &Instruction,
         accounts: &[(Pubkey, AccountSharedData)],
     ) -> Result<InstructionResult, SvmError> {
+        // Top-level precompile dispatch. Agave's runtime detects
+        // ed25519 / secp256k1 / secp256r1 program-ids before
+        // invoking the BPF VM and routes to a Rust `verify()` closure.
+        // The Lean spec (`Svm.Native.Precompiles.dispatch`) is the
+        // source of truth; we call it directly via FFI without
+        // serializing parameters or running the interpreter.
+        //
+        // Precompiles never mutate accounts and never produce logs or
+        // return data, so the resulting state mirrors the input
+        // verbatim.
+        if is_precompile(&instruction.program_id) {
+            let pid_bytes = instruction.program_id.to_bytes();
+            let (r0, cu) = crate::run_precompile(&pid_bytes, &instruction.data);
+            let program_result = if r0 == 0 {
+                ProgramResult::Success
+            } else {
+                ProgramResult::Failure { exit_code: r0 }
+            };
+            return Ok(InstructionResult {
+                program_result,
+                compute_units_consumed: cu,
+                logs: vec![],
+                return_data: vec![],
+                resulting_accounts: accounts.to_vec(),
+            });
+        }
+
         let elf = self.programs.get(&instruction.program_id)
             .ok_or_else(|| SvmError::UnknownProgram(instruction.program_id))?;
 
@@ -261,6 +288,18 @@ fn ix_accounts_writable_sysvar(instruction: &Instruction) -> Option<Pubkey> {
         }
     }
     None
+}
+
+/// Whether `pid` is one of the three sig-verify precompile pubkeys
+/// (`Ed25519SigVerify1111…`, `KeccakSecp256k11111…`,
+/// `Secp256r1SigVerify1111…`). agave's runtime routes these without
+/// entering the BPF VM; we mirror by detecting them in
+/// `process_instruction` and calling
+/// `Svm.Native.Precompiles.dispatch` via FFI.
+fn is_precompile(pid: &Pubkey) -> bool {
+    *pid == solana_sdk_ids::ed25519_program::ID
+        || *pid == solana_sdk_ids::secp256k1_program::ID
+        || *pid == solana_sdk_ids::secp256r1_program::ID
 }
 
 /// Per-account / cross-account invariants agave enforces at

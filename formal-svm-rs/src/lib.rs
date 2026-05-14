@@ -89,6 +89,39 @@ pub fn run_buffer_with_registry(
     wire::decode(&bytes)
 }
 
+/// Drive the Lean precompile dispatcher
+/// (`Svm.Native.Precompiles.dispatch`) for the three sig-verify
+/// precompile pubkeys. Returns `(r0, compute_units_consumed)`:
+///   - `r0 == 0` → all signatures verified (ProgramResult::Success).
+///   - `r0 == 1` → any failure (bad offsets, bad sig, out-of-bounds,
+///     non-`0xFFFF` instruction_index, etc).
+///   - `cu` is `num_signatures × per_sig_cost` (per agave's
+///     cost-model `*_VERIFY_*_COST` constants), charged regardless
+///     of pass/fail.
+///
+/// This bypasses the BPF VM entirely — precompiles never enter it
+/// in agave either; the Solana runtime detects their pubkey early
+/// in `process_instruction` and routes to a Rust `verify()` closure.
+pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> (u64, u64) {
+    let g = ffi::lock();
+    let (r0, cu) = unsafe {
+        let pid_obj = ffi::alloc_bytearray(&g, pid);
+        let ix_obj = ffi::alloc_bytearray(&g, ix_data);
+        let result_obj = ffi::formal_svm_precompile_dispatch(pid_obj, ix_obj);
+        let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
+        ffi::dec_ref(&g, result_obj);
+        // 16-byte wire format: [u64 LE r0 ‖ u64 LE cu].
+        debug_assert_eq!(bytes.len(), 16, "precompile FFI returned {} bytes", bytes.len());
+        let mut r0_b = [0u8; 8];
+        let mut cu_b = [0u8; 8];
+        r0_b.copy_from_slice(&bytes[0..8]);
+        cu_b.copy_from_slice(&bytes[8..16]);
+        (u64::from_le_bytes(r0_b), u64::from_le_bytes(cu_b))
+    };
+    drop(g);
+    (r0, cu)
+}
+
 /// Build the canonical registry blob from a list of (pubkey, elf) pairs.
 /// Matches `Svm.Ffi.parseRegistry` in the Lean side.
 pub fn encode_registry(entries: &[(&[u8; 32], &[u8])]) -> Vec<u8> {
