@@ -28,6 +28,13 @@ def STACK_START    : Nat := 0x200000000
 def HEAP_START     : Nat := 0x300000000
 def INPUT_START    : Nat := 0x400000000
 
+/-- Size of each sBPF memory region. Same value as the spacing between
+    `BYTECODE_START`/`STACK_START`/`HEAP_START`/`INPUT_START`. Also the
+    threshold below which the ELF loader's `R_BPF_64_Relative` patch
+    bumps an address into the program region (`MM_PROGRAM_START` in
+    agave / solana-sbpf nomenclature). -/
+def MM_REGION_SIZE : Nat := 0x100000000
+
 /-! ## Effective address computation -/
 
 /-- Compute effective address from base register value and signed offset.

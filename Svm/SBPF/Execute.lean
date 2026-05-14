@@ -71,18 +71,23 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_alt_bn128_group_op                      => AltBn128.cuGroupOp
   | .sol_alt_bn128_compression                   => AltBn128.cuCompression
   | .sol_big_mod_exp                             => BigModExp.cu
-  -- PDA
-  | .sol_create_program_address
-  | .sol_try_find_program_address                => Pda.cu
+  -- PDA. `create` is a fixed `cuPerAttempt`; `try_find` scales
+  -- per bump-loop iteration (matches agave's pre-loop + per-failed
+  -- iter charging in `SyscallTryFindProgramAddress::rust`).
+  | .sol_create_program_address                  => Pda.cuCreate
+  | .sol_try_find_program_address                => Pda.cuTryFind s
   -- CPI
   | .sol_invoke_signed | .sol_invoke_signed_c    => Cpi.cu
-  -- Sysvars
-  | .sol_get_clock_sysvar
-  | .sol_get_rent_sysvar
-  | .sol_get_epoch_schedule_sysvar
-  | .sol_get_last_restart_slot
-  | .sol_get_fees_sysvar
-  | .sol_get_epoch_rewards_sysvar
+  -- Sysvars — agave charges `sysvar_base_cost + size_of::<T>()`,
+  -- so each typed sysvar getter has its own constant. `sol_get_sysvar`
+  -- (the size-parameterized generic) and `sol_get_epoch_stake` (which
+  -- doesn't fetch a struct) stay on the bare base cost.
+  | .sol_get_clock_sysvar                        => Sysvar.cuClock
+  | .sol_get_rent_sysvar                         => Sysvar.cuRent
+  | .sol_get_epoch_schedule_sysvar               => Sysvar.cuEpochSchedule
+  | .sol_get_last_restart_slot                   => Sysvar.cuLastRestartSlot
+  | .sol_get_fees_sysvar                         => Sysvar.cuFees
+  | .sol_get_epoch_rewards_sysvar                => Sysvar.cuEpochRewards
   | .sol_get_sysvar                              => Sysvar.cu
   | .sol_get_epoch_stake                         => Sysvar.cu
   -- Return data
@@ -311,18 +316,25 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .call_local target =>
     -- Push a `CallFrame` (retPc, r6, r7, r8, r9, r10), then jump
     -- and bump r10 by one V0 frame. Matches solana-sbpf's
-    -- `Interpreter::push_frame`: with V0 stack-frame gaps,
-    -- r10 += stack_frame_size * 2 = 0x2000, *and* r6–r9 are
-    -- snapshotted so `.exit` can restore them (LLVM treats those
-    -- as callee-saved). V1/V2 leave r10 to the program — not
-    -- modeled yet. r10 is updated via direct record syntax (not
-    -- `RegFile.set`) so the user-visible no-op axiom for r10
-    -- writes is preserved.
+    -- `Interpreter::push_frame` AS WIRED BY THE AGAVE PROGRAM-RUNTIME
+    -- WE COMPARE AGAINST: agave 4.0 sets
+    --   enable_stack_frame_gaps = !feature_set.virtual_address_space_adjustments
+    -- and `FeatureSet::all_enabled()` (which mollusk uses) activates
+    -- that feature, leaving gaps **off**. So even though the V0 sBPF
+    -- version reports `stack_frame_gaps() = true`, the effective
+    -- num_frames is 1 and r10 bumps by `stack_frame_size = 0x1000`,
+    -- not 0x2000. (Earlier mainnet feature gates flipped the same
+    -- way for direct mapping; the net is the same: modern agave bumps
+    -- by 0x1000 per call.) r6–r9 are snapshotted so `.exit` can
+    -- restore them (LLVM treats those as callee-saved). V1/V2 leave
+    -- r10 to the program — not modeled yet. r10 is updated via direct
+    -- record syntax (not `RegFile.set`) so the user-visible no-op
+    -- axiom for r10 writes is preserved.
     let frame : CallFrame := {
       retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
       savedR8 := rf.r8, savedR9 := rf.r9, savedR10 := rf.r10 }
     { s with pc := target
-             regs := { rf with r10 := rf.r10 + 0x2000 }
+             regs := { rf with r10 := rf.r10 + 0x1000 }
              callStack := frame :: s.callStack }
 
   | .callx reg =>
@@ -582,7 +594,7 @@ abbrev Step := State → PUnit × State
       retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
       savedR8 := rf.r8, savedR9 := rf.r9, savedR10 := rf.r10 }
     ((), { s with pc := target
-                  regs := { rf with r10 := rf.r10 + 0x2000 }
+                  regs := { rf with r10 := rf.r10 + 0x1000 }
                   callStack := frame :: s.callStack })
 
   -- Indirect call — see step's `.callx` arm.

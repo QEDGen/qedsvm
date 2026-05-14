@@ -66,6 +66,22 @@ const CPI_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_caller.so");
 /// through the CPI write-back path. Source in
 /// `cpi_increment_caller_src/`.
 const CPI_INCREMENT_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_increment_caller.so");
+/// Forwards TWO writable accounts via `invoke(&ix, &[a, b])` to a
+/// target program. Exercises Phase 3-N marshaling: both AccountInfo
+/// blocks must serialize into the callee's input region with the
+/// correct cumulative offsets, and the per-slot write-back loop must
+/// propagate any modifications back through the right pointers.
+/// Source in `cpi_two_account_caller_src/`.
+const CPI_TWO_ACCOUNT_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_two_account_caller.so");
+/// Loads the address of a `static` (lives in `.rodata`), extracts the
+/// upper 32 bits, and writes them as 4-byte instruction `return_data`.
+/// Surfaces the `R_BPF_64_Relative`-in-`.text` divergence: agave
+/// patches the `lddw` imm by `+= MM_REGION_SIZE` at load time so the
+/// upper 32 bits are non-zero; a formal-svm without the matching
+/// patch would leave the imm as the raw section VA (upper = 0) and
+/// diverge from mollusk on return_data. Source in
+/// `rodata_addr_returner_src/`.
+const RODATA_ADDR_RETURNER_SO: &[u8] = include_bytes!("fixtures/rodata_addr_returner.so");
 
 fn pid(seed: u64) -> Pubkey {
     let mut b = [0u8; 32];
@@ -426,19 +442,179 @@ fn token_initialize_mint2_matches_mollusk() {
         "Mint data diverged after InitializeMint2");
     assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
     assert_eq!(fs_acct.owner(), &m_acct.owner, "owner diverged");
-    // CU equality: known gap of ~176 CU for token InitializeMint2.
-    // Functional behavior (log + Mint write + program_result) matches
-    // mollusk exactly; the residual CU drift is small enough to be
-    // tracked separately and big enough to point at a specific
-    // accounting line we haven't pinned down. Asserted as
-    // approximately-equal so a future regression that *widens* the
-    // gap is still caught.
-    let cu_diff = m_r.compute_units_consumed.abs_diff(fs_r.compute_units_consumed);
-    assert!(
-        cu_diff < 200,
-        "CU drift for InitializeMint2 exceeded the documented ~176-CU \
-         gap: ours={} mollusk={} (diff={})",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed, cu_diff,
+    // CU exact equality: the 176-CU drift documented prior to
+    // 2026-05-14 traced back to our `.call_local` bumping r10 by
+    // 0x2000 (V0 + stack-frame-gaps) whereas modern agave 4.x with
+    // `FeatureSet::all_enabled()` runs V0 with
+    // `enable_stack_frame_gaps = false`, so r10 bumps by 0x1000.
+    // Once fixed, byte-for-byte CU equality returns on this fixture.
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for InitializeMint2: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Build a 165-byte `spl_token::state::Account` (TokenAccount) blob
+/// with the given mint, owner, and amount. All COption fields are
+/// `None`, state is `Initialized`. Layout taken from
+/// `spl_token::state::Account::pack_into_slice`:
+///
+///   0..32   mint
+///   32..64  owner
+///   64..72  amount             (u64 LE)
+///   72..76  delegate tag       (0 = None)
+///   76..108 delegate pubkey
+///   108     state              (1 = Initialized)
+///   109..113 is_native tag     (0 = None)
+///   113..121 is_native value
+///   121..129 delegated_amount  (u64 LE, 0)
+///   129..133 close_authority tag (0 = None)
+///   133..165 close_authority pubkey
+const TOKEN_ACCOUNT_LEN: usize = 165;
+fn build_token_account(mint: &Pubkey, owner: &Pubkey, amount: u64) -> Vec<u8> {
+    let mut d = vec![0u8; TOKEN_ACCOUNT_LEN];
+    d[0..32].copy_from_slice(mint.as_ref());
+    d[32..64].copy_from_slice(owner.as_ref());
+    d[64..72].copy_from_slice(&amount.to_le_bytes());
+    // delegate tag (72..76) stays 0 (None).
+    d[108] = 1; // AccountState::Initialized
+    // is_native tag (109..113) stays 0 (None).
+    // delegated_amount (121..129) stays 0.
+    // close_authority tag (129..133) stays 0 (None).
+    d
+}
+
+/// SPL Token `Transfer` (discriminant 3). Moves 250 lamports of a
+/// token from `source` to `destination`, both owned by the same
+/// authority. Real on-chain Token path — exercises the same .text
+/// region as InitializeMint2 plus a memcpy/memmove-style data
+/// rearrangement, two TokenAccount unpack/pack round-trips, and the
+/// 64-bit checked-add/sub arithmetic.
+///
+/// This is the "should just work" claim from production-parity.md:
+/// Transfer has no CPI, no PDA derivation, no sysvar read beyond
+/// what's already wired. If it diverges, the divergence is a real
+/// new bug.
+#[test]
+fn token_transfer_matches_mollusk() {
+    let program_id = pid(7);
+    let mint = pid(30);
+    let authority = pid(31);
+    let source_key = pid(32);
+    let dest_key = pid(33);
+
+    const TRANSFER_AMOUNT: u64 = 250;
+    const SOURCE_INITIAL: u64 = 1_000;
+    const DEST_INITIAL: u64 = 0;
+    const LAMPORTS: u64 = 2_039_280; // standard rent-exempt for 165 bytes
+
+    let source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
+    let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
+
+    let pre_src_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_dst_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+
+    let pre_src_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_dst_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    // Transfer instruction data: [3, amount_le_u64...] = 9 bytes.
+    let mut ix_data = Vec::with_capacity(9);
+    ix_data.push(3);
+    ix_data.extend_from_slice(&TRANSFER_AMOUNT.to_le_bytes());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),       // writable, not signer
+            AccountMeta::new(dest_key, false),         // writable, not signer
+            AccountMeta::new_readonly(authority, true), // readonly, signer
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, pre_src_shared),
+            (dest_key, pre_dst_shared),
+            (authority, pre_auth_shared),
+        ])
+        .expect("formal-svm runs spl-token Transfer");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, pre_src_mollusk),
+        (dest_key, pre_dst_mollusk),
+        (authority, pre_auth_mollusk),
+    ]);
+
+    // Surface both results before asserting so a divergence is debuggable.
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+    if !fs_r.logs.is_empty() {
+        eprintln!("fs.logs ({}):", fs_r.logs.len());
+        for (i, l) in fs_r.logs.iter().enumerate() {
+            eprintln!("  [{i}] {}", String::from_utf8_lossy(l));
+        }
+    }
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success on Transfer, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on Transfer, got {:?}", m_r.program_result);
+
+    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
+    assert_eq!(fs_r.resulting_accounts.len(), 3);
+    assert_eq!(m_r.resulting_accounts.len(), 3);
+
+    // Source and destination data should diverge from the initial in
+    // a structured way (amount field at offset 64..72). Assert the
+    // exact post-state matches mollusk byte-for-byte.
+    for i in 0..3 {
+        let (_, fa) = &fs_r.resulting_accounts[i];
+        let (_, ma) = &m_r.resulting_accounts[i];
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "account[{i}] data diverged after Transfer");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "account[{i}] lamports diverged after Transfer");
+        assert_eq!(fa.owner(), &ma.owner,
+            "account[{i}] owner diverged after Transfer");
+    }
+
+    // Strict CU match — Transfer should be deterministic.
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }
 
@@ -733,3 +909,180 @@ fn noop_with_instruction_data_matches_mollusk() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success));
     assert_eq!(fs_r.return_data, m_r.return_data);
 }
+
+/// Phase 3-N CPI: caller forwards TWO writable accounts to
+/// `incrementer.so`. The callee operates on `accounts[0]` only,
+/// incrementing its `data[0..8]` u64. `accounts[1]` is passed through
+/// unmodified. Asserts both engines agree on the full post-state —
+/// proving N=2 marshaling (cumulative per-block offsets, per-slot
+/// write-back pointers) is byte-for-byte correct, *and* that an
+/// account that the callee reads but doesn't mutate still round-trips.
+#[test]
+fn cpi_two_account_caller_forwards_to_incrementer() {
+    let caller_id = pid(60);
+    let callee_id = pid(61);
+    let acct0_key = pid(62);
+    let acct1_key = pid(63);
+
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+    let mk_shared = || AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    });
+    let mk_mollusk = || mollusk_account::Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    };
+    let callee_program_shared = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_mollusk = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(acct0_key, false),
+            AccountMeta::new(acct1_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_TWO_ACCOUNT_CALLER_SO);
+    fs.add_program(&callee_id, INCREMENTER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct0_key, mk_shared()),
+        (acct1_key, mk_shared()),
+        (callee_id, callee_program_shared),
+    ]).expect("formal-svm runs N=2 CPI");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_TWO_ACCOUNT_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), INCREMENTER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct0_key, mk_mollusk()),
+        (acct1_key, mk_mollusk()),
+        (callee_id, callee_program_mollusk),
+    ]);
+
+    let our_logs: Vec<String> = fs_r.logs.iter()
+        .map(|b| String::from_utf8_lossy(b).into_owned()).collect();
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected Success on N=2 CPI, got {:?}; logs: {our_logs:?}",
+        fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on N=2 CPI, got {:?}", m_r.program_result);
+
+    // accounts[0] must be incremented to 1 (incrementer's effect),
+    // accounts[1] must be unchanged (still 0). Both engines must
+    // agree on both account contents.
+    let mut expected_a = vec![0u8; 16];
+    expected_a[..8].copy_from_slice(&1u64.to_le_bytes());
+    let expected_b = vec![0u8; 16];
+
+    let (_, fs_a) = &fs_r.resulting_accounts[0];
+    let (_, fs_b) = &fs_r.resulting_accounts[1];
+    let (_, m_a)  = &m_r.resulting_accounts[0];
+    let (_, m_b)  = &m_r.resulting_accounts[1];
+
+    assert_eq!(fs_a.data(), expected_a.as_slice(),
+        "formal-svm: accounts[0] not incremented; got {:?}", fs_a.data());
+    assert_eq!(fs_b.data(), expected_b.as_slice(),
+        "formal-svm: accounts[1] changed unexpectedly; got {:?}", fs_b.data());
+    assert_eq!(m_a.data.as_slice(), expected_a.as_slice());
+    assert_eq!(m_b.data.as_slice(), expected_b.as_slice());
+
+    // Cross-engine byte-for-byte agreement on every account.
+    assert_eq!(fs_a.data(), m_a.data.as_slice(), "accounts[0] diverged");
+    assert_eq!(fs_b.data(), m_b.data.as_slice(), "accounts[1] diverged");
+    assert_eq!(fs_a.lamports(), m_a.lamports, "accounts[0] lamports diverged");
+    assert_eq!(fs_b.lamports(), m_b.lamports, "accounts[1] lamports diverged");
+}
+
+/// Surfaces the `R_BPF_64_Relative`-in-`.text` loader bug. The
+/// program (built from `rodata_addr_returner_src/`) takes the address
+/// of a `#[used] static RODATA_CONST: u64` (which lives in
+/// `.rodata`), forces a volatile read so the compiler can't fold the
+/// address, and returns the upper 32 bits as the entrypoint exit
+/// code.
+///
+/// On agave: the loader patches the `lddw` imm `+= MM_REGION_SIZE`
+/// so the address sits in the program region; upper 32 bits = `0x1`
+/// → entrypoint returns `1` → `ProgramResult::Failure(Custom(1))`.
+///
+/// Pre-fix formal-svm: `applyRelocations` left `R_BPF_64_Relative`
+/// in `.text` unpatched; the loaded address was the raw section VA
+/// (typically `< 0x1_0000_0000`); upper 32 bits = `0` → entrypoint
+/// returns `0` → `ProgramResult::Success`. Asymmetric outcome
+/// (Failure vs Success) — divergence is immediate and unmissable.
+///
+/// Post-fix (this test): both engines return exit code 1 → both
+/// `Failure(Custom(1))`. Asserts on `program_result` matching, plus
+/// CU equality.
+#[test]
+fn rodata_addr_returner_matches_mollusk() {
+    let program_id = pid(40);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, RODATA_ADDR_RETURNER_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("formal-svm runs rodata_addr_returner");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        RODATA_ADDR_RETURNER_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+
+    // Both engines must reach the *same* outcome (post-fix: Failure
+    // because the relocated address has upper bits = 1 → exit code 1
+    // → Failure(Custom(1))). Pre-fix, ours would land at Success
+    // (exit 0) and mollusk at Failure — that's the divergence the
+    // fix closes.
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "formal-svm: expected non-Success (exit code = upper 32 bits = 1), \
+         got {:?} — this means R_BPF_64_Relative-in-.text isn't being applied",
+        fs_r.program_result);
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected non-Success, got {:?}", m_r.program_result);
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+// NOTE: a `pda_finder` diff-mollusk fixture was drafted in this
+// session but is blocked on a separate latent bug: invoking
+// `Curve25519.validateEdwards` (and thereby `Pda.createProgramAddress`)
+// through Lean's compiled-native runtime FFI from inside
+// `Svm.process_instruction` SIGSEGVs. The same call works via
+// `native_decide` (see Demo 29 / 32 in `RunnerDemo.lean`), so the
+// pure-Lean semantics are sound — only the *runtime* FFI dispatch is
+// broken. Once that's diagnosed, a `pda_finder` fixture that calls
+// `Pubkey::find_program_address(&[b"vault"], program_id)` and asserts
+// byte+CU equality against mollusk will close the loop for
+// `sol_try_find_program_address` (the per-iteration CU charge added
+// in `Pda.cuTryFind` is already correct; it's untested via diff-mollusk
+// until the FFI bug is fixed).

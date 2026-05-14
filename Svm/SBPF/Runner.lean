@@ -29,6 +29,22 @@ namespace Runner
 
 open Memory
 
+/-- One-off debug knob: when `true`, every step emits a one-line `STEP`
+    trace to stderr via `dbg_trace`, including pc + r0..r10. Lean's
+    if-then-else short-circuits, so when this is `false` (production)
+    the dbg_trace and its s!"…" string interpolation never run.
+
+    Flip to `true`, rebuild Lean, run a single fixture with
+    `cargo test … -- --nocapture 2>trace.txt`, then flip back. Used to
+    bisect cross-engine CU drift against mollusk's
+    `SBF_TRACE_DIR` / `SBF_TRACE_DISASSEMBLE` output. -/
+def TRACE_STEPS : Bool := false
+
+/-- Pad a Nat as a `width`-digit lowercase hex string. -/
+private def hex (n width : Nat) : String :=
+  let s := String.ofList (Nat.toDigits 16 (n % (16^width)))
+  String.ofList (List.replicate (width - s.length) '0') ++ s
+
 /-! ## Memory + register initialization -/
 
 /-- Empty memory: every byte is zero. -/
@@ -213,6 +229,116 @@ def CPI_OWNER_OFFSET    : Nat := 8 + 40                 -- = 48
 def CPI_LAMPORTS_OFFSET : Nat := 8 + 72                 -- = 80
 def CPI_DATA_OFFSET     : Nat := 8 + 88                 -- = 96
 
+/-! ### N-account CPI marshaling (Phase 3-N)
+
+Generalizes `buildCpiSubInputOneAccount` to an arbitrary list of
+parsed accounts. Two complications vs. N=1:
+
+- **Duplicate accounts** (same pubkey at indices i < j in
+  `ix.accounts`) compress: the j-th slot emits a 1-byte position
+  index of `i` followed by 7 zero pad bytes, instead of a full
+  block. The callee's deserializer collapses both AccountInfos
+  onto the same underlying RefCell, so any mutation through the
+  dup slot in the callee writes to the canonical slot's bytes —
+  we only write back through the canonical slot's pointers. This
+  mirrors `formal-svm-rs/src/serialize.rs`'s `seen[]` loop.
+- **Per-slot cumulative offset** into the sub-input. Each
+  non-dup block has stride `88 + dataLen + align_pad + 10240 + 8`
+  (different per account if data sizes differ). Dups are stride 8.
+  The block offset feeds into write-back so we know where each
+  slot's modifiable region lives in the sub-input. -/
+
+/-- One slot in the laid-out CPI sub-input. `parsed` carries the
+    pre-call account data + write-back pointers; `dupOf?` is
+    `some j` if this slot is a duplicate of an earlier slot (emit
+    only the 8-byte dup marker, no own block); `blockOff` is the
+    offset in the sub-input where this slot's bytes begin (used
+    for write-back). -/
+structure AcctSlot where
+  parsed   : ParsedAcct
+  dupOf?   : Option Nat
+  blockOff : Nat
+
+/-- Per-account stride in bytes (non-dup blocks only). Matches the
+    full block layout: dup_marker(1) + flags(3) + pad(4) + key(32)
+    + owner(32) + lamports(8) + data_len(8) + data(L) + align_pad
+    + MAX_PERMITTED_DATA_INCREASE + rent_epoch(8). -/
+private def nonDupBlockSize (dataLen : Nat) : Nat :=
+  88 + dataLen + ((8 - dataLen % 8) % 8) + MAX_PERMITTED_DATA_INCREASE + 8
+
+/-- Build the slot table from a list of pre-parsed accounts. Linear
+    pass: for each slot, scan earlier slots for a key match. -/
+def buildAcctSlots (parsed : List ParsedAcct) : List AcctSlot :=
+  let n := parsed.length
+  let parsedArr : Array ParsedAcct := parsed.toArray
+  -- Fold over indices; carry the running block offset.
+  -- Sentinel default for out-of-bounds reads (unreachable for `i < n`).
+  let dflt : ParsedAcct :=
+    { key := ByteArray.empty, owner := ByteArray.empty, lamports := 0,
+      dataLen := 0, data := ByteArray.empty, isSigner := false,
+      isWritable := false, executable := false, rentEpoch := 0,
+      ownerPtr := 0, lamportsRefAddr := 0, dataPtr := 0 }
+  ((List.range n).foldl (fun (acc, off) i =>
+    let p := parsedArr.getD i dflt
+    -- Find first j < i with the same key (linear scan).
+    let dup : Option Nat :=
+      (List.range i).find? (fun j =>
+        (parsedArr.getD j dflt).key = p.key)
+    match dup with
+    | some _ =>
+      (acc ++ [({ parsed := p, dupOf? := dup, blockOff := off } : AcctSlot)],
+       off + 8)
+    | none =>
+      (acc ++ [({ parsed := p, dupOf? := none, blockOff := off } : AcctSlot)],
+       off + nonDupBlockSize p.dataLen))
+   ([], 8)).1  -- initial offset = 8 (after num_accounts header)
+
+/-- Parse `count` consecutive `AccountInfo` structs starting at
+    `baseAddr`. Stride is 48 bytes (the size of Rust's
+    `solana_program::AccountInfo` with default layout). -/
+def parseAccountInfos (mem : Mem) (baseAddr count : Nat) : List ParsedAcct :=
+  (List.range count).map (fun i => parseAccountInfo mem (baseAddr + i * 48))
+
+/-- Emit a single non-dup account block (88 + dataLen + align_pad +
+    MAX_PERMITTED_DATA_INCREASE + 8 bytes). -/
+private def emitNonDupBlock (p : ParsedAcct) : ByteArray :=
+  let dupMarker   := ByteArray.empty.push 0xFF
+  let signer      : UInt8 := if p.isSigner then 1 else 0
+  let writable    : UInt8 := if p.isWritable then 1 else 0
+  let executable  : UInt8 := if p.executable then 1 else 0
+  let flags       := ⟨#[signer, writable, executable]⟩
+  let padU32      := zeroBytes 4
+  let lamports    := u64ToLE p.lamports
+  let dataLen     := u64ToLE p.dataLen
+  let alignPad    := zeroBytes ((8 - p.dataLen % 8) % 8)
+  let increasePad := zeroBytes MAX_PERMITTED_DATA_INCREASE
+  let rentEpoch   := u64ToLE p.rentEpoch
+  dupMarker ++ flags ++ padU32 ++ p.key ++ p.owner
+    ++ lamports ++ dataLen ++ p.data ++ alignPad
+    ++ increasePad ++ rentEpoch
+
+/-- Emit a dup-marker slot (1 byte position + 7 zero pad bytes). -/
+private def emitDupBlock (j : Nat) : ByteArray :=
+  (ByteArray.empty.push j.toUInt8) ++ zeroBytes 7
+
+/-- Build an N-account CPI sub-input from a slot table. Byte-for-byte
+    matches `serialize_parameters` for the same account list. -/
+def buildCpiSubInputN (slots : List AcctSlot)
+    (programId ixData : ByteArray) : ByteArray :=
+  let numAccounts := u64ToLE slots.length
+  let blocks : ByteArray := slots.foldl (fun acc slot =>
+    match slot.dupOf? with
+    | some j => acc ++ emitDupBlock j
+    | none   => acc ++ emitNonDupBlock slot.parsed) ByteArray.empty
+  let ixLen := u64ToLE ixData.size
+  numAccounts ++ blocks ++ ixLen ++ ixData ++ programId
+
+/-- Per-slot write-back offsets (from the slot's `blockOff`) for the
+    three modifiable fields inside a non-dup block. -/
+def CPI_BLOCK_OWNER_OFFSET    : Nat := 40   -- dup_marker(1)+flags(3)+pad(4)+key(32) = 40
+def CPI_BLOCK_LAMPORTS_OFFSET : Nat := 72   -- ...+owner(32) = 72
+def CPI_BLOCK_DATA_OFFSET     : Nat := 88   -- ...+lamports(8)+data_len(8) = 88
+
 /-! ## Run configuration -/
 
 /-- Per-run configuration for the sBPF runner. -/
@@ -341,37 +467,36 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                   | some (tb, h, ts) => (tb, some h, some ts)
                   | none => (calleeBytes, none, none)
                 let calleeInsns ← Decode.decodeProgram textBytes
-                -- Phase 3-minimal (0 accounts) or Phase 3-full (1 account)?
-                -- For >1 accounts, fall back to legacy (share caller's mem).
-                let parsedAcct? : Option ParsedAcct :=
-                  if accountCount = 1
-                    then some (parseAccountInfo s.mem s.regs.r2)
-                    else none
+                -- Phase 3-N: parse all N AccountInfos at `r2` (stride 48),
+                -- build the slot table (with dup detection), and emit a
+                -- full N-account sub-input. Works uniformly for N ∈ {0, 1,
+                -- 2, …} — N=0 yields just the trailer, N=1 a single block,
+                -- N≥2 N blocks with potential dup-marker compression.
+                let parsedAccts : List ParsedAcct :=
+                  parseAccountInfos s.mem s.regs.r2 accountCount
+                let slots : List AcctSlot := buildAcctSlots parsedAccts
                 let subInput : ByteArray :=
-                  match parsedAcct? with
-                  | some acct =>
-                    buildCpiSubInputOneAccount acct pidBytes ByteArray.empty
-                  | none =>
-                    buildCpiSubInputNoAccounts pidBytes ByteArray.empty
-                -- Build the sub-mem (only when accountCount ∈ {0, 1}).
-                let useSubMem := accountCount ≤ 1
-                let subMem :=
-                  if useSubMem then
-                    let baseMem := loadInput emptyMem subInput
-                    match headerOpt with
-                    | none => baseMem
-                    | some h =>
-                      let m1 := match Elf.findSection calleeBytes h Elf.rodataName with
-                        | some sec =>
-                          loadBytesAt baseMem (Elf.extractSection calleeBytes sec) sec.addr
-                        | none => baseMem
-                      match Elf.findSection calleeBytes h Elf.dataRelRoName with
+                  buildCpiSubInputN slots pidBytes ByteArray.empty
+                -- Always run callee against a fresh sub-mem (rodata +
+                -- .data.rel.ro mapped from its own ELF). The previous
+                -- "fall back to caller's mem for N>1" path is gone; with
+                -- per-slot offsets the marshaling is uniform.
+                let subMem : Mem :=
+                  let baseMem := loadInput emptyMem subInput
+                  match headerOpt with
+                  | none => baseMem
+                  | some h =>
+                    let m1 := match Elf.findSection calleeBytes h Elf.rodataName with
                       | some sec =>
-                        let raw       := Elf.extractSection calleeBytes sec
-                        let relocated := Elf.applyDataRelocations calleeBytes h sec.addr raw
-                        loadBytesAt m1 relocated sec.addr
-                      | none => m1
-                  else s.mem
+                        loadBytesAt baseMem (Elf.extractSection calleeBytes sec)
+                          (Elf.relocateSecAddr sec.addr)
+                      | none => baseMem
+                    match Elf.findSection calleeBytes h Elf.dataRelRoName with
+                    | some sec =>
+                      let raw       := Elf.extractSection calleeBytes sec
+                      let relocated := Elf.applyDataRelocations calleeBytes h sec.addr raw
+                      loadBytesAt m1 relocated (Elf.relocateSecAddr sec.addr)
+                    | none => m1
                 let entryPc :=
                   match headerOpt, textSecOpt with
                   | some h, some textSec =>
@@ -390,24 +515,29 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                     returnData := ByteArray.empty }
                 let subFinal := (executeFnCpiWithFuel registry
                   (fetchFromArray calleeInsns) subS fuel').1
-                -- Phase 3 write-back. For each account in the
-                -- sub-input that the callee may have modified, copy
-                -- the bytes back to the corresponding caller-memory
-                -- addresses (which is what the harness's
-                -- `deserialize_account_writes` reads).
-                let newCallerMem : Mem :=
-                  match parsedAcct? with
-                  | none => s.mem
-                  | some acct =>
+                -- Phase 3-N write-back. Loop over slots. For each
+                -- non-dup slot, read the (possibly mutated) data /
+                -- lamports / owner from the sub-mem at the slot's
+                -- block offset, and propagate back through the
+                -- caller-mem pointers captured at parse time. Dup
+                -- slots have no own block; any mutation routed
+                -- through them lands in the canonical slot's bytes,
+                -- which we already write back via that slot.
+                let newCallerMem : Mem := slots.foldl (fun mem slot =>
+                  match slot.dupOf? with
+                  | some _ => mem
+                  | none =>
+                    let p := slot.parsed
+                    let blockBase := INPUT_START + slot.blockOff
                     let newData := readMemBytes subFinal.mem
-                      (INPUT_START + CPI_DATA_OFFSET) acct.dataLen
-                    let m1 := loadBytesAt s.mem newData acct.dataPtr
+                      (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
+                    let m1 := loadBytesAt mem newData p.dataPtr
                     let newLamports := Memory.readU64 subFinal.mem
-                      (INPUT_START + CPI_LAMPORTS_OFFSET)
-                    let m2 := Memory.writeU64 m1 acct.lamportsRefAddr newLamports
+                      (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
+                    let m2 := Memory.writeU64 m1 p.lamportsRefAddr newLamports
                     let newOwner := readMemBytes subFinal.mem
-                      (INPUT_START + CPI_OWNER_OFFSET) 32
-                    loadBytesAt m2 newOwner acct.ownerPtr
+                      (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
+                    loadBytesAt m2 newOwner p.ownerPtr) s.mem
                 some (subFinal, newCallerMem)
             match registry pid with
             | none =>
@@ -423,7 +553,11 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                          log        := subFinal.log
                          returnData := subFinal.returnData }
           | _ => step insn s
-        executeFnCpiWithFuel registry fetch s' fuel'
+        if TRACE_STEPS then
+          dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
+          executeFnCpiWithFuel registry fetch s' fuel'
+        else
+          executeFnCpiWithFuel registry fetch s' fuel'
 
 /-- Original signature, preserved for existing callers (demos +
     `Runner.run` / `Runner.runElf`). A thin wrapper around
@@ -484,13 +618,14 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
         let mem₁ := match Elf.findSection elfBytes header Elf.rodataName with
-          | some sec => loadBytesAt baseMem (Elf.extractSection elfBytes sec) sec.addr
+          | some sec => loadBytesAt baseMem (Elf.extractSection elfBytes sec)
+              (Elf.relocateSecAddr sec.addr)
           | none => baseMem
         let mem := match Elf.findSection elfBytes header Elf.dataRelRoName with
           | some sec =>
             let raw       := Elf.extractSection elfBytes sec
             let relocated := Elf.applyDataRelocations elfBytes header sec.addr raw
-            loadBytesAt mem₁ relocated sec.addr
+            loadBytesAt mem₁ relocated (Elf.relocateSecAddr sec.addr)
           | none => mem₁
         let s : State :=
           { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
@@ -532,7 +667,8 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
         let mem₁ := match Elf.findSection elfBytes header Elf.rodataName with
-          | some sec => loadBytesAt baseMem (Elf.extractSection elfBytes sec) sec.addr
+          | some sec => loadBytesAt baseMem (Elf.extractSection elfBytes sec)
+              (Elf.relocateSecAddr sec.addr)
           | none => baseMem
         -- Map `.data.rel.ro` (read-only-after-relocation) if present.
         -- This is where the linker parks static structures whose fields
@@ -545,7 +681,7 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
           | some sec =>
             let raw       := Elf.extractSection elfBytes sec
             let relocated := Elf.applyDataRelocations elfBytes header sec.addr raw
-            loadBytesAt mem₁ relocated sec.addr
+            loadBytesAt mem₁ relocated (Elf.relocateSecAddr sec.addr)
           | none => mem₁
         -- Convert `e_entry` (virtual address) to logical PC. The
         -- byte offset within `.text` is `e_entry - textSec.addr`;

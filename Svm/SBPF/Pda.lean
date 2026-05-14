@@ -65,38 +65,42 @@ def createProgramAddress (seeds : List ByteArray) (programId : ByteArray) : Opti
     we truncate via `toUInt8` for safety in case of caller error). -/
 private def bumpSeed (bump : Nat) : ByteArray := ⟨#[bump.toUInt8]⟩
 
-/-- Inner loop for `tryFindProgramAddress`. Recurses on `fuel` (an
-    explicit bound for structural recursion). Each iteration appends
-    `[bump]` as an extra seed and calls `createProgramAddress`. The
-    first off-curve result wins; if all 256 bumps fail, returns
-    `none` (statistically impossible in real use). -/
-private def tryFindLoop (seeds : List ByteArray) (programId : ByteArray)
-    : Nat → Nat → Option (ByteArray × UInt8)
-  | 0, _ => none
-  | _ + 1, 0 =>
-    match createProgramAddress (seeds ++ [bumpSeed 0]) programId with
-    | some addr => some (addr, 0)
-    | none => none
-  | fuel + 1, bump + 1 =>
-    match createProgramAddress (seeds ++ [bumpSeed (bump + 1)]) programId with
-    | some addr => some (addr, (bump + 1).toUInt8)
-    | none => tryFindLoop seeds programId fuel bump
+/-- Inner loop for `tryFindProgramAddress`. Returns both the search
+    result and the *number of attempts* the loop made (= number of
+    `createProgramAddress` calls performed, including the one that
+    succeeded). Used by both `tryFindProgramAddress` and the per-call
+    CU charge — agave charges `1500` per attempt (initial + each
+    failed iteration). Mirrors agave's `SyscallTryFindProgramAddress`
+    loop bound: iterates `bump` from 255 down to **1**, never tries
+    `bump = 0` (the `0..u8::MAX` range in agave's source). -/
+private def tryFindLoopWithIters (seeds : List ByteArray) (programId : ByteArray)
+    : Nat → Option (ByteArray × UInt8) × Nat
+  | 0 => (none, 0)
+  | bump + 1 =>
+    let attempt := bump + 1
+    match createProgramAddress (seeds ++ [bumpSeed attempt]) programId with
+    | some addr => (some (addr, attempt.toUInt8), 1)
+    | none =>
+      let (rest, restIters) := tryFindLoopWithIters seeds programId bump
+      (rest, restIters + 1)
 
 /-- `Address::find_program_address(seeds, program_id)` (agave's
     `sol_try_find_program_address`). Iterates `bump` from 255 down to
-    0, appending `[bump]` as the trailing seed each time, and returns
+    1, appending `[bump]` as the trailing seed each time, and returns
     the first `(off-curve PDA, bump)`. Returns `none` only if every
-    bump yields an on-curve hash — statistically impossible. -/
+    bump in 255..=1 yields an on-curve hash — statistically
+    impossible in real use; agave also never tries `bump = 0`. -/
 def tryFindProgramAddress (seeds : List ByteArray) (programId : ByteArray)
     : Option (ByteArray × UInt8) :=
-  tryFindLoop seeds programId 256 255
+  (tryFindLoopWithIters seeds programId 255).1
+
+/-- Same as `tryFindProgramAddress` but returns the iteration count
+    alongside the result. Used for state-dependent CU scaling. -/
+def tryFindProgramAddressWithIters (seeds : List ByteArray) (programId : ByteArray)
+    : Option (ByteArray × UInt8) × Nat :=
+  tryFindLoopWithIters seeds programId 255
 
 /-! ## Syscall bindings -/
-
-/-- CU charge for both PDA syscalls. `try_find` is charged once per
-    iteration in agave; we currently approximate by charging the
-    single-attempt cost. -/
-def cu : Nat := 1_500
 
 /-- Read `n` seeds from a `VmSlice` array as a `List ByteArray`.
     Mirrors `readSlices` from Machine.lean but keeps each seed as a
@@ -109,6 +113,44 @@ def cu : Nat := 1_500
     let len := Memory.readU64 mem (descAddr + 8)
     readBytes mem ptr len)
 
+/-- CU charge for one `create_program_address` attempt. Agave's
+    `create_program_address_units` from `SVMTransactionExecutionCost`.
+    `sol_create_program_address` pays exactly this once;
+    `sol_try_find_program_address` pays this **per iteration** of its
+    bump loop (initial + each failed attempt = total attempts made).
+    Matches agave's `SyscallTryFindProgramAddress::rust` charging
+    model (consume before loop + consume at end of each failed
+    iteration). -/
+def cuPerAttempt : Nat := 1_500
+
+/-- CU charge for `sol_create_program_address`. Single flat cost. -/
+def cuCreate : Nat := cuPerAttempt
+
+/-- State-dependent CU charge for `sol_try_find_program_address`.
+    Reads seeds + program_id from caller memory, simulates the bump
+    loop, and charges `cuPerAttempt × attempts_made` — matching
+    agave's `SyscallTryFindProgramAddress::rust` charging model:
+    one consume before the loop + one consume at the end of each
+    failed iteration. The loop simulation runs `tryFindLoopWithIters`
+    so the charged iteration count is byte-for-byte identical to
+    what `execTryFind` actually performs.
+
+    On success at attempt `k` (1 ≤ k ≤ 255): iters = k, CU = k × 1500.
+    On full-search failure (all 255 attempts on-curve): iters = 255,
+    plus agave's pre-loop charge that never gets the early-return
+    short-circuit, so CU = 256 × 1500.
+
+    Pure-but-State-keyed: invoked via the existing `syscallCu`
+    dispatcher in `Execute.lean`. -/
+def cuTryFind (s : State) : Nat :=
+  let seeds := readSeeds s.mem s.regs.r1 s.regs.r2
+  let pid   := readBytes s.mem s.regs.r3 32
+  let (result, iters) := tryFindProgramAddressWithIters seeds pid
+  let extra := match result with
+    | some _ => 0
+    | none   => cuPerAttempt
+  cuPerAttempt * iters + extra
+
 /-- Execute `sol_create_program_address`.
     ABI: r1 = `*const [VmSlice; N]`, r2 = N, r3 = `*const [u8; 32]`
     program_id, r4 = `*mut [u8; 32]` out. r0 = 0/1. -/
@@ -119,9 +161,7 @@ def cu : Nat := 1_500
   commitOptional s s.regs.r4 32 result
 
 /-- Execute `sol_try_find_program_address`.
-    Same as `execCreate` plus r5 = `*mut [u8; 1]` bump output. The
-    extra bump byte means we hand-roll the commit rather than reuse
-    `commitOptional`. -/
+    Same as `execCreate` plus r5 = `*mut [u8; 1]` bump output. -/
 def execTryFind (s : State) : State :=
   let outA   := s.regs.r4
   let bumpA  := s.regs.r5

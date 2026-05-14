@@ -1,16 +1,39 @@
--- Sysvar-getter syscalls: zero-fill the output buffer at `*r1` to a
--- length appropriate for the sysvar layout. Real values vary per
--- slot/epoch and aren't tracked; zero is the safe default that lets
--- dependent programs continue. CU charge is `sysvar_base_cost = 100`
--- for all of them.
+-- Sysvar-getter syscalls: fill the output buffer at `*r1` with the
+-- canonical mainnet-default contents of the sysvar. Most sysvars
+-- (clock, epoch_schedule, last_restart_slot, …) zero-fill — their
+-- real values vary per slot/epoch and zero is a safe default that
+-- lets dependent programs continue. Rent is *not* zero-filled,
+-- because real programs (notably SPL Token) feed its fields into
+-- a software-f64 `is_exempt` computation; mainnet's
+-- `lamports_per_byte_year=3480` / `exemption_threshold=2.0` /
+-- `burn_percent=50` produce a different number of executed
+-- instructions than the zero-value short-circuit, and the
+-- cross-engine CU diff against mollusk depends on matching that
+-- path. CU charge for all sysvar getters is `sysvar_base_cost = 100`.
 
 import Svm.SBPF.Machine
 
 namespace Svm.SBPF
 namespace Sysvar
 
-/-- Shared CU charge: `sysvar_base_cost = 100`. -/
+/-- Base CU charge: `sysvar_base_cost = 100`. The "typed" sysvar
+    getters (`sol_get_clock_sysvar`, `sol_get_rent_sysvar`, …) charge
+    `base + size_of::<T>()` per agave's `get_sysvar` helper in
+    `agave-syscalls/src/sysvar.rs`. The runtime size_of is the
+    Rust struct's full layout (with trailing padding), not the
+    minimal field bytes. -/
 def cu : Nat := 100
+
+/-- Per-sysvar CU = `base + size_of::<T>()`. Rust `size_of` includes
+    trailing alignment padding, so e.g. `Rent` (u64 + f64 + u8) is
+    24 bytes, not 17. Mirrors
+    `agave-syscalls::sysvar::get_sysvar`. -/
+@[simp] def cuClock          : Nat := cu + 40
+@[simp] def cuRent           : Nat := cu + 24
+@[simp] def cuEpochSchedule  : Nat := cu + 40
+@[simp] def cuLastRestartSlot : Nat := cu + 8
+@[simp] def cuFees           : Nat := cu + 8
+@[simp] def cuEpochRewards   : Nat := cu + 81
 
 /-- Build a state where `n` bytes at `*r1` are zeroed and r0 := 0. -/
 @[simp] def zeroFillR1 (s : State) (n : Nat) : State :=
@@ -22,9 +45,45 @@ def cu : Nat := 100
 /-- `sol_get_clock_sysvar`: 40 bytes
     (slot, epoch_start_ts, epoch, leader_epoch, unix_ts). -/
 @[simp] def execClock          (s : State) : State := zeroFillR1 s 40
-/-- `sol_get_rent_sysvar`: 17 bytes
-    (lamports_per_byte_year, exemption_threshold, burn_percent). -/
-@[simp] def execRent           (s : State) : State := zeroFillR1 s 17
+
+/-- `sol_get_rent_sysvar`: write the 17-byte mainnet-default `Rent`
+    struct at `*r1`. Layout (LE):
+      [0..8)   lamports_per_byte_year : u64 = 3480 (0xD98)
+      [8..16)  exemption_threshold    : f64 = 2.0  (raw bits 0x4000_0000_0000_0000)
+      [16]     burn_percent           : u8  = 50   (0x32)
+    Constants mirror `solana_rent::DEFAULT_*` (still the values on
+    mainnet at the time of writing). SPL Token's
+    `Rent::is_exempt(lamports, data_len)` compiles to a software-f64
+    `(data_len + 128) * lamports_per_byte_year * exemption_threshold`
+    that takes a meaningfully different number of sBPF instructions
+    on zero vs. non-zero inputs — agave's interpreter under
+    `FeatureSet::all_enabled()` always sees the real values, so we
+    must too for CU equality to hold. -/
+@[simp] def execRent           (s : State) : State :=
+  let outA := s.regs.r1
+  -- Construct the 17 bytes byte-by-byte; the address-keyed `if`
+  -- chain stays decidable for proofs without dragging in
+  -- `writeU64`'s axioms.
+  let mem' : Memory.Mem := fun a =>
+    if      a = outA + 0  then 0x98  -- lamports_per_byte_year = 3480 = 0x0000_0000_0000_0D98
+    else if a = outA + 1  then 0x0D
+    else if a = outA + 2  then 0
+    else if a = outA + 3  then 0
+    else if a = outA + 4  then 0
+    else if a = outA + 5  then 0
+    else if a = outA + 6  then 0
+    else if a = outA + 7  then 0
+    else if a = outA + 8  then 0     -- exemption_threshold = 2.0 (f64 bits = 0x4000_0000_0000_0000)
+    else if a = outA + 9  then 0
+    else if a = outA + 10 then 0
+    else if a = outA + 11 then 0
+    else if a = outA + 12 then 0
+    else if a = outA + 13 then 0
+    else if a = outA + 14 then 0
+    else if a = outA + 15 then 0x40
+    else if a = outA + 16 then 50    -- burn_percent = 50
+    else s.mem a
+  { s with regs := s.regs.set .r0 0, mem := mem' }
 /-- `sol_get_epoch_schedule_sysvar`: 33 bytes. -/
 @[simp] def execEpochSchedule  (s : State) : State := zeroFillR1 s 33
 /-- `sol_get_last_restart_slot`: u64. -/

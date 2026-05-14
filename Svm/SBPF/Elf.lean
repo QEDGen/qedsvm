@@ -241,6 +241,20 @@ where
 
 /-! ## Patching helpers -/
 
+/-- Bump a section-VA into the program region if it's below
+    `MM_REGION_SIZE`. Mirrors agave's loader convention: sections with
+    a sub-`MM_REGION_SIZE` `sh_addr` (the typical `cargo-build-sbf`
+    case, e.g. `.rodata` at `0x1bf60`) get shifted to
+    `MM_PROGRAM_START + sh_addr` (`0x1_0001_bf60`) at load time.
+    Sections whose linker-assigned address is already at or above
+    `MM_REGION_SIZE` (e.g. hand-assembled demo ELFs that put `.rodata`
+    at `0x100000000`) are left alone. Use this everywhere a section
+    is mapped into `Mem` or where a relocation target is computed,
+    so that lddw imms (post-relocation) and the loaded bytes live at
+    the same address. -/
+def relocateSecAddr (addr : Nat) : Nat :=
+  if addr < Memory.MM_REGION_SIZE then addr + Memory.MM_REGION_SIZE else addr
+
 /-- Write a 32-bit little-endian value at offset `off` in `bytes`. -/
 def writeU32LE (bytes : ByteArray) (off val : Nat) : ByteArray :=
   let b0 := bytes.set! off       (val % 0x100).toUInt8
@@ -259,12 +273,15 @@ def writeU64LE (bytes : ByteArray) (off val : Nat) : ByteArray :=
 
 /-- Apply a single `R_BPF_64_64` relocation to the loaded `.text` bytes.
     Splits a 64-bit symbol address into the two 32-bit immediate fields
-    of an `lddw rN, IMM` (a 16-byte instruction). -/
+    of an `lddw rN, IMM` (a 16-byte instruction). The resulting address
+    is bumped into the program region (via `relocateSecAddr`) if it's
+    below `MM_REGION_SIZE`, matching agave's loader convention. -/
 def applyRel64 (textBytes : ByteArray) (textVA target : Nat) (relOff : Nat) :
     ByteArray :=
   let off := if relOff ≥ textVA then relOff - textVA else relOff
   let addend := readU32LE textBytes (off + 4)
-  let final  := (target + addend) % 0x10000000000000000  -- u64
+  let raw    := (target + addend) % 0x10000000000000000  -- u64
+  let final  := relocateSecAddr raw
   let lo := final % 0x100000000
   let hi := final / 0x100000000
   let b1 := writeU32LE textBytes (off + 4) lo
@@ -293,10 +310,42 @@ where
       let b := readU8 bytes (off + i)
       if b = 0 then ⟨acc⟩ else go (i + 1) fuel' (acc.push b.toUInt8)
 
-/-- Apply `R_BPF_64_64` and `R_BPF_64_32` relocations from the ELF to
-    the loaded `.text`. Returns the original bytes unchanged if no
-    symbol/relocation tables are present (fast path for
-    hand-assembled fixtures).
+/-- Apply a single `R_BPF_64_Relative` relocation that falls inside
+    `.text`. The patch site `relOff` points at an `lddw` (a 16-byte
+    instruction); we combine the existing split-imm halves into a
+    64-bit address, and if that address is below `MM_REGION_SIZE`
+    (i.e. the linker left it as a low-32 file-VA), we add
+    `MM_REGION_SIZE` to relocate it into the program region. The new
+    address is split back into the two imm halves at `+4` and `+12`.
+
+    Lifted from `solana-sbpf::Executable::relocate`'s branch for
+    `R_BPF_64_RELATIVE` in `.text`. The "outside .text" branch (which
+    `applyDataRelocations` handles for `.data.rel.ro`) is unaffected.
+
+    Without this patch, programs that store the loaded address, do
+    arithmetic on it, or compare it against another pointer diverge
+    from agave — agave sees the upper 32 bits set (program-region
+    address); we'd see them zero (raw VA). For pure rodata-byte
+    dereferences our total `Mem` happens to map the byte at the
+    file-VA, so simple loads still work; the bug surfaces on
+    pointer-arithmetic patterns. -/
+def applyRelRelativeText (textBytes : ByteArray) (textVA : Nat)
+    (relOff : Nat) : ByteArray :=
+  let off := if relOff ≥ textVA then relOff - textVA else relOff
+  let lo := readU32LE textBytes (off + 4)
+  let hi := readU32LE textBytes (off + 12)
+  let addr := lo + hi * 0x100000000
+  let relocated :=
+    if addr < Memory.MM_REGION_SIZE then addr + Memory.MM_REGION_SIZE else addr
+  let newLo := relocated % 0x100000000
+  let newHi := relocated / 0x100000000
+  let acc' := writeU32LE textBytes (off + 4) newLo
+  writeU32LE acc' (off + 12) newHi
+
+/-- Apply `R_BPF_64_64`, `R_BPF_64_32`, and in-`.text` `R_BPF_64_Relative`
+    relocations from the ELF to the loaded `.text`. Returns the original
+    bytes unchanged if no symbol/relocation tables are present (fast
+    path for hand-assembled fixtures).
 
     - `R_BPF_64_64`: patches a 64-bit symbol address into an `lddw`'s
       split immediate fields. Used for pointers into `.rodata` etc.
@@ -305,7 +354,11 @@ where
       `relOff + 4`. After patching, the imm IS the function key —
       either a syscall hash (decoder routes to `.call syscall`) or
       an internal-function hash (decoder falls back to
-      `.call_local`). -/
+      `.call_local`).
+    - `R_BPF_64_Relative` in `.text`: bumps a sub-`MM_REGION_SIZE`
+      address loaded by an `lddw` into the program region (see
+      `applyRelRelativeText`). Relocs of this type outside `.text`
+      are left for `applyDataRelocations`. -/
 def applyRelocations (elfBytes : ByteArray) (h : Header)
     (textVA : Nat) (textBytes : ByteArray) : ByteArray :=
   match findSectionByType elfBytes h SHT_DYNSYM,
@@ -315,6 +368,7 @@ def applyRelocations (elfBytes : ByteArray) (h : Header)
     let nRels := reltab.size / 16
     let symBase := symtab.offset
     let dynstrBase := dynstr.offset
+    let textEnd := textVA + textBytes.size
     (List.range nRels).foldl (fun acc i =>
       let rel := parseRelocationEntry elfBytes (reltab.offset + i * 16)
       if rel.type = R_BPF_64_64 then
@@ -327,6 +381,10 @@ def applyRelocations (elfBytes : ByteArray) (h : Header)
         let name := readCString elfBytes (dynstrBase + sym.nameOff)
         let hash := Murmur3.hash name 0
         applyRel32 acc textVA hash rel.offset
+      else if rel.type = R_BPF_64_Relative
+              ∧ rel.offset ≥ textVA
+              ∧ rel.offset + 16 ≤ textEnd then
+        applyRelRelativeText acc textVA rel.offset
       else
         acc) textBytes
   | _, _, _ => textBytes
@@ -365,7 +423,7 @@ def applyDataRelocations (elfBytes : ByteArray) (h : Header)
          ∧ rel.offset ≥ secVA ∧ rel.offset < secEnd then
         let secOff := rel.offset - secVA
         let target := readU32LE secBytes (secOff + 4)
-        writeU64LE acc secOff target
+        writeU64LE acc secOff (relocateSecAddr target)
       else acc) secBytes
   | none => secBytes
 

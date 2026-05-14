@@ -105,11 +105,11 @@ structure State where
   /-- Internal call / return stack. Each `.call_local` pushes a
       `CallFrame` capturing the return PC, current `r10`, and the
       callee-saved scratch registers r6–r9, then bumps `r10` by
-      one V0 frame (0x2000 with stack-frame gaps). Each `.exit`
-      either pops the frame (restoring all six fields) or, if
-      empty, terminates the program. Mirrors agave's SBPF V0
-      behavior in `solana-sbpf::Interpreter::push_frame` +
-      `EXIT`. -/
+      one V0 frame (0x1000 — agave 4.x with `all_enabled` features
+      sets `enable_stack_frame_gaps = false`, so num_frames = 1).
+      Each `.exit` either pops the frame (restoring all six fields)
+      or, if empty, terminates the program. Mirrors agave's SBPF V0
+      behavior in `solana-sbpf::Interpreter::push_frame` + `EXIT`. -/
   callStack : List CallFrame := []
   /-- Extra CU consumed beyond the per-step "1 fuel per instruction"
       baseline. Bumped by `.call syscall` according to
