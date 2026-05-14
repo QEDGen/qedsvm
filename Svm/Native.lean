@@ -34,6 +34,8 @@ import Svm.Native.AcctInput
 import Svm.Native.System
 import Svm.Native.ComputeBudget
 import Svm.Native.AddressLookupTable
+import Svm.Native.Config
+import Svm.Native.Precompiles
 
 namespace Svm.Native
 
@@ -43,9 +45,10 @@ open Svm.SBPF.Memory
     order; returns the first match.
 
     Implemented: System (all 13 variants), ComputeBudget (no-op +
-    150 CU), AddressLookupTable (all 5 variants). Still missing:
-    Stake, Vote — large state machines, each warrants its own
-    session-sized focus. -/
+    150 CU), AddressLookupTable (all 5 variants), Config (the single
+    `Store` instruction), and the three sig-verify precompiles
+    (ed25519, secp256k1, secp256r1). Still missing: Stake, Vote, the
+    BPF Loaders, ZK ElGamal Proof. -/
 def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
     (mem : Mem) : Option NativeResult :=
   if pid = System.PROGRAM_ID then
@@ -54,7 +57,9 @@ def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
     ComputeBudget.dispatch ixData accts mem
   else if pid = AddressLookupTable.PROGRAM_ID then
     AddressLookupTable.dispatch ixData accts mem
+  else if pid = Config.PROGRAM_ID then
+    some (Config.dispatch ixData accts mem)
   else
-    none
+    Precompiles.dispatch pid ixData accts mem
 
 end Svm.Native

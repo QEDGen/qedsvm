@@ -27,6 +27,14 @@ light-poseidon = "0.4.0"
 solana-bls12-381-syscall = "0.1.0"
 solana-bn254 = "3.2.1"
 solana-big-mod-exp = "3.0.0"
+# Precompile sig-verify backends. ed25519 matches agave's
+# precompile crate (workspace pin = 1.0.1 + transitive 2.2.0). We use
+# 2.x's `VerifyingKey::verify_strict` which has equivalent semantics
+# for non-malleable signatures. p256 covers the secp256r1 precompile;
+# agave uses openssl + manual low-S checks — p256 + manual low-S is
+# the pure-Rust analogue.
+ed25519-dalek = "2.2.0"
+p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 [build-dependencies]
 cc = "1"

@@ -704,3 +704,104 @@ pub extern "C" fn lean_poseidon(
     };
     some_bytearray(&hash)
 }
+
+// ───────────────────────────────────────────────────────────────────
+// ed25519 strict signature verification (`ed25519-dalek = 2.2.0`).
+//
+// Used by the ed25519 precompile (`Ed25519SigVerify1111…`). Agave's
+// workspace pins ed25519-dalek 1.0.1 and the precompile calls
+// `PublicKey::from_bytes(...).verify_strict(msg, &sig)`; the 2.x
+// `VerifyingKey::verify_strict` has equivalent semantics for any
+// signature/pubkey/message accepted by 1.0.1, so we use 2.x here.
+//
+// Returns 1 on success, 0 on any failure (invalid pubkey, invalid
+// signature length, mathematical verification failure). The Lean side
+// surfaces this as a single `r0 := 0 | 1` outcome — the precompile
+// doesn't distinguish between failure categories.
+// ───────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn lean_ed25519_verify_strict(
+    pubkey: b_lean_obj_arg,
+    sig: b_lean_obj_arg,
+    msg: b_lean_obj_arg,
+) -> u8 {
+    let pubkey_bytes = unsafe { sarray_as_slice(pubkey) };
+    let sig_bytes = unsafe { sarray_as_slice(sig) };
+    let msg_bytes = unsafe { sarray_as_slice(msg) };
+
+    let Ok(pubkey_arr): Result<[u8; 32], _> = pubkey_bytes.try_into() else {
+        return 0;
+    };
+    let Ok(sig_arr): Result<[u8; 64], _> = sig_bytes.try_into() else {
+        return 0;
+    };
+
+    let Ok(vk) = ed25519_dalek::VerifyingKey::from_bytes(&pubkey_arr) else {
+        return 0;
+    };
+    let signature = ed25519_dalek::Signature::from_bytes(&sig_arr);
+
+    match vk.verify_strict(msg_bytes, &signature) {
+        Ok(()) => 1,
+        Err(_) => 0,
+    }
+}
+
+// ───────────────────────────────────────────────────────────────────
+// secp256r1 (NIST P-256) ECDSA verification with low-S enforcement
+// (`p256 = 0.13`).
+//
+// Agave's secp256r1 precompile uses openssl directly + manual range
+// checks against the curve order's half (low-S non-malleability). We
+// use the pure-Rust `p256` crate and apply the same low-S rule.
+//
+// Inputs:
+//   pubkey: 33-byte compressed point (SEC1 format).
+//   sig:    64-byte r || s big-endian integers (P-256 field size = 32).
+//   msg:    arbitrary bytes; the verifier internally SHA-256s it.
+//
+// Returns 1 on success, 0 on any failure: bad input lengths,
+// uncompressible pubkey, r/s out of range, signature mismatch, or
+// `s > n/2` (rejected per agave).
+// ───────────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn lean_secp256r1_verify(
+    pubkey: b_lean_obj_arg,
+    sig: b_lean_obj_arg,
+    msg: b_lean_obj_arg,
+) -> u8 {
+    use p256::ecdsa::signature::Verifier;
+
+    let pubkey_bytes = unsafe { sarray_as_slice(pubkey) };
+    let sig_bytes = unsafe { sarray_as_slice(sig) };
+    let msg_bytes = unsafe { sarray_as_slice(msg) };
+
+    if pubkey_bytes.len() != 33 || sig_bytes.len() != 64 {
+        return 0;
+    }
+
+    // Parse the signature: P-256 uses 32-byte big-endian r and s.
+    let Ok(signature) = p256::ecdsa::Signature::try_from(sig_bytes) else {
+        return 0;
+    };
+
+    // Reject high-S to mirror agave's manual `s ≤ half_order` check.
+    // `normalize_s` returns `Some` when s is in the upper half and
+    // would have been rewritten to its low counterpart; we reject
+    // outright rather than normalising.
+    if signature.normalize_s().is_some() {
+        return 0;
+    }
+
+    // Parse compressed pubkey + build a verifying key.
+    let Ok(vk) = p256::ecdsa::VerifyingKey::from_sec1_bytes(pubkey_bytes) else {
+        return 0;
+    };
+
+    match vk.verify(msg_bytes, &signature) {
+        Ok(()) => 1,
+        Err(_) => 0,
+    }
+}

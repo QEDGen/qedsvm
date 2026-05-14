@@ -145,6 +145,8 @@ fn main() {
         "lean_alt_bn128_compression",
         "lean_big_mod_exp",
         "lean_poseidon",
+        "lean_ed25519_verify_strict",
+        "lean_secp256r1_verify",
     ];
     let undersym_prefix = if cfg!(target_os = "macos") { "_" } else { "" };
     for sym in FFI_SYMS {
