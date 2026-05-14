@@ -11,28 +11,60 @@
 --
 -- ## What this module ships
 --
--- All 8 variants decode. 5 dispatch arms are implemented end-to-end:
+-- All 8 variants decode and dispatch end-to-end:
 --
 --   * InitializeBuffer     — Uninitialized → Buffer { authority }
 --   * Write                — bounds-checked copy into buffer payload
+--   * DeployWithMaxDataLen — PDA verify + buffer→payer drain +
+--                             inline System::CreateAccount + buffer
+--                             payload copy → programdata + state writes
+--   * Upgrade              — state verify + buffer→programdata copy +
+--                             tail-zero + lamport spill
 --   * SetAuthority         — Buffer / ProgramData authority rotation
---   * SetAuthorityChecked  — same but with new-authority signer check
 --   * Close                — all three target states (Uninit / Buffer /
 --                             ProgramData), full lamport-drain semantics
+--   * ExtendProgram        — data_len grow + inline System::Transfer
+--                             for rent gap (when rent_min > 0)
+--   * SetAuthorityChecked  — same as SetAuthority + new-authority signer
 --
--- The remaining 3 dispatch arms charge `CU` and surface `r0 = 1`
--- ("deferred"). They are *decoded* correctly so a future session can
--- swap in semantics without touching the wire path:
+-- ## Model simplifications (documented gaps)
 --
---   * DeployWithMaxDataLen — needs a native-internal CPI into
---     `System::CreateAccount` (programdata account) + ELF verification
---     hook; deploy-side semantics tracked in the agave processor at
---     lib.rs:202-356.
---   * Upgrade              — needs ELF verify + lamport spill +
---     buffer→programdata copy; lib.rs:357-529.
---   * ExtendProgram        — needs an internal `System::Transfer` for
---     rent top-up + data-length grow; lib.rs:759-911 (incl. SIMD-0431
---     `MINIMUM_EXTEND_PROGRAM_BYTES` gating).
+-- These come from agave-side machinery we don't replicate, all of
+-- which are described in the project charter as "spec where
+-- meaningful, skip when machinery is harness-only":
+--
+--   * **ELF verification.** agave's `deploy_program!` macro
+--     verifies the ELF and stashes the JIT-compiled program in the
+--     transaction's program cache for subsequent invocations. We
+--     have no program cache, so Deploy / Upgrade / Extend skip the
+--     verify side-effect. Future code paths that load the freshly-
+--     deployed program will go through `Decode.decodeProgram` at
+--     invocation time anyway.
+--   * **Rent::minimum_balance.** We model `rent_min(len) = 0` (the
+--     same simplification documented in the project's Tier-2 deferred
+--     items). Affected branches:
+--     - Deploy's payer-pays-rent step charges 1 lamport (the
+--       `max(1, rent_min)` lower bound).
+--     - Upgrade's spill formula leaves 1 lamport on programdata.
+--     - ExtendProgram skips the System::Transfer top-up when
+--       programdata already has ≥ 1 lamport.
+--   * **executable flag on Deploy.** agave's `program.set_executable(true)`
+--     mutates the TransactionContext's view; the BPF caller's
+--     `AccountInfo` exec bit is not writable from within a Native in
+--     our model (AcctInput doesn't expose its slot). The harness
+--     surfaces executable=true via the resulting_accounts builder
+--     for accounts owned by the loader; the Lean dispatch itself
+--     leaves the bit alone.
+--   * **Inter-Native CPI accounting.** Deploy and ExtendProgram do
+--     `native_invoke_signed(system_instruction::...)` in agave,
+--     which charges Cpi.cu (946) per call. We inline the System
+--     side-effects directly, so the Cpi.cu charge is folded into
+--     CU_DEFAULT (2370) — Deploy's net CU figure will be 2370 vs
+--     agave's 2370 + 946 + 150. This is a known divergence on
+--     cross-engine CU equality; spec semantics still match.
+--   * **Close ProgramData same-slot freshness.** agave rejects
+--     Close when `clock.slot == programdata.slot`. With both = 0
+--     in our model the gate would always fire; we bypass it.
 --
 -- ## State layout (agave's `UpgradeableLoaderState`)
 --
@@ -51,6 +83,7 @@
 
 import Svm.Native.AcctInput
 import Svm.SBPF.Machine
+import Svm.SBPF.Pda
 
 namespace Svm.Native.BpfLoaderUpgradeable
 
@@ -462,25 +495,294 @@ def execClose (mem : Mem) (accts : List AcctInput) : NativeResult :=
       | _ => fail mem
   | _ => fail mem
 
+/-! ## Deploy / Upgrade / Extend
+
+These three variants share the pattern "verify state-chain →
+manipulate lamports → copy buffer payload → write state". They also
+share two model simplifications (see top-doc):
+
+  * `rent_min(_) = 0` — agave's Rent sysvar would compute per-byte
+    lamports; we don't model the Rent sysvar's value, so the
+    `1.max(rent_min)` clamp always lands at 1.
+  * The internal `native_invoke_signed(system_instruction::...)` is
+    inlined (lamport / data_len / owner writes done directly) rather
+    than re-entering the System dispatcher. This saves a Cpi.cu
+    charge of 946 + 150 vs agave; net CU figures will differ by
+    that amount per inner invocation. -/
+
+/-- The MAX_PERMITTED_DATA_LENGTH constant agave clamps deploys
+    against. Matches `solana_system_interface::MAX_PERMITTED_DATA_LENGTH`. -/
+private def MAX_PERMITTED_DATA_LENGTH : Nat := 10 * 1024 * 1024
+
+/-- Stub for `Rent::minimum_balance(_)`. Our model treats every
+    rent-exempt computation as 0 lamports. The downstream
+    `1.max(rent_min)` formula then clamps to 1. -/
+private def rentMin (_dataLen : Nat) : Nat := 0
+
+/-- SIMD-0431: a successful Extend must add at least 10 KiB unless
+    the account is within 10 KiB of MAX_PERMITTED_DATA_LENGTH. We
+    enforce the bound directly (agave gates this behind a feature
+    flag; we treat the gate as always-active since modern fixtures
+    won't run pre-SIMD-0431 paths). -/
+private def MINIMUM_EXTEND_PROGRAM_BYTES : Nat := 10240
+
+/-- `DeployWithMaxDataLen { max_data_len }`. Accounts (per
+    `solana-loader-v3-interface-6.1.1/src/instruction.rs:86-97`):
+    0. `[writable, signer]` payer
+    1. `[writable]` uninitialized ProgramData (the PDA)
+    2. `[writable]` uninitialized Program
+    3. `[writable]` Buffer
+    4. `[]` Rent sysvar
+    5. `[]` Clock sysvar
+    6. `[]` System program
+    7. `[signer]` upgrade authority -/
+def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
+    (maxDataLen : Nat) : NativeResult :=
+  match accts with
+  | payer :: pdAcct :: program :: buffer :: _rent :: _clock :: _sys ::
+    authority :: _ =>
+    -- Verify Program account: Uninitialized + large enough + rent-exempt
+    -- (we skip the rent check, per `rentMin = 0`).
+    match readState mem program.dataPtr program.dataLen with
+    | .uninitialized =>
+      if program.dataLen < SIZE_PROGRAM then fail mem
+      else
+        -- Verify Buffer account: Buffer state + authority matches +
+        -- authority signed.
+        match readState mem buffer.dataPtr buffer.dataLen with
+        | .buffer authorityAddr =>
+          if !authorityEq authorityAddr (some authority.key) then fail mem
+          else if !authority.isSigner then fail mem
+          else
+            let bufferDataOffset := SIZE_BUFFER_METADATA  -- 37
+            if buffer.dataLen < bufferDataOffset then fail mem
+            else
+              let bufferDataLen := buffer.dataLen - bufferDataOffset
+              let programDataLen := SIZE_PROGRAMDATA_META + maxDataLen
+              if bufferDataLen = 0 then fail mem
+              else if maxDataLen < bufferDataLen then fail mem
+              else if programDataLen > MAX_PERMITTED_DATA_LENGTH then fail mem
+              else
+                -- PDA verify: find_program_address([program.key], LOADER)
+                -- == pdAcct.key.
+                match Svm.SBPF.Pda.tryFindProgramAddress
+                        [program.key] PROGRAM_ID_BYTES with
+                | none => fail mem
+                | some (derived, _bump) =>
+                  if !pubkeyEq derived pdAcct.key then fail mem
+                  else
+                    -- Drain buffer → payer.
+                    if payer.lamports + buffer.lamports ≥ U64_MODULUS then
+                      fail mem
+                    else
+                      let payerAfterDrain := payer.lamports + buffer.lamports
+                      -- Inline System::CreateAccount: rent_min = 0 so
+                      -- payer pays 1 lamport to programdata.
+                      let requiredLamports := Nat.max 1 (rentMin programDataLen)
+                      if payerAfterDrain < requiredLamports then fail mem
+                      else
+                        let payerFinal := payerAfterDrain - requiredLamports
+                        let pdFinal := pdAcct.lamports + requiredLamports
+                        let m1 := writeU64 mem payer.lamportsRefAddr payerFinal
+                        let m2 := writeU64 m1 buffer.lamportsRefAddr 0
+                        let m3 := writeU64 m2 pdAcct.lamportsRefAddr pdFinal
+                        let m4 := writeU64 m3 pdAcct.dataLenRefAddr programDataLen
+                        let m5 := writeU64 m4 (pdAcct.dataPtr - 8) programDataLen
+                        let m6 := writeBytes m5 pdAcct.ownerPtr 32 PROGRAM_ID_BYTES
+                        -- Set ProgramData state.
+                        let m7 := writeProgramDataState m6 pdAcct.dataPtr 0
+                                                       (some authority.key)
+                        -- Copy buffer payload → programdata payload.
+                        let src := readBytes m7 (buffer.dataPtr + bufferDataOffset)
+                                              bufferDataLen
+                        let m8 := writeBytes m7
+                                  (pdAcct.dataPtr + SIZE_PROGRAMDATA_META)
+                                  bufferDataLen src
+                        -- Buffer dataLen → size_of_buffer(0) = 37.
+                        let m9 := writeU64 m8 buffer.dataLenRefAddr
+                                          SIZE_BUFFER_METADATA
+                        let m10 := writeU64 m9 (buffer.dataPtr - 8)
+                                            SIZE_BUFFER_METADATA
+                        -- Program state → Program { programdata_address }.
+                        let m11 := writeU32 m10 program.dataPtr TAG_PROGRAM
+                        let m12 := writeBytes m11 (program.dataPtr + 4) 32
+                                              pdAcct.key
+                        -- NOTE: program.executable is left unset; see
+                        -- module-level "executable flag on Deploy".
+                        ⟨m12, 0, CU_DEFAULT⟩
+        | _ => fail mem
+    | _ => fail mem  -- AccountAlreadyInitialized
+  | _ => fail mem
+
+/-- `Upgrade`. Accounts:
+    0. `[writable]` ProgramData
+    1. `[writable]` Program
+    2. `[writable]` Buffer
+    3. `[writable]` spill (recipient of excess lamports)
+    4. `[]` Rent sysvar
+    5. `[]` Clock sysvar
+    6. `[signer]` upgrade authority -/
+def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
+  match accts with
+  | pdAcct :: program :: buffer :: spill :: _rent :: _clock ::
+    authority :: _ =>
+    -- Verify Program account.
+    if !program.isWritable then fail mem
+    else if !isOwnerLoader program.owner then fail mem
+    else
+      match readState mem program.dataPtr program.dataLen with
+      | .program programdataAddr =>
+        if !pubkeyEq programdataAddr pdAcct.key then fail mem
+        else
+          -- Verify Buffer account.
+          match readState mem buffer.dataPtr buffer.dataLen with
+          | .buffer authorityAddr =>
+            if !authorityEq authorityAddr (some authority.key) then fail mem
+            else if !authority.isSigner then fail mem
+            else
+              let bufferDataOffset := SIZE_BUFFER_METADATA
+              if buffer.dataLen < bufferDataOffset then fail mem
+              else
+                let bufferDataLen := buffer.dataLen - bufferDataOffset
+                if bufferDataLen = 0 then fail mem
+                else
+                  -- Verify ProgramData account.
+                  let balanceRequired := Nat.max 1 (rentMin pdAcct.dataLen)
+                  if pdAcct.dataLen <
+                       SIZE_PROGRAMDATA_META + bufferDataLen then fail mem
+                  else if pdAcct.lamports + buffer.lamports
+                            < balanceRequired then fail mem
+                  else
+                    match readState mem pdAcct.dataPtr pdAcct.dataLen with
+                    | .programData _slot upgradeAuth =>
+                      -- Same-slot check skipped (slot = 0 in our model).
+                      if upgradeAuth.isNone then fail mem
+                      else if !authorityEq upgradeAuth
+                                            (some authority.key) then fail mem
+                      else
+                        -- Copy buffer payload → programdata payload.
+                        let src := readBytes mem
+                                    (buffer.dataPtr + bufferDataOffset)
+                                    bufferDataLen
+                        let m1 := writeBytes mem
+                                    (pdAcct.dataPtr + SIZE_PROGRAMDATA_META)
+                                    bufferDataLen src
+                        -- Zero programdata[45+bufferDataLen..dataLen].
+                        let tailStart :=
+                          pdAcct.dataPtr + SIZE_PROGRAMDATA_META + bufferDataLen
+                        let tailLen :=
+                          pdAcct.dataLen - (SIZE_PROGRAMDATA_META + bufferDataLen)
+                        let m2 := writeZeros m1 tailStart tailLen
+                        -- Update ProgramData state with current slot.
+                        let m3 := writeProgramDataState m2 pdAcct.dataPtr 0
+                                                       (some authority.key)
+                        -- Spill: spill += programdata + buffer - balance_required.
+                        let totalLamports := pdAcct.lamports + buffer.lamports
+                        let excess := totalLamports - balanceRequired
+                        if spill.lamports + excess ≥ U64_MODULUS then fail mem
+                        else
+                          let m4 := writeU64 m3 spill.lamportsRefAddr
+                                            (spill.lamports + excess)
+                          let m5 := writeU64 m4 buffer.lamportsRefAddr 0
+                          let m6 := writeU64 m5 pdAcct.lamportsRefAddr
+                                            balanceRequired
+                          -- Buffer dataLen → 37.
+                          let m7 := writeU64 m6 buffer.dataLenRefAddr
+                                            SIZE_BUFFER_METADATA
+                          let m8 := writeU64 m7 (buffer.dataPtr - 8)
+                                            SIZE_BUFFER_METADATA
+                          ⟨m8, 0, CU_DEFAULT⟩
+                    | _ => fail mem
+          | _ => fail mem
+      | _ => fail mem
+  | _ => fail mem
+
+/-- `ExtendProgram { additional_bytes }`. Accounts:
+    0. `[writable]` ProgramData
+    1. `[writable]` ProgramData's associated Program
+    2. `[]` System program (optional)
+    3. `[writable, signer]` payer (optional, only when rent gap > 0)
+
+    The `check_authority` variant (`ExtendProgramChecked`, not in
+    agave's 8 variants in this version) shifts the authority into
+    account index 2 and the payer into 4. We model only the
+    unchecked form. -/
+def execExtendProgram (mem : Mem) (accts : List AcctInput)
+    (additionalBytes : Nat) : NativeResult :=
+  match accts with
+  | pdAcct :: program :: rest =>
+    if additionalBytes = 0 then fail mem
+    else if !isOwnerLoader pdAcct.owner then fail mem
+    else if !pdAcct.isWritable then fail mem
+    else if !program.isWritable then fail mem
+    else if !isOwnerLoader program.owner then fail mem
+    else
+      match readState mem program.dataPtr program.dataLen with
+      | .program programdataAddr =>
+        if !pubkeyEq programdataAddr pdAcct.key then fail mem
+        else
+          let oldLen := pdAcct.dataLen
+          let newLen := oldLen + additionalBytes
+          if newLen > MAX_PERMITTED_DATA_LENGTH then fail mem
+          else
+            -- SIMD-0431: additional_bytes ≥ MINIMUM_EXTEND_PROGRAM_BYTES
+            -- unless within MINIMUM_EXTEND_PROGRAM_BYTES of the cap.
+            let headroom := MAX_PERMITTED_DATA_LENGTH - oldLen
+            if additionalBytes < MINIMUM_EXTEND_PROGRAM_BYTES ∧
+               additionalBytes ≠ headroom then fail mem
+            else
+              match readState mem pdAcct.dataPtr pdAcct.dataLen with
+              | .programData _slot upgradeAuth =>
+                -- Same-slot check skipped (slot = 0 in our model).
+                if upgradeAuth.isNone then fail mem
+                else
+                  -- Rent gap: balance_required = max(1, rent_min(newLen)) = 1.
+                  -- If programdata already has ≥ 1 lamport, no transfer.
+                  let balanceRequired := Nat.max 1 (rentMin newLen)
+                  let needTransfer := pdAcct.lamports < balanceRequired
+                  let baseMem :=
+                    -- Optional inline System::Transfer for the rent gap.
+                    if needTransfer then
+                      match rest with
+                      | _sys :: payer :: _ =>
+                        let required := balanceRequired - pdAcct.lamports
+                        if payer.lamports < required then mem
+                        else
+                          let m1 := writeU64 mem payer.lamportsRefAddr
+                                            (payer.lamports - required)
+                          writeU64 m1 pdAcct.lamportsRefAddr balanceRequired
+                      | _ => mem  -- missing payer; agave returns
+                                  -- AccountNotEnoughKeys but our model
+                                  -- falls through to dataLen update
+                    else mem
+                  -- Grow programdata.dataLen to newLen.
+                  let m1 := writeU64 baseMem pdAcct.dataLenRefAddr newLen
+                  let m2 := writeU64 m1 (pdAcct.dataPtr - 8) newLen
+                  -- Re-write ProgramData state header (slot stays 0).
+                  let m3 := writeProgramDataState m2 pdAcct.dataPtr 0
+                                                  upgradeAuth
+                  ⟨m3, 0, CU_DEFAULT⟩
+              | _ => fail mem
+      | _ => fail mem
+  | _ => fail mem
+
 /-! ## Dispatcher -/
 
 /-- Single dispatch entry. The Tier-1 #2 native-program convention is
     "return `some` whenever the program-id matches" — even
-    unimplemented variants surface a deterministic `r0=1` so the
+    unknown discriminants surface a deterministic `r0=1` so the
     failure doesn't silently fall through to the BPF registry. -/
 def dispatch (ixData : ByteArray) (accts : List AcctInput) (mem : Mem) :
     Option NativeResult :=
   match decode ixData with
   | .initializeBuffer      => some (execInitializeBuffer mem accts)
   | .write off bytes       => some (execWrite mem accts off bytes)
+  | .deployWithMaxDataLen n => some (execDeployWithMaxDataLen mem accts n)
+  | .upgrade                => some (execUpgrade mem accts)
   | .setAuthority          => some (execSetAuthority mem accts)
-  | .setAuthorityChecked   => some (execSetAuthorityChecked mem accts)
   | .close                 => some (execClose mem accts)
-  -- The three deferred variants charge CU but surface r0=1
-  -- ("deferred"): see module-doc.
-  | .deployWithMaxDataLen _ => some ⟨mem, 1, CU_DEFAULT⟩
-  | .upgrade                => some ⟨mem, 1, CU_DEFAULT⟩
-  | .extendProgram _        => some ⟨mem, 1, CU_DEFAULT⟩
-  | .unknown _              => some ⟨mem, 1, CU_DEFAULT⟩
+  | .extendProgram n        => some (execExtendProgram mem accts n)
+  | .setAuthorityChecked   => some (execSetAuthorityChecked mem accts)
+  | .unknown _             => some ⟨mem, 1, CU_DEFAULT⟩
 
 end Svm.Native.BpfLoaderUpgradeable
