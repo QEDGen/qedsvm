@@ -37,6 +37,7 @@ import Svm.Native.AddressLookupTable
 import Svm.Native.Config
 import Svm.Native.Precompiles
 import Svm.Native.BpfLoaderUpgradeable
+import Svm.Native.Stake
 
 namespace Svm.Native
 
@@ -50,11 +51,22 @@ open Svm.SBPF.Memory
       - ComputeBudget (no-op + 150 CU)
       - AddressLookupTable (all 5 variants)
       - Config (the single `Store` instruction)
-      - BPF Loader v3 Upgradeable (5 of 8 variants — see
-        [[native-programs-design]] for the deferred 3)
+      - BPF Loader v3 Upgradeable (all 8 variants)
+      - Stake (foundation: 8 management variants + decoder for all 18;
+        operational variants DelegateStake/Split/Merge/Withdraw/
+        Deactivate/MoveStake/MoveLamports/AuthorizeWithSeed/
+        AuthorizeCheckedWithSeed/DeactivateDelinquent are decoded but
+        dispatch returns r0=1 — see [[native-programs-design]])
       - The three sig-verify precompiles (ed25519, secp256k1,
         secp256r1)
-    Still missing: Stake, Vote, ZK ElGamal Proof, BPF Loader v1/v2/v4. -/
+
+    **Intentionally unimplemented** (see
+    [[native-programs-scope-decision]]):
+      - Vote — SIMD-0387 is migrating it out of builtins.
+      - ZK ElGamal Proof — Token-2022 confidential transfers;
+        narrow utility, large math surface.
+
+    Not yet covered: BPF Loader v1 (deprecated), v2, v4. -/
 def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
     (mem : Mem) : Option NativeResult :=
   if pid = System.PROGRAM_ID then
@@ -67,6 +79,8 @@ def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
     some (Config.dispatch ixData accts mem)
   else if pid = BpfLoaderUpgradeable.PROGRAM_ID then
     BpfLoaderUpgradeable.dispatch ixData accts mem
+  else if pid = Stake.PROGRAM_ID then
+    Stake.dispatch ixData accts mem
   else
     Precompiles.dispatch pid ixData accts mem
 
