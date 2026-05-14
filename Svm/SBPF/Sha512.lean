@@ -26,7 +26,9 @@ Same `SliceDesc`-list ABI as `sol_sha256` / `sol_keccak256`, only the
 output is 64 bytes. Cost mirrors agave's `sha256_base_cost` (the same
 table entry covers all four hash families). -/
 
-def cu : Nat := 85
+/-- Same per-byte CU as sha256 (one row in agave's cost table covers
+    sha256/sha512/keccak256/blake3): `base (85) + bytes`. -/
+@[simp] def cu (s : State) : Nat := 85 + sumSliceLens s.mem s.regs.r1 s.regs.r2
 
 @[simp] def exec (s : State) : State :=
   let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)

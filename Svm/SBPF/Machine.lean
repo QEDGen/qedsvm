@@ -182,6 +182,16 @@ def readSlices (mem : Memory.Mem) (descsAddr n : Nat) : ByteArray :=
     let len := Memory.readU64 mem (descAddr + 8)
     acc ++ readBytes mem ptr len) ByteArray.empty
 
+/-- Sum the `len` fields across `n` `SliceDesc { ptr, len }` descriptors
+    starting at `descsAddr`. Cheaper than `readSlices …  |>.size` because
+    it skips dereferencing the slice bytes — used for per-byte CU
+    accounting (`sha256_byte_cost = 1`, etc.) where the body length is
+    all that matters. -/
+def sumSliceLens (mem : Memory.Mem) (descsAddr n : Nat) : Nat :=
+  (List.range n).foldl (fun acc i =>
+    let descAddr := descsAddr + i * 16
+    acc + Memory.readU64 mem (descAddr + 8)) 0
+
 /-- Memory update that writes the first `len` bytes of `bs` to address
     `out`, leaving everything else untouched. Equivalent to the
     inline `fun a => if a ≥ out ∧ a - out < len then bs.get! (a - out)

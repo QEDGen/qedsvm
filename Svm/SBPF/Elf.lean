@@ -142,6 +142,18 @@ def textName : ByteArray := ⟨#[0x2e, 0x74, 0x65, 0x78, 0x74]⟩  -- ".text"
     (Anchor discriminator tables, string constants, IDL fragments, etc.). -/
 def rodataName : ByteArray := ⟨#[0x2e, 0x72, 0x6f, 0x64, 0x61, 0x74, 0x61]⟩  -- ".rodata"
 
+/-- `.data.rel.ro` — read-only-after-relocation data. The linker emits
+    static structures containing pointer fields here (jump tables for
+    enum match-arms, `&'static` references to rodata strings, vtables,
+    etc.). Each pointer field carries an `R_BPF_64_RELATIVE` relocation
+    whose payload-bytes layout is `00 00 00 00 <u32 target_addr>` —
+    the address sits in the upper 32 bits of the u64 word, with the
+    runtime loader expected to repack it as `<u32 target_addr> 00 00 00 00`
+    (i.e., write target_addr into the low 32 bits). Programs with
+    enum dispatch (SPL Token, Anchor, etc.) crash without this. -/
+def dataRelRoName : ByteArray :=
+  ⟨#[0x2e, 0x64, 0x61, 0x74, 0x61, 0x2e, 0x72, 0x65, 0x6c, 0x2e, 0x72, 0x6f]⟩  -- ".data.rel.ro"
+
 /-- `.dynstr` section name — strings for dynamic-symbol entries
     (used to resolve syscall names referenced by `R_BPF_64_32`
     relocations). -/
@@ -236,6 +248,13 @@ def writeU32LE (bytes : ByteArray) (off val : Nat) : ByteArray :=
   let b2 := b1.set!   (off + 2)  (val / 0x10000 % 0x100).toUInt8
   b2.set!             (off + 3)  (val / 0x1000000 % 0x100).toUInt8
 
+/-- Write a 64-bit little-endian value at offset `off` in `bytes`. -/
+def writeU64LE (bytes : ByteArray) (off val : Nat) : ByteArray :=
+  let lo := val % 0x100000000
+  let hi := val / 0x100000000
+  let b1 := writeU32LE bytes off lo
+  writeU32LE b1 (off + 4) hi
+
 /-! ## Applying relocations -/
 
 /-- Apply a single `R_BPF_64_64` relocation to the loaded `.text` bytes.
@@ -311,6 +330,44 @@ def applyRelocations (elfBytes : ByteArray) (h : Header)
       else
         acc) textBytes
   | _, _, _ => textBytes
+
+/-- Apply `R_BPF_64_RELATIVE` relocations that fall inside a non-text
+    section (typically `.data.rel.ro`). Each reloc names a byte offset
+    inside the section where the linker has placed an 8-byte word
+    laid out as `[0u32 ; target_u32]` — the actual address sits in
+    the *upper* 32 bits. Without patching, a u64-LE read of that word
+    returns `target << 32` (a huge bogus address); after patching, it
+    returns `target` directly (a valid section-space address that
+    our `Mem` resolves through the section mapping).
+
+    Implementation mirrors the backwards-compat branch of
+    `solana-sbpf`'s `Executable::relocate` for `R_Bpf_64_Relative`
+    outside `.text`: read u32 at `r_offset + 4`, write u64 at
+    `r_offset`. Modern toolchain output (cargo-build-sbf 3.1.x) goes
+    through this branch for all `.data.rel.ro` relocs.
+
+    `secBytes`  — the section's raw bytes (typically `.data.rel.ro`).
+    `secVA`     — `sh_addr` of the section, used to convert
+                  `rel.offset` (an ELF VA) to a byte offset into
+                  `secBytes`.
+
+    Relocs not falling inside `[secVA, secVA + secBytes.size)` are
+    skipped. -/
+def applyDataRelocations (elfBytes : ByteArray) (h : Header)
+    (secVA : Nat) (secBytes : ByteArray) : ByteArray :=
+  match findSectionByType elfBytes h SHT_REL with
+  | some reltab =>
+    let nRels := reltab.size / 16
+    let secEnd := secVA + secBytes.size
+    (List.range nRels).foldl (fun acc i =>
+      let rel := parseRelocationEntry elfBytes (reltab.offset + i * 16)
+      if rel.type = R_BPF_64_Relative
+         ∧ rel.offset ≥ secVA ∧ rel.offset < secEnd then
+        let secOff := rel.offset - secVA
+        let target := readU32LE secBytes (secOff + 4)
+        writeU64LE acc secOff target
+      else acc) secBytes
+  | none => secBytes
 
 /-- Extract the `.text` section (the bytecode) from a Solana sBPF ELF.
     Returns `none` if the header is malformed or there is no `.text`. -/

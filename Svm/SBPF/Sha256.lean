@@ -209,11 +209,10 @@ implementation gathers all slice bytes, hashes once with the
 pure-Lean `hash`, and writes the 32-byte big-endian digest to `*r3`.
 `r0` is set to 0 on success. -/
 
-/-- CU charge for `sol_sha256`. Agave's `sha256_base_cost = 85`.
-    The per-byte cost (`sha256_byte_cost = 1`) is not yet modeled —
-    it requires reading the slice descriptor list to learn the
-    total byte count and re-reading state in `syscallCu`. -/
-def cu : Nat := 85
+/-- CU charge for `sol_sha256`. Agave: `sha256_base_cost (85) +
+    sha256_byte_cost (1) * total_bytes`, where `total_bytes` sums
+    the `len` field across all `SliceDesc` descriptors in `*r1`. -/
+@[simp] def cu (s : State) : Nat := 85 + sumSliceLens s.mem s.regs.r1 s.regs.r2
 
 /-- Execute `sol_sha256` against the supplied state.
 

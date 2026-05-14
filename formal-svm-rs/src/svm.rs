@@ -147,11 +147,27 @@ impl Svm {
             .ok_or_else(|| SvmError::UnknownProgram(instruction.program_id))?;
         let input = serialize_parameters(instruction, accounts, &instruction.program_id)?;
 
-        let raw = crate::run_buffer(elf, &input, self.cu_budget)
-            .map_err(|e| match e {
-                crate::DecodeError::ElfDecodeFailed => SvmError::ElfDecodeFailed,
-                other => SvmError::InternalWireFormat(other),
-            })?;
+        // Build a CPI registry of all *other* programs registered with
+        // this `Svm`. The main program is fetched via `elf` directly,
+        // so we exclude it from the registry to keep the blob small —
+        // the Lean runner doesn't need it twice.
+        let registry_entries: Vec<(&[u8; 32], &[u8])> = self.programs
+            .iter()
+            .filter(|(pid, _)| **pid != instruction.program_id)
+            .map(|(pid, elf)| (pid.as_array(), elf.as_slice()))
+            .collect();
+        let raw = if registry_entries.is_empty() {
+            // Fast path: no other programs, use the simpler entry that
+            // doesn't allocate a registry blob.
+            crate::run_buffer(elf, &input, self.cu_budget)
+        } else {
+            let registry_blob = crate::encode_registry(&registry_entries);
+            crate::run_buffer_with_registry(elf, &input, &registry_blob, self.cu_budget)
+        }
+        .map_err(|e| match e {
+            crate::DecodeError::ElfDecodeFailed => SvmError::ElfDecodeFailed,
+            other => SvmError::InternalWireFormat(other),
+        })?;
 
         let program_result = match raw.outcome {
             ExitOutcome::OutOfBudget => ProgramResult::OutOfBudget,

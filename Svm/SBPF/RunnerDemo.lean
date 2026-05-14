@@ -197,18 +197,22 @@ def helloElf : ByteArray := ⟨#[
 
 example : Runner.runElfForExit helloElf = some 42 := by native_decide
 
-/-! ## Demo 9 — `call <hash>` decoding
+/-! ## Demo 9 — `call <hash>` decoding (internal-call fallback)
 
-A program that issues a syscall by Murmur3 hash, then exits. Without a
-hash table the decoder routes the call to `Syscall.unknown <hash>`,
-whose default semantics sets `r0 := 0`. The program then exits with
-that `r0`. This proves the `call` opcode (0x85) decodes and runs
-cleanly — required for any program that calls `sol_log_*`,
-`sol_memcpy_*`, `sol_invoke_signed_*`, etc. -/
+A program that issues a `0x85 call` with an imm that doesn't match any
+registered syscall hash. The decoder routes such imms to `.call_local
+target = pc + 1 + imm` (signed). Here we use `imm = 0` so the target
+is the next instruction — a benign self-call that pushes one frame and
+proceeds. The next instruction (exit) pops the frame and re-executes
+exit at PC 1, which halts with `r0 = 0`. This proves the 0x85 opcode
+decodes and the unknown-hash → call_local fallback runs cleanly.
+Real `sol_log_*` / `sol_memcpy_*` / `sol_invoke_signed_*` calls use
+the *known*-hash branch, which dispatches to a syscall variant. -/
 
 def callProgram : ByteArray := ⟨#[
-  -- call 0x12345678  (some unknown syscall hash)
-  0x85, 0x00, 0x00, 0x00, 0x78, 0x56, 0x34, 0x12,
+  -- call 0  (no syscall hash matches imm=0; decoder routes to
+  -- call_local target = pc+1+0 = next instruction)
+  0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   -- exit
   0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ]⟩
@@ -804,32 +808,41 @@ def relocElf : ByteArray := ⟨#[
 
 example : Runner.runElfForExit relocElf = some 0x42 := by native_decide
 
-/-! ## Demo 25 — cross-program invocation via `sol_invoke_signed_c`
+/-! ## Demo 25 — cross-program invocation via `sol_invoke_signed`
 
-The runner's `RunConfig.programRegistry` maps a program-id (modeled as
-a `Nat`) to the callee's raw bytecode. When the caller issues
-`sol_invoke_signed_c`, the CPI handler in `Runner.executeFnCpi` looks up
-the callee, decodes it, runs it in a fresh sub-state, and propagates the
-sub-program's exit code into the caller's `r0`.
+The runner's `RunConfig.programRegistry` maps a program-id (encoded as
+a little-endian Nat over 32 bytes) to the callee's raw bytecode. When
+the caller issues `sol_invoke_signed` (the Rust-ABI variant called
+from `solana_program::invoke`), the CPI handler reads the 32-byte
+`program_id` from caller memory at `*(r1 + 48)`. Why +48: Rust's
+default layout for `Instruction { program_id, accounts: Vec, data: Vec }`
+reorders fields by alignment — the 8-byte-aligned Vec fields come
+first (24 B each), then `program_id` (1-byte-aligned Pubkey) at the
+end, offset 48.
 
-v1 simplification: `r1` is read as the program-id directly (not a
-pointer to a `SolInstruction` C struct). A future revision will read
-`SolInstruction { program_id, accounts, accounts_len, data, data_len }`
-out of memory at `r1`. Account write-back, PDA seed validation, CU
-splitting, and stack-depth tracking are also deferred.
+For this demo we don't bother building the rest of `Instruction`; we
+just need a 32-byte pubkey at the right offset.
 
-Caller:
+Caller (places `0x42, 0, …, 0` at `[r10-32]` and sets r1 so that
+`r1 + 48 = r10 - 32`):
 ```
-  mov64 r1, 0x42                ; program-id (v1 stub)
-  call sol_invoke_signed_c      ; r0 := callee.exit_code
+  st .byte [r10-32], 0x42   ; first byte of pubkey
+  mov64 r1, r10
+  add64 r1, -80             ; r1 → r10-80, so r1+48 = r10-32 (pubkey)
+  call sol_invoke_signed    ; r0 := callee.exit_code
   exit
 ```
 
-Callee (registered at id `0x42`):
+Callee (registered at pubkey `0x42, 0, …, 0` → LE Nat 0x42):
 ```
   mov64 r0, 0x77
   exit
 ```
+
+What's still TODO (Phase 3-full): real `AccountInfo` decoding +
+write-back propagation for CPIs that pass accounts. The current
+implementation handles the zero-account case (which this demo
+exercises) with a fresh sub-input + sub-mem.
 -/
 
 def cpiCalleeBytes : ByteArray := ⟨#[
@@ -840,15 +853,21 @@ def cpiCalleeBytes : ByteArray := ⟨#[
 ]⟩
 
 def cpiCallerBytes : ByteArray :=
-  let h := SyscallHash.sol_invoke_signed_c_hash
+  let h := SyscallHash.sol_invoke_signed_rust_hash
   ⟨#[
-    -- mov64 r1, 0x42  (program-id for CPI; v1 stub uses r1 directly)
-    0xb7, 0x01, 0x00, 0x00, 0x42, 0x00, 0x00, 0x00
+    -- st .byte [r10-32], 0x42
+    0x72, 0x0a, 0xe0, 0xff, 0x42, 0x00, 0x00, 0x00,
+    -- mov64 r1, r10
+    0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    -- add64 r1, -80  (r1 + 48 = r10 - 32 → pubkey at +48)
+    0x07, 0x01, 0x00, 0x00, 0xb0, 0xff, 0xff, 0xff
   ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
     -- exit
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   ]⟩
 
+/-- Registry keyed by the LE-Nat encoding of the 32-byte pubkey. The
+    demo's pubkey is `0x42, 0, …, 0` → LE Nat = 0x42. -/
 def cpiRegistry : Nat → Option ByteArray :=
   fun pid => if pid = 0x42 then some cpiCalleeBytes else none
 

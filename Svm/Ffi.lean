@@ -116,4 +116,82 @@ def runElfBuffer (elf input : ByteArray) (cuBudget : UInt64) : ByteArray :=
     let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
     encodeRun s input.size (UInt64.ofNat consumed)
 
+/-! ## Multi-program registry (for CPI)
+
+Real Solana programs CPI into other programs (System, Token, ATA, etc.).
+The `Runner.RunConfig.programRegistry` field accepts a `Nat → Option
+ByteArray` lookup from program-id (encoded as LE Nat over 32 bytes) to
+that program's ELF bytes; the CPI stub at `Runner.executeFnCpiWithFuel`
+consults it on `.sol_invoke_signed` / `.sol_invoke_signed_c`.
+
+For Rust callers that hold multiple ELFs in a `HashMap<Pubkey, Vec<u8>>`,
+we accept the whole map as a flat ByteArray blob, parse it once on
+entry, and hand a closure to the runner.
+
+Blob format (all LE):
+  u32 num_entries
+  for each entry:
+    [32]u8 pubkey
+    u32 elf_size
+    [u8]; elf_size  elf bytes
+-/
+
+/-- Decode 32 raw pubkey bytes at `bytes[off..off+32]` as a little-endian
+    Nat. Matches the same convention the CPI handler uses when reading
+    32 bytes from caller memory (so both halves of the lookup agree). -/
+def pubkeyToNat (bytes : ByteArray) (off : Nat) : Nat :=
+  (List.range 32).foldl
+    (fun acc i => acc + (bytes.get! (off + i)).toNat * 256^i) 0
+
+/-- Parse a registry blob into a `(Nat → Option ByteArray)` lookup.
+    Linear scan on each lookup — fine for the small program counts
+    typical of one transaction (<= ~32 programs in practice).
+    Malformed blob (truncated, count overflow) yields an empty
+    registry. -/
+def parseRegistry (blob : ByteArray) : Nat → Option ByteArray :=
+  if blob.size < 4 then fun _ => none
+  else
+    let count := readU32LE blob 0
+    let entries : List (Nat × ByteArray) :=
+      (List.range count).foldl (fun acc _ =>
+        let off : Nat :=
+          acc.foldl (fun acc' (_, elf) => acc' + 32 + 4 + elf.size) 4
+        if off + 36 > blob.size then acc
+        else
+          let pk := pubkeyToNat blob off
+          let elfSize := readU32LE blob (off + 32)
+          let elfEnd := off + 36 + elfSize
+          if elfEnd > blob.size then acc
+          else
+            let elf := blob.extract (off + 36) elfEnd
+            acc ++ [(pk, elf)]) []
+    fun pid =>
+      (entries.find? (·.1 = pid)).map (·.2)
+where
+  /-- Read u32 LE from a ByteArray (Ffi-local copy, distinct from
+      Decode.readU32LE which works on a different input shape). -/
+  readU32LE (bytes : ByteArray) (off : Nat) : Nat :=
+    (bytes.get! off).toNat +
+    (bytes.get! (off + 1)).toNat * 0x100 +
+    (bytes.get! (off + 2)).toNat * 0x10000 +
+    (bytes.get! (off + 3)).toNat * 0x1000000
+
+/-- Like `runElfBuffer` but additionally accepts a `registry` blob (see
+    "Multi-program registry" above). Used by Rust harnesses that need
+    CPI support — `Svm::add_program` populates a map, we serialize it
+    once, and the Lean runner consults it for each
+    `.sol_invoke_signed{,_c}` call. -/
+@[export formal_svm_run_with_registry]
+def runWithRegistry (elf input registry : ByteArray) (cuBudget : UInt64)
+    : ByteArray :=
+  let cfg : Runner.RunConfig :=
+    { input           := input
+      cuBudget        := cuBudget.toNat
+      programRegistry := parseRegistry registry }
+  match Runner.runElfWithFuel elf cfg with
+  | none => encodeElfError
+  | some (s, fuelRemaining) =>
+    let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
+    encodeRun s input.size (UInt64.ofNat consumed)
+
 end Svm.Ffi

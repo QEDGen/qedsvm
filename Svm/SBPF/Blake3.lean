@@ -28,7 +28,7 @@ opaque hash (data : @& ByteArray) : ByteArray
 
 Same `SliceDesc`-list ABI and base cost as `sol_sha256`. -/
 
-def cu : Nat := 85
+@[simp] def cu (s : State) : Nat := 85 + sumSliceLens s.mem s.regs.r1 s.regs.r2
 
 @[simp] def exec (s : State) : State :=
   let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)

@@ -63,6 +63,25 @@ extern "C" {
         cu_budget: u64,
     ) -> lean_obj_res;
 
+    /// Same as `formal_svm_run_elf_buffer` but also accepts a
+    /// `registry` ByteArray that encodes a (Pubkey → ELF) map for
+    /// cross-program invocation. Format (all LE):
+    ///
+    ///   u32 num_entries
+    ///   for each entry:
+    ///     [32]u8 pubkey
+    ///     u32 elf_size
+    ///     [u8;elf_size] elf
+    ///
+    /// Wire format of the result is identical to
+    /// `formal_svm_run_elf_buffer`.
+    pub fn formal_svm_run_with_registry(
+        elf: lean_obj_arg,
+        input: lean_obj_arg,
+        registry: lean_obj_arg,
+        cu_budget: u64,
+    ) -> lean_obj_res;
+
     // ─ Out-of-line wrappers (csrc/init_glue.c). ───────────────────
     fn leanfsvm_io_result_is_error(r: b_lean_obj_arg) -> u8;
     fn leanfsvm_dec_ref(o: lean_obj_arg);

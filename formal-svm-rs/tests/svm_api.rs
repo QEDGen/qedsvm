@@ -105,6 +105,26 @@ fn compute_units_consumed_matches_program_length() {
     assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
 }
 
+/// Registering a second program triggers the CPI registry path
+/// (`run_buffer_with_registry`) instead of the plain `run_buffer`
+/// entry. The "main" program (hello ELF) doesn't actually CPI, so
+/// the registry's contents go unused — this is purely an exercise of
+/// the FFI plumbing: encode_registry → Lean parseRegistry → runner.
+/// Asserts the same observable result as the single-program case,
+/// proving the new entry is wire-compatible.
+#[test]
+fn process_instruction_with_multiple_programs_routes_through_registry() {
+    let main_id = pid(20);
+    let other_id = pid(21);
+    let mut svm = Svm::default();
+    svm.add_program(&main_id, HELLO_ELF);
+    svm.add_program(&other_id, HELLO_ELF); // second program ⇒ registry path
+    let ix = Instruction { program_id: main_id, accounts: vec![], data: vec![] };
+    let result = svm.process_instruction(&ix, &[]).expect("runs");
+    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(result.compute_units_consumed, 2);
+}
+
 #[test]
 fn missing_account_returns_serialize_error() {
     let program_id = pid(9);

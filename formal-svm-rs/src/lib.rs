@@ -52,3 +52,52 @@ pub fn run_buffer(elf: &[u8], input: &[u8], cu_budget: u64) -> Result<RawResult,
     drop(g);
     wire::decode(&bytes)
 }
+
+/// Like [`run_buffer`] but additionally passes a CPI program registry —
+/// a flat blob mapping pubkeys to ELF bytes that the Lean runner
+/// consults on `sol_invoke_signed{,_c}`. Use this when the program
+/// under test may CPI into other programs (Token, ATA, System, etc.).
+///
+/// `registry_blob` format (all little-endian):
+/// ```text
+/// u32 num_entries
+/// for each entry:
+///   [32]u8 pubkey
+///   u32 elf_size
+///   [u8; elf_size] elf
+/// ```
+///
+/// See [`encode_registry`] for the canonical builder.
+pub fn run_buffer_with_registry(
+    elf: &[u8],
+    input: &[u8],
+    registry_blob: &[u8],
+    cu_budget: u64,
+) -> Result<RawResult, DecodeError> {
+    let g = ffi::lock();
+    let bytes = unsafe {
+        let elf_obj = ffi::alloc_bytearray(&g, elf);
+        let input_obj = ffi::alloc_bytearray(&g, input);
+        let registry_obj = ffi::alloc_bytearray(&g, registry_blob);
+        let result_obj = ffi::formal_svm_run_with_registry(
+            elf_obj, input_obj, registry_obj, cu_budget);
+        let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
+        ffi::dec_ref(&g, result_obj);
+        bytes
+    };
+    drop(g);
+    wire::decode(&bytes)
+}
+
+/// Build the canonical registry blob from a list of (pubkey, elf) pairs.
+/// Matches `Svm.Ffi.parseRegistry` in the Lean side.
+pub fn encode_registry(entries: &[(&[u8; 32], &[u8])]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for (pubkey, elf) in entries {
+        out.extend_from_slice(pubkey.as_slice());
+        out.extend_from_slice(&(elf.len() as u32).to_le_bytes());
+        out.extend_from_slice(elf);
+    }
+    out
+}

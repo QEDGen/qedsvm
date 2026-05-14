@@ -34,3 +34,36 @@ cp target/deploy/formal_svm_<name>.so ../<name>.so
 ```
 
 Requires the Solana toolchain (cargo-build-sbf) on PATH.
+
+## `cpi_caller.so` / `cpi_increment_caller.so`
+
+Two CPI fixtures, both from `cargo-build-sbf`:
+
+- `cpi_caller.so` — reads a 32-byte target pubkey from
+  `instruction_data[0..32]`, invokes it via `solana_program::invoke`
+  with no accounts and no data. Exercises the **zero-account CPI**
+  path (sub-input is 48 bytes: `num_acc=0, ix_data_len=0, program_id`).
+  Source in `cpi_caller_src/`.
+- `cpi_increment_caller.so` — same target-pubkey shape, but forwards
+  its one writable account through the CPI's `Instruction.accounts`.
+  Exercises **one-account CPI with write-back** when registered against
+  `incrementer.so`: the callee mutates the data, the caller's
+  post-state reflects the mutation. Source in
+  `cpi_increment_caller_src/`.
+
+## Third-party `.so` fixtures (no `_src/`)
+
+These three `.so` files were vendored verbatim from
+[`blueshift-gg/sbpf`](https://github.com/blueshift-gg/sbpf) at
+`crates/runtime/tests/fixtures/` (dual-licensed Apache-2.0 / MIT):
+
+- `token.so` (134 KB) — SPL Token program, real on-chain binary.
+- `associated_token.so` (105 KB) — SPL Associated Token Account
+  program. CPIs into Token, so most ATA paths need our CPI stub
+  replaced with real CPI before they'll diff cleanly.
+- `libupstream_pinocchio_escrow.so` (28 KB) — Pinocchio-based escrow
+  example. Bare-metal style program; smaller surface than token.
+
+All three are V0 (`e_flags = 0`), so the V0 stack-frame model
+applies. We use them as cross-engine diff inputs only; we don't
+build or modify them in this repo.

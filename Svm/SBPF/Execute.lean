@@ -52,11 +52,11 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_log_compute_units_                      => Logging.cuLogComputeUnits
   | .sol_log_pubkey                              => Logging.cuLogPubkey
   | .sol_log_data                                => Logging.cuLogData
-  -- Hashing
-  | .sol_sha256                                  => Sha256.cu
-  | .sol_sha512                                  => Sha512.cu
-  | .sol_keccak256                               => Keccak256.cu
-  | .sol_blake3                                  => Blake3.cu
+  -- Hashing (base + per-byte)
+  | .sol_sha256                                  => Sha256.cu s
+  | .sol_sha512                                  => Sha512.cu s
+  | .sol_keccak256                               => Keccak256.cu s
+  | .sol_blake3                                  => Blake3.cu s
   | .sol_poseidon                                => Poseidon.cu
   -- Memory ops
   | .sol_memcpy  | .sol_memmove
