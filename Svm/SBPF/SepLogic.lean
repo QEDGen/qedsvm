@@ -110,6 +110,277 @@ theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
 @[simp] theorem singletonMem_pc {a v : Nat} :
     (singletonMem a v).pc = none := rfl
 
+/-! ### singletonMemU64 — 8 consecutive bytes encoding a u64 value
+
+The partial state owns 8 bytes starting at `addr`, whose little-endian
+decode is `v % 2^64`. Used as the building block for the `↦U64`
+assertion that ldxdw/stxdw specs need. -/
+
+/-- Partial state owning 8 consecutive memory bytes whose little-endian
+    decode equals `v % 2^64`. -/
+def singletonMemU64 (addr v : Nat) : PartialState :=
+  { regs := fun _ => none
+    mem := fun a =>
+      if a = addr then some (v % 256)
+      else if a = addr + 1 then some (v / 0x100 % 256)
+      else if a = addr + 2 then some (v / 0x10000 % 256)
+      else if a = addr + 3 then some (v / 0x1000000 % 256)
+      else if a = addr + 4 then some (v / 0x100000000 % 256)
+      else if a = addr + 5 then some (v / 0x10000000000 % 256)
+      else if a = addr + 6 then some (v / 0x1000000000000 % 256)
+      else if a = addr + 7 then some (v / 0x100000000000000 % 256)
+      else none
+    pc := none }
+
+@[simp] theorem singletonMemU64_regs {addr v : Nat} (r : Reg) :
+    (singletonMemU64 addr v).regs r = none := rfl
+
+@[simp] theorem singletonMemU64_pc {addr v : Nat} :
+    (singletonMemU64 addr v).pc = none := rfl
+
+theorem singletonMemU64_mem_0 (addr v : Nat) :
+    (singletonMemU64 addr v).mem addr = some (v % 256) := by
+  unfold singletonMemU64; simp
+
+theorem singletonMemU64_mem_1 (addr v : Nat) :
+    (singletonMemU64 addr v).mem (addr + 1) = some (v / 0x100 % 256) := by
+  unfold singletonMemU64
+  show (if addr + 1 = addr then _
+        else if addr + 1 = addr + 1 then some (v / 0x100 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 1 ≠ addr), if_pos rfl]
+
+theorem singletonMemU64_mem_2 (addr v : Nat) :
+    (singletonMemU64 addr v).mem (addr + 2) = some (v / 0x10000 % 256) := by
+  show (singletonMemU64 addr v).mem (addr + 2) = _
+  unfold singletonMemU64
+  show (if addr + 2 = addr then some (v % 256)
+        else if addr + 2 = addr + 1 then some (v / 0x100 % 256)
+        else if addr + 2 = addr + 2 then some (v / 0x10000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 2 ≠ addr),
+      if_neg (by omega : addr + 2 ≠ addr + 1),
+      if_pos rfl]
+
+theorem singletonMemU64_mem_3 (addr v : Nat) :
+    (singletonMemU64 addr v).mem (addr + 3) = some (v / 0x1000000 % 256) := by
+  unfold singletonMemU64
+  show (if addr + 3 = addr then _
+        else if addr + 3 = addr + 1 then _
+        else if addr + 3 = addr + 2 then _
+        else if addr + 3 = addr + 3 then some (v / 0x1000000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 3 ≠ addr),
+      if_neg (by omega : addr + 3 ≠ addr + 1),
+      if_neg (by omega : addr + 3 ≠ addr + 2),
+      if_pos rfl]
+
+theorem singletonMemU64_mem_4 (addr v : Nat) :
+    (singletonMemU64 addr v).mem (addr + 4) = some (v / 0x100000000 % 256) := by
+  unfold singletonMemU64
+  show (if addr + 4 = addr then _
+        else if addr + 4 = addr + 1 then _
+        else if addr + 4 = addr + 2 then _
+        else if addr + 4 = addr + 3 then _
+        else if addr + 4 = addr + 4 then some (v / 0x100000000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 4 ≠ addr),
+      if_neg (by omega : addr + 4 ≠ addr + 1),
+      if_neg (by omega : addr + 4 ≠ addr + 2),
+      if_neg (by omega : addr + 4 ≠ addr + 3),
+      if_pos rfl]
+
+theorem singletonMemU64_mem_5 (addr v : Nat) :
+    (singletonMemU64 addr v).mem (addr + 5) = some (v / 0x10000000000 % 256) := by
+  unfold singletonMemU64
+  show (if addr + 5 = addr then _
+        else if addr + 5 = addr + 1 then _
+        else if addr + 5 = addr + 2 then _
+        else if addr + 5 = addr + 3 then _
+        else if addr + 5 = addr + 4 then _
+        else if addr + 5 = addr + 5 then some (v / 0x10000000000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 5 ≠ addr),
+      if_neg (by omega : addr + 5 ≠ addr + 1),
+      if_neg (by omega : addr + 5 ≠ addr + 2),
+      if_neg (by omega : addr + 5 ≠ addr + 3),
+      if_neg (by omega : addr + 5 ≠ addr + 4),
+      if_pos rfl]
+
+theorem singletonMemU64_mem_6 (addr v : Nat) :
+    (singletonMemU64 addr v).mem (addr + 6) = some (v / 0x1000000000000 % 256) := by
+  unfold singletonMemU64
+  show (if addr + 6 = addr then _
+        else if addr + 6 = addr + 1 then _
+        else if addr + 6 = addr + 2 then _
+        else if addr + 6 = addr + 3 then _
+        else if addr + 6 = addr + 4 then _
+        else if addr + 6 = addr + 5 then _
+        else if addr + 6 = addr + 6 then some (v / 0x1000000000000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 6 ≠ addr),
+      if_neg (by omega : addr + 6 ≠ addr + 1),
+      if_neg (by omega : addr + 6 ≠ addr + 2),
+      if_neg (by omega : addr + 6 ≠ addr + 3),
+      if_neg (by omega : addr + 6 ≠ addr + 4),
+      if_neg (by omega : addr + 6 ≠ addr + 5),
+      if_pos rfl]
+
+theorem singletonMemU64_mem_7 (addr v : Nat) :
+    (singletonMemU64 addr v).mem (addr + 7) = some (v / 0x100000000000000 % 256) := by
+  unfold singletonMemU64
+  show (if addr + 7 = addr then _
+        else if addr + 7 = addr + 1 then _
+        else if addr + 7 = addr + 2 then _
+        else if addr + 7 = addr + 3 then _
+        else if addr + 7 = addr + 4 then _
+        else if addr + 7 = addr + 5 then _
+        else if addr + 7 = addr + 6 then _
+        else if addr + 7 = addr + 7 then some (v / 0x100000000000000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 7 ≠ addr),
+      if_neg (by omega : addr + 7 ≠ addr + 1),
+      if_neg (by omega : addr + 7 ≠ addr + 2),
+      if_neg (by omega : addr + 7 ≠ addr + 3),
+      if_neg (by omega : addr + 7 ≠ addr + 4),
+      if_neg (by omega : addr + 7 ≠ addr + 5),
+      if_neg (by omega : addr + 7 ≠ addr + 6),
+      if_pos rfl]
+
+/-! ### singletonMemU16 / singletonMemU32 — narrower-width variants
+
+Same shape as `singletonMemU64` but for 2-byte (`u16`) and 4-byte
+(`u32`) ownership. Used by `ldxh`/`stxh` and `ldxw`/`stxw`. -/
+
+/-- Partial state owning 2 consecutive memory bytes whose little-endian
+    decode equals `v % 2^16`. -/
+def singletonMemU16 (addr v : Nat) : PartialState :=
+  { regs := fun _ => none
+    mem := fun a =>
+      if a = addr then some (v % 256)
+      else if a = addr + 1 then some (v / 0x100 % 256)
+      else none
+    pc := none }
+
+@[simp] theorem singletonMemU16_regs {addr v : Nat} (r : Reg) :
+    (singletonMemU16 addr v).regs r = none := rfl
+
+@[simp] theorem singletonMemU16_pc {addr v : Nat} :
+    (singletonMemU16 addr v).pc = none := rfl
+
+theorem singletonMemU16_mem_0 (addr v : Nat) :
+    (singletonMemU16 addr v).mem addr = some (v % 256) := by
+  unfold singletonMemU16; simp
+
+theorem singletonMemU16_mem_1 (addr v : Nat) :
+    (singletonMemU16 addr v).mem (addr + 1) = some (v / 0x100 % 256) := by
+  unfold singletonMemU16
+  show (if addr + 1 = addr then _
+        else if addr + 1 = addr + 1 then some (v / 0x100 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 1 ≠ addr), if_pos rfl]
+
+theorem singletonMemU16_mem_outside (addr v : Nat) (a : Nat)
+    (h : a < addr ∨ a ≥ addr + 2) :
+    (singletonMemU16 addr v).mem a = none := by
+  unfold singletonMemU16
+  show (if a = addr then some (v % 256)
+        else if a = addr + 1 then some (v / 0x100 % 256)
+        else none) = none
+  rw [if_neg (by omega : a ≠ addr),
+      if_neg (by omega : a ≠ addr + 1)]
+
+/-- Partial state owning 4 consecutive memory bytes whose little-endian
+    decode equals `v % 2^32`. -/
+def singletonMemU32 (addr v : Nat) : PartialState :=
+  { regs := fun _ => none
+    mem := fun a =>
+      if a = addr then some (v % 256)
+      else if a = addr + 1 then some (v / 0x100 % 256)
+      else if a = addr + 2 then some (v / 0x10000 % 256)
+      else if a = addr + 3 then some (v / 0x1000000 % 256)
+      else none
+    pc := none }
+
+@[simp] theorem singletonMemU32_regs {addr v : Nat} (r : Reg) :
+    (singletonMemU32 addr v).regs r = none := rfl
+
+@[simp] theorem singletonMemU32_pc {addr v : Nat} :
+    (singletonMemU32 addr v).pc = none := rfl
+
+theorem singletonMemU32_mem_0 (addr v : Nat) :
+    (singletonMemU32 addr v).mem addr = some (v % 256) := by
+  unfold singletonMemU32; simp
+
+theorem singletonMemU32_mem_1 (addr v : Nat) :
+    (singletonMemU32 addr v).mem (addr + 1) = some (v / 0x100 % 256) := by
+  unfold singletonMemU32
+  show (if addr + 1 = addr then _
+        else if addr + 1 = addr + 1 then some (v / 0x100 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 1 ≠ addr), if_pos rfl]
+
+theorem singletonMemU32_mem_2 (addr v : Nat) :
+    (singletonMemU32 addr v).mem (addr + 2) = some (v / 0x10000 % 256) := by
+  unfold singletonMemU32
+  show (if addr + 2 = addr then _
+        else if addr + 2 = addr + 1 then _
+        else if addr + 2 = addr + 2 then some (v / 0x10000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 2 ≠ addr),
+      if_neg (by omega : addr + 2 ≠ addr + 1),
+      if_pos rfl]
+
+theorem singletonMemU32_mem_3 (addr v : Nat) :
+    (singletonMemU32 addr v).mem (addr + 3) = some (v / 0x1000000 % 256) := by
+  unfold singletonMemU32
+  show (if addr + 3 = addr then _
+        else if addr + 3 = addr + 1 then _
+        else if addr + 3 = addr + 2 then _
+        else if addr + 3 = addr + 3 then some (v / 0x1000000 % 256)
+        else _) = _
+  rw [if_neg (by omega : addr + 3 ≠ addr),
+      if_neg (by omega : addr + 3 ≠ addr + 1),
+      if_neg (by omega : addr + 3 ≠ addr + 2),
+      if_pos rfl]
+
+theorem singletonMemU32_mem_outside (addr v : Nat) (a : Nat)
+    (h : a < addr ∨ a ≥ addr + 4) :
+    (singletonMemU32 addr v).mem a = none := by
+  unfold singletonMemU32
+  show (if a = addr then some (v % 256)
+        else if a = addr + 1 then some (v / 0x100 % 256)
+        else if a = addr + 2 then some (v / 0x10000 % 256)
+        else if a = addr + 3 then some (v / 0x1000000 % 256)
+        else none) = none
+  rw [if_neg (by omega : a ≠ addr),
+      if_neg (by omega : a ≠ addr + 1),
+      if_neg (by omega : a ≠ addr + 2),
+      if_neg (by omega : a ≠ addr + 3)]
+
+/-- Address outside the 8-byte range owns nothing in `singletonMemU64`. -/
+theorem singletonMemU64_mem_outside (addr v : Nat) (a : Nat)
+    (h : a < addr ∨ a ≥ addr + 8) :
+    (singletonMemU64 addr v).mem a = none := by
+  unfold singletonMemU64
+  show (if a = addr then some (v % 256)
+        else if a = addr + 1 then some (v / 0x100 % 256)
+        else if a = addr + 2 then some (v / 0x10000 % 256)
+        else if a = addr + 3 then some (v / 0x1000000 % 256)
+        else if a = addr + 4 then some (v / 0x100000000 % 256)
+        else if a = addr + 5 then some (v / 0x10000000000 % 256)
+        else if a = addr + 6 then some (v / 0x1000000000000 % 256)
+        else if a = addr + 7 then some (v / 0x100000000000000 % 256)
+        else none) = none
+  rw [if_neg (by omega : a ≠ addr),
+      if_neg (by omega : a ≠ addr + 1),
+      if_neg (by omega : a ≠ addr + 2),
+      if_neg (by omega : a ≠ addr + 3),
+      if_neg (by omega : a ≠ addr + 4),
+      if_neg (by omega : a ≠ addr + 5),
+      if_neg (by omega : a ≠ addr + 6),
+      if_neg (by omega : a ≠ addr + 7)]
+
 @[simp] theorem empty_regs (r : Reg) : empty.regs r = none := rfl
 @[simp] theorem empty_mem (a : Nat) : empty.mem a = none := rfl
 @[simp] theorem empty_pc : empty.pc = none := rfl
@@ -314,6 +585,27 @@ def memByteIs (a v : Nat) : Assertion :=
 
 @[inherit_doc] notation:50 a " ↦ₘ " v => memByteIs a v
 
+/-- 2 consecutive memory bytes at `addr` whose little-endian decode is
+    `v % 2^16`. Used by `ldxh` / `stxh` specs. -/
+def memU16Is (addr v : Nat) : Assertion :=
+  fun h => h = PartialState.singletonMemU16 addr v
+
+@[inherit_doc] notation:50 a " ↦U16 " v => memU16Is a v
+
+/-- 4 consecutive memory bytes at `addr` whose little-endian decode is
+    `v % 2^32`. Used by `ldxw` / `stxw` specs. -/
+def memU32Is (addr v : Nat) : Assertion :=
+  fun h => h = PartialState.singletonMemU32 addr v
+
+@[inherit_doc] notation:50 a " ↦U32 " v => memU32Is a v
+
+/-- 8 consecutive memory bytes at `addr` whose little-endian decode is
+    `v % 2^64`. Used by `ldxdw` / `stxdw` specs. -/
+def memU64Is (addr v : Nat) : Assertion :=
+  fun h => h = PartialState.singletonMemU64 addr v
+
+@[inherit_doc] notation:50 a " ↦U64 " v => memU64Is a v
+
 /-- The PC holds value `v`, and that's all we own. -/
 def pcIs (v : Nat) : Assertion :=
   fun h => h = PartialState.singletonPC v
@@ -373,6 +665,67 @@ theorem sepConj_assoc {P Q R : Assertion} :
     refine ⟨h_P.union h_Q, h_R, hd_PQ_R, ?_, ⟨h_P, h_Q, hd_PQ, rfl, hP, hQ⟩, hR⟩
     rw [← PartialState.union_assoc, hu_QR]; exact hu_P_QR
 
+/-- Swap the first two atoms of a 3-fold separating conjunction.
+    Useful when composing specs whose natural assertion orders differ
+    (e.g. `ldxb` produces `dst ** src ** mem` while `stxb` consumes
+    `baseReg ** valReg ** mem`). Chain: assoc-back, comm inner, assoc-forward. -/
+theorem sepConj_swap_first_two {P Q R : Assertion} :
+    ∀ h, (P ** Q ** R) h ↔ (Q ** P ** R) h := by
+  intro h
+  constructor
+  · intro hPQR
+    have h1 : ((P ** Q) ** R) h := (sepConj_assoc h).mpr hPQR
+    obtain ⟨a, c, hd, hu, hpq, hr⟩ := h1
+    have hQP : (Q ** P) a := (sepConj_comm a).mp hpq
+    exact (sepConj_assoc h).mp ⟨a, c, hd, hu, hQP, hr⟩
+  · intro hQPR
+    have h1 : ((Q ** P) ** R) h := (sepConj_assoc h).mpr hQPR
+    obtain ⟨a, c, hd, hu, hqp, hr⟩ := h1
+    have hPQ : (P ** Q) a := (sepConj_comm a).mp hqp
+    exact (sepConj_assoc h).mp ⟨a, c, hd, hu, hPQ, hr⟩
+
+/-! ## Pointwise-iff combinators for sepConj
+
+These are the building blocks the elab-level permutation builder in
+`SLTactic.lean` uses to assemble an arbitrary-permutation iff between
+two right-folded sepConjs over the same multiset of atoms. The chain
+is `Iff.refl` / `Iff.trans` lifted pointwise, plus a frame-on-the-left
+combinator for descending into the tail of a sepConj. -/
+
+theorem sepConj_iff_refl (P : Assertion) : ∀ h, P h ↔ P h :=
+  fun _ => Iff.rfl
+
+theorem sepConj_iff_trans_pw {P Q R : Assertion}
+    (h1 : ∀ h, P h ↔ Q h) (h2 : ∀ h, Q h ↔ R h) :
+    ∀ h, P h ↔ R h :=
+  fun h => Iff.trans (h1 h) (h2 h)
+
+theorem sepConj_iff_symm_pw {P Q : Assertion} (h : ∀ x, P x ↔ Q x) :
+    ∀ x, Q x ↔ P x :=
+  fun x => (h x).symm
+
+/-- Reshape the right operand of a sepConj. Pointwise iff over the
+    tail lifts to a pointwise iff over `(P ** _)`. Used by the
+    permutation builder to descend through a sepConj's right spine. -/
+theorem sepConj_iff_congr_right (P : Assertion) {Q Q' : Assertion}
+    (hQQ' : ∀ h, Q h ↔ Q' h) :
+    ∀ h, (P ** Q) h ↔ (P ** Q') h := by
+  intro h
+  constructor
+  · rintro ⟨h1, h2, hd, hu, hP1, hQ2⟩
+    exact ⟨h1, h2, hd, hu, hP1, (hQQ' h2).mp hQ2⟩
+  · rintro ⟨h1, h2, hd, hu, hP1, hQ'2⟩
+    exact ⟨h1, h2, hd, hu, hP1, (hQQ' h2).mpr hQ'2⟩
+
+/-- Reshape the left operand of a sepConj. Mirror of
+    `sepConj_iff_congr_right`. Derived via `sepConj_comm`. -/
+theorem sepConj_iff_congr_left (Q : Assertion) {P P' : Assertion}
+    (hPP' : ∀ h, P h ↔ P' h) :
+    ∀ h, (P ** Q) h ↔ (P' ** Q) h := by
+  intro h
+  refine Iff.trans (sepConj_comm h) (Iff.trans ?_ (sepConj_comm h))
+  exact sepConj_iff_congr_right Q hPP' h
+
 /-! ## holdsFor — bridge from Assertion to full State -/
 
 /-- An assertion `P` holds for full state `s` when some partial state
@@ -413,6 +766,15 @@ theorem pcFree_regIs (r : Reg) (v : Nat) : (regIs r v).pcFree := by
   intro h heq; rw [heq]; rfl
 
 theorem pcFree_memByteIs (a v : Nat) : (memByteIs a v).pcFree := by
+  intro h heq; rw [heq]; rfl
+
+theorem pcFree_memU16Is (a v : Nat) : (memU16Is a v).pcFree := by
+  intro h heq; rw [heq]; rfl
+
+theorem pcFree_memU32Is (a v : Nat) : (memU32Is a v).pcFree := by
+  intro h heq; rw [heq]; rfl
+
+theorem pcFree_memU64Is (a v : Nat) : (memU64Is a v).pcFree := by
   intro h heq; rw [heq]; rfl
 
 theorem pcFree_sepConj {P Q : Assertion} (hP : P.pcFree) (hQ : Q.pcFree) :
