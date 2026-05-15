@@ -111,6 +111,22 @@ impl From<SerializeError> for SvmError {
 pub struct Svm {
     programs: HashMap<Pubkey, Vec<u8>>,
     cu_budget: u64,
+    /// Whether to enforce the rent-state transition check from
+    /// `solana-svm::rent_calculator::check_rent_state` at instruction
+    /// exit (an account can't move from Uninitialized/RentExempt into
+    /// RentPaying, and a RentPaying account can't grow or be
+    /// credited).
+    ///
+    /// Default: **off**. Agave applies this check at the *transaction*
+    /// layer (`transaction_processor::execute_loaded_transaction`),
+    /// not per-instruction; mollusk's harness — which runs per-
+    /// instruction like us — bypasses it. Enabling here while
+    /// diff-testing against mollusk would surface false divergences
+    /// on fixtures that aren't rent-exempt by design.
+    ///
+    /// Enable when running formal-svm as a transaction-level oracle
+    /// (rather than the diff-mollusk per-instruction comparator).
+    enforce_rent_state: bool,
 }
 
 impl Default for Svm {
@@ -119,13 +135,25 @@ impl Default for Svm {
 
 impl Svm {
     pub fn new() -> Self {
-        Self { programs: HashMap::new(), cu_budget: DEFAULT_CU_BUDGET }
+        Self {
+            programs: HashMap::new(),
+            cu_budget: DEFAULT_CU_BUDGET,
+            enforce_rent_state: false,
+        }
     }
 
     /// Lower or raise the per-instruction CU budget. Default is
     /// `DEFAULT_CU_BUDGET = 200_000`.
     pub fn with_cu_budget(mut self, cu_budget: u64) -> Self {
         self.cu_budget = cu_budget;
+        self
+    }
+
+    /// Enable the post-state rent-state transition check
+    /// (`solana-svm::rent_calculator::check_rent_state` equivalent).
+    /// Off by default — see field-level comment for the rationale.
+    pub fn with_rent_state_enforcement(mut self, enforce: bool) -> Self {
+        self.enforce_rent_state = enforce;
         self
     }
 
@@ -234,7 +262,8 @@ impl Svm {
         // invariants don't apply. Any violation downgrades the
         // outcome to `Failure { exit_code: ERR_INVALID_POSTSTATE }`.
         let program_result = if matches!(program_result, ProgramResult::Success) {
-            match validate_post_state(instruction, accounts, &resulting_accounts) {
+            match validate_post_state(instruction, accounts, &resulting_accounts,
+                                       self.enforce_rent_state) {
                 Ok(()) => program_result,
                 Err(_) => ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE },
             }
@@ -318,12 +347,91 @@ pub enum PostStateError {
     LamportConservationViolated { pre_sum: u128, post_sum: u128 },
     /// Account data grew past `pre_len + MAX_PERMITTED_DATA_INCREASE`.
     DataLengthOverflow { pubkey: Pubkey, pre: usize, post: usize },
+    /// Account transitioned to a disallowed rent state. Mirrors
+    /// agave's `TransactionError::InsufficientFundsForRent`.
+    RentStateTransitionInvalid {
+        pubkey: Pubkey,
+        pre_lamports: u64,
+        pre_data_size: usize,
+        post_lamports: u64,
+        post_data_size: usize,
+    },
+}
+
+/// Default Rent's `lamports_per_byte_year * exemption_threshold` —
+/// the canonical mainnet value. Default Rent is
+/// `lamports_per_byte_year = 3480`, `exemption_threshold = 2.0`, so
+/// the product is `3480 * 2 = 6960` lamports per byte per
+/// exemption window.
+const RENT_LAMPORTS_PER_BYTE_EXEMPT: u64 = 6960;
+
+/// `ACCOUNT_STORAGE_OVERHEAD` — fixed per-account overhead included
+/// in the rent-exempt minimum.
+const ACCOUNT_STORAGE_OVERHEAD: u64 = 128;
+
+/// `Rent::minimum_balance(data_len)` with the default Rent
+/// parameters. Mirrors `solana-rent`'s formula:
+/// `(ACCOUNT_STORAGE_OVERHEAD + data_len) * lamports_per_byte_exempt`.
+fn rent_minimum_balance(data_len: usize) -> u64 {
+    let bytes = data_len as u64;
+    ACCOUNT_STORAGE_OVERHEAD
+        .saturating_add(bytes)
+        .saturating_mul(RENT_LAMPORTS_PER_BYTE_EXEMPT)
+}
+
+/// Rent state of a Solana account. Mirrors
+/// `solana-svm::rent_calculator::RentState`. -/
+#[derive(Debug, PartialEq, Eq)]
+enum RentState {
+    /// `account.lamports == 0` — account doesn't exist for rent
+    /// purposes.
+    Uninitialized,
+    /// `0 < lamports < minimum_balance`. Rent-paying accounts are
+    /// only allowed in legacy form; modern accounts must be
+    /// rent-exempt at instruction exit.
+    RentPaying { lamports: u64, data_size: usize },
+    /// `lamports >= minimum_balance`. The canonical state.
+    RentExempt,
+}
+
+fn get_account_rent_state(lamports: u64, data_size: usize) -> RentState {
+    if lamports == 0 {
+        RentState::Uninitialized
+    } else if lamports >= rent_minimum_balance(data_size) {
+        RentState::RentExempt
+    } else {
+        RentState::RentPaying { lamports, data_size }
+    }
+}
+
+/// Whether a transition from `pre` to `post` rent state is allowed.
+/// Mirrors `solana-svm::rent_calculator::transition_allowed`.
+///
+/// - Transitioning *to* `Uninitialized` or `RentExempt` is always
+///   allowed (you can always close an account or top it up to
+///   exempt).
+/// - Transitioning *to* `RentPaying` is allowed only when the pre
+///   was already `RentPaying` with the *same* data size and the
+///   account wasn't credited (post lamports ≤ pre lamports).
+fn rent_transition_allowed(pre: &RentState, post: &RentState) -> bool {
+    match post {
+        RentState::Uninitialized | RentState::RentExempt => true,
+        RentState::RentPaying { lamports: post_lamports, data_size: post_data_size } => {
+            match pre {
+                RentState::Uninitialized | RentState::RentExempt => false,
+                RentState::RentPaying { lamports: pre_lamports, data_size: pre_data_size } => {
+                    post_data_size == pre_data_size && post_lamports <= pre_lamports
+                }
+            }
+        }
+    }
 }
 
 fn validate_post_state(
     instruction: &Instruction,
     pre: &[(Pubkey, AccountSharedData)],
     post: &[(Pubkey, AccountSharedData)],
+    enforce_rent_state: bool,
 ) -> Result<(), PostStateError> {
     use solana_account::ReadableAccount;
 
@@ -387,7 +495,110 @@ fn validate_post_state(
                 pubkey: pk, pre: pre_len, post: post_len,
             });
         }
+
+        // Rent-state transition enforcement. Off by default — see
+        // `Svm::with_rent_state_enforcement` for the rationale.
+        // Mirrors agave's `solana-svm::rent_calculator::check_rent_state`
+        // applied per account at instruction exit. The incinerator
+        // pubkey is exempt.
+        if enforce_rent_state && pk != solana_sdk_ids::incinerator::ID {
+            let pre_state  = get_account_rent_state(pre_acct.lamports(),  pre_len);
+            let post_state = get_account_rent_state(post_acct.lamports(), post_len);
+            if !rent_transition_allowed(&pre_state, &post_state) {
+                return Err(PostStateError::RentStateTransitionInvalid {
+                    pubkey: pk,
+                    pre_lamports: pre_acct.lamports(),
+                    pre_data_size: pre_len,
+                    post_lamports: post_acct.lamports(),
+                    post_data_size: post_len,
+                });
+            }
+        }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod rent_state_tests {
+    //! Unit tests for the rent-state machinery
+    //! (`rent_minimum_balance`, `get_account_rent_state`,
+    //! `rent_transition_allowed`). These run regardless of the
+    //! `diff-mollusk` feature gate — the math itself is harness-
+    //! independent.
+    use super::*;
+
+    #[test]
+    fn minimum_balance_matches_agave_default_rent() {
+        // Default Rent: (128 + n) * 6960.
+        assert_eq!(rent_minimum_balance(0),   128 * 6960);          //   891_360
+        assert_eq!(rent_minimum_balance(1),   129 * 6960);          //   898_320
+        assert_eq!(rent_minimum_balance(165), (128 + 165) * 6960);  // 2_039_280 — SPL Token Mint
+        assert_eq!(rent_minimum_balance(200), (128 + 200) * 6960);  // 2_282_880 — Stake account
+    }
+
+    #[test]
+    fn rent_state_classification() {
+        // Uninitialized when lamports = 0 regardless of data size.
+        assert_eq!(get_account_rent_state(0, 0),   RentState::Uninitialized);
+        assert_eq!(get_account_rent_state(0, 200), RentState::Uninitialized);
+
+        // RentExempt when lamports ≥ minimum_balance.
+        let exempt = rent_minimum_balance(200);
+        assert_eq!(get_account_rent_state(exempt,     200), RentState::RentExempt);
+        assert_eq!(get_account_rent_state(exempt + 1, 200), RentState::RentExempt);
+
+        // RentPaying when 0 < lamports < minimum_balance.
+        let half = exempt / 2;
+        assert_eq!(
+            get_account_rent_state(half, 200),
+            RentState::RentPaying { lamports: half, data_size: 200 },
+        );
+    }
+
+    #[test]
+    fn transition_allowed_uninit_to_exempt_ok() {
+        let pre  = RentState::Uninitialized;
+        let post = RentState::RentExempt;
+        assert!(rent_transition_allowed(&pre, &post));
+    }
+
+    #[test]
+    fn transition_allowed_uninit_to_paying_rejected() {
+        let pre  = RentState::Uninitialized;
+        let post = RentState::RentPaying { lamports: 100, data_size: 200 };
+        assert!(!rent_transition_allowed(&pre, &post));
+    }
+
+    #[test]
+    fn transition_allowed_paying_to_paying_same_size_no_credit_ok() {
+        let pre  = RentState::RentPaying { lamports: 1000, data_size: 200 };
+        let post = RentState::RentPaying { lamports: 500,  data_size: 200 };
+        assert!(rent_transition_allowed(&pre, &post));
+    }
+
+    #[test]
+    fn transition_allowed_paying_to_paying_credited_rejected() {
+        // Crediting a rent-paying account is forbidden (would let
+        // someone "donate" lamports into a state below rent exemption).
+        let pre  = RentState::RentPaying { lamports: 500,  data_size: 200 };
+        let post = RentState::RentPaying { lamports: 1000, data_size: 200 };
+        assert!(!rent_transition_allowed(&pre, &post));
+    }
+
+    #[test]
+    fn transition_allowed_paying_to_paying_resized_rejected() {
+        // Resizing while rent-paying is forbidden.
+        let pre  = RentState::RentPaying { lamports: 1000, data_size: 200 };
+        let post = RentState::RentPaying { lamports: 1000, data_size: 100 };
+        assert!(!rent_transition_allowed(&pre, &post));
+    }
+
+    #[test]
+    fn transition_allowed_to_uninit_always_ok() {
+        // Closing the account (drain to 0) is always allowed.
+        let pre  = RentState::RentExempt;
+        let post = RentState::Uninitialized;
+        assert!(rent_transition_allowed(&pre, &post));
+    }
 }
