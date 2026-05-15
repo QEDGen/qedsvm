@@ -8,6 +8,10 @@ license = "MIT"
 [lib]
 name = "formal_svm"
 
+[[bin]]
+name = "formal-svm-cli"
+path = "src/bin/cli.rs"
+
 [dependencies]
 # Pinned to agave master's published versions (see anza-xyz/agave Cargo.toml).
 # The whole point of these crates is to be Mollusk-shape-compatible:
