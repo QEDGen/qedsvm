@@ -9,6 +9,7 @@ import Svm.SBPF.Region
 import Svm.SBPF.SepLogic
 import Svm.SBPF.CPSSpec
 import Svm.SBPF.InstructionSpecs
+import Svm.SBPF.SLTactic
 import Svm.SBPF.MacroDemo
 import Svm.SBPF.Murmur3
 import Svm.SBPF.Sha256
