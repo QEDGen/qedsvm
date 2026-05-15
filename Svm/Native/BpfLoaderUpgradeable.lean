@@ -55,13 +55,17 @@
 --     surfaces executable=true via the resulting_accounts builder
 --     for accounts owned by the loader; the Lean dispatch itself
 --     leaves the bit alone.
---   * **Inter-Native CPI accounting.** Deploy and ExtendProgram do
---     `native_invoke_signed(system_instruction::...)` in agave,
---     which charges Cpi.cu (946) per call. We inline the System
---     side-effects directly, so the Cpi.cu charge is folded into
---     CU_DEFAULT (2370) — Deploy's net CU figure will be 2370 vs
---     agave's 2370 + 946 + 150. This is a known divergence on
---     cross-engine CU equality; spec semantics still match.
+--   * **Inter-Native CPI (closed 2026-05-15).** Deploy and
+--     ExtendProgram do `native_invoke_signed(system_instruction::…)`
+--     in agave, which charges `Cpi.cu = 946` per call. The earlier
+--     Loader v3 closure (commit 2c1c1ab) inlined the System
+--     side-effects to avoid building inter-Native CPI plumbing. This
+--     module now composes via `System.dispatch` directly with
+--     synthetic `isSigner = true` on the PDA-derived account
+--     (mirrors agave's `invoke_signed` where seeds authorize the
+--     PDA). Deploy's CU = 2370 + 946 + 150 = 3466, matching agave;
+--     ExtendProgram's rent-gap Transfer (only fires when
+--     `rent_min > 0`) charges the same `946 + 150` premium.
 --   * **Close ProgramData same-slot freshness.** agave rejects
 --     Close when `clock.slot == programdata.slot`. With both = 0
 --     in our model the gate would always fire; we bypass it.
@@ -82,8 +86,10 @@
 -- continues to `accts[i].dataLen`.
 
 import Svm.Native.AcctInput
+import Svm.Native.System
 import Svm.SBPF.Machine
 import Svm.SBPF.Pda
+import Svm.Syscalls.Cpi
 
 namespace Svm.Native.BpfLoaderUpgradeable
 
@@ -526,6 +532,53 @@ private def rentMin (_dataLen : Nat) : Nat := 0
     won't run pre-SIMD-0431 paths). -/
 private def MINIMUM_EXTEND_PROGRAM_BYTES : Nat := 10240
 
+/-! ### Inter-Native CPI composition
+
+Build the bincode ix data for a few `SystemInstruction` variants we
+invoke as inner CPI calls, then dispatch through `System.dispatch`.
+`Cpi.cu = 946` is added to the cu figure to mirror agave's
+`invoke_units` charge — System contributes its own `System.CU_DEFAULT
+= 150` on top via its result. -/
+
+private def U64_BYTES (n : Nat) : ByteArray := Id.run do
+  let mut out := ByteArray.empty
+  let mut v := n
+  for _ in [0:8] do
+    out := out.push (UInt8.ofNat (v % 256))
+    v := v / 256
+  return out
+
+private def U32_BYTES (n : Nat) : ByteArray := Id.run do
+  let mut out := ByteArray.empty
+  let mut v := n
+  for _ in [0:4] do
+    out := out.push (UInt8.ofNat (v % 256))
+    v := v / 256
+  return out
+
+/-- Build the bincode-encoded `SystemInstruction::CreateAccount`
+    payload: u32(0) || u64(lamports) || u64(space) || 32B(owner). -/
+private def encodeSystemCreateAccount (lamports space : Nat) (owner : ByteArray)
+    : ByteArray :=
+  U32_BYTES 0 ++ U64_BYTES lamports ++ U64_BYTES space ++ owner
+
+/-- Build the bincode-encoded `SystemInstruction::Transfer` payload:
+    u32(2) || u64(lamports). -/
+private def encodeSystemTransfer (lamports : Nat) : ByteArray :=
+  U32_BYTES 2 ++ U64_BYTES lamports
+
+/-- Compose an inner `System.dispatch` call from within a Loader v3
+    executor. Adds `Cpi.cu = 946` to the inner CU charge; returns
+    `none` if the dispatch fails (unknown variant) or the inner call
+    returned a non-zero r0. Successful returns expose the composed
+    (mem, cu) pair so the caller can fold them into its NativeResult. -/
+private def invokeSystem (ixData : ByteArray) (subAccts : List AcctInput)
+    (mem : Mem) : Option (Mem × Nat) :=
+  match System.dispatch ixData subAccts mem with
+  | none => none
+  | some r => if r.r0 = 0 then some (r.mem, Svm.SBPF.Cpi.cu + r.cu)
+              else none
+
 /-- `DeployWithMaxDataLen { max_data_len }`. Accounts (per
     `solana-loader-v3-interface-6.1.1/src/instruction.rs:86-97`):
     0. `[writable, signer]` payer
@@ -576,21 +629,23 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
                       fail mem
                     else
                       let payerAfterDrain := payer.lamports + buffer.lamports
-                      -- Inline System::CreateAccount: rent_min = 0 so
-                      -- payer pays 1 lamport to programdata.
-                      let requiredLamports := Nat.max 1 (rentMin programDataLen)
-                      if payerAfterDrain < requiredLamports then fail mem
-                      else
-                        let payerFinal := payerAfterDrain - requiredLamports
-                        let pdFinal := pdAcct.lamports + requiredLamports
-                        let m1 := writeU64 mem payer.lamportsRefAddr payerFinal
-                        let m2 := writeU64 m1 buffer.lamportsRefAddr 0
-                        let m3 := writeU64 m2 pdAcct.lamportsRefAddr pdFinal
-                        let m4 := writeU64 m3 pdAcct.dataLenRefAddr programDataLen
-                        let m5 := writeU64 m4 (pdAcct.dataPtr - 8) programDataLen
-                        let m6 := writeBytes m5 pdAcct.ownerPtr 32 PROGRAM_ID_BYTES
+                      let m_drain := writeU64 mem payer.lamportsRefAddr payerAfterDrain
+                      let m_buf0  := writeU64 m_drain buffer.lamportsRefAddr 0
+                      -- Inter-Native CPI: System::CreateAccount. Synthesize
+                      -- isSigner=true on the PDA-derived account (the loader's
+                      -- invoke_signed in agave authorizes via the seeds).
+                      let cpiPayer := { payer with lamports := payerAfterDrain }
+                      let cpiPd    := { pdAcct with isSigner := true }
+                      let createIx := encodeSystemCreateAccount
+                                       (Nat.max 1 (rentMin programDataLen))
+                                       programDataLen PROGRAM_ID_BYTES
+                      match invokeSystem createIx [cpiPayer, cpiPd] m_buf0 with
+                      | none => fail mem
+                      | some (m_sys, sysCu) =>
+                        -- After System::CreateAccount: programdata has lamports +
+                        -- dataLen + owner set; payer is decremented.
                         -- Set ProgramData state.
-                        let m7 := writeProgramDataState m6 pdAcct.dataPtr 0
+                        let m7 := writeProgramDataState m_sys pdAcct.dataPtr 0
                                                        (some authority.key)
                         -- Copy buffer payload → programdata payload.
                         let src := readBytes m7 (buffer.dataPtr + bufferDataOffset)
@@ -609,7 +664,7 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
                                               pdAcct.key
                         -- NOTE: program.executable is left unset; see
                         -- module-level "executable flag on Deploy".
-                        ⟨m12, 0, CU_DEFAULT⟩
+                        ⟨m12, 0, CU_DEFAULT + sysCu⟩
         | _ => fail mem
     | _ => fail mem  -- AccountAlreadyInitialized
   | _ => fail mem
@@ -740,28 +795,26 @@ def execExtendProgram (mem : Mem) (accts : List AcctInput)
                   -- If programdata already has ≥ 1 lamport, no transfer.
                   let balanceRequired := Nat.max 1 (rentMin newLen)
                   let needTransfer := pdAcct.lamports < balanceRequired
-                  let baseMem :=
-                    -- Optional inline System::Transfer for the rent gap.
+                  -- Inter-Native CPI System::Transfer for the rent gap.
+                  let cpiResult : Option (Mem × Nat) :=
                     if needTransfer then
                       match rest with
                       | _sys :: payer :: _ =>
                         let required := balanceRequired - pdAcct.lamports
-                        if payer.lamports < required then mem
-                        else
-                          let m1 := writeU64 mem payer.lamportsRefAddr
-                                            (payer.lamports - required)
-                          writeU64 m1 pdAcct.lamportsRefAddr balanceRequired
-                      | _ => mem  -- missing payer; agave returns
-                                  -- AccountNotEnoughKeys but our model
-                                  -- falls through to dataLen update
-                    else mem
-                  -- Grow programdata.dataLen to newLen.
-                  let m1 := writeU64 baseMem pdAcct.dataLenRefAddr newLen
-                  let m2 := writeU64 m1 (pdAcct.dataPtr - 8) newLen
-                  -- Re-write ProgramData state header (slot stays 0).
-                  let m3 := writeProgramDataState m2 pdAcct.dataPtr 0
-                                                  upgradeAuth
-                  ⟨m3, 0, CU_DEFAULT⟩
+                        let transferIx := encodeSystemTransfer required
+                        invokeSystem transferIx [payer, pdAcct] mem
+                      | _ => none
+                    else some (mem, 0)
+                  match cpiResult with
+                  | none => fail mem
+                  | some (baseMem, sysCu) =>
+                    -- Grow programdata.dataLen to newLen.
+                    let m1 := writeU64 baseMem pdAcct.dataLenRefAddr newLen
+                    let m2 := writeU64 m1 (pdAcct.dataPtr - 8) newLen
+                    -- Re-write ProgramData state header (slot stays 0).
+                    let m3 := writeProgramDataState m2 pdAcct.dataPtr 0
+                                                    upgradeAuth
+                    ⟨m3, 0, CU_DEFAULT + sysCu⟩
               | _ => fail mem
       | _ => fail mem
   | _ => fail mem
