@@ -108,8 +108,11 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
 
     Logging syscalls (`sol_log_*`) write into `State.log` as observable
     side effects — `sol_log_` and `sol_log_pubkey` log their bytes
-    verbatim; `sol_log_64_` / `sol_log_compute_units_` / `sol_log_data`
-    push an empty marker (their formatted encoding is TODO).
+    verbatim; `sol_log_64_` hex-formats r1..r5 as `0x<hex>, 0x<hex>,
+    …`; `sol_log_compute_units_` formats the consumed-CU count;
+    `sol_log_data` reads the slice array and emits hex-encoded fields
+    joined by space (slightly diverges from agave's base64 — see
+    `Svm.SBPF.Logging` docstring for the rationale).
 
     Memory syscalls (`sol_memcpy_*`, `sol_memmove_*`, `sol_memset_*`,
     `sol_memcmp_*`) are implemented with their actual byte-moving / byte-
@@ -124,9 +127,9 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   -- Logging
   | .sol_log_                                    => Logging.execLog s
   | .sol_log_pubkey                              => Logging.execLogPubkey s
-  | .sol_log_64_
-  | .sol_log_compute_units_
-  | .sol_log_data                                => Logging.execLogMarker s
+  | .sol_log_64_                                 => Logging.execLog64 s
+  | .sol_log_compute_units_                      => Logging.execLogComputeUnits s
+  | .sol_log_data                                => Logging.execLogData s
   -- Hashing
   | .sol_sha256                                  => Sha256.exec s
   | .sol_sha512                                  => Sha512.exec s

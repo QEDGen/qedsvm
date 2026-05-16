@@ -149,6 +149,44 @@ impl Svm {
         self
     }
 
+    /// Transaction-level pre-flight equivalent: scan a transaction's
+    /// instruction list for a `ComputeBudgetInstruction::SetComputeUnitLimit`
+    /// and set [`Self::cu_budget`] from its value.
+    ///
+    /// formal-svm models per-instruction execution, not the full
+    /// transaction pipeline. Agave's `ComputeBudgetProcessor` does
+    /// this scan at the transaction level (before invoking each
+    /// top-level instruction); callers wanting that behavior can run
+    /// this helper themselves over the txn's `ix` list and pipe the
+    /// result into [`Self::with_cu_budget`]. We expose it as a
+    /// builder for ergonomics.
+    ///
+    /// Wire format: ComputeBudget's `SetComputeUnitLimit` is
+    /// discriminant `2` followed by a u32 LE value. Other variants
+    /// (`RequestUnits` legacy / heap frame / unit price / loaded-
+    /// accounts-data limit) don't affect the per-instruction CU cap
+    /// and are ignored. If multiple `SetComputeUnitLimit` are
+    /// present, the *last* wins (matches agave's behavior of
+    /// overwriting the running cap as it iterates).
+    ///
+    /// Returns `Self` unchanged if no `SetComputeUnitLimit` is found.
+    pub fn with_compute_budget_from_instructions(
+        mut self,
+        instructions: &[Instruction],
+    ) -> Self {
+        let cb_id = solana_sdk_ids::compute_budget::ID;
+        for ix in instructions {
+            if ix.program_id != cb_id { continue; }
+            if ix.data.is_empty() { continue; }
+            // Discriminant 2 = SetComputeUnitLimit(u32).
+            if ix.data[0] != 2 { continue; }
+            if ix.data.len() < 5 { continue; }
+            let units = u32::from_le_bytes([ix.data[1], ix.data[2], ix.data[3], ix.data[4]]);
+            self.cu_budget = u64::from(units);
+        }
+        self
+    }
+
     /// Enable the post-state rent-state transition check
     /// (`solana-svm::rent_calculator::check_rent_state` equivalent).
     /// Off by default — see field-level comment for the rationale.
@@ -592,6 +630,110 @@ mod rent_state_tests {
         let pre  = RentState::RentPaying { lamports: 1000, data_size: 200 };
         let post = RentState::RentPaying { lamports: 1000, data_size: 100 };
         assert!(!rent_transition_allowed(&pre, &post));
+    }
+
+    /// Construct a writable `AccountMeta` for `pk`.
+    fn writable_meta(pk: Pubkey) -> solana_instruction::AccountMeta {
+        solana_instruction::AccountMeta { pubkey: pk, is_signer: false, is_writable: true }
+    }
+
+    /// Build a `(pk, AccountSharedData)` pair with given lamports + data size.
+    fn acct(pk: Pubkey, lamports: u64, data_size: usize) -> (Pubkey, AccountSharedData) {
+        use solana_account::Account;
+        let acct = AccountSharedData::from(Account {
+            lamports,
+            data: vec![0u8; data_size],
+            owner: Pubkey::default(),
+            executable: false,
+            rent_epoch: 0,
+        });
+        (pk, acct)
+    }
+
+    /// Distinct pubkey for test setup. Seed-based so values stay
+    /// stable across runs.
+    fn test_pk(seed: u8) -> Pubkey {
+        let mut b = [0u8; 32];
+        b[0] = seed;
+        Pubkey::new_from_array(b)
+    }
+
+    #[test]
+    fn validate_post_state_off_admits_rent_violating_transition() {
+        // Pre/post conserve lamports but B goes Uninitialized →
+        // RentPaying (10_000 < minimum_balance(200) ≈ 2.28M).
+        let a = test_pk(1);
+        let b = test_pk(2);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(a), writable_meta(b)],
+            data: vec![],
+        };
+        let pre  = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
+        let post = vec![acct(a, 1_000_000, 0), acct(b, 10_000, 200)];
+        // Enforcement off: the rent-state machinery is bypassed
+        // entirely. All other invariants (executable/rent_epoch
+        // immutability, lamport conservation, data-length growth, RO
+        // writes) still run, but they're satisfied here.
+        assert!(validate_post_state(&ix, &pre, &post, false).is_ok());
+    }
+
+    #[test]
+    fn validate_post_state_on_rejects_uninit_to_paying() {
+        let a = test_pk(1);
+        let b = test_pk(2);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(a), writable_meta(b)],
+            data: vec![],
+        };
+        let pre  = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
+        let post = vec![acct(a, 1_000_000, 0), acct(b, 10_000, 200)];
+        match validate_post_state(&ix, &pre, &post, true) {
+            Err(PostStateError::RentStateTransitionInvalid { pubkey, .. }) => {
+                assert_eq!(pubkey, b);
+            }
+            other => panic!("expected RentStateTransitionInvalid for {b}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_post_state_on_admits_uninit_to_exempt() {
+        // Crediting an uninitialized account up to rent-exempt is OK.
+        let a = test_pk(1);
+        let b = test_pk(2);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(a), writable_meta(b)],
+            data: vec![],
+        };
+        // `a` must stay above its own exempt min (891_360 for size 0)
+        // post-debit, otherwise `a` itself transitions RentExempt →
+        // RentPaying (also disallowed). Give `a` enough headroom.
+        let pre  = vec![acct(a, 5_000_000, 0), acct(b, 0, 200)];
+        let post = vec![acct(a, 2_717_120, 0), acct(b, 2_282_880, 200)];
+        // 2_282_880 = (128 + 200) * 6960 = minimum_balance(200) → RentExempt.
+        // 2_717_120 ≥ minimum_balance(0) = 891_360 → still RentExempt.
+        assert!(validate_post_state(&ix, &pre, &post, true).is_ok());
+    }
+
+    #[test]
+    fn validate_post_state_on_exempts_incinerator() {
+        // The incinerator pubkey is the global lamport-burn sink.
+        // Its rent state can be anything; agave (and we) skip the
+        // transition check for it.
+        let a = test_pk(1);
+        let inc = solana_sdk_ids::incinerator::ID;
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(a), writable_meta(inc)],
+            data: vec![],
+        };
+        let pre  = vec![acct(a, 1_010_000, 0), acct(inc, 0, 200)];
+        let post = vec![acct(a, 1_000_000, 0), acct(inc, 10_000, 200)];
+        // Same Uninitialized → RentPaying shape as the rejection
+        // test, but on incinerator. Must pass.
+        assert!(validate_post_state(&ix, &pre, &post, true).is_ok());
     }
 
     #[test]
