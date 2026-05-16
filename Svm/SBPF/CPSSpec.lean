@@ -97,6 +97,18 @@ theorem Disjoint_union_left {cr1 cr2 cr3 : CodeReq}
     · right; exact h_cr3'
   · right; exact h_cr3
 
+/-- `Disjoint` is symmetric. -/
+theorem Disjoint_comm {cr1 cr2 : CodeReq} (h : cr1.Disjoint cr2) :
+    cr2.Disjoint cr1 := by
+  intro a; exact (h a).symm
+
+/-- Disjointness lifts through union on the right (mirror of
+    `Disjoint_union_left` via `Disjoint_comm`). -/
+theorem Disjoint_union_right {cr1 cr2 cr3 : CodeReq}
+    (h1 : cr1.Disjoint cr2) (h2 : cr1.Disjoint cr3) :
+    cr1.Disjoint (cr2.union cr3) :=
+  Disjoint_comm (Disjoint_union_left (Disjoint_comm h1) (Disjoint_comm h2))
+
 /-- If a fetch satisfies a union of code requirements, it satisfies each
     requirement individually. -/
 theorem SatisfiedBy_of_union_left {cr1 cr2 : CodeReq} {fetch : Nat → Option Insn}
@@ -428,6 +440,184 @@ theorem cuTripleWithinMem_reshape_pre {N pc1 pc2 : Nat} {cr : CodeReq}
     cuTripleWithinMem N pc1 pc2 cr P' Q rr :=
   cuTripleWithinMem_weaken (fun hp hP' => (iff_pre hp).mpr hP') (fun _ x => x)
     (fun _ x => x) h
+
+/-! ## Branching triple — two-target form
+
+`cuTripleWithinBranch N entry exitT exitF cond cr P Q`:
+
+  Like `cuTripleWithin`, but the exit PC is one of two depending on
+  whether the carried Decidable Prop `cond` holds at entry. The post
+  `Q` is the same on both branches (jcond instructions don't mutate
+  registers or memory — they only move the PC).
+
+The triple's structural support — frame, sequencing, refl — mirrors
+`cuTripleWithin`'s. The key new combinator is `cuTripleWithinBranch_join`,
+which composes a branch triple with two `cuTripleWithin` follow-up
+chains landing at a common `pcJoin` PC, producing a single
+`cuTripleWithin` from `entry` to `pcJoin` whose post is
+`(if cond then Rt else Rf)` (the `cond`-conditioned union of the two
+chains' posts).
+
+This is the foundation for verifying Solana programs with non-trivial
+control flow — discriminant dispatch, error-path checks, etc. -/
+
+def cuTripleWithinBranch (nSteps : Nat) (entry exitT exitF : Nat)
+    (cond : Prop) [Decidable cond] (cr : CodeReq)
+    (P Q : Assertion) : Prop :=
+  ∀ (R : Assertion), R.pcFree →
+  ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
+  ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    ∃ k, k ≤ nSteps ∧
+      (executeFn fetch s k).pc = (if cond then exitT else exitF) ∧
+      (executeFn fetch s k).exitCode = none ∧
+      (Q ** R).holdsFor (executeFn fetch s k)
+
+/-- Bridge: an existing `cuTripleWithin` with an `if cond then pcT else
+    pcF` exit (the shape that jcond specs produce) lifts directly into
+    the branch family. -/
+theorem cuTripleWithin.toBranch {N : Nat} {pc pcT pcF : Nat} {cr : CodeReq}
+    {P Q : Assertion} {cond : Prop} [Decidable cond]
+    (h : cuTripleWithin N pc (if cond then pcT else pcF) cr P Q) :
+    cuTripleWithinBranch N pc pcT pcF cond cr P Q := by
+  intro R hR fetch hcr s hPR hpc hex
+  exact h R hR fetch hcr s hPR hpc hex
+
+/-- Frame rule (right) for the branch triple. Same shape as
+    `cuTripleWithin_frame_right`: adding a pc-free assertion `F` to
+    both sides preserves the triple. -/
+theorem cuTripleWithinBranch_frame_right (F : Assertion) (hF : F.pcFree)
+    {N : Nat} {pc pcT pcF : Nat} {cr : CodeReq} {P Q : Assertion}
+    {cond : Prop} [Decidable cond]
+    (h : cuTripleWithinBranch N pc pcT pcF cond cr P Q) :
+    cuTripleWithinBranch N pc pcT pcF cond cr (P ** F) (Q ** F) := by
+  intro R hR fetch hcr s hPFR hpc hex
+  have hFR_pcfree : (F ** R).pcFree := pcFree_sepConj hF hR
+  have hP_FR : (P ** (F ** R)).holdsFor s := holdsFor_sepConj_assoc.mp hPFR
+  obtain ⟨k, hk, hpc', hex', hQFR⟩ :=
+    h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex
+  refine ⟨k, hk, hpc', hex', ?_⟩
+  exact holdsFor_sepConj_assoc.mpr hQFR
+
+/-- Rule of consequence for the branch triple: strengthen the pre,
+    weaken the post (same Q on both branches), keep the step bound +
+    exit PCs + `cond`. -/
+theorem cuTripleWithinBranch_weaken {N : Nat} {pc pcT pcF : Nat} {cr : CodeReq}
+    {P P' Q Q' : Assertion} {cond : Prop} [Decidable cond]
+    (hpre  : ∀ h, P' h → P h)
+    (hpost : ∀ h, Q h → Q' h)
+    (h : cuTripleWithinBranch N pc pcT pcF cond cr P Q) :
+    cuTripleWithinBranch N pc pcT pcF cond cr P' Q' := by
+  intro R hR fetch hcr s hP'R hpc hex
+  have hPR : (P ** R).holdsFor s := by
+    obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
+    exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
+  obtain ⟨k, hk, hpc', hex', hQR⟩ := h R hR fetch hcr s hPR hpc hex
+  refine ⟨k, hk, hpc', hex', ?_⟩
+  obtain ⟨hp, hcompat, h1, h2, hd, hu, hQ1, hR2⟩ := hQR
+  exact ⟨hp, hcompat, h1, h2, hd, hu, hpost h1 hQ1, hR2⟩
+
+/-- Frame rule (left) for the branch triple. Derived from frame_right
+    via `sepConj_comm` weakens. -/
+theorem cuTripleWithinBranch_frame_left (F : Assertion) (hF : F.pcFree)
+    {N : Nat} {pc pcT pcF : Nat} {cr : CodeReq} {P Q : Assertion}
+    {cond : Prop} [Decidable cond]
+    (h : cuTripleWithinBranch N pc pcT pcF cond cr P Q) :
+    cuTripleWithinBranch N pc pcT pcF cond cr (F ** P) (F ** Q) :=
+  cuTripleWithinBranch_weaken
+    (fun hp hFP => (sepConj_comm hp).mp hFP)
+    (fun hp hQF => (sepConj_comm hp).mp hQF)
+    (cuTripleWithinBranch_frame_right F hF h)
+
+/-- Branch composition (join rule): given a branch triple at the
+    entry, two follow-up `cuTripleWithin` chains landing at a common
+    `pcJoin` (one for each branch outcome), and code-req disjointness
+    among the three segments, produce a single `cuTripleWithin` from
+    entry to `pcJoin` whose post is `(if cond then Rt else Rf)`.
+
+    Bound: `N0 + max NT NF`. The `max` reflects that one of the two
+    branches is taken — we don't know which without `cond`, so the
+    upper bound is the larger of the two.
+
+    Code-req union: `(crBr ∪ crT) ∪ crF` — left-folded so the result's
+    shape matches what `sl_block_iter`-style proofs produce. -/
+theorem cuTripleWithinBranch_join {N0 NT NF : Nat}
+    {pc0 pcT pcF pcJoin : Nat}
+    {crBr crT crF : CodeReq}
+    (hd_brT : crBr.Disjoint crT) (hd_brF : crBr.Disjoint crF)
+    (hd_TF : crT.Disjoint crF)
+    {cond : Prop} [Decidable cond]
+    {P Q Rt Rf : Assertion}
+    (h_br : cuTripleWithinBranch N0 pc0 pcT pcF cond crBr P Q)
+    (h_T : cuTripleWithin NT pcT pcJoin crT Q Rt)
+    (h_F : cuTripleWithin NF pcF pcJoin crF Q Rf) :
+    cuTripleWithin (N0 + max NT NF) pc0 pcJoin
+      ((crBr.union crT).union crF)
+      P (if cond then Rt else Rf) := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  -- Split the union: fetch satisfies crBr, crT, crF individually.
+  have hcr_brT : (crBr.union crT).SatisfiedBy fetch :=
+    CodeReq.SatisfiedBy_of_union_left hcr
+  have hcr_F : crF.SatisfiedBy fetch := by
+    apply CodeReq.SatisfiedBy_of_union_right _ hcr
+    exact CodeReq.Disjoint_union_left hd_brF hd_TF
+  have hcr_br : crBr.SatisfiedBy fetch :=
+    CodeReq.SatisfiedBy_of_union_left hcr_brT
+  have hcr_T : crT.SatisfiedBy fetch :=
+    CodeReq.SatisfiedBy_of_union_right hd_brT hcr_brT
+  -- Step 1: run the branch.
+  obtain ⟨k0, hk0, hpc_mid, hex_mid, hQR⟩ :=
+    h_br R hRfree fetch hcr_br s hPR hpc hex
+  -- Step 2: run the appropriate follow-up branch.
+  by_cases hcond : cond
+  · -- True branch: pc_mid = pcT.
+    have hpc_mid' : (executeFn fetch s k0).pc = pcT := by
+      rw [hpc_mid]; simp [hcond]
+    obtain ⟨k1, hk1, hpc_end, hex_end, hRtR⟩ :=
+      h_T R hRfree fetch hcr_T (executeFn fetch s k0) hQR hpc_mid' hex_mid
+    refine ⟨k0 + k1, ?_, ?_, ?_, ?_⟩
+    · -- k0 + k1 ≤ N0 + max NT NF
+      apply Nat.add_le_add hk0
+      exact Nat.le_trans hk1 (Nat.le_max_left NT NF)
+    · rw [executeFn_compose]; exact hpc_end
+    · rw [executeFn_compose]; exact hex_end
+    · rw [executeFn_compose]
+      -- Goal: ((if cond then Rt else Rf) ** R).holdsFor _
+      simp only [hcond, if_true]
+      exact hRtR
+  · -- False branch: pc_mid = pcF.
+    have hpc_mid' : (executeFn fetch s k0).pc = pcF := by
+      rw [hpc_mid]; simp [hcond]
+    obtain ⟨k1, hk1, hpc_end, hex_end, hRfR⟩ :=
+      h_F R hRfree fetch hcr_F (executeFn fetch s k0) hQR hpc_mid' hex_mid
+    refine ⟨k0 + k1, ?_, ?_, ?_, ?_⟩
+    · apply Nat.add_le_add hk0
+      exact Nat.le_trans hk1 (Nat.le_max_right NT NF)
+    · rw [executeFn_compose]; exact hpc_end
+    · rw [executeFn_compose]; exact hex_end
+    · rw [executeFn_compose]
+      simp only [hcond, if_false]
+      exact hRfR
+
+/-- Specialization of `cuTripleWithinBranch_join` for the common case
+    where both branches reach the same post `Rjoin`. Eliminates the
+    `if cond then Rt else Rf` from the result. -/
+theorem cuTripleWithinBranch_join_uniform {N0 NT NF : Nat}
+    {pc0 pcT pcF pcJoin : Nat}
+    {crBr crT crF : CodeReq}
+    (hd_brT : crBr.Disjoint crT) (hd_brF : crBr.Disjoint crF)
+    (hd_TF : crT.Disjoint crF)
+    {cond : Prop} [Decidable cond]
+    {P Q Rjoin : Assertion}
+    (h_br : cuTripleWithinBranch N0 pc0 pcT pcF cond crBr P Q)
+    (h_T : cuTripleWithin NT pcT pcJoin crT Q Rjoin)
+    (h_F : cuTripleWithin NF pcF pcJoin crF Q Rjoin) :
+    cuTripleWithin (N0 + max NT NF) pc0 pcJoin
+      ((crBr.union crT).union crF)
+      P Rjoin := by
+  have h := cuTripleWithinBranch_join hd_brT hd_brF hd_TF h_br h_T h_F
+  apply cuTripleWithin_weaken (fun _ x => x) ?_ h
+  intro hp hpost
+  by_cases hcond : cond <;> simp [hcond] at hpost <;> exact hpost
 
 /-! ## SL ↔ WP bridge — concrete-execution corollary
 
