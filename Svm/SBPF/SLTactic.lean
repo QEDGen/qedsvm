@@ -73,6 +73,9 @@ macro_rules
          decide)
       | (apply CodeReq.Disjoint_union_left
          · sl_disjoint_codereq
+         · sl_disjoint_codereq)
+      | (apply CodeReq.Disjoint_union_right
+         · sl_disjoint_codereq
          · sl_disjoint_codereq))
 
 private example :
@@ -739,59 +742,43 @@ def bridgeChainToGoal (chain : Expr) (chainIsMem : Bool)
       throwError m!"sl_block_iter.bridgeChainToGoal: chain post has extra atoms not in goalPost: {frame.toArray}"
     reshapeChainPost chain' chainIsMem iff
 
-/-- Main elab body. Single-pass loop: for each step, extract the frame
-    against the current state (possibly with permutation reshape on the
-    chain), build the framed step, right-normalize it, compose with the
-    chain. After the loop, bridge chain's pre / post to the user-stated
-    `goalPre` / `goalPost` atom order, then assign the resulting term to
-    the goal and discharge accumulated `pcFree` + `Disjoint` subgoals. -/
-def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
+/-- Build the chain expression from a step-hypothesis list and a
+    starting state. Walks left-to-right: for each step, extract the
+    frame against the current state (possibly with permutation reshape
+    on the chain), build the framed step, right-normalize it, compose
+    with the chain. Returns the composed chain term + isMem flag —
+    leaves the goal alone, so callers (sl_block_iter, sl_branch) can
+    bridge or assemble as they need. pcFree + Disjoint subgoals are
+    appended to the IO.Refs for the caller to discharge. -/
+def buildChainExpr (startState : Expr) (hExprs : List Expr)
+    (pcfreeGoals disjGoals : IO.Ref (List MVarId)) :
+    MetaM (Expr × Bool) := do
   if hExprs.isEmpty then
-    throwError "sl_block_iter: empty hypothesis list"
-  let goal ← getMainGoal
-  let target ← instantiateMVars (← goal.getType)
-  let some (goalIsMem, goalPre, goalPost) ← parseTripleType target |
-    throwError m!"sl_block_iter: goal is not a cuTripleWithin[Mem]:\n  {target}"
-  let pcfreeGoals ← IO.mkRef ([] : List MVarId)
-  let disjGoals ← IO.mkRef ([] : List MVarId)
-  -- Track chain expr + isMem flag. `none` means "no chain built yet".
+    throwError "buildChainExpr: empty hypothesis list"
   let mut chain : Option (Expr × Bool) := none
-  -- `currentState` is the chain's current post (or `goalPre` on iter 0,
-  -- which acts as the implicit chain.post against which step 0's pre is
-  -- aligned). Always right-folded after the loop's first iteration.
-  let mut currentState := goalPre
+  let mut currentState := startState
   for h in hExprs do
     let hType ← inferType h
     let some (stepIsMem, stepPre, stepPost) ← parseTripleType hType |
-      throwError m!"sl_block_iter: hypothesis is not a cuTripleWithin[Mem]:\n  {hType}"
+      throwError m!"buildChainExpr: hypothesis is not a cuTripleWithin[Mem]:\n  {hType}"
     let info : StepInfo := { isMem := stepIsMem, hyp := h, pre := stepPre, post := stepPost }
     let fr ← extractFrame currentState info.pre
-    -- Apply reshape iff to the chain's post if the frame extraction
-    -- required a permutation. On iter 0 there's no chain yet — the
-    -- reshape would apply to "what becomes the framed step"; we defer
-    -- by leaving `currentState` un-reshaped, and the final
-    -- `bridgeChainToGoal` will adjust chain.pre back to goalPre.
-    let (lowFr, didReshape) ← match fr with
+    let (lowFr, _didReshape) ← match fr with
       | .reshape iff frameOpt =>
         let newFrameResult : FrameResult := match frameOpt with
           | none => .noFrame
           | some F => .right F
-        -- Apply reshape to chain if it exists.
         match chain with
         | some (chainExpr, chainIsMem) =>
           let chainExpr' ← reshapeChainPost chainExpr chainIsMem iff
           chain := some (chainExpr', chainIsMem)
           pure (newFrameResult, true)
         | none =>
-          -- iter 0: defer to final bridge.
           pure (newFrameResult, true)
       | other => pure (other, false)
-    -- Build framed step.
     let (framed, _newPost, framedIsMem) ←
       buildFramedStep info lowFr pcfreeGoals
-    -- Right-normalize the framed step so its pre / post are right-folded.
     let framedNorm ← rightNormalizeChain framed framedIsMem
-    -- Compose with chain (or set as the initial chain).
     let chainExpr' : Expr ← match chain with
       | none => pure framedNorm
       | some (chainExpr, chainIsMem) =>
@@ -801,15 +788,22 @@ def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
       | none => framedIsMem
       | some (_, chainIsMem) => chainIsMem || framedIsMem
     chain := some (chainExpr', chainIsMem')
-    -- Update currentState from chain's new post.
     let chainType ← inferType chainExpr'
     let some (_, _, newPost) ← parseTripleType chainType |
-      throwError "sl_block_iter: chain type lost during composition"
+      throwError "buildChainExpr: chain type lost during composition"
     currentState := newPost
-    -- Silence unused-warnings.
-    let _ := didReshape
-  let some (chainExpr, chainIsMem) := chain |
-    throwError "sl_block_iter: no chain built"
+  let some result := chain |
+    throwError "buildChainExpr: no chain built"
+  return result
+
+def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
+  let goal ← getMainGoal
+  let target ← instantiateMVars (← goal.getType)
+  let some (goalIsMem, goalPre, goalPost) ← parseTripleType target |
+    throwError m!"sl_block_iter: goal is not a cuTripleWithin[Mem]:\n  {target}"
+  let pcfreeGoals ← IO.mkRef ([] : List MVarId)
+  let disjGoals ← IO.mkRef ([] : List MVarId)
+  let (chainExpr, chainIsMem) ← buildChainExpr goalPre hExprs pcfreeGoals disjGoals
   -- Lift the final chain to Mem if needed (all steps pure, goal Mem).
   let mut chainExpr := chainExpr
   let mut chainIsMem := chainIsMem
@@ -818,12 +812,10 @@ def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
     chainIsMem := true
   -- Bridge chain.pre / chain.post to goalPre / goalPost atom order.
   let bridged ← bridgeChainToGoal chainExpr chainIsMem goalPre goalPost
-  -- Verify and assign.
   let bridgedType ← inferType bridged
   unless ← isDefEq target bridgedType do
     throwError m!"sl_block_iter: bridged chain type doesn't match goal.\n  goal:    {target}\n  chain:   {bridgedType}"
   goal.assign bridged
-  -- Discharge side conditions.
   let pcfrees := (← pcfreeGoals.get).reverse
   let disjs := (← disjGoals.get).reverse
   dischargeGoals pcfrees (← `(tactic| sl_pcfree)) "sl_pcfree"
@@ -840,5 +832,143 @@ elab_rules : tactic
       let hExprs ← hs.getElems.toList.mapM
         (fun h => Lean.Elab.Term.elabTermAndSynthesize h.raw none)
       SLBlockIter.slBlockIter hExprs
+
+/-! ## sl_branch — branch + join + post-distribute combinator
+
+`sl_branch h_br [h_T₁, h_T₂, …] [h_F₁, h_F₂, …]` discharges a
+`cuTripleWithin N pc₀ pcJoin cr P Q` goal by composing:
+
+- `h_br` — a pre-framed `cuTripleWithinBranch` triple at `pc₀` that
+  the user has already widened to the macro's full state via
+  `cuTripleWithinBranch_frame_{left,right}`. Its `cond` is extracted
+  from the type and threaded into the post-distribute step.
+- `[h_T,*]` — step hypotheses for the true branch, in the format
+  `sl_block_iter` accepts. The branch chain is built by reusing
+  `sl_block_iter` directly.
+- `[h_F,*]` — same for the false branch.
+
+Internally emits one tactic block:
+
+```
+refine cuTripleWithin_weaken (fun _ x => x) ?_post
+  (cuTripleWithinBranch_join ?disjBT ?disjBF ?disjTF h_br ?hT ?hF)
+case hT => sl_block_iter [h_T,*]
+case hF => sl_block_iter [h_F,*]
+case disjBT => sl_disjoint_codereq
+case disjBF => sl_disjoint_codereq
+case disjTF => sl_disjoint_codereq
+case _post =>
+  intro _hp _hpost
+  by_cases _hc : <cond>
+  · simp only [_hc, if_true]  at _hpost ⊢; exact _hpost
+  · simp only [_hc, if_false] at _hpost ⊢; exact _hpost
+```
+
+Source order matters: the chain cases run first, filling the `crT` /
+`crF` metas, so `sl_disjoint_codereq`'s `decide` sees concrete code
+requirements.
+
+Limitations (matching `sl_block_iter`'s):
+
+- The user's goal `cr` must be `((crBr ∪ crT_chain) ∪ crF_chain)` in
+  the left-folded shape `cuTripleWithinBranch_join` produces.
+- The goal `N` must equal `N0_h_br + max NT_chain NF_chain`.
+- The goal `P` must equal `h_br`'s pre.
+- The post-distribute `simp only [_hc, if_*]` finisher assumes the
+  goal post mentions `cond` only inside `if … then … else …` terms
+  with both branches having the same surrounding shape (the natural
+  case — `r0 ↦ᵣ (if cond then a else b)`-style atoms). If the
+  shapes diverge, fall back to a manual `weaken + by_cases`. -/
+
+namespace SLBranch
+open Lean Lean.Meta Lean.Elab.Tactic Lean.Elab.Term
+
+/-- Parsed shape of a `cuTripleWithinBranch` application type.
+    Layout matches the declaration:
+    `cuTripleWithinBranch nSteps entry exitT exitF cond [Dec] cr P Q`. -/
+structure BranchInfo where
+  cond : Expr
+  Q : Expr
+  deriving Inhabited
+
+def parseBranchType (brType : Expr) : MetaM BranchInfo := do
+  let brType := (← instantiateMVars brType).consumeMData
+  let args := brType.getAppArgs
+  match brType.getAppFn.constName? with
+  | some ``Svm.SBPF.cuTripleWithinBranch =>
+    if args.size = 9 then
+      return { cond := args[4]!, Q := args[8]! }
+    throwError m!"sl_branch: cuTripleWithinBranch application has {args.size} args, expected 9"
+  | _ =>
+    throwError m!"sl_branch: h_br is not a cuTripleWithinBranch application:\n  {brType}"
+
+end SLBranch
+
+syntax "sl_branch" term:max "[" term,* "]" "[" term,* "]" : tactic
+
+open Lean Lean.Elab.Tactic Lean.Elab.Term Lean.Meta SLBlockIter in
+elab_rules : tactic
+  | `(tactic| sl_branch $hBr [$tSteps,*] [$fSteps,*]) => withMainContext do
+      let hBrExpr ← elabTermAndSynthesize hBr none
+      let hBrType ← inferType hBrExpr
+      let brInfo ← SLBranch.parseBranchType hBrType
+      let condStx ← Lean.PrettyPrinter.delab brInfo.cond
+      -- Build each branch chain into a concrete term against `brInfo.Q`
+      -- (the join's intermediate `Q`). Pre-building avoids the
+      -- application-order trap where `refine cuTripleWithinBranch_join`
+      -- with chain-meta arguments leaves `1 + max ?NT ?NF` unreduced.
+      let pcfreeGoals ← IO.mkRef ([] : List MVarId)
+      let disjGoals ← IO.mkRef ([] : List MVarId)
+      let tStepExprs ← tSteps.getElems.toList.mapM
+        (fun s => elabTermAndSynthesize s.raw none)
+      let fStepExprs ← fSteps.getElems.toList.mapM
+        (fun s => elabTermAndSynthesize s.raw none)
+      let (hTExpr, _) ← buildChainExpr brInfo.Q tStepExprs pcfreeGoals disjGoals
+      let (hFExpr, _) ← buildChainExpr brInfo.Q fStepExprs pcfreeGoals disjGoals
+      -- Assemble the join term with the chains concrete and disjointness
+      -- as fresh metas. `mkAppM` unifies the cond/cr/N args naturally.
+      let mkDisjMvar (a b : Expr) : MetaM Expr := do
+        mkFreshExprMVar (← mkAppM ``Svm.SBPF.CodeReq.Disjoint #[a, b])
+      let hBrArgs := ((← instantiateMVars hBrType).consumeMData).getAppArgs
+      let crBr := hBrArgs[6]!
+      let crT := (((← instantiateMVars (← inferType hTExpr))).consumeMData).getAppArgs[3]!
+      let crF := (((← instantiateMVars (← inferType hFExpr))).consumeMData).getAppArgs[3]!
+      let disjBT ← mkDisjMvar crBr crT
+      let disjBF ← mkDisjMvar crBr crF
+      let disjTF ← mkDisjMvar crT crF
+      let joinExpr ← mkAppM ``Svm.SBPF.cuTripleWithinBranch_join
+        #[disjBT, disjBF, disjTF, hBrExpr, hTExpr, hFExpr]
+      let joinType ← inferType joinExpr
+      -- Wrap in `cuTripleWithin_weaken` so the goal post can be in
+      -- atom-distributed `(r ↦ᵣ if cond then a else b)` form rather
+      -- than the join's natural `if cond then (r ↦ᵣ a) else (r ↦ᵣ b)`.
+      -- Splice the join term in by asserting it as a local hypothesis
+      -- first — delab'ing an Expr with metavariables loses the meta
+      -- references and triggers fresh elaboration, which fails. The
+      -- assert keeps the disjointness metas in `joinExpr` referable
+      -- so they can be discharged after the refine.
+      let mainGoal ← getMainGoal
+      let asserted ← mainGoal.assert `_h_joined joinType joinExpr
+      let (joinedFVar, postIntro) ← asserted.intro1
+      replaceMainGoal [postIntro]
+      let joinedIdent := mkIdent (← postIntro.withContext do
+        pure (← FVarId.getDecl joinedFVar).userName)
+      evalTactic (← `(tactic|
+        refine cuTripleWithin_weaken (fun _ x => x) ?branchPost $joinedIdent))
+      evalTactic (← `(tactic|
+        case branchPost =>
+          intro _hp _hpost
+          by_cases _hc : $condStx
+          · simp only [_hc, if_true]  at _hpost ⊢; exact _hpost
+          · simp only [_hc, if_false] at _hpost ⊢; exact _hpost))
+      -- Discharge collected side conditions: chain disjointness +
+      -- pcFree (from buildChainExpr) + branch-level disjointness (the
+      -- three Disjoint metas just synthesized).
+      let chainDisjs := (← disjGoals.get).reverse
+      let branchDisjs := [disjBT, disjBF, disjTF].map (·.mvarId!)
+      dischargeGoals (branchDisjs ++ chainDisjs)
+        (← `(tactic| sl_disjoint_codereq)) "sl_disjoint_codereq"
+      let pcfrees := (← pcfreeGoals.get).reverse
+      dischargeGoals pcfrees (← `(tactic| sl_pcfree)) "sl_pcfree"
 
 end Svm.SBPF

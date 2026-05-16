@@ -540,82 +540,24 @@ theorem if_else_macro_spec (vR1 vR2 : Nat) :
       ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2))
       ((.r1 ↦ᵣ vR1) **
         (.r2 ↦ᵣ (if vR1 = toU64 0 then toU64 200 else toU64 100))) := by
-  -- Step 1: branch triple at pc=0, framed to own both r1 and r2.
-  have h_br_r1 := jeq_imm_branch_spec .r1 0 vR1 0 3
-  have h_br :
-      cuTripleWithinBranch 1 0 3 1 (vR1 = toU64 0)
-        (CodeReq.singleton 0 (.jeq .r1 (.imm 0) 3))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2)) :=
-    cuTripleWithinBranch_frame_right (.r2 ↦ᵣ vR2) (pcFree_regIs _ _) h_br_r1
-  -- Step 2: true branch is `mov64 r2, 200` at pc=3, framed with r1.
+  -- Branch spec, pre-framed to widen its 1-atom state to (r1 ** r2).
+  have h_br := cuTripleWithinBranch_frame_right (.r2 ↦ᵣ vR2) (pcFree_regIs _ _)
+                 (jeq_imm_branch_spec .r1 0 vR1 0 3)
+  -- True branch: a single `mov64 r2, 200` (framed by sl_block_iter).
   have h_T_r2 := mov64_imm_spec .r2 200 vR2 3 (by decide)
-  have h_T :
-      cuTripleWithin 1 3 4
-        (CodeReq.singleton 3 (.mov64 .r2 (.imm 200)))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 200)) :=
-    cuTripleWithin_frame_left (.r1 ↦ᵣ vR1) (pcFree_regIs _ _) h_T_r2
-  -- Step 3: false branch is `mov64 r2, 100` at pc=1 then `ja 4` at pc=2.
+  -- False branch: `mov64 r2, 100` then `ja 4`. ja_spec has emp pre/post
+  -- which sl_block_iter's atom-extractor can't widen automatically, so
+  -- pre-frame it to the post-state of the preceding mov.
   have h_F_mov_r2 := mov64_imm_spec .r2 100 vR2 1 (by decide)
-  have h_F_mov :
-      cuTripleWithin 1 1 2
-        (CodeReq.singleton 1 (.mov64 .r2 (.imm 100)))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100)) :=
-    cuTripleWithin_frame_left (.r1 ↦ᵣ vR1) (pcFree_regIs _ _) h_F_mov_r2
-  have h_F_ja := ja_spec 4 2
-  -- Frame ja with the pre/post that the chain expects.
-  have h_F_ja' :
-      cuTripleWithin 1 2 4
-        (CodeReq.singleton 2 (.ja 4))
+  have h_F_ja : cuTripleWithin 1 2 4 (CodeReq.singleton 2 (.ja 4))
         ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100))
         ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100)) := by
     have := cuTripleWithin_frame_right ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100))
-              (pcFree_sepConj (pcFree_regIs _ _) (pcFree_regIs _ _)) h_F_ja
-    -- this : cuTripleWithin 1 2 4 cr (emp ** (...)) (emp ** (...))
-    -- Weaken to drop the trivial `emp ** _`.
+              (pcFree_sepConj (pcFree_regIs _ _) (pcFree_regIs _ _)) (ja_spec 4 2)
     apply cuTripleWithin_weaken
       (fun hp hPP => (sepConj_emp_left hp).mpr hPP)
       (fun hp hQQ => (sepConj_emp_left hp).mp hQQ) this
-  have h_F :
-      cuTripleWithin 2 1 4
-        ((CodeReq.singleton 1 (.mov64 .r2 (.imm 100))).union
-         (CodeReq.singleton 2 (.ja 4)))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100)) :=
-    cuTripleWithin_seq
-      (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-      h_F_mov h_F_ja'
-  -- Step 4: join at pc=4 via cuTripleWithinBranch_join.
-  -- The join's post is `if cond then RT else RF`.
-  -- Bound: 1 + max 1 2 = 3. ✓
-  have h_joined :=
-    cuTripleWithinBranch_join
-      (cond := vR1 = toU64 0)
-      -- hd_brT : (singleton 0).Disjoint (singleton 3)
-      (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-      -- hd_brF : (singleton 0).Disjoint (singleton 1 ∪ singleton 2)
-      (CodeReq.Disjoint_union_right
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide)))
-      -- hd_TF : (singleton 3).Disjoint (singleton 1 ∪ singleton 2)
-      (CodeReq.Disjoint_union_right
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide)))
-      h_br h_T h_F
-  -- Reshape the post: `if cond then ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 200))
-  -- else ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100))` ↔
-  -- `(.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ (if cond then toU64 200 else toU64 100))`.
-  apply cuTripleWithin_weaken (fun _ x => x) ?_ h_joined
-  intro hp hpost
-  by_cases hcond : vR1 = toU64 0
-  · simp only [hcond, if_true] at hpost
-    simp only [hcond, if_true]
-    exact hpost
-  · simp only [hcond, if_false] at hpost
-    simp only [hcond, if_false]
-    exact hpost
+  sl_branch h_br [h_T_r2] [h_F_mov_r2, h_F_ja]
 
 /-! ## SPL-Token-shaped 2-way discriminant dispatch (Phase E session 2)
 
@@ -676,66 +618,25 @@ theorem spl_token_2way_dispatch_macro_spec
   -- post takes that prefix; the dispatch's `r0 ** r2` pre is matched
   -- by sepConj associativity.
 
-  -- Stage 1: dispatch chain (pc=1 → pc=5), 2-atom pre `(r0 ** r2)`.
-  -- 1a. Branch triple at pc=1, framed with r0 on the LEFT.
-  have h_br_r2 := jeq_imm_branch_spec .r2 0 (discByte % 256) 1 4
-  have h_br :
-      cuTripleWithinBranch 1 1 4 2 (discByte % 256 = toU64 0)
-        (CodeReq.singleton 1 (.jeq .r2 (.imm 0) 4))
-        ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ discByte % 256))
-        ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ discByte % 256)) :=
-    cuTripleWithinBranch_frame_left (.r0 ↦ᵣ vR0) (pcFree_regIs _ _) h_br_r2
-  -- 1b. True branch at pc=4: `mov64 r0, 200` framed with r2 on the RIGHT.
+  -- Stage 1: dispatch chain (pc=1 → pc=5), 2-atom state `(r0 ** r2)`.
+  -- Pre-frame the bare branch spec to widen to the 2-atom state.
+  have h_br := cuTripleWithinBranch_frame_left (.r0 ↦ᵣ vR0) (pcFree_regIs _ _)
+                 (jeq_imm_branch_spec .r2 0 (discByte % 256) 1 4)
+  -- True branch step: `mov64 r0, 200` (sl_block_iter auto-frames r2).
   have h_T_r0 := mov64_imm_spec .r0 200 vR0 4 (by decide)
-  have h_T :
-      cuTripleWithin 1 4 5
-        (CodeReq.singleton 4 (.mov64 .r0 (.imm 200)))
-        ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ discByte % 256))
-        ((.r0 ↦ᵣ toU64 200) ** (.r2 ↦ᵣ discByte % 256)) :=
-    cuTripleWithin_frame_right (.r2 ↦ᵣ discByte % 256) (pcFree_regIs _ _) h_T_r0
-  -- 1c. False branch at pc=2,3: `mov64 r0, 100` then `ja 5`, framed with r2.
+  -- False branch steps: `mov64 r0, 100` (auto-framed) + `ja 5`
+  -- (manually framed since ja_spec's emp pre/post can't be widened
+  -- by sl_block_iter's atom-extractor).
   have h_F_mov_r0 := mov64_imm_spec .r0 100 vR0 2 (by decide)
-  have h_F_mov :
-      cuTripleWithin 1 2 3
-        (CodeReq.singleton 2 (.mov64 .r0 (.imm 100)))
-        ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ discByte % 256))
-        ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256)) :=
-    cuTripleWithin_frame_right (.r2 ↦ᵣ discByte % 256) (pcFree_regIs _ _) h_F_mov_r0
-  have h_F_ja := ja_spec 5 3
-  have h_F_ja' :
-      cuTripleWithin 1 3 5
-        (CodeReq.singleton 3 (.ja 5))
+  have h_F_ja : cuTripleWithin 1 3 5 (CodeReq.singleton 3 (.ja 5))
         ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256))
         ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256)) := by
     have := cuTripleWithin_frame_right
               ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256))
-              (pcFree_sepConj (pcFree_regIs _ _) (pcFree_regIs _ _)) h_F_ja
+              (pcFree_sepConj (pcFree_regIs _ _) (pcFree_regIs _ _)) (ja_spec 5 3)
     apply cuTripleWithin_weaken
       (fun hp hPP => (sepConj_emp_left hp).mpr hPP)
       (fun hp hQQ => (sepConj_emp_left hp).mp hQQ) this
-  have h_F :
-      cuTripleWithin 2 2 5
-        ((CodeReq.singleton 2 (.mov64 .r0 (.imm 100))).union
-         (CodeReq.singleton 3 (.ja 5)))
-        ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ discByte % 256))
-        ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256)) :=
-    cuTripleWithin_seq
-      (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-      h_F_mov h_F_ja'
-  -- 1d. Branch join: produces a pure triple from pc=1 → pc=5.
-  have h_dispatch_raw :=
-    cuTripleWithinBranch_join
-      (cond := discByte % 256 = toU64 0)
-      (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-      (CodeReq.Disjoint_union_right
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide)))
-      (CodeReq.Disjoint_union_right
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide))
-        (CodeReq.singleton_disjoint_singleton _ _ (by decide)))
-      h_br h_T h_F
-  -- Distribute the `if` through the sepConj: r2 is identical on both
-  -- branches; only r0 differs.
   have h_dispatch_2atom : cuTripleWithin 3 1 5
         (((CodeReq.singleton 1 (.jeq .r2 (.imm 0) 4)).union
           (CodeReq.singleton 4 (.mov64 .r0 (.imm 200)))).union
@@ -744,13 +645,7 @@ theorem spl_token_2way_dispatch_macro_spec
         ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ discByte % 256))
         ((.r0 ↦ᵣ (if discByte % 256 = toU64 0 then toU64 200 else toU64 100)) **
           (.r2 ↦ᵣ discByte % 256)) := by
-    apply cuTripleWithin_weaken (fun _ x => x) ?_ h_dispatch_raw
-    intro hp hpost
-    by_cases hcond : discByte % 256 = toU64 0
-    · simp only [hcond, if_true] at hpost
-      simp only [hcond, if_true]; exact hpost
-    · simp only [hcond, if_false] at hpost
-      simp only [hcond, if_false]; exact hpost
+    sl_branch h_br [h_T_r0] [h_F_mov_r0, h_F_ja]
   -- Stage 2: frame with `(.r1 ↦ᵣ baseAddr) ** (mem ↦ₘ discByte)` on
   -- the RIGHT, then re-associate via `sepConj_assoc` so the 4-atom
   -- shape is right-folded `r0 ** r2 ** r1 ** mem`.
@@ -758,9 +653,6 @@ theorem spl_token_2way_dispatch_macro_spec
     ((.r1 ↦ᵣ baseAddr) ** (effectiveAddr baseAddr 0 ↦ₘ discByte))
     (pcFree_sepConj (pcFree_regIs _ _) (pcFree_memByteIs _ _))
     h_dispatch_2atom
-  -- h_dispatch_4atom_raw has shape `((r0 ** r2) ** (r1 ** mem))`. Use
-  -- the existing `_reshape_*` lemmas (which take an iff in OLD ↔ NEW
-  -- orientation) with `sepConj_assoc` directly to right-fold.
   have h_dispatch_4atom_post :=
     cuTripleWithin_reshape_post sepConj_assoc h_dispatch_4atom_raw
   have h_dispatch_4atom :=
