@@ -185,6 +185,53 @@ def readBytes (mem : Memory.Mem) (addr len : Nat) : ByteArray :=
   ⟨(List.range len).foldl
     (fun acc i => acc.push (mem (addr + i) % 256).toUInt8) #[]⟩
 
+/-- `readBytes`'s underlying `Array` is a map over `List.range len`. -/
+theorem readBytes_data (mem : Memory.Mem) (addr len : Nat) :
+    (readBytes mem addr len).data
+      = ((List.range len).map (fun i => (mem (addr + i) % 256).toUInt8)).toArray := by
+  show ((List.range len).foldl (fun acc i => acc.push (mem (addr + i) % 256).toUInt8) #[])
+        = ((List.range len).map (fun i => (mem (addr + i) % 256).toUInt8)).toArray
+  rw [List.foldl_push_eq_append]
+  simp
+
+/-- `readBytes` produces a `ByteArray` of size exactly `len`. -/
+@[simp] theorem readBytes_size (mem : Memory.Mem) (addr len : Nat) :
+    (readBytes mem addr len).size = len := by
+  show (readBytes mem addr len).data.size = len
+  rw [readBytes_data]
+  simp [List.length_range]
+
+/-- `readBytes` recovers `bs` exactly when (a) sizes match and (b) each
+    byte of `bs` matches the corresponding byte of memory mod 256.
+    Used by syscall specs that pull a fixed-length blob (pubkey, hash,
+    output buffer) out of caller memory under SL ownership. -/
+theorem readBytes_eq_of_match (mem : Memory.Mem) (addr len : Nat) (bs : ByteArray)
+    (hsize : bs.size = len)
+    (hb : ∀ i, i < len → mem (addr + i) % 256 = (bs.get! i).toNat) :
+    readBytes mem addr len = bs := by
+  apply ByteArray.ext
+  rw [readBytes_data]
+  apply Array.ext
+  · simp [List.length_range, hsize]
+  · intro i hi1 _
+    have hi : i < len := by
+      have hi' : i < ((List.range len).map
+          (fun i => (mem (addr + i) % 256).toUInt8)).toArray.size := hi1
+      simpa [List.length_range] using hi'
+    have hbsize : i < bs.size := by rw [hsize]; exact hi
+    simp only [List.getElem_toArray, List.getElem_map, List.getElem_range]
+    -- Goal: (mem (addr + i) % 256).toUInt8 = bs.data[i]
+    have hmem := hb i hi
+    -- hmem : mem (addr + i) % 256 = (bs.get! i).toNat
+    have h_get : bs.get! i = bs.data[i] := by
+      show bs.data[i]! = bs.data[i]
+      exact getElem!_pos bs.data i hbsize
+    rw [hmem]
+    -- Goal: (bs.get! i).toNat.toUInt8 = bs.data[i]
+    show UInt8.ofNat (bs.get! i).toNat = bs.data[i]
+    rw [UInt8.ofNat_toNat, h_get]
+
+
 /-- Read `n` 16-byte `SliceDesc { ptr: u64, len: u64 }` descriptors
     starting at `descsAddr`, deref each to its referenced bytes, and
     concatenate them. This is the standard input shape for the

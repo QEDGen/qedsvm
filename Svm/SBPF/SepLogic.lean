@@ -358,6 +358,165 @@ theorem singletonMemU32_mem_outside (addr v : Nat) (a : Nat)
       if_neg (by omega : a ≠ addr + 2),
       if_neg (by omega : a ≠ addr + 3)]
 
+/-! ### singletonMem32Bytes — 32 consecutive bytes from a `ByteArray`
+
+The partial state owns 32 bytes starting at `addr`, where byte `i ∈
+[0, 32)` equals `(bs.get! i).toNat`. Used as the building block for
+the `↦Bytes32` assertion that PDA / hash-family syscall specs need.
+
+Unlike the `U16`/`U32`/`U64` atoms (which carry a Nat decoded LE),
+this atom carries an opaque `ByteArray` payload — bytes are indexed,
+not integer-decoded. Callers are expected to keep `bs.size = 32`;
+larger arrays have their tail ignored, smaller arrays fall through
+to `bs.get!`'s default (zero). -/
+
+/-- Partial state owning 32 consecutive memory bytes whose contents are
+    `bs`. A single conditional, not 32 unrolled `if`s — keeps both the
+    definition and the byte-extraction proof linear in size. -/
+def singletonMem32Bytes (addr : Nat) (bs : ByteArray) : PartialState :=
+  { regs := fun _ => none
+    mem := fun a =>
+      if addr ≤ a ∧ a < addr + 32 then some (bs.get! (a - addr)).toNat
+      else none
+    pc := none }
+
+@[simp] theorem singletonMem32Bytes_regs {addr : Nat} {bs : ByteArray} (r : Reg) :
+    (singletonMem32Bytes addr bs).regs r = none := rfl
+
+@[simp] theorem singletonMem32Bytes_pc {addr : Nat} {bs : ByteArray} :
+    (singletonMem32Bytes addr bs).pc = none := rfl
+
+/-- Byte at offset `i ∈ [0, 32)` equals `(bs.get! i).toNat`. The single
+    parameterized lemma replaces 32 unrolled `_mem_i` lemmas. -/
+theorem singletonMem32Bytes_mem_at (addr : Nat) (bs : ByteArray) (i : Nat)
+    (hi : i < 32) :
+    (singletonMem32Bytes addr bs).mem (addr + i) = some (bs.get! i).toNat := by
+  unfold singletonMem32Bytes
+  show (if addr ≤ addr + i ∧ addr + i < addr + 32 then
+          some (bs.get! ((addr + i) - addr)).toNat
+        else none) = some (bs.get! i).toNat
+  rw [if_pos ⟨Nat.le_add_right _ _, by omega⟩,
+      show (addr + i) - addr = i from by omega]
+
+/-- Address outside the 32-byte range owns nothing. -/
+theorem singletonMem32Bytes_mem_outside (addr : Nat) (bs : ByteArray) (a : Nat)
+    (h : a < addr ∨ a ≥ addr + 32) :
+    (singletonMem32Bytes addr bs).mem a = none := by
+  unfold singletonMem32Bytes
+  show (if addr ≤ a ∧ a < addr + 32 then some (bs.get! (a - addr)).toNat else none) = none
+  apply if_neg
+  rintro ⟨h1, h2⟩
+  omega
+
+/-! ### singletonMemBytes — variable-length byte blob from a `ByteArray`
+
+Generalization of `singletonMem32Bytes` to arbitrary lengths. The
+partial state owns `bs.size` bytes starting at `addr`, where byte
+`i ∈ [0, bs.size)` equals `(bs.get! i).toNat`. Used by syscall
+specs that read variable-length data (PDA seeds, hash inputs, etc.).
+
+For `bs.size = 0` the atom owns nothing — equivalent to `empty`
+on the mem side. -/
+
+/-- Partial state owning `bs.size` consecutive memory bytes whose
+    contents are `bs`. Single-conditional `mem` field, same shape
+    as `singletonMem32Bytes` but parametric in length. -/
+def singletonMemBytes (addr : Nat) (bs : ByteArray) : PartialState :=
+  { regs := fun _ => none
+    mem := fun a =>
+      if addr ≤ a ∧ a < addr + bs.size then some (bs.get! (a - addr)).toNat
+      else none
+    pc := none }
+
+@[simp] theorem singletonMemBytes_regs {addr : Nat} {bs : ByteArray} (r : Reg) :
+    (singletonMemBytes addr bs).regs r = none := rfl
+
+@[simp] theorem singletonMemBytes_pc {addr : Nat} {bs : ByteArray} :
+    (singletonMemBytes addr bs).pc = none := rfl
+
+/-- Byte at offset `i ∈ [0, bs.size)` equals `(bs.get! i).toNat`. -/
+theorem singletonMemBytes_mem_at (addr : Nat) (bs : ByteArray) (i : Nat)
+    (hi : i < bs.size) :
+    (singletonMemBytes addr bs).mem (addr + i) = some (bs.get! i).toNat := by
+  unfold singletonMemBytes
+  show (if addr ≤ addr + i ∧ addr + i < addr + bs.size then
+          some (bs.get! ((addr + i) - addr)).toNat
+        else none) = some (bs.get! i).toNat
+  rw [if_pos ⟨Nat.le_add_right _ _, by omega⟩,
+      show (addr + i) - addr = i from by omega]
+
+/-- Address outside the `[addr, addr + bs.size)` range owns nothing. -/
+theorem singletonMemBytes_mem_outside (addr : Nat) (bs : ByteArray) (a : Nat)
+    (h : a < addr ∨ a ≥ addr + bs.size) :
+    (singletonMemBytes addr bs).mem a = none := by
+  unfold singletonMemBytes
+  show (if addr ≤ a ∧ a < addr + bs.size then
+          some (bs.get! (a - addr)).toNat else none) = none
+  apply if_neg
+  rintro ⟨h1, h2⟩
+  omega
+
+/-! ### `_mem_isSome` helpers — used by range-disjointness derivations
+
+For each memory atom, "address in range ⇒ atom owns it" packaged as an
+`∃ v, mem a = some v` witness. The range-disjointness pattern picks a
+sentinel address in one atom's range and uses these helpers together
+with SL disjointness to conclude the other atom doesn't own it. -/
+
+theorem singletonMemU64_mem_isSome (addr v : Nat) (a : Nat)
+    (h : addr ≤ a ∧ a < addr + 8) :
+    ∃ x, (singletonMemU64 addr v).mem a = some x := by
+  obtain ⟨h1, h2⟩ := h
+  rcases Nat.lt_or_ge a (addr + 1) with h_lt | h_ge
+  · refine ⟨v % 256, ?_⟩
+    have : a = addr := by omega
+    rw [this]; exact singletonMemU64_mem_0 _ _
+  rcases Nat.lt_or_ge a (addr + 2) with h_lt | h_ge
+  · refine ⟨v / 0x100 % 256, ?_⟩
+    have : a = addr + 1 := by omega
+    rw [this]; exact singletonMemU64_mem_1 _ _
+  rcases Nat.lt_or_ge a (addr + 3) with h_lt | h_ge
+  · refine ⟨v / 0x10000 % 256, ?_⟩
+    have : a = addr + 2 := by omega
+    rw [this]; exact singletonMemU64_mem_2 _ _
+  rcases Nat.lt_or_ge a (addr + 4) with h_lt | h_ge
+  · refine ⟨v / 0x1000000 % 256, ?_⟩
+    have : a = addr + 3 := by omega
+    rw [this]; exact singletonMemU64_mem_3 _ _
+  rcases Nat.lt_or_ge a (addr + 5) with h_lt | h_ge
+  · refine ⟨v / 0x100000000 % 256, ?_⟩
+    have : a = addr + 4 := by omega
+    rw [this]; exact singletonMemU64_mem_4 _ _
+  rcases Nat.lt_or_ge a (addr + 6) with h_lt | h_ge
+  · refine ⟨v / 0x10000000000 % 256, ?_⟩
+    have : a = addr + 5 := by omega
+    rw [this]; exact singletonMemU64_mem_5 _ _
+  rcases Nat.lt_or_ge a (addr + 7) with h_lt | h_ge
+  · refine ⟨v / 0x1000000000000 % 256, ?_⟩
+    have : a = addr + 6 := by omega
+    rw [this]; exact singletonMemU64_mem_6 _ _
+  · refine ⟨v / 0x100000000000000 % 256, ?_⟩
+    have : a = addr + 7 := by omega
+    rw [this]; exact singletonMemU64_mem_7 _ _
+
+theorem singletonMem32Bytes_mem_isSome (addr : Nat) (bs : ByteArray) (a : Nat)
+    (h : addr ≤ a ∧ a < addr + 32) :
+    ∃ x, (singletonMem32Bytes addr bs).mem a = some x := by
+  obtain ⟨h1, h2⟩ := h
+  have h_lt : a - addr < 32 := by omega
+  have key := singletonMem32Bytes_mem_at addr bs (a - addr) h_lt
+  rw [show addr + (a - addr) = a from by omega] at key
+  exact ⟨_, key⟩
+
+theorem singletonMemBytes_mem_isSome (addr : Nat) (bs : ByteArray) (a : Nat)
+    (h : addr ≤ a ∧ a < addr + bs.size) :
+    ∃ x, (singletonMemBytes addr bs).mem a = some x := by
+  obtain ⟨h1, h2⟩ := h
+  have h_lt : a - addr < bs.size := by omega
+  have key := singletonMemBytes_mem_at addr bs (a - addr) h_lt
+  rw [show addr + (a - addr) = a from by omega] at key
+  exact ⟨_, key⟩
+
 /-- Address outside the 8-byte range owns nothing in `singletonMemU64`. -/
 theorem singletonMemU64_mem_outside (addr v : Nat) (a : Nat)
     (h : a < addr ∨ a ≥ addr + 8) :
@@ -606,6 +765,24 @@ def memU64Is (addr v : Nat) : Assertion :=
 
 @[inherit_doc] notation:50 a " ↦U64 " v => memU64Is a v
 
+/-- 32 consecutive memory bytes at `addr` whose contents are the
+    `ByteArray` `bs`. Byte `i ∈ [0, 32)` holds `(bs.get! i).toNat`.
+    Used by PDA / hash syscall specs that pass opaque 32-byte blobs
+    (pubkeys, hash outputs) where a single-Nat decode isn't useful. -/
+def memBytes32Is (addr : Nat) (bs : ByteArray) : Assertion :=
+  fun h => h = PartialState.singletonMem32Bytes addr bs
+
+@[inherit_doc] notation:50 a " ↦Bytes32 " bs => memBytes32Is a bs
+
+/-- `bs.size` consecutive memory bytes at `addr` whose contents are
+    the `ByteArray` `bs`. Variable-length sibling of `memBytes32Is`,
+    used by syscall specs that read variable-length data (PDA seeds,
+    hash inputs). -/
+def memBytesIs (addr : Nat) (bs : ByteArray) : Assertion :=
+  fun h => h = PartialState.singletonMemBytes addr bs
+
+@[inherit_doc] notation:50 a " ↦Bytes " bs => memBytesIs a bs
+
 /-- The PC holds value `v`, and that's all we own. -/
 def pcIs (v : Nat) : Assertion :=
   fun h => h = PartialState.singletonPC v
@@ -726,6 +903,107 @@ theorem sepConj_iff_congr_left (Q : Assertion) {P P' : Assertion}
   refine Iff.trans (sepConj_comm h) (Iff.trans ?_ (sepConj_comm h))
   exact sepConj_iff_congr_right Q hPP' h
 
+/-! ## List-fold sepConj + permutation iff
+
+`foldSepConj` collapses a `List Assertion` into a right-folded
+sepConj with `emp` at the trailing position. This shape (vs the
+"no trailing emp" form `rebuildSepConj` produces in tactic land)
+admits a uniform `cons` case in proofs, making the
+permutation-invariance theorem `foldSepConj_perm` a clean induction
+on `List.Perm`.
+
+The point of these lemmas is that `sl_block_iter`'s tactic
+machinery can then build a permutation iff in **constant** Expr
+size (one application of `foldSepConj_perm`), instead of the
+previous O(N²) chain of adjacent-swap applications. This dropped
+the bridge step from being super-linear in atom count to linear
+(plus a `bridge` lemma below to/from the trailing-emp form,
+which is O(N) per side). -/
+
+/-- Right-folded sepConj with trailing `emp`. For `[a, b, c]`:
+    `a ** (b ** (c ** emp))`. Always defined (empty list = `emp`). -/
+def foldSepConj : List Assertion → Assertion
+  | [] => emp
+  | a :: rest => a ** foldSepConj rest
+
+@[simp] theorem foldSepConj_nil : foldSepConj [] = emp := rfl
+
+@[simp] theorem foldSepConj_cons (a : Assertion) (rest : List Assertion) :
+    foldSepConj (a :: rest) = (a ** foldSepConj rest) := rfl
+
+/-- The permutation-invariance theorem: any List-permutation of the
+    atoms preserves the `foldSepConj` assertion's truth-set.
+    Induction on `List.Perm` decomposes into `cons`/`swap`/`trans`,
+    each handled by an existing structural sepConj lemma
+    (`congr_right` / `swap_first_two` / `Iff.trans`). -/
+theorem foldSepConj_perm {l1 l2 : List Assertion} (h : l1.Perm l2) :
+    ∀ s, foldSepConj l1 s ↔ foldSepConj l2 s := by
+  induction h with
+  | nil => intro s; exact Iff.rfl
+  | cons x _ ih =>
+    intro s
+    show (x ** foldSepConj _) s ↔ (x ** foldSepConj _) s
+    refine ⟨?_, ?_⟩
+    · rintro ⟨h1, h2, hd, hu, hP, hQ⟩
+      exact ⟨h1, h2, hd, hu, hP, (ih h2).mp hQ⟩
+    · rintro ⟨h1, h2, hd, hu, hP, hQ⟩
+      exact ⟨h1, h2, hd, hu, hP, (ih h2).mpr hQ⟩
+  | swap x y rest =>
+    intro s
+    -- List.Perm.swap : (x :: y :: l).Perm (y :: x :: l) — note x is first on LHS
+    -- foldSepConj (y :: x :: rest) = y ** (x ** foldSepConj rest)
+    -- foldSepConj (x :: y :: rest) = x ** (y ** foldSepConj rest)
+    show (y ** x ** foldSepConj rest) s ↔ (x ** y ** foldSepConj rest) s
+    exact sepConj_swap_first_two s
+  | trans _ _ ih1 ih2 =>
+    intro s; exact (ih1 s).trans (ih2 s)
+
+/-- Swap adjacent elements at position `k` in a list. Structural recursion
+    on the list's spine — needs no `Inhabited` instance (no out-of-range
+    lookup), and the perm proof falls out by the same induction. -/
+def swapAt {α} : List α → Nat → List α
+  | [], _ => []
+  | [a], _ => [a]
+  | a :: b :: rest, 0 => b :: a :: rest
+  | a :: b :: rest, k + 1 => a :: swapAt (b :: rest) k
+
+theorem swapAt_perm {α} : ∀ (l : List α) (k : Nat), l.Perm (swapAt l k)
+  | [], _ => List.Perm.refl _
+  | [_], _ => List.Perm.refl _
+  | a :: b :: rest, 0 => List.Perm.swap b a rest
+  | a :: b :: rest, k + 1 => List.Perm.cons a (swapAt_perm (b :: rest) k)
+
+/-- Apply a sequence of adjacent-position swaps to a list, left-to-right. -/
+def applySwaps {α} (l : List α) (swaps : List Nat) : List α :=
+  swaps.foldl swapAt l
+
+theorem applySwaps_perm {α} (l : List α) (swaps : List Nat) :
+    l.Perm (applySwaps l swaps) := by
+  induction swaps generalizing l with
+  | nil => exact List.Perm.refl l
+  | cons k rest ih =>
+    show l.Perm (applySwaps (swapAt l k) rest)
+    exact (swapAt_perm l k).trans (ih (swapAt l k))
+
+/-- Convenience: the perm-iff between two `foldSepConj`s where the
+    second is the result of applying a swap sequence to the first.
+    This is the "single application" the sl_block_iter tactic needs to
+    replace its O(N²) iff chain. -/
+theorem foldSepConj_applySwaps_iff (atoms : List Assertion) (swaps : List Nat) :
+    ∀ s, foldSepConj atoms s ↔ foldSepConj (applySwaps atoms swaps) s :=
+  foldSepConj_perm (applySwaps_perm atoms swaps)
+
+/-- `(P ** emp) h ↔ P h` flipped. The bridge from a "no trailing emp"
+    sepConj (`rebuildSepConj`'s output) to a "trailing emp" form
+    (`foldSepConj`'s output) at the singleton-list base case. -/
+theorem sepConj_emp_right_symm {P : Assertion} : ∀ h, P h ↔ (P ** emp) h :=
+  fun h => (sepConj_emp_right h).symm
+
+/-- Symmetry of pointwise iff. Used to flip `bridge2` (foldSepConj →
+    rebuildSepConj) from its naturally-stated direction. -/
+theorem sepConj_iff_pw_symm {P Q : Assertion} (h : ∀ s, P s ↔ Q s) :
+    ∀ s, Q s ↔ P s := fun s => (h s).symm
+
 /-! ## holdsFor — bridge from Assertion to full State -/
 
 /-- An assertion `P` holds for full state `s` when some partial state
@@ -775,6 +1053,12 @@ theorem pcFree_memU32Is (a v : Nat) : (memU32Is a v).pcFree := by
   intro h heq; rw [heq]; rfl
 
 theorem pcFree_memU64Is (a v : Nat) : (memU64Is a v).pcFree := by
+  intro h heq; rw [heq]; rfl
+
+theorem pcFree_memBytes32Is (a : Nat) (bs : ByteArray) : (memBytes32Is a bs).pcFree := by
+  intro h heq; rw [heq]; rfl
+
+theorem pcFree_memBytesIs (a : Nat) (bs : ByteArray) : (memBytesIs a bs).pcFree := by
   intro h heq; rw [heq]; rfl
 
 theorem pcFree_sepConj {P Q : Assertion} (hP : P.pcFree) (hQ : Q.pcFree) :
