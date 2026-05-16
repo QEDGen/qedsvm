@@ -40,6 +40,19 @@ use formal_svm::{ProgramResult, Svm};
 use solana_account::{Account, AccountSharedData};
 use solana_pubkey::Pubkey;
 
+/// Counter-derived unique-ish pubkey for placeholder accounts.
+/// `solana_address::Address::new_unique` lives behind the `atomic`
+/// feature, which our default-features-off `solana-pubkey` dep
+/// doesn't pull in — so we roll our own deterministic counter here.
+fn dummy_pubkey() -> Pubkey {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(1);
+    let n = N.fetch_add(1, Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&n.to_le_bytes());
+    Pubkey::new_from_array(bytes)
+}
+
 fn precompile_native_account() -> AccountSharedData {
     AccountSharedData::from(Account {
         lamports: 1,
@@ -70,7 +83,7 @@ fn ed25519_precompile_accepts_valid_signature() {
             .unwrap(),
     );
     let ed_id = solana_sdk_ids::ed25519_program::id();
-    let dummy = Pubkey::new_unique();
+    let dummy = dummy_pubkey();
 
     let r = Svm::default()
         .process_instruction(&ix, &[
@@ -107,7 +120,7 @@ fn ed25519_precompile_rejects_corrupted_signature() {
     );
     let r = Svm::default()
         .process_instruction(&ix, &[
-            (Pubkey::new_unique(), AccountSharedData::default()),
+            (dummy_pubkey(), AccountSharedData::default()),
             (solana_sdk_ids::ed25519_program::id(), precompile_native_account()),
         ])
         .expect("corrupted-sig precompile still dispatches");
@@ -138,7 +151,7 @@ fn secp256k1_precompile_accepts_valid_signature() {
         msg, &sig, recid, &eth_address,
     );
     let sk_id = solana_sdk_ids::secp256k1_program::id();
-    let dummy = Pubkey::new_unique();
+    let dummy = dummy_pubkey();
     let r = Svm::default()
         .process_instruction(&ix, &[
             (dummy, AccountSharedData::default()),
@@ -179,7 +192,7 @@ fn secp256r1_precompile_accepts_valid_signature() {
         msg, &sig, &pubkey,
     );
     let r1_id = solana_sdk_ids::secp256r1_program::id();
-    let dummy = Pubkey::new_unique();
+    let dummy = dummy_pubkey();
     let r = Svm::default()
         .process_instruction(&ix, &[
             (dummy, AccountSharedData::default()),
@@ -197,7 +210,7 @@ fn unknown_pid_does_not_match_precompile_path() {
     // A non-precompile pid must NOT route through the precompile path —
     // it should hit the existing UnknownProgram error from the BPF
     // registry lookup.
-    let pid = Pubkey::new_unique();
+    let pid = dummy_pubkey();
     let ix = solana_instruction::Instruction {
         program_id: pid, accounts: vec![], data: vec![1, 2, 3],
     };

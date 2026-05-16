@@ -137,7 +137,43 @@ fn main() {
             undersym_prefix, sym
         );
     }
-    println!("cargo:rustc-link-lib=static=leanbridge");
+    // Pass libleanbridge.a as a positional link-arg, NOT via
+    // `cargo:rustc-link-lib=static=`. macOS `ld` is single-pass:
+    // `-Wl,-u,<sym>` only pulls a symbol from an archive that appears
+    // LATER on the command line. rustc places `-l` flags from
+    // `link-lib` near the start of the link cmd — before the
+    // `-Wl,-u,...` flags emitted via `link-arg` — so the archive gets
+    // processed first (no demand → all objects skipped) and the
+    // subsequent `-u` flags find nothing. Emitting the absolute path
+    // as a positional link-arg lands it in the cmd here, AFTER the
+    // `-u` flags, restoring correct order.
+    let leanbridge_a = lake_lib_dir.join("libleanbridge.a");
+    if !leanbridge_a.exists() {
+        panic!(
+            "Missing {} — did `lake build` produce the static archive?",
+            leanbridge_a.display()
+        );
+    }
+    println!("cargo:rustc-link-arg={}", leanbridge_a.display());
+    // libleanbridge.a's objects reference Lean runtime symbols
+    // (`_mi_malloc_small`, `_lean_internal_panic_*`, etc.) that live
+    // in libleanshared.dylib. The `cargo:rustc-link-lib=dylib=*`
+    // directives above place those `-l` flags BEFORE this point in
+    // the cmd, but rustc/cargo strips `-l<dylib>` entries that look
+    // unreferenced from user code, so the dylibs disappear from the
+    // final cc invocation. Pass them positionally here too — by
+    // absolute path — so they're guaranteed to participate in the
+    // final symbol-resolution pass.
+    let leanshared_dylib =
+        PathBuf::from(prefix).join("lib").join("lean").join("libleanshared.dylib");
+    let lake_shared_dylib =
+        PathBuf::from(prefix).join("lib").join("lean").join("libLake_shared.dylib");
+    for p in [&leanshared_dylib, &lake_shared_dylib] {
+        if !p.exists() {
+            panic!("Missing {} — toolchain layout changed?", p.display());
+        }
+        println!("cargo:rustc-link-arg={}", p.display());
+    }
     println!("cargo:rerun-if-changed={}", bridge_src.display());
 
     // Export the binary's dynamic symbol table so the Lean dylibs'
