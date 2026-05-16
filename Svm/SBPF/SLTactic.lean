@@ -98,7 +98,9 @@ macro_rules
       | exact pcFree_memByteIs _ _
       | exact pcFree_memU16Is _ _
       | exact pcFree_memU32Is _ _
-      | exact pcFree_memU64Is _ _)
+      | exact pcFree_memU64Is _ _
+      | exact pcFree_memBytes32Is _ _
+      | exact pcFree_memBytesIs _ _)
 
 syntax "sl_pcfree" : tactic
 
@@ -278,8 +280,60 @@ def buildAdjacentSwapIff (atoms : List Expr) (k : Nat) : MetaM Expr := do
     inner ← mkAppM ``Svm.SBPF.sepConj_iff_congr_right #[leftAtom, inner]
   return inner
 
+/-- Normalize an atom Expr's address subterm using a fixed set of
+    common rewrites:
+      `effectiveAddr base (Int.ofNat n) → base + n`
+      `effectiveAddr base 0 → base` (subsumed by the above + Nat.add_zero)
+    This collapses the syntactic gap between `stxdw_spec`-produced
+    atoms (which use `effectiveAddr baseAddr off`) and macro/syscall
+    spec atoms (which write `baseAddr + 8` or `baseAddr` directly).
+    Walks via `Lean.Meta.transform`. -/
+private def normalizeAtomExpr (e : Expr) : MetaM Expr :=
+  Lean.Meta.transform e (post := fun e' => do
+    let e'' := e'.consumeMData
+    match e''.getAppFnArgs with
+    | (``Svm.SBPF.Memory.effectiveAddr, #[base, off]) =>
+      let off := off.consumeMData
+      -- off = @OfNat.ofNat Int n _  →  literal-int Nat value n
+      match off.getAppFnArgs with
+      | (``OfNat.ofNat, #[_, n, _]) =>
+        match n.nat? with
+        | some 0 => return .done base
+        | some k =>
+          let nLit := mkNatLit k
+          let res ← mkAppOptM ``HAdd.hAdd #[none, none, none, none, base, nLit]
+          return .done res
+        | none => return .continue
+      | _ =>
+        -- Already `Int.ofNat n` form?
+        match off.getAppFnArgs with
+        | (``Int.ofNat, #[n]) =>
+          match n.nat? with
+          | some 0 => return .done base
+          | some k =>
+            let nLit := mkNatLit k
+            let res ← mkAppOptM ``HAdd.hAdd #[none, none, none, none, base, nLit]
+            return .done res
+          | none => return .continue
+        | _ => return .continue
+    | _ => return .continue)
+
+/-- Atom equality. Structural-first (`==` → `eqv`), then normalize
+    `effectiveAddr` forms via `normalizeAtomExpr` and retry `==`,
+    finally fall back to `isDefEq`. The normalization step catches
+    the specific `stxdw_spec` vs macro-spec address-form mismatch
+    that triggered ~96K `Nat.rec` invocations per iter at iter 5 of
+    the stack-macro composition. -/
+private def atomEq (a b : Expr) : MetaM Bool := do
+  if a == b then return true
+  if a.eqv b then return true
+  let aN ← normalizeAtomExpr a
+  let bN ← normalizeAtomExpr b
+  if aN == bN then return true
+  isDefEq a b
+
 /-- Selection-sort `src` into `tgt`-prefix order. For each `i ∈ [0..|tgt|)`,
-    finds `tgt[i]` in `src.drop i` (modulo `isDefEq`) and bubbles it down
+    finds `tgt[i]` in `src.drop i` (modulo `atomEq`) and bubbles it down
     to position `i` via a sequence of adjacent transpositions. Returns
     `none` if `tgt` is not a sub-multiset of `src`; else returns
     `(swaps, finalAtoms)` where `swaps` is the list of positions `k`
@@ -295,7 +349,7 @@ partial def bubbleSortToPrefix (src tgt : List Expr) :
     let target := tgt[i]!
     let mut found : Option Nat := none
     for j in [i:work.size] do
-      if (← isDefEq work[j]! target) then
+      if (← atomEq work[j]! target) then
         found := some j
         break
     match found with
@@ -312,13 +366,56 @@ partial def bubbleSortToPrefix (src tgt : List Expr) :
         p := p - 1
   return some (swaps.reverse, work.toList)
 
+/-- Build an iff `∀ h, (rebuildSepConj atoms) h ↔ (foldSepConj atoms_lit) h`
+    where `atoms_lit` is the Lean `List Assertion` literal containing
+    `atoms`. The iff "adds the trailing emp" — `foldSepConj` always
+    emits `... ** emp`, while `rebuildSepConj` does not.
+
+    Term depth: O(|atoms|) — one `congr_right` per atom + one
+    `sepConj_emp_right_symm` at the singleton base. Compare to the
+    old O(N²) chain.
+
+    Singleton (`[a]`): produces `sepConj_emp_right_symm a`.
+    Recursive (`a :: rest`): produces `sepConj_iff_congr_right a (recurse on rest)`.
+    Empty: throws (callers ensure non-empty). -/
+partial def buildRebuildToFoldIff : List Expr → MetaM Expr
+  | [] => throwError "buildRebuildToFoldIff: empty atoms"
+  | [a] => mkAppOptM ``Svm.SBPF.sepConj_emp_right_symm #[some a]
+  | a :: rest => do
+    let restIff ← buildRebuildToFoldIff rest
+    mkAppM ``Svm.SBPF.sepConj_iff_congr_right #[a, restIff]
+
+/-- Build the Lean `List Assertion` literal `[a₀, a₁, …, aₙ₋₁]` from
+    a Lean `List Expr` of atoms. Each atom must be of type `Assertion`. -/
+def mkAtomListLit (atoms : List Expr) : MetaM Expr := do
+  let assertionType ← mkConstWithFreshMVarLevels ``Svm.SBPF.Assertion
+  let nilExpr ← mkAppOptM ``List.nil #[some assertionType]
+  let mut acc := nilExpr
+  for a in atoms.reverse do
+    acc ← mkAppOptM ``List.cons #[some assertionType, some a, some acc]
+  return acc
+
+/-- Build the Lean `List Nat` literal `[k₀, k₁, …, kₘ₋₁]`. -/
+def mkNatListLit (ns : List Nat) : MetaM Expr := do
+  let natType : Expr := mkConst ``Nat
+  let nilExpr ← mkAppOptM ``List.nil #[some natType]
+  let mut acc := nilExpr
+  for k in ns.reverse do
+    let kLit := mkNatLit k
+    acc ← mkAppOptM ``List.cons #[some natType, some kLit, some acc]
+  return acc
+
 /-- Build the full pointwise iff `∀ h, (src folded) h ↔ (final folded) h`
     where `final = tgt ++ frame` is `src` permuted to put `tgt` first.
     Returns `none` if `tgt`'s atoms aren't a sub-multiset of `src`'s.
     On success returns `(maybeIff, frame, didPermute)` where
-    `maybeIff = none` iff the permutation was the identity (no swaps,
-    `tgt` was already a literal prefix), in which case `frame = src.drop
-    tgt.length` and no `weaken` is needed at the call site. -/
+    `maybeIff = none` iff the permutation was the identity.
+
+    The iff is composed left-to-right via `sepConj_iff_trans_pw` over
+    `buildAdjacentSwapIff` outputs (one per bubble-sort swap). This
+    produces an O(N²) term in worst case, but each swap iff stays
+    bounded (no `applySwaps` reduction by Lean's kernel — which the
+    list-based alternative was incurring at ~100× cost). -/
 def buildPermuteIff (src tgt : List Expr) :
     MetaM (Option (Option Expr × List Expr × Bool)) := do
   match ← bubbleSortToPrefix src tgt with
@@ -368,7 +465,7 @@ def tryStripPrefix : List Expr → List Expr → MetaM (Option (List Expr))
   | sAtoms, [] => return some sAtoms
   | [], _ :: _ => return none
   | s :: sRest, t :: tRest => do
-    if ← isDefEq s t then tryStripPrefix sRest tRest else return none
+    if ← atomEq s t then tryStripPrefix sRest tRest else return none
 
 /-- Try to strip `targetAtoms` as a suffix of `stateAtoms`. Returns the
     remaining prefix on success. -/
@@ -381,7 +478,7 @@ def tryStripSuffix (stateAtoms targetAtoms : List Expr) :
   let rec go : List Expr → List Expr → MetaM Bool
     | [], [] => return true
     | s :: sRest, t :: tRest => do
-      if ← isDefEq s t then go sRest tRest else return false
+      if ← atomEq s t then go sRest tRest else return false
     | _, _ => return false
   if ← go suffixPart targetAtoms then return some prefixPart
   else return none
@@ -432,65 +529,146 @@ def buildFramedStep (info : StepInfo) (fr : FrameResult)
   match fr with
   | .noFrame => return (h, info.post, isMem)
   | .right F =>
-    let pcfreeType ← mkAppM ``Svm.SBPF.Assertion.pcFree #[F]
+    let pcfreeType ← mkAppOptM ``Svm.SBPF.Assertion.pcFree #[some F]
     let hF ← mkFreshExprMVar pcfreeType
     pcfreeGoals.modify (hF.mvarId! :: ·)
-    let lemmaName := if isMem
-      then ``Svm.SBPF.cuTripleWithinMem_frame_right
-      else ``Svm.SBPF.cuTripleWithin_frame_right
-    let framed ← mkAppM lemmaName #[F, hF, h]
-    let newPost ← mkAppM ``Svm.SBPF.sepConj #[info.post, F]
+    -- Extract N, pc1, pc2, cr, P, Q (and rr for Mem) from h's type to
+    -- skip mkAppM's implicit-arg inference work.
+    let hType ← inferType h
+    let hArgs := (← instantiateMVars hType).consumeMData.getAppArgs
+    let N := hArgs[0]!; let pc1 := hArgs[1]!; let pc2 := hArgs[2]!
+    let cr := hArgs[3]!; let P := hArgs[4]!; let Q := hArgs[5]!
+    let framed ← if isMem then
+        let rr := hArgs[6]!
+        mkAppOptM ``Svm.SBPF.cuTripleWithinMem_frame_right
+          #[some F, some hF, some N, some pc1, some pc2, some cr,
+            some P, some Q, some rr, some h]
+      else
+        mkAppOptM ``Svm.SBPF.cuTripleWithin_frame_right
+          #[some F, some hF, some N, some pc1, some pc2, some cr,
+            some P, some Q, some h]
+    let newPost ← mkAppOptM ``Svm.SBPF.sepConj #[some info.post, some F]
     return (framed, newPost, isMem)
   | .left F =>
-    let pcfreeType ← mkAppM ``Svm.SBPF.Assertion.pcFree #[F]
+    let pcfreeType ← mkAppOptM ``Svm.SBPF.Assertion.pcFree #[some F]
     let hF ← mkFreshExprMVar pcfreeType
     pcfreeGoals.modify (hF.mvarId! :: ·)
-    let lemmaName := if isMem
-      then ``Svm.SBPF.cuTripleWithinMem_frame_left
-      else ``Svm.SBPF.cuTripleWithin_frame_left
-    let framed ← mkAppM lemmaName #[F, hF, h]
-    let newPost ← mkAppM ``Svm.SBPF.sepConj #[F, info.post]
+    let hType ← inferType h
+    let hArgs := (← instantiateMVars hType).consumeMData.getAppArgs
+    let N := hArgs[0]!; let pc1 := hArgs[1]!; let pc2 := hArgs[2]!
+    let cr := hArgs[3]!; let P := hArgs[4]!; let Q := hArgs[5]!
+    let framed ← if isMem then
+        let rr := hArgs[6]!
+        mkAppOptM ``Svm.SBPF.cuTripleWithinMem_frame_left
+          #[some F, some hF, some N, some pc1, some pc2, some cr,
+            some P, some Q, some rr, some h]
+      else
+        mkAppOptM ``Svm.SBPF.cuTripleWithin_frame_left
+          #[some F, some hF, some N, some pc1, some pc2, some cr,
+            some P, some Q, some h]
+    let newPost ← mkAppOptM ``Svm.SBPF.sepConj #[some F, some info.post]
     return (framed, newPost, isMem)
   | .reshape .. =>
     throwError "sl_block_iter.buildFramedStep: .reshape should be lowered to .right / .noFrame before this call"
 
 /-- Apply `cuTripleWithin{,Mem}_reshape_post` to chain so its post becomes
     `newPost`. Uses the pointwise iff `iff_post : ∀ h, chainPost h ↔
-    newPost h`. -/
+    newPost h`. Extracts N/pc1/pc2/cr/P/Q from `chain`'s type
+    explicitly so `mkAppOptM` doesn't have to infer them. -/
 def reshapeChainPost (chain : Expr) (chainIsMem : Bool) (iff_post : Expr) :
     MetaM Expr := do
-  let lemmaName := if chainIsMem
-    then ``Svm.SBPF.cuTripleWithinMem_reshape_post
-    else ``Svm.SBPF.cuTripleWithin_reshape_post
-  mkAppM lemmaName #[iff_post, chain]
+  let chainType ← inferType chain
+  let cArgs := (← instantiateMVars chainType).consumeMData.getAppArgs
+  let N := cArgs[0]!; let pc1 := cArgs[1]!; let pc2 := cArgs[2]!
+  let cr := cArgs[3]!; let P := cArgs[4]!; let Q := cArgs[5]!
+  if chainIsMem then
+    let rr := cArgs[6]!
+    mkAppOptM ``Svm.SBPF.cuTripleWithinMem_reshape_post
+      #[some N, some pc1, some pc2, some cr, some P, some Q, none, some rr,
+        some iff_post, some chain]
+  else
+    mkAppOptM ``Svm.SBPF.cuTripleWithin_reshape_post
+      #[some N, some pc1, some pc2, some cr, some P, some Q, none,
+        some iff_post, some chain]
 
 /-- Apply `cuTripleWithin{,Mem}_reshape_pre` to chain so its pre becomes
     `newPre`. Uses the pointwise iff `iff_pre : ∀ h, newPre h ↔ chainPre h`. -/
 def reshapeChainPre (chain : Expr) (chainIsMem : Bool) (iff_pre : Expr) :
     MetaM Expr := do
-  let lemmaName := if chainIsMem
-    then ``Svm.SBPF.cuTripleWithinMem_reshape_pre
-    else ``Svm.SBPF.cuTripleWithin_reshape_pre
-  mkAppM lemmaName #[iff_pre, chain]
+  let chainType ← inferType chain
+  let cArgs := (← instantiateMVars chainType).consumeMData.getAppArgs
+  let N := cArgs[0]!; let pc1 := cArgs[1]!; let pc2 := cArgs[2]!
+  let cr := cArgs[3]!; let P := cArgs[4]!; let Q := cArgs[5]!
+  if chainIsMem then
+    let rr := cArgs[6]!
+    mkAppOptM ``Svm.SBPF.cuTripleWithinMem_reshape_pre
+      #[some N, some pc1, some pc2, some cr, some P, none, some Q, some rr,
+        some iff_pre, some chain]
+  else
+    mkAppOptM ``Svm.SBPF.cuTripleWithin_reshape_pre
+      #[some N, some pc1, some pc2, some cr, some P, none, some Q,
+        some iff_pre, some chain]
 
 /-- Compose two consecutive (already framed) triples. Picks the lemma
     variant that preserves the memory side's `rr` (no trivial-True
-    factor in the chain's rr). -/
+    factor in the chain's rr).
+
+    Uses `mkAppOptM` with all implicit args (N, pc, cr, P, Q, R, rr)
+    extracted explicitly from `h1`/`h2`'s types, instead of letting
+    `mkAppM` infer them. Inference walks the chain's `inferType`
+    repeatedly — for a chain that grows in depth each iteration, this
+    is O(depth × iter) wasted work and was the bottleneck in the
+    stack-macro composition. Explicit extraction reads off the args
+    in one pass and skips inference entirely.
+
+    Layout: `cuTripleWithin N pc1 pc2 cr P Q` →
+      args[0..5] = N, pc1, pc2, cr, P, Q.
+    `cuTripleWithinMem N pc1 pc2 cr P Q rr` →
+      args[0..6] = N, pc1, pc2, cr, P, Q, rr. -/
 def composeSteps (h1 h2 : Expr) (isMem1 isMem2 : Bool)
     (disjGoals : IO.Ref (List MVarId)) : MetaM (Expr × Bool) := do
-  let cr1 ← getCr (← inferType h1)
-  let cr2 ← getCr (← inferType h2)
-  let disjType ← mkAppM ``Svm.SBPF.CodeReq.Disjoint #[cr1, cr2]
+  let h1Type ← inferType h1
+  let h2Type ← inferType h2
+  let h1Args := (← instantiateMVars h1Type).consumeMData.getAppArgs
+  let h2Args := (← instantiateMVars h2Type).consumeMData.getAppArgs
+  let N1 := h1Args[0]!
+  let pc1 := h1Args[1]!
+  let pc2 := h1Args[2]!
+  let cr1 := h1Args[3]!
+  let P  := h1Args[4]!
+  let Q  := h1Args[5]!
+  let N2 := h2Args[0]!
+  let pc3 := h2Args[2]!
+  let cr2 := h2Args[3]!
+  let R  := h2Args[5]!
+  let disjType ← mkAppOptM ``Svm.SBPF.CodeReq.Disjoint #[some cr1, some cr2]
   let hd ← mkFreshExprMVar disjType
   disjGoals.modify (hd.mvarId! :: ·)
-  let lemmaName :=
-    match isMem1, isMem2 with
-    | false, false => ``Svm.SBPF.cuTripleWithin_seq
-    | true,  false => ``Svm.SBPF.cuTripleWithinMem_seq_pure_right
-    | false, true  => ``Svm.SBPF.cuTripleWithinMem_seq_pure_left
-    | true,  true  => ``Svm.SBPF.cuTripleWithinMem_seq
-  let chained ← mkAppM lemmaName #[hd, h1, h2]
-  return (chained, isMem1 || isMem2)
+  match isMem1, isMem2 with
+  | false, false =>
+    let chained ← mkAppOptM ``Svm.SBPF.cuTripleWithin_seq
+      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
+        some hd, some P, some Q, some R, some h1, some h2]
+    return (chained, false)
+  | true, false =>
+    let rr := h1Args[6]!
+    let chained ← mkAppOptM ``Svm.SBPF.cuTripleWithinMem_seq_pure_right
+      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
+        some hd, some P, some Q, some R, some rr, some h1, some h2]
+    return (chained, true)
+  | false, true =>
+    let rr := h2Args[6]!
+    let chained ← mkAppOptM ``Svm.SBPF.cuTripleWithinMem_seq_pure_left
+      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
+        some hd, some P, some Q, some R, some rr, some h1, some h2]
+    return (chained, true)
+  | true, true =>
+    let rr1 := h1Args[6]!
+    let rr2 := h2Args[6]!
+    let chained ← mkAppOptM ``Svm.SBPF.cuTripleWithinMem_seq
+      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
+        some hd, some P, some Q, some R, some rr1, some rr2, some h1, some h2]
+    return (chained, true)
 
 /-- Run `tac` on each subgoal mvar in turn; throw if any fails. -/
 def dischargeGoals (mvars : List MVarId) (tac : TSyntax `tactic)
