@@ -878,18 +878,24 @@ Addresses use the natural chain-produced form
 `wrapAdd r10V (toU64 (-80))` etc. — sl_block_iter's unification
 matches stxdw's `effectiveAddr` output with the syscall's `r1V`. -/
 
-/-- Session 2B current state: spec type-checks; proof body is a
-    `sorry`. The `sl_block_iter` composition of 11 instructions ×
-    12 SL atoms exhausts Lean's tactic recursion depth even at
-    `maxRecDepth = 16000`. Path forward (Session 2C): split the
-    proof into halves via `cuTripleWithinMem_seq` — each half (6 + 5
-    instrs) has tractable atom-frame size. The spec demonstrates the
-    realistic Solana stack-VmSlice shape. -/
+/-- Track A path 1 (2026-05-17): closes Session 2B's sorry by
+    parameterizing the descriptor + output addresses as abstract
+    `descAddr`/`outAddr : Nat` instead of inlining
+    `wrapAdd r10V (toU64 (-80))` / `(-64)` everywhere. Caller supplies
+    `hDesc`/`hOut` equalities; inside the proof we rewrite the
+    per-instruction `have`s to use the abstract names before
+    composing. This keeps `sl_block_iter`'s atomEq comparisons at
+    Nat-variable level instead of cascading kernel reductions of the
+    `wrapAdd r10V (toU64 _)` literals — the precise cost that hit
+    `maxRecDepth = 64000` in Session 2B. -/
 theorem pda_n1_stack_macro_spec
     (vR0 vR1 vR2 vR3 vR4 vR5 r10V : Nat)
     (seed_imm pid_imm : Int)
     (vSlotPtr_old vSlotLen_old : Nat)
     (seedBytes pidBytes outOldBytes : ByteArray)
+    (descAddr outAddr : Nat)
+    (hDesc : descAddr = wrapAdd r10V (toU64 (-80)))
+    (hOut : outAddr = wrapAdd r10V (toU64 (-64)))
     (hpid : pidBytes.size = 32)
     (hslen_lt : seedBytes.size < 2 ^ 64) :
     cuTripleWithinMem 11 0 11
@@ -907,46 +913,122 @@ theorem pda_n1_stack_macro_spec
       ((.r0 ↦ᵣ vR0) ** (.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2) **
         (.r3 ↦ᵣ vR3) ** (.r4 ↦ᵣ vR4) ** (.r5 ↦ᵣ vR5) **
         (.r10 ↦ᵣ r10V) **
-        (wrapAdd r10V (toU64 (-80)) ↦U64 vSlotPtr_old) **
-        (wrapAdd r10V (toU64 (-80)) + 8 ↦U64 vSlotLen_old) **
-        (wrapAdd r10V (toU64 (-64)) ↦Bytes32 outOldBytes) **
+        (descAddr ↦U64 vSlotPtr_old) **
+        (descAddr + 8 ↦U64 vSlotLen_old) **
+        (outAddr ↦Bytes32 outOldBytes) **
         (toU64 seed_imm ↦Bytes seedBytes) **
         (toU64 pid_imm ↦Bytes32 pidBytes))
       ((.r0 ↦ᵣ (match Pda.createProgramAddress [seedBytes] pidBytes with
                 | some _ => 0 | none => 1)) **
-        (.r1 ↦ᵣ wrapAdd r10V (toU64 (-80))) ** (.r2 ↦ᵣ 1) **
+        (.r1 ↦ᵣ descAddr) ** (.r2 ↦ᵣ 1) **
         (.r3 ↦ᵣ toU64 pid_imm) **
-        (.r4 ↦ᵣ wrapAdd r10V (toU64 (-64))) **
+        (.r4 ↦ᵣ outAddr) **
         (.r5 ↦ᵣ seedBytes.size) **
         (.r10 ↦ᵣ r10V) **
-        (wrapAdd r10V (toU64 (-80)) ↦U64 toU64 seed_imm) **
-        (wrapAdd r10V (toU64 (-80)) + 8 ↦U64 seedBytes.size) **
-        (wrapAdd r10V (toU64 (-64)) ↦Bytes32
+        (descAddr ↦U64 toU64 seed_imm) **
+        (descAddr + 8 ↦U64 seedBytes.size) **
+        (outAddr ↦Bytes32
             (match Pda.createProgramAddress [seedBytes] pidBytes with
               | some bs => bs | none => outOldBytes)) **
         (toU64 seed_imm ↦Bytes seedBytes) **
         (toU64 pid_imm ↦Bytes32 pidBytes))
       (fun rt =>
-        rt.containsWritable (Memory.effectiveAddr (wrapAdd r10V (toU64 (-80))) 0) 8 = true ∧
-        rt.containsWritable (Memory.effectiveAddr (wrapAdd r10V (toU64 (-80))) 8) 8 = true) := by
+        rt.containsWritable (Memory.effectiveAddr descAddr 0) 8 = true ∧
+        rt.containsWritable (Memory.effectiveAddr descAddr 8) 8 = true) := by
+  have hsz_eq : toU64 (seedBytes.size : Int) = seedBytes.size := by
+    unfold toU64
+    have hnn : (0 : Int) ≤ (seedBytes.size : Int) := by exact_mod_cast Nat.zero_le _
+    have hlt : (seedBytes.size : Int) < (2 ^ 64 : Int) := by exact_mod_cast hslen_lt
+    rw [Int.emod_eq_of_lt hnn hlt]
+    omega
+  have hEff0 : Memory.effectiveAddr descAddr 0 = descAddr := by
+    unfold Memory.effectiveAddr
+    show Int.toNat ((descAddr : Int) + 0) = descAddr
+    omega
+  have hEff8 : Memory.effectiveAddr descAddr 8 = descAddr + 8 := by
+    unfold Memory.effectiveAddr
+    show Int.toNat ((descAddr : Int) + 8) = descAddr + 8
+    omega
   have h0 := mov64_imm_spec .r2 1 vR2 0 (by decide)
   have h1 := mov64_reg_spec .r1 .r10 vR1 r10V 1 (by decide)
   have h2 := add64_imm_spec .r1 (-80) r10V 2 (by decide)
+  rw [← hDesc] at h2
   have h3 := lddw_spec .r5 seed_imm vR5 3 (by decide)
-  have h4 := stxdw_spec .r1 .r5 0
-              (wrapAdd r10V (toU64 (-80))) (toU64 seed_imm) vSlotPtr_old 4
+  have h4 := stxdw_spec .r1 .r5 0 descAddr (toU64 seed_imm) vSlotPtr_old 4
+  rw [hEff0] at h4
   have h5 := lddw_spec .r5 (seedBytes.size : Int) (toU64 seed_imm) 5 (by decide)
-  have h6 := stxdw_spec .r1 .r5 8
-              (wrapAdd r10V (toU64 (-80))) (toU64 (seedBytes.size : Int)) vSlotLen_old 6
+  rw [hsz_eq] at h5
+  have h6 := stxdw_spec .r1 .r5 8 descAddr (toU64 (seedBytes.size : Int)) vSlotLen_old 6
+  rw [hEff8, hsz_eq] at h6
   have h7 := lddw_spec .r3 pid_imm vR3 7 (by decide)
   have h8 := mov64_reg_spec .r4 .r10 vR4 r10V 8 (by decide)
   have h9 := add64_imm_spec .r4 (-64) r10V 9 (by decide)
+  rw [← hOut] at h9
   have htoU64_seed_lt : toU64 seed_imm < 2 ^ 64 := by
     unfold toU64
     exact (Int.toNat_lt' (by decide)).mpr (Int.emod_lt_of_pos _ (by decide))
   have h10 := call_create_program_address_n1_spec vR0
-              (wrapAdd r10V (toU64 (-80))) (toU64 pid_imm)
-              (wrapAdd r10V (toU64 (-64))) (toU64 seed_imm)
+              descAddr (toU64 pid_imm) outAddr (toU64 seed_imm)
               seedBytes pidBytes outOldBytes 10 hpid htoU64_seed_lt hslen_lt
-  sorry
+  sl_block_iter [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10]
+
+/-! ## PDA n=1 stack-VmSlice macro — executeFn bridge -/
+
+theorem pda_n1_stack_macro_executeFn
+    (vR0 vR1 vR2 vR3 vR4 vR5 r10V : Nat)
+    (seed_imm pid_imm : Int)
+    (vSlotPtr_old vSlotLen_old : Nat)
+    (seedBytes pidBytes outOldBytes : ByteArray)
+    (descAddr outAddr : Nat)
+    (hDesc : descAddr = wrapAdd r10V (toU64 (-80)))
+    (hOut : outAddr = wrapAdd r10V (toU64 (-64)))
+    (hpid : pidBytes.size = 32)
+    (hslen_lt : seedBytes.size < 2 ^ 64)
+    {fetch : Nat → Option Insn}
+    (hcr : (((((((((((CodeReq.singleton 0 (.mov64 .r2 (.imm 1))).union
+                  (CodeReq.singleton 1 (.mov64 .r1 (.reg .r10)))).union
+                  (CodeReq.singleton 2 (.add64 .r1 (.imm (-80))))).union
+                  (CodeReq.singleton 3 (.lddw .r5 seed_imm))).union
+                  (CodeReq.singleton 4 (.stx .dword .r1 0 .r5))).union
+                  (CodeReq.singleton 5 (.lddw .r5 (seedBytes.size : Int)))).union
+                  (CodeReq.singleton 6 (.stx .dword .r1 8 .r5))).union
+                  (CodeReq.singleton 7 (.lddw .r3 pid_imm))).union
+                  (CodeReq.singleton 8 (.mov64 .r4 (.reg .r10)))).union
+                  (CodeReq.singleton 9 (.add64 .r4 (.imm (-64))))).union
+                  (CodeReq.singleton 10 (.call .sol_create_program_address))
+            ).SatisfiedBy fetch)
+    {s : State}
+    (hP : ((.r0 ↦ᵣ vR0) ** (.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ vR2) **
+            (.r3 ↦ᵣ vR3) ** (.r4 ↦ᵣ vR4) ** (.r5 ↦ᵣ vR5) **
+            (.r10 ↦ᵣ r10V) **
+            (descAddr ↦U64 vSlotPtr_old) **
+            (descAddr + 8 ↦U64 vSlotLen_old) **
+            (outAddr ↦Bytes32 outOldBytes) **
+            (toU64 seed_imm ↦Bytes seedBytes) **
+            (toU64 pid_imm ↦Bytes32 pidBytes)).holdsFor s)
+    (hpc : s.pc = 0) (hex : s.exitCode = none)
+    (h_reg :
+      s.regions.containsWritable (Memory.effectiveAddr descAddr 0) 8 = true ∧
+      s.regions.containsWritable (Memory.effectiveAddr descAddr 8) 8 = true) :
+    ∃ k, k ≤ 11 ∧
+      (executeFn fetch s k).pc = 11 ∧
+      (executeFn fetch s k).exitCode = none ∧
+      ((.r0 ↦ᵣ (match Pda.createProgramAddress [seedBytes] pidBytes with
+                | some _ => 0 | none => 1)) **
+        (.r1 ↦ᵣ descAddr) ** (.r2 ↦ᵣ 1) **
+        (.r3 ↦ᵣ toU64 pid_imm) **
+        (.r4 ↦ᵣ outAddr) **
+        (.r5 ↦ᵣ seedBytes.size) **
+        (.r10 ↦ᵣ r10V) **
+        (descAddr ↦U64 toU64 seed_imm) **
+        (descAddr + 8 ↦U64 seedBytes.size) **
+        (outAddr ↦Bytes32
+            (match Pda.createProgramAddress [seedBytes] pidBytes with
+              | some bs => bs | none => outOldBytes)) **
+        (toU64 seed_imm ↦Bytes seedBytes) **
+        (toU64 pid_imm ↦Bytes32 pidBytes)).holdsFor
+        (executeFn fetch s k) :=
+  (pda_n1_stack_macro_spec vR0 vR1 vR2 vR3 vR4 vR5 r10V seed_imm pid_imm
+    vSlotPtr_old vSlotLen_old seedBytes pidBytes outOldBytes descAddr outAddr
+    hDesc hOut hpid hslen_lt).toExec hcr hP hpc hex h_reg
 
