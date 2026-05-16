@@ -704,6 +704,9 @@ def initialState (cfg : RunConfig) : State :=
 @[simp] theorem initialState_exitCode (cfg : RunConfig) :
     (initialState cfg).exitCode = none := rfl
 
+@[simp] theorem initialState_callStack (cfg : RunConfig) :
+    (initialState cfg).callStack = [] := rfl
+
 /-- Decode `bytes` and run for up to `cfg.cuBudget` compute units. Returns
     the final machine state, or `none` if decoding fails.
 
