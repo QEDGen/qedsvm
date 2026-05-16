@@ -642,7 +642,12 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                     pc         := entryPc
                     exitCode   := none
                     log        := s.log
-                    returnData := ByteArray.empty }
+                    returnData := ByteArray.empty
+                    -- Callee inherits the caller's remaining fuel as
+                    -- its budget so `sol_log_compute_units_` inside
+                    -- the callee reports a meaningful "remaining"
+                    -- (matches agave's shared compute meter).
+                    cuBudget   := fuel' }
                 let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
                   (fetchFromArray calleeInsns) subS fuel'
                 -- Phase 3-N write-back. Loop over slots. For each
@@ -762,7 +767,8 @@ def run (bytes : ByteArray) (cfg : RunConfig := {}) : Option State := do
       mem     := mem
       regions := runtimeRegions cfg.input.size
       pc      := 0
-      exitCode := none }
+      exitCode := none
+      cuBudget := cfg.cuBudget }
   return executeFnCpi cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget
 
 /-- Convenience: return only the exit code if the program terminated. -/
@@ -811,7 +817,8 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
             mem     := mem
             regions := elfRegions elfBytes header textSec cfg.input.size
             pc      := 0
-            exitCode := none }
+            exitCode := none
+            cuBudget := cfg.cuBudget }
         some (executeFnCpi cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 /-- Convenience: ELF run returning only the exit code. -/
@@ -883,7 +890,8 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
             mem     := mem
             regions := elfRegions elfBytes header textSec cfg.input.size
             pc      := entryPc
-            exitCode := none }
+            exitCode := none
+            cuBudget := cfg.cuBudget }
         some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 end Runner

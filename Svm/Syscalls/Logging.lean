@@ -12,15 +12,16 @@
 --    {:#x}, {:#x}, {:#x}", a, b, c, d, e)` exactly modulo the leading
 --    "Program log: " prefix that agave's `stable_log::program_log`
 --    would add (we store raw message bodies, no prefix).
--- - `sol_log_compute_units_`: emits `Program consumption: <cuConsumed>
---    CU consumed`. Agave's wording is `<remaining> units remaining` —
---    we don't track `cuBudget` in `State`, so we report consumed
---    instead. Observable, just inverted.
+-- - `sol_log_compute_units_`: emits `Program consumption: <remaining>
+--    units remaining` where `remaining = State.cuBudget - cuConsumed`
+--    (saturating to 0). Matches agave's `stable_log::program_compute_units`
+--    body byte-for-byte modulo the "Program consumption: " prefix
+--    that `stable_log` would prepend.
 -- - `sol_log_data`: reads the array of `SliceDesc { ptr, len }`
---    descriptors at r1 (count r2) and emits each slice hex-encoded,
---    joined by single-space. Agave emits base64; we emit hex because
---    Lean core has no base64 and dragging one in for a debug-only
---    syscall is over-investment. Observable and deterministic.
+--    descriptors at r1 (count r2) and emits each slice base64-encoded
+--    (RFC 4648, with `=` padding), joined by single-space. Matches
+--    agave's `stable_log::program_data` body byte-for-byte modulo the
+--    "Program data: " prefix that `stable_log` would prepend.
 
 import Svm.SBPF.Machine
 
@@ -73,6 +74,48 @@ def bytesToHex (bs : ByteArray) : String :=
 private def natToDec (n : Nat) : String :=
   String.ofList (Nat.toDigits 10 n)
 
+/-- Standard base64 alphabet (RFC 4648): `A-Z` `a-z` `0-9` `+` `/`. -/
+private def base64Char (n : Nat) : Char :=
+  if n < 26       then Char.ofNat (n + 0x41)            -- 'A'..'Z'
+  else if n < 52  then Char.ofNat (n - 26 + 0x61)       -- 'a'..'z'
+  else if n < 62  then Char.ofNat (n - 52 + 0x30)       -- '0'..'9'
+  else if n = 62  then '+'
+  else                 '/'
+
+/-- Standard base64 encoding with `=` padding (RFC 4648). Three input
+    bytes → four output chars; trailing 1 or 2 bytes are emitted with
+    one or two `=` pads respectively. Matches agave's
+    `bs58::engine::general_purpose::STANDARD` default that
+    `sol_log_data` uses (debug-helper formatter, not a primitive). -/
+partial def base64Encode (bs : ByteArray) : String :=
+  let n := bs.size
+  let rec go (i : Nat) (acc : String) : String :=
+    if i + 3 ≤ n then
+      let b0 := (bs.get! i).toNat
+      let b1 := (bs.get! (i + 1)).toNat
+      let b2 := (bs.get! (i + 2)).toNat
+      let acc := acc.push (base64Char (b0 / 4))
+                    |>.push (base64Char ((b0 % 4) * 16 + b1 / 16))
+                    |>.push (base64Char ((b1 % 16) * 4 + b2 / 64))
+                    |>.push (base64Char (b2 % 64))
+      go (i + 3) acc
+    else if i + 2 = n then
+      let b0 := (bs.get! i).toNat
+      let b1 := (bs.get! (i + 1)).toNat
+      acc.push (base64Char (b0 / 4))
+        |>.push (base64Char ((b0 % 4) * 16 + b1 / 16))
+        |>.push (base64Char ((b1 % 16) * 4))
+        |>.push '='
+    else if i + 1 = n then
+      let b0 := (bs.get! i).toNat
+      acc.push (base64Char (b0 / 4))
+        |>.push (base64Char ((b0 % 4) * 16))
+        |>.push '='
+        |>.push '='
+    else
+      acc
+  go 0 ""
+
 /-! ## Bodies -/
 
 /-- `sol_log_(ptr, len)`: log the byte slice verbatim, set r0 = 0. -/
@@ -100,23 +143,24 @@ private def natToDec (n : Nat) : String :=
   { s with regs := s.regs.set .r0 0
            log  := s.log.push msg.toUTF8 }
 
-/-- `sol_log_compute_units_`: emit "Program consumption: <consumed>
-    CU consumed". Agave reports `<remaining> units remaining`; we
-    can't reconstruct `remaining` without `cuBudget` in `State`, so
-    we report `cuConsumed` instead. Observable, format diverges. -/
+/-- `sol_log_compute_units_`: emit "Program consumption: <remaining>
+    units remaining" with `remaining = State.cuBudget - cuConsumed`
+    (saturating to 0 if `cuConsumed` already exceeds the budget — Nat
+    subtraction). Matches agave's `stable_log::program_compute_units`
+    body. -/
 @[simp] def execLogComputeUnits (s : State) : State :=
-  let msg := "Program consumption: " ++ natToDec s.cuConsumed ++ " CU consumed"
+  let remaining := s.cuBudget - s.cuConsumed
+  let msg := "Program consumption: " ++ natToDec remaining ++ " units remaining"
   { s with regs := s.regs.set .r0 0
            log  := s.log.push msg.toUTF8 }
 
 /-- `sol_log_data(fields_ptr, count)`: read the `count`-long array of
     `SliceDesc { u64 ptr, u64 len }` descriptors at r1, dereference
-    each, and emit hex-encoded slices joined by single space.
+    each, and emit base64-encoded slices joined by single space.
 
-    Format diverges from agave's `Program data: <base64> <base64> …`:
-    we hex-encode (not base64) and emit raw bytes without the
-    "Program data: " prefix that `stable_log::program_data` would
-    add. Observable for differential debugging; not strict parity. -/
+    Matches agave's `stable_log::program_data` body byte-for-byte
+    modulo the "Program data: " prefix that `stable_log` would
+    prepend (we store raw message bodies, no prefix). -/
 @[simp] def execLogData (s : State) : State :=
   let descsAddr := s.regs.r1
   let count     := s.regs.r2
@@ -128,8 +172,8 @@ private def natToDec (n : Nat) : String :=
       acc.push (readBytes s.mem ptr len)) #[]
   let joined : String :=
     fields.foldl (fun acc bs =>
-      if acc.isEmpty then bytesToHex bs
-      else acc ++ " " ++ bytesToHex bs) ""
+      if acc.isEmpty then base64Encode bs
+      else acc ++ " " ++ base64Encode bs) ""
   { s with regs := s.regs.set .r0 0
            log  := s.log.push joined.toUTF8 }
 

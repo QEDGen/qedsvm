@@ -121,6 +121,13 @@ structure State where
       Top-level CU reporting in `Svm/Ffi.lean` is
       `(cuBudget - fuelRemaining) + s.cuConsumed`. -/
   cuConsumed : Nat := 0
+  /-- Total transaction CU budget, threaded in from `Runner.RunConfig`
+      at `initState` time. Used by `sol_log_compute_units_` to report
+      `remaining = cuBudget - cuConsumed` (saturating to 0) — the
+      agave-parity wording. `0` means "unset / uncapped" — log syscalls
+      will still emit a `0 units remaining` message in that case,
+      matching agave's behavior when the budget is exhausted. -/
+  cuBudget : Nat := 0
   /-- Bump-allocator pointer for `sol_alloc_free_`. Starts at
       `MM_HEAP_START` (`0x300000000`) and grows upward as allocations
       happen. Tier-2 #6 — the BPF program-local heap. Reset to
