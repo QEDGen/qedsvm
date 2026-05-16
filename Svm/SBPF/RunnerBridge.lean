@@ -139,6 +139,22 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
         rw [hlhs, hrhs]
         exact ih (step insn s)
 
+/-- Lift a "for all members of an Array Insn" property to a "for all
+    fetch lookups" property. Used to discharge the fetch-form
+    hypotheses in `executeFnCpi_eq_executeFn_of_no_cpi`,
+    `executeFn_callStack_empty`, etc. from a simpler
+    `∀ i ∈ insns, ...` premise. -/
+theorem fetchFromArray_property_of_mem
+    {insns : Array Insn} {P : Insn → Bool}
+    (h : ∀ i, i ∈ insns → P i = false) :
+    ∀ a i, fetchFromArray insns a = some i → P i = false := by
+  intro a i hfetch
+  unfold fetchFromArray at hfetch
+  by_cases hbnd : a < insns.size
+  · simp [hbnd] at hfetch
+    exact h i (Array.mem_iff_getElem.mpr ⟨a, hbnd, hfetch⟩)
+  · simp [hbnd] at hfetch
+
 /-- Convenience corollary specialized to `fetchFromArray`. The hypothesis
     becomes a property of the concrete instruction array — discharged
     by `decide` once the array is a closed literal. -/
@@ -147,14 +163,9 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi_array
     (s : State) (fuel : Nat)
     (h : ∀ i, i ∈ insns → Insn.isCpiCall i = false) :
     executeFnCpi registry (fetchFromArray insns) s fuel =
-      executeFn (fetchFromArray insns) s fuel := by
-  apply executeFnCpi_eq_executeFn_of_no_cpi
-  intro a i hfetch
-  unfold fetchFromArray at hfetch
-  by_cases hbnd : a < insns.size
-  · simp [hbnd] at hfetch
-    exact h i (Array.mem_iff_getElem.mpr ⟨a, hbnd, hfetch⟩)
-  · simp [hbnd] at hfetch
+      executeFn (fetchFromArray insns) s fuel :=
+  executeFnCpi_eq_executeFn_of_no_cpi registry (fetchFromArray insns) s fuel
+    (fetchFromArray_property_of_mem h)
 
 /-! ## callStack-empty invariant
 
@@ -299,17 +310,9 @@ private theorem run_terminates_after_witness
     Runner.run bs cfg = some (step Insn.exit s_witness) ∧
     (step Insn.exit s_witness).exitCode = some s_witness.regs.r0 := by
   -- callStack stays empty along the trace from initialState (no `.call_local`).
-  have h_safe_ncl : ∀ a i, fetchFromArray insns a = some i →
-                            Insn.isCallLocal i = false := by
-    intro a i hfetch
-    unfold fetchFromArray at hfetch
-    by_cases hbnd : a < insns.size
-    · simp [hbnd] at hfetch
-      exact hnoCallLocal i (Array.mem_iff_getElem.mpr ⟨a, hbnd, hfetch⟩)
-    · simp [hbnd] at hfetch
   have hcs : (executeFn (fetchFromArray insns) (initialState cfg) k).callStack = [] :=
     executeFn_callStack_empty (fetchFromArray insns) (initialState cfg) k
-      (initialState_callStack cfg) h_safe_ncl
+      (initialState_callStack cfg) (fetchFromArray_property_of_mem hnoCallLocal)
   refine ⟨hpc, hex, hQ, ?_, ?_⟩
   · -- Goal: Runner.run bs cfg = some (step Insn.exit s_witness)
     have h_step_exit_halted :

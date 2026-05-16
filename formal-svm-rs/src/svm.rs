@@ -244,7 +244,7 @@ impl Svm {
         // We mirror by inspecting `ix.accounts` *before* serializing
         // (cheaper than catching after exec). Failures surface as
         // ProgramResult::Failure with the post-state sentinel.
-        if let Some(bad) = ix_accounts_writable_sysvar(instruction) {
+        if let Some(_bad) = ix_accounts_writable_sysvar(instruction) {
             return Ok(InstructionResult {
                 program_result: ProgramResult::Failure {
                     exit_code: ERR_INVALID_POSTSTATE,

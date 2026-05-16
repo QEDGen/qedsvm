@@ -405,37 +405,21 @@ theorem byteIncrementSo_run_terminates
   obtain ⟨k, hk, hpc, hex, hQ⟩ :=
     run_reaches_spec_mem byteIncrementSoInsns cfg byteIncrementSo_cr_satisfied
       (byte_increment_macro_spec baseAddr vR2Old oldByte) hP hregions
-  -- callStack invariant.
-  have h_safe_ncl : ∀ a i, fetchFromArray byteIncrementSoInsns a = some i →
-                            Insn.isCallLocal i = false := by
-    intro a i hfetch
-    unfold fetchFromArray at hfetch
-    by_cases hbnd : a < byteIncrementSoInsns.size
-    · simp [hbnd] at hfetch
-      exact byteIncrementSo_noCallLocal i
-        (Array.mem_iff_getElem.mpr ⟨a, hbnd, hfetch⟩)
-    · simp [hbnd] at hfetch
+  -- callStack invariant along the trace.
   have hcs_witness : (executeFn (fetchFromArray byteIncrementSoInsns)
                   (Runner.initialState cfg) k).callStack = [] :=
     executeFn_callStack_empty (fetchFromArray byteIncrementSoInsns)
-      (Runner.initialState cfg) k (Runner.initialState_callStack cfg) h_safe_ncl
-  -- step (mov r0 0) at witness preserves callStack-empty.
-  have hcs_smov : (step (.mov64 .r0 (.imm 0))
-        (executeFn (fetchFromArray byteIncrementSoInsns)
-          (Runner.initialState cfg) k)).callStack = [] :=
-    step_callStack_empty_preserved (.mov64 .r0 (.imm 0))
-      (executeFn (fetchFromArray byteIncrementSoInsns)
-        (Runner.initialState cfg) k)
-      hcs_witness (by decide)
+      (Runner.initialState cfg) k (Runner.initialState_callStack cfg)
+      (fetchFromArray_property_of_mem byteIncrementSo_noCallLocal)
   refine ⟨k, hk, hpc, hQ, ?_, ?_⟩
-  · -- Goal: Runner.run byteIncrementSoText cfg = some (step .exit (step mov (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)))
-    -- Plan:
-    --   executeFn fetch (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) 1                  = step mov (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)           (mov at pc=3)
-    --   executeFn fetch (step mov (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) 1       = step .exit (step mov (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))  (exit at pc=4)
-    --   executeFn fetch (initialState) (k+2)  = step .exit (step mov (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))  (compose)
-    --   executeFn fetch (initialState) m      = step .exit (step mov (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))  for m ≥ k+2 (halted)
-    --   executeFnCpi = executeFn under noCpi  (bridge)
-    --   Runner.run = some (executeFnCpi ... cuBudget)                (unfold)
+  · -- Runner.run byteIncrementSoText cfg = some (step .exit (step mov s_witness))
+    -- Chain:
+    --   executeFn fetch s_witness 1                = step mov s_witness         (mov at pc=3)
+    --   executeFn fetch (step mov s_witness) 1     = step .exit (step mov s_w)  (exit at pc=4)
+    --   executeFn fetch (initialState) (k+2)       = step .exit (step mov s_w)  (compose)
+    --   executeFn fetch (initialState) cfg.cuBudget = step .exit (step mov s_w) (halted)
+    --   executeFnCpi = executeFn                    (bridge via noCpi)
+    --   Runner.run = some (executeFnCpi ... cuBudget) (unfold)
     have h_step_mov : executeFn (fetchFromArray byteIncrementSoInsns) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) 1 =
                      step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) := by
       have hf : (fetchFromArray byteIncrementSoInsns) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).pc =
@@ -444,7 +428,7 @@ theorem byteIncrementSo_run_terminates
       rw [executeFn_step (fetchFromArray byteIncrementSoInsns) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) 0
             (.mov64 .r0 (.imm 0)) hex hf]
       simp [executeFn]
-    -- step (mov r0 0) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) has pc = (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).pc + 1 = 4 and exitCode = (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).exitCode = none.
+    -- step mov increments pc to 4 and preserves exitCode = none.
     have hpc_smov : (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).pc = 4 := by
       simp only [step, hpc]
     have hex_smov : (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).exitCode = none := by
@@ -462,7 +446,7 @@ theorem byteIncrementSo_run_terminates
     have h_exit_halted : (step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).exitCode =
         some ((step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).regs.get Reg.r0) := by
       simp only [step, hcs_witness]
-    -- Compose: executeFn fetch (initialState) (k+2) = step .exit (step mov (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).
+    -- Compose: executeFn fetch (initialState) (k+2) = step .exit (step mov s_witness).
     have h_kp2 : executeFn (fetchFromArray byteIncrementSoInsns)
                   (Runner.initialState cfg) (k + 2) =
                   step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) := by

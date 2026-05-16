@@ -8,7 +8,7 @@
 //! byte is incremented mod 256.
 
 use formal_svm::{ProgramResult, Svm};
-use solana_instruction::{AccountMeta, Instruction};
+use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 
 const BYTE_INCREMENT_SO: &[u8] = include_bytes!("fixtures/byte_increment.so");
@@ -63,5 +63,4 @@ fn byte_increment_text_matches_lean_literal() {
     let text = &BYTE_INCREMENT_SO[TEXT_OFFSET..TEXT_OFFSET + EXPECTED_TEXT.len()];
     assert_eq!(text, &EXPECTED_TEXT[..],
         "byte_increment.so .text bytes drifted from the Lean literal — re-run cargo-build-sbf and update Svm.SBPF.RunnerSpecDemo or revert the toolchain");
-    let _ = AccountMeta::new_readonly(pid(0), false); // suppress unused warning
 }
