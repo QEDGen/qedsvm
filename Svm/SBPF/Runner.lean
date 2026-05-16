@@ -447,15 +447,120 @@ v1 simplifications (tracked in `docs/next-session-plan.md`):
 - PDA signer seeds (`r4` / `r5`) are ignored.
 - The full caller CU budget is passed to the callee (no proportional
   split). Re-entrant CPI is supported transparently by the recursion. -/
+/-- Compute the next state for one of the two CPI-call syscalls
+    (`sol_invoke_signed` / `sol_invoke_signed_c`). Non-recursive — the
+    recursive sub-VM invocation is supplied as the `runCallee` closure
+    by `executeFnCpiWithFuel`. Factored out so the per-instruction match
+    inside `executeFnCpiWithFuel` has compact arms (helps proofs that
+    case-split on the instruction without elaborating this whole body
+    in every Syscall arm). -/
+def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
+    (sc : Syscall) (fuel' : Nat)
+    (runCallee : ByteArray → Option (State × Mem × Nat)) : State :=
+  -- CPI v2: r1 is a *pointer* into caller memory at which
+  -- the Instruction descriptor lives. Two ABIs:
+  --
+  -- - `sol_invoke_signed` (Rust ABI from
+  --   `solana_program::invoke`): r1 → `&Instruction`. With
+  --   default Rust layout the high-alignment fields (Vec)
+  --   come first, so `program_id` sits at offset 48 (after
+  --   accounts:Vec=24B and data:Vec=24B). The 32-byte pubkey
+  --   is inline.
+  -- - `sol_invoke_signed_c` (C ABI): r1 → `SolInstruction`.
+  --   First field is `SolPubkey *program_id` (a u64 pointer
+  --   to the actual pubkey bytes); deref to get the 32B.
+  let pubkeyAddr : Nat := match sc with
+    | .sol_invoke_signed   => s.regs.r1 + 48      -- inline @ +48
+    | .sol_invoke_signed_c =>                     -- pointer @ +0
+      Memory.readU64 s.mem s.regs.r1
+    | _ => s.regs.r1
+  let pid := (List.range 32).foldl
+    (fun acc i => acc + (s.mem (pubkeyAddr + i) % 256) * 256^i) 0
+  let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
+  let parsedAccts : List ParsedAcct :=
+    parseAccountInfos s.mem s.regs.r2 accountCount
+  -- Tier-2 #8 — account aliasing detection.
+  let parsedArr : Array ParsedAcct := parsedAccts.toArray
+  let aliasedWritability : Bool :=
+    (List.range parsedArr.size).any (fun i =>
+      (List.range i).any (fun j =>
+        let pi := parsedArr.getD i (parsedArr.getD 0
+          { key := ByteArray.empty, owner := ByteArray.empty,
+            lamports := 0, dataLen := 0, data := ByteArray.empty,
+            isSigner := false, isWritable := false,
+            executable := false, rentEpoch := 0,
+            ownerPtr := 0, lamportsRefAddr := 0,
+            dataPtr := 0, dataLenRefAddr := 0 })
+        let pj := parsedArr.getD j (parsedArr.getD 0
+          { key := ByteArray.empty, owner := ByteArray.empty,
+            lamports := 0, dataLen := 0, data := ByteArray.empty,
+            isSigner := false, isWritable := false,
+            executable := false, rentEpoch := 0,
+            ownerPtr := 0, lamportsRefAddr := 0,
+            dataPtr := 0, dataLenRefAddr := 0 })
+        pi.key == pj.key && pi.isWritable ≠ pj.isWritable))
+  let ixDataPtr : Nat := Memory.readU64 s.mem (s.regs.r1 + 24)
+  let ixDataLen : Nat := match sc with
+    | .sol_invoke_signed   => Memory.readU64 s.mem (s.regs.r1 + 40)
+    | .sol_invoke_signed_c => Memory.readU64 s.mem (s.regs.r1 + 32)
+    | _ => 0
+  let ixData : ByteArray := readMemBytes s.mem ixDataPtr ixDataLen
+  let nativeAccts : List Native.AcctInput := parsedAccts.map (fun p =>
+    { key := p.key, owner := p.owner, lamports := p.lamports,
+      dataLen := p.dataLen, isSigner := p.isSigner,
+      isWritable := p.isWritable,
+      lamportsRefAddr := p.lamportsRefAddr,
+      ownerPtr := p.ownerPtr, dataPtr := p.dataPtr,
+      dataLenRefAddr := p.dataLenRefAddr })
+  if aliasedWritability then
+    { s with regs := s.regs.set .r0 1
+             pc   := s.pc + 1
+             cuConsumed := s.cuConsumed + Cpi.cu }
+  else
+  match Native.dispatch pid ixData nativeAccts s.mem with
+  | some nr =>
+    { s with regs       := s.regs.set .r0 nr.r0
+             mem        := nr.mem
+             pc         := s.pc + 1
+             cuConsumed := s.cuConsumed + Cpi.cu + nr.cu }
+  | none =>
+  match registry pid with
+  | none =>
+    { s with regs := s.regs.set .r0 1
+             pc := s.pc + 1
+             cuConsumed := s.cuConsumed + Cpi.cu }
+  | some calleeElf =>
+    match runCallee calleeElf with
+    | none =>
+      { s with regs := s.regs.set .r0 1
+               pc := s.pc + 1
+               cuConsumed := s.cuConsumed + Cpi.cu }
+    | some (subFinal, newMem, subFuelRemaining) =>
+      -- Tier-2 #7 — proportional CU split. The caller's
+      -- meter absorbs the callee's spend in two parts:
+      --   * `subFinal.cuConsumed`: callee's syscall extras
+      --     (already bumped into the callee's State during
+      --     its own execution).
+      --   * `fuel' - subFuelRemaining`: the callee's step
+      --     count (each callee step decremented its local
+      --     fuel by one; the diff equals the number of
+      --     callee steps).
+      { s with regs       := s.regs.set .r0 (subFinal.exitCode.getD 1)
+               mem        := newMem
+               pc         := s.pc + 1
+               log        := subFinal.log
+               returnData := subFinal.returnData
+               cuConsumed := s.cuConsumed + Cpi.cu
+                                          + subFinal.cuConsumed
+                                          + (fuel' - subFuelRemaining) }
+
 /-- CU-accounting variant of `executeFnCpi`. Returns the final state
     plus the remaining fuel — `cuConsumed = initial_fuel - returned_fuel`.
 
     Each step (including a CPI invocation) consumes one unit of the
-    caller's fuel. The callee runs under its own copy of the caller's
-    remaining budget and its consumption is *not* deducted from the
-    caller — matching the v1 CPI semantics already documented at
-    `executeFnCpi`. (Proper proportional CU split is a CPI v2
-    concern, tracked alongside `programRegistry`-by-`Pubkey`.)
+    caller's fuel. CPI dispatch is delegated to `cpiCallNextState` for
+    proof-friendliness; this function is responsible only for fuel
+    management, fetch, and the per-instruction match.
 
     The early-exit arms (`some _` already-exited, `ERR_INVALID_PC`
     on decode failure) preserve the remaining fuel at the moment of
@@ -471,270 +576,101 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
       match fetch s.pc with
       | none => ({ s with exitCode := some ERR_INVALID_PC }, fuel')
       | some insn =>
+        -- The runCallee closure captures `s`, `parsedAccts`/`pidBytes`
+        -- (recomputed inside cpiCallNextState — see comment there), and
+        -- the recursive `executeFnCpiWithFuel` invocation at `fuel'`
+        -- (strictly smaller, so termination on `fuel` still holds).
+        let runCallee (pidBytesIn : ByteArray) (parsedAcctsIn : List ParsedAcct)
+            (calleeBytes : ByteArray) : Option (State × Mem × Nat) :=
+          let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader) := do
+            let h ← Elf.parseHeader calleeBytes
+            let textSec ← Elf.findSection calleeBytes h Elf.textName
+            let rawText  := Elf.extractSection calleeBytes textSec
+            let textBytes := Elf.applyRelocations calleeBytes h textSec.addr rawText
+            some (textBytes, h, textSec)
+          do
+            let (textBytes, headerOpt, textSecOpt) :
+                ByteArray × Option Elf.Header × Option Elf.SectionHeader :=
+              match tryElf with
+              | some (tb, h, ts) => (tb, some h, some ts)
+              | none => (calleeBytes, none, none)
+            let calleeInsns ← Decode.decodeProgram textBytes
+            let slots : List AcctSlot := buildAcctSlots parsedAcctsIn
+            let subInput : ByteArray :=
+              buildCpiSubInputN slots pidBytesIn ByteArray.empty
+            let subMem : Mem :=
+              let baseMem := loadInput emptyMem subInput
+              match headerOpt with
+              | none => baseMem
+              | some h =>
+                let m1 := match Elf.findSection calleeBytes h Elf.rodataName with
+                  | some sec =>
+                    loadBytesAt baseMem (Elf.extractSection calleeBytes sec)
+                      (Elf.relocateSecAddr sec.addr)
+                  | none => baseMem
+                match Elf.findSection calleeBytes h Elf.dataRelRoName with
+                | some sec =>
+                  let raw       := Elf.extractSection calleeBytes sec
+                  let relocated := Elf.applyDataRelocations calleeBytes h sec.addr raw
+                  loadBytesAt m1 relocated (Elf.relocateSecAddr sec.addr)
+                | none => m1
+            let entryPc :=
+              match headerOpt, textSecOpt with
+              | some h, some textSec =>
+                let slotMap := Decode.buildSlotMap textBytes
+                let byteOff := if h.entry ≥ textSec.addr
+                               then h.entry - textSec.addr else 0
+                let slot := byteOff / 8
+                if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
+              | _, _ => 0
+            let subRegions : Memory.RegionTable :=
+              match headerOpt, textSecOpt with
+              | some h, some textSec =>
+                elfRegions calleeBytes h textSec subInput.size
+              | _, _ => runtimeRegions subInput.size
+            let subS : State :=
+              { regs       := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+                mem        := subMem
+                regions    := subRegions
+                pc         := entryPc
+                exitCode   := none
+                log        := s.log
+                returnData := ByteArray.empty
+                cuBudget   := fuel' }
+            let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
+              (fetchFromArray calleeInsns) subS fuel'
+            let newCallerMem : Mem := slots.foldl (fun mem slot =>
+              match slot.dupOf? with
+              | some _ => mem
+              | none =>
+                let p := slot.parsed
+                let blockBase := INPUT_START + slot.blockOff
+                let newData := readMemBytes subFinal.mem
+                  (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
+                let m1 := loadBytesAt mem newData p.dataPtr
+                let newLamports := Memory.readU64 subFinal.mem
+                  (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
+                let m2 := Memory.writeU64 m1 p.lamportsRefAddr newLamports
+                let newOwner := readMemBytes subFinal.mem
+                  (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
+                loadBytesAt m2 newOwner p.ownerPtr) s.mem
+            some (subFinal, newCallerMem, subFuelRemaining)
         let s' : State :=
           match insn with
-          | .call sc@.sol_invoke_signed | .call sc@.sol_invoke_signed_c =>
-            -- CPI v2: r1 is a *pointer* into caller memory at which
-            -- the Instruction descriptor lives. Two ABIs:
-            --
-            -- - `sol_invoke_signed` (Rust ABI from
-            --   `solana_program::invoke`): r1 → `&Instruction`. With
-            --   default Rust layout the high-alignment fields (Vec)
-            --   come first, so `program_id` sits at offset 48 (after
-            --   accounts:Vec=24B and data:Vec=24B). The 32-byte pubkey
-            --   is inline.
-            -- - `sol_invoke_signed_c` (C ABI): r1 → `SolInstruction`.
-            --   First field is `SolPubkey *program_id` (a u64 pointer
-            --   to the actual pubkey bytes); deref to get the 32B.
-            --
-            -- Both encode the resulting 32 bytes as a little-endian
-            -- Nat (matches `Svm.Ffi.pubkeyToNat`) for registry lookup.
-            --
-            -- Phases 2/3 (account-info decoding + write-back) are
-            -- still TODO — the sub-call currently runs against the
-            -- *caller's* memory with `r1 := INPUT_START`. Programs
-            -- that only need the callee's `r0` (exit code) work today;
-            -- programs that inspect modified accounts after CPI don't.
-            let pubkeyAddr : Nat := match sc with
-              | .sol_invoke_signed   => s.regs.r1 + 48      -- inline @ +48
-              | .sol_invoke_signed_c =>                     -- pointer @ +0
-                Memory.readU64 s.mem s.regs.r1
-              | _ => s.regs.r1
-            let pid := (List.range 32).foldl
-              (fun acc i => acc + (s.mem (pubkeyAddr + i) % 256) * 256^i) 0
-            -- Read pubkey bytes for use in the sub-input trailer.
+          | .call .sol_invoke_signed =>
+            let pubkeyAddr := s.regs.r1 + 48
             let pidBytes := readMemBytes s.mem pubkeyAddr 32
-            -- Phase 3-minimal: for zero-account CPIs, build a fresh
-            -- sub-input + sub-mem so the callee deserializes its own
-            -- (empty) accounts list rather than the caller's input
-            -- region. We trigger on `Instruction.accounts.len()`
-            -- (not r3): r3 is the *AccountInfo* count, which is
-            -- typically larger or equal to the Instruction's account
-            -- list (callers pass all their accounts to `invoke()`
-            -- even when the CPI uses only some). The instruction's
-            -- accounts.len lives at r1+16 in both Rust's `Instruction`
-            -- layout (Vec @ +0 → (ptr,cap,len) → len @ +16) and C's
-            -- `SolInstruction` (program_id*@0, accounts*@8, account_len@16).
             let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            -- Parse the caller's `AccountInfo` array once — both the
-            -- BPF sub-VM marshaling and the native dispatch path
-            -- consume it. (Previously this was parsed inside
-            -- `runCallee`; hoisted out so `Native.dispatch` can see
-            -- the same list.)
-            let parsedAccts : List ParsedAcct :=
-              parseAccountInfos s.mem s.regs.r2 accountCount
-            -- Tier-2 #8 — account aliasing detection. Agave's loader
-            -- errors out if the same pubkey appears in
-            -- `Instruction.accounts` with mismatched `is_writable`
-            -- (the borrow checker can't reconcile a writable + a
-            -- read-only handle to the same account). We mirror it by
-            -- walking pairs (i, j) i < j and flagging any aliased
-            -- meta with diverging writability.
-            let parsedArr : Array ParsedAcct := parsedAccts.toArray
-            let aliasedWritability : Bool :=
-              (List.range parsedArr.size).any (fun i =>
-                (List.range i).any (fun j =>
-                  let pi := parsedArr.getD i (parsedArr.getD 0
-                    { key := ByteArray.empty, owner := ByteArray.empty,
-                      lamports := 0, dataLen := 0, data := ByteArray.empty,
-                      isSigner := false, isWritable := false,
-                      executable := false, rentEpoch := 0,
-                      ownerPtr := 0, lamportsRefAddr := 0,
-                      dataPtr := 0, dataLenRefAddr := 0 })
-                  let pj := parsedArr.getD j (parsedArr.getD 0
-                    { key := ByteArray.empty, owner := ByteArray.empty,
-                      lamports := 0, dataLen := 0, data := ByteArray.empty,
-                      isSigner := false, isWritable := false,
-                      executable := false, rentEpoch := 0,
-                      ownerPtr := 0, lamportsRefAddr := 0,
-                      dataPtr := 0, dataLenRefAddr := 0 })
-                  pi.key == pj.key && pi.isWritable ≠ pj.isWritable))
-            -- Read the instruction data. Two ABIs:
-            --   Rust  `&Instruction`     : `data: Vec<u8>` @ r1+24
-            --                              (ptr@+24, cap@+32, len@+40)
-            --   C     `SolInstruction *` : data ptr @ r1+24, data len @ r1+32.
-            -- (`accounts.len` is u64 LE at r1+16 in both, see above.)
-            let ixDataPtr : Nat := Memory.readU64 s.mem (s.regs.r1 + 24)
-            let ixDataLen : Nat := match sc with
-              | .sol_invoke_signed   => Memory.readU64 s.mem (s.regs.r1 + 40)
-              | .sol_invoke_signed_c => Memory.readU64 s.mem (s.regs.r1 + 32)
-              | _ => 0
-            let ixData : ByteArray := readMemBytes s.mem ixDataPtr ixDataLen
-            -- Convert parsed `AccountInfo`s into the trimmed view
-            -- native handlers consume. The CPI handler still keeps
-            -- the full `ParsedAcct` for BPF marshaling.
-            let nativeAccts : List Native.AcctInput := parsedAccts.map (fun p =>
-              { key := p.key, owner := p.owner, lamports := p.lamports,
-                dataLen := p.dataLen, isSigner := p.isSigner,
-                isWritable := p.isWritable,
-                lamportsRefAddr := p.lamportsRefAddr,
-                ownerPtr := p.ownerPtr, dataPtr := p.dataPtr,
-                dataLenRefAddr := p.dataLenRefAddr })
-            -- The registry stores full ELF blobs (not raw text). We
-            -- mirror `runElfWithFuel`'s loader pipeline (parse header,
-            -- find `.text`, apply relocations, decode) before handing
-            -- the decoded instruction array to the sub-VM.
-            -- Returns `(subFinalState, callerMemAfterWriteBack)` so
-            -- the outer code can propagate both observable effects
-            -- (r0, log, return_data via subFinal) and account
-            -- mutations (callerMem) in one go.
-            let runCallee (calleeBytes : ByteArray) : Option (State × Mem × Nat) :=
-              let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader) := do
-                let h ← Elf.parseHeader calleeBytes
-                let textSec ← Elf.findSection calleeBytes h Elf.textName
-                let rawText  := Elf.extractSection calleeBytes textSec
-                let textBytes := Elf.applyRelocations calleeBytes h textSec.addr rawText
-                some (textBytes, h, textSec)
-              do
-                let (textBytes, headerOpt, textSecOpt) :
-                    ByteArray × Option Elf.Header × Option Elf.SectionHeader :=
-                  match tryElf with
-                  | some (tb, h, ts) => (tb, some h, some ts)
-                  | none => (calleeBytes, none, none)
-                let calleeInsns ← Decode.decodeProgram textBytes
-                -- Phase 3-N: build the slot table (with dup detection)
-                -- from the parsed AccountInfos hoisted to the enclosing
-                -- scope, and emit a full N-account sub-input. Works
-                -- uniformly for N ∈ {0, 1, 2, …} — N=0 yields just the
-                -- trailer, N=1 a single block, N≥2 N blocks with
-                -- potential dup-marker compression.
-                let slots : List AcctSlot := buildAcctSlots parsedAccts
-                let subInput : ByteArray :=
-                  buildCpiSubInputN slots pidBytes ByteArray.empty
-                -- Always run callee against a fresh sub-mem (rodata +
-                -- .data.rel.ro mapped from its own ELF). The previous
-                -- "fall back to caller's mem for N>1" path is gone; with
-                -- per-slot offsets the marshaling is uniform.
-                let subMem : Mem :=
-                  let baseMem := loadInput emptyMem subInput
-                  match headerOpt with
-                  | none => baseMem
-                  | some h =>
-                    let m1 := match Elf.findSection calleeBytes h Elf.rodataName with
-                      | some sec =>
-                        loadBytesAt baseMem (Elf.extractSection calleeBytes sec)
-                          (Elf.relocateSecAddr sec.addr)
-                      | none => baseMem
-                    match Elf.findSection calleeBytes h Elf.dataRelRoName with
-                    | some sec =>
-                      let raw       := Elf.extractSection calleeBytes sec
-                      let relocated := Elf.applyDataRelocations calleeBytes h sec.addr raw
-                      loadBytesAt m1 relocated (Elf.relocateSecAddr sec.addr)
-                    | none => m1
-                let entryPc :=
-                  match headerOpt, textSecOpt with
-                  | some h, some textSec =>
-                    let slotMap := Decode.buildSlotMap textBytes
-                    let byteOff := if h.entry ≥ textSec.addr
-                                   then h.entry - textSec.addr else 0
-                    let slot := byteOff / 8
-                    if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
-                  | _, _ => 0
-                let subRegions : Memory.RegionTable :=
-                  match headerOpt, textSecOpt with
-                  | some h, some textSec =>
-                    elfRegions calleeBytes h textSec subInput.size
-                  | _, _ => runtimeRegions subInput.size
-                let subS : State :=
-                  { regs       := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
-                    mem        := subMem
-                    regions    := subRegions
-                    pc         := entryPc
-                    exitCode   := none
-                    log        := s.log
-                    returnData := ByteArray.empty
-                    -- Callee inherits the caller's remaining fuel as
-                    -- its budget so `sol_log_compute_units_` inside
-                    -- the callee reports a meaningful "remaining"
-                    -- (matches agave's shared compute meter).
-                    cuBudget   := fuel' }
-                let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
-                  (fetchFromArray calleeInsns) subS fuel'
-                -- Phase 3-N write-back. Loop over slots. For each
-                -- non-dup slot, read the (possibly mutated) data /
-                -- lamports / owner from the sub-mem at the slot's
-                -- block offset, and propagate back through the
-                -- caller-mem pointers captured at parse time. Dup
-                -- slots have no own block; any mutation routed
-                -- through them lands in the canonical slot's bytes,
-                -- which we already write back via that slot.
-                let newCallerMem : Mem := slots.foldl (fun mem slot =>
-                  match slot.dupOf? with
-                  | some _ => mem
-                  | none =>
-                    let p := slot.parsed
-                    let blockBase := INPUT_START + slot.blockOff
-                    let newData := readMemBytes subFinal.mem
-                      (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
-                    let m1 := loadBytesAt mem newData p.dataPtr
-                    let newLamports := Memory.readU64 subFinal.mem
-                      (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
-                    let m2 := Memory.writeU64 m1 p.lamportsRefAddr newLamports
-                    let newOwner := readMemBytes subFinal.mem
-                      (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
-                    loadBytesAt m2 newOwner p.ownerPtr) s.mem
-                some (subFinal, newCallerMem, subFuelRemaining)
-            -- Native dispatch comes before the BPF registry lookup.
-            -- If the program-id matches a known native program
-            -- (System, in the first slice), the call is satisfied
-            -- here without sub-VM execution. Returning `some`
-            -- consumes the call deterministically — including
-            -- "unimplemented variant" cases — so we never silently
-            -- fall through to the BPF path for a recognized native
-            -- program-id.
-            -- Every CPI charges `Cpi.cu` (946) for the syscall itself,
-            -- on top of whatever the callee consumes. The regular
-            -- `.call` arm in `step` does this via `syscallCu`; the
-            -- CPI handler here builds its own state and has to add it
-            -- explicitly.
-            if aliasedWritability then
-              { s with regs := s.regs.set .r0 1
-                       pc   := s.pc + 1
-                       cuConsumed := s.cuConsumed + Cpi.cu }
-            else
-            match Native.dispatch pid ixData nativeAccts s.mem with
-            | some nr =>
-              { s with regs       := s.regs.set .r0 nr.r0
-                       mem        := nr.mem
-                       pc         := s.pc + 1
-                       cuConsumed := s.cuConsumed + Cpi.cu + nr.cu }
-            | none =>
-            match registry pid with
-            | none =>
-              { s with regs := s.regs.set .r0 1
-                       pc := s.pc + 1
-                       cuConsumed := s.cuConsumed + Cpi.cu }
-            | some calleeElf =>
-              match runCallee calleeElf with
-              | none =>
-                { s with regs := s.regs.set .r0 1
-                         pc := s.pc + 1
-                         cuConsumed := s.cuConsumed + Cpi.cu }
-              | some (subFinal, newMem, subFuelRemaining) =>
-                -- Tier-2 #7 — proportional CU split. The caller's
-                -- meter absorbs the callee's spend in two parts:
-                --   * `subFinal.cuConsumed`: callee's syscall extras
-                --     (already bumped into the callee's State during
-                --     its own execution).
-                --   * `fuel' - subFuelRemaining`: the callee's step
-                --     count (each callee step decremented its local
-                --     fuel by one; the diff equals the number of
-                --     callee steps).
-                -- Both flow into the caller's `cuConsumed`. The
-                -- caller's own fuel still decrements by one for this
-                -- CPI step itself (the `.call sol_invoke_signed`
-                -- instruction), mirroring the regular `.call` arm in
-                -- `step`. Total CU surfaced at the top via
-                -- `(initial_fuel - final_fuel) + cuConsumed` matches
-                -- agave's shared-meter semantics.
-                { s with regs       := s.regs.set .r0 (subFinal.exitCode.getD 1)
-                         mem        := newMem
-                         pc         := s.pc + 1
-                         log        := subFinal.log
-                         returnData := subFinal.returnData
-                         cuConsumed := s.cuConsumed + Cpi.cu
-                                                    + subFinal.cuConsumed
-                                                    + (fuel' - subFuelRemaining) }
+            let parsedAccts := parseAccountInfos s.mem s.regs.r2 accountCount
+            cpiCallNextState registry s .sol_invoke_signed fuel'
+              (runCallee pidBytes parsedAccts)
+          | .call .sol_invoke_signed_c =>
+            let pubkeyAddr := Memory.readU64 s.mem s.regs.r1
+            let pidBytes := readMemBytes s.mem pubkeyAddr 32
+            let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
+            let parsedAccts := parseAccountInfos s.mem s.regs.r2 accountCount
+            cpiCallNextState registry s .sol_invoke_signed_c fuel'
+              (runCallee pidBytes parsedAccts)
           | _ => step insn s
         if TRACE_STEPS then
           dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
