@@ -543,21 +543,12 @@ theorem if_else_macro_spec (vR1 vR2 : Nat) :
   -- Branch spec, pre-framed to widen its 1-atom state to (r1 ** r2).
   have h_br := cuTripleWithinBranch_frame_right (.r2 ↦ᵣ vR2) (pcFree_regIs _ _)
                  (jeq_imm_branch_spec .r1 0 vR1 0 3)
-  -- True branch: a single `mov64 r2, 200` (framed by sl_block_iter).
+  -- True branch: a single `mov64 r2, 200` (r1 auto-framed).
   have h_T_r2 := mov64_imm_spec .r2 200 vR2 3 (by decide)
-  -- False branch: `mov64 r2, 100` then `ja 4`. ja_spec has emp pre/post
-  -- which sl_block_iter's atom-extractor can't widen automatically, so
-  -- pre-frame it to the post-state of the preceding mov.
+  -- False branch: `mov64 r2, 100` then `ja 4`. ja_spec's emp/emp gets
+  -- auto-widened to the current chain state by `sl_branch`.
   have h_F_mov_r2 := mov64_imm_spec .r2 100 vR2 1 (by decide)
-  have h_F_ja : cuTripleWithin 1 2 4 (CodeReq.singleton 2 (.ja 4))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100))
-        ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100)) := by
-    have := cuTripleWithin_frame_right ((.r1 ↦ᵣ vR1) ** (.r2 ↦ᵣ toU64 100))
-              (pcFree_sepConj (pcFree_regIs _ _) (pcFree_regIs _ _)) (ja_spec 4 2)
-    apply cuTripleWithin_weaken
-      (fun hp hPP => (sepConj_emp_left hp).mpr hPP)
-      (fun hp hQQ => (sepConj_emp_left hp).mp hQQ) this
-  sl_branch h_br [h_T_r2] [h_F_mov_r2, h_F_ja]
+  sl_branch h_br [h_T_r2] [h_F_mov_r2, ja_spec 4 2]
 
 /-! ## SPL-Token-shaped 2-way discriminant dispatch (Phase E session 2)
 
@@ -622,21 +613,9 @@ theorem spl_token_2way_dispatch_macro_spec
   -- Pre-frame the bare branch spec to widen to the 2-atom state.
   have h_br := cuTripleWithinBranch_frame_left (.r0 ↦ᵣ vR0) (pcFree_regIs _ _)
                  (jeq_imm_branch_spec .r2 0 (discByte % 256) 1 4)
-  -- True branch step: `mov64 r0, 200` (sl_block_iter auto-frames r2).
   have h_T_r0 := mov64_imm_spec .r0 200 vR0 4 (by decide)
-  -- False branch steps: `mov64 r0, 100` (auto-framed) + `ja 5`
-  -- (manually framed since ja_spec's emp pre/post can't be widened
-  -- by sl_block_iter's atom-extractor).
   have h_F_mov_r0 := mov64_imm_spec .r0 100 vR0 2 (by decide)
-  have h_F_ja : cuTripleWithin 1 3 5 (CodeReq.singleton 3 (.ja 5))
-        ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256))
-        ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256)) := by
-    have := cuTripleWithin_frame_right
-              ((.r0 ↦ᵣ toU64 100) ** (.r2 ↦ᵣ discByte % 256))
-              (pcFree_sepConj (pcFree_regIs _ _) (pcFree_regIs _ _)) (ja_spec 5 3)
-    apply cuTripleWithin_weaken
-      (fun hp hPP => (sepConj_emp_left hp).mpr hPP)
-      (fun hp hQQ => (sepConj_emp_left hp).mp hQQ) this
+  -- ja_spec's emp/emp auto-widened by sl_branch's chain builder.
   have h_dispatch_2atom : cuTripleWithin 3 1 5
         (((CodeReq.singleton 1 (.jeq .r2 (.imm 0) 4)).union
           (CodeReq.singleton 4 (.mov64 .r0 (.imm 200)))).union
@@ -645,7 +624,7 @@ theorem spl_token_2way_dispatch_macro_spec
         ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ discByte % 256))
         ((.r0 ↦ᵣ (if discByte % 256 = toU64 0 then toU64 200 else toU64 100)) **
           (.r2 ↦ᵣ discByte % 256)) := by
-    sl_branch h_br [h_T_r0] [h_F_mov_r0, h_F_ja]
+    sl_branch h_br [h_T_r0] [h_F_mov_r0, ja_spec 5 3]
   -- Stage 2: frame with `(.r1 ↦ᵣ baseAddr) ** (mem ↦ₘ discByte)` on
   -- the RIGHT, then re-associate via `sepConj_assoc` so the 4-atom
   -- shape is right-folded `r0 ** r2 ** r1 ** mem`.

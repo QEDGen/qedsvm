@@ -742,6 +742,12 @@ def bridgeChainToGoal (chain : Expr) (chainIsMem : Bool)
       throwError m!"sl_block_iter.bridgeChainToGoal: chain post has extra atoms not in goalPost: {frame.toArray}"
     reshapeChainPost chain' chainIsMem iff
 
+/-- Detect a bare `Svm.SBPF.emp` assertion (used to identify
+    `ja_spec`-style steps that can be auto-widened to the surrounding
+    chain state). -/
+def isEmpAssertion (e : Expr) : Bool :=
+  (e.consumeMData).isConstOf ``Svm.SBPF.emp
+
 /-- Build the chain expression from a step-hypothesis list and a
     starting state. Walks left-to-right: for each step, extract the
     frame against the current state (possibly with permutation reshape
@@ -749,7 +755,11 @@ def bridgeChainToGoal (chain : Expr) (chainIsMem : Bool)
     with the chain. Returns the composed chain term + isMem flag —
     leaves the goal alone, so callers (sl_block_iter, sl_branch) can
     bridge or assemble as they need. pcFree + Disjoint subgoals are
-    appended to the IO.Refs for the caller to discharge. -/
+    appended to the IO.Refs for the caller to discharge.
+
+    Auto-widens `emp/emp` step hypotheses (e.g. `ja_spec`) to use the
+    current chain state via `cuTripleWithin_widen_emp`, so users don't
+    have to hand-write the `frame_right + sepConj_emp_left` dance. -/
 def buildChainExpr (startState : Expr) (hExprs : List Expr)
     (pcfreeGoals disjGoals : IO.Ref (List MVarId)) :
     MetaM (Expr × Bool) := do
@@ -757,10 +767,27 @@ def buildChainExpr (startState : Expr) (hExprs : List Expr)
     throwError "buildChainExpr: empty hypothesis list"
   let mut chain : Option (Expr × Bool) := none
   let mut currentState := startState
-  for h in hExprs do
-    let hType ← inferType h
+  for hOrig in hExprs do
+    let mut h := hOrig
+    let mut hType ← inferType h
     let some (stepIsMem, stepPre, stepPost) ← parseTripleType hType |
       throwError m!"buildChainExpr: hypothesis is not a cuTripleWithin[Mem]:\n  {hType}"
+    -- Auto-widen `cuTripleWithin _ _ _ _ emp emp` steps to use the
+    -- current chain state as their pre/post via `cuTripleWithin_widen_emp`.
+    -- Avoids forcing the user to manually frame+strip-emp for the
+    -- common `ja_spec`-shaped specs.
+    let mut stepPre := stepPre
+    let mut stepPost := stepPost
+    if !stepIsMem && isEmpAssertion stepPre && isEmpAssertion stepPost then
+      let pcfreeTy ← mkAppM ``Svm.SBPF.Assertion.pcFree #[currentState]
+      let pcfreeMvar ← mkFreshExprMVar pcfreeTy
+      pcfreeGoals.modify (pcfreeMvar.mvarId! :: ·)
+      h ← mkAppM ``Svm.SBPF.cuTripleWithin_widen_emp #[currentState, pcfreeMvar, h]
+      hType ← inferType h
+      let some (_, widenedPre, widenedPost) ← parseTripleType hType |
+        throwError "buildChainExpr: widen_emp lost triple shape"
+      stepPre := widenedPre
+      stepPost := widenedPost
     let info : StepInfo := { isMem := stepIsMem, hyp := h, pre := stepPre, post := stepPost }
     let fr ← extractFrame currentState info.pre
     let (lowFr, _didReshape) ← match fr with

@@ -246,6 +246,25 @@ theorem cuTripleWithin_frame_left (F : Assertion) (hF : F.pcFree)
     (fun hp hQF => (sepConj_comm hp).mp hQF)
     (cuTripleWithin_frame_right F hF h)
 
+/-- Widen an `emp`-pre/`emp`-post triple to use any pc-free assertion
+    `F` as its pre/post. Such triples (e.g. `ja_spec`) require nothing
+    of the state and change nothing, so they can be reused at any
+    state `F`. Used by `sl_block_iter` / `sl_branch` to auto-frame
+    `ja_spec`-style steps against the surrounding chain state without
+    the user manually composing `frame_right + sepConj_emp_left`.
+
+    Proof: frame with `F` on the right, then weaken via the
+    `sepConj_emp_left` iff to strip the trivial `emp **` prefix on
+    both sides. -/
+theorem cuTripleWithin_widen_emp (F : Assertion) (hF : F.pcFree)
+    {N : Nat} {pc1 pc2 : Nat} {cr : CodeReq}
+    (h : cuTripleWithin N pc1 pc2 cr emp emp) :
+    cuTripleWithin N pc1 pc2 cr F F := by
+  have := cuTripleWithin_frame_right F hF h
+  apply cuTripleWithin_weaken
+    (fun hp hPP => (sepConj_emp_left hp).mpr hPP)
+    (fun hp hQQ => (sepConj_emp_left hp).mp hQQ) this
+
 /-! ## Memory-aware triple
 
 `cuTripleWithinMem` extends `cuTripleWithin` with a persistent side
