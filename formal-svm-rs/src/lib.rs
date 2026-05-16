@@ -19,7 +19,7 @@ mod wire;
 
 pub use deserialize::{deserialize_account_writes, DeserializeError};
 pub use serialize::{serialize_parameters, SerializeError};
-pub use svm::{InstructionResult, ProgramResult, Svm, SvmError};
+pub use svm::{InstructionResult, ProgramResult, Svm, SvmError, ERR_INVALID_POSTSTATE};
 pub use wire::{decode as decode_wire, DecodeError, ExitOutcome, RawResult};
 
 /// Run an ELF binary under the Lean VM with an arbitrary input buffer
