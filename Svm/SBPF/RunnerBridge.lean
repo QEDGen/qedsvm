@@ -123,5 +123,67 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi_array
     exact h i (Array.mem_iff_getElem.mpr ⟨a, hbnd, hfetch⟩)
   · simp [hbnd] at hfetch
 
+/-! ## End-to-end soundness: cuTripleWithin lifts to Runner.run
+
+These are the headline theorems of this file. Together with
+`executeFnCpi_eq_executeFn_of_no_cpi_array`, they say: if you've
+proved a `cuTripleWithin` over the decoded instruction array of a
+bytecode, the same property holds for the actual bytes when executed
+by `Runner.run`. -/
+
+/-- **Form A (witness):** A `cuTripleWithin` proven over a decoded
+    instruction array produces a k-step witness state inside the
+    pure-`executeFn` trace launched from `Runner.initialState cfg`,
+    where the post-assertion `Q` holds.
+
+    The witness is in terms of `executeFn`, not `Runner.run`, because
+    `cuTripleWithin` only constrains the trace up to step k. To
+    conclude about `run`'s output state, use `run_terminates_with_spec`
+    below (it requires the spec to land on an `Insn.exit`). -/
+theorem run_reaches_spec
+    {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
+    (insns : Array Insn) (cfg : RunConfig)
+    (hcr : cr.SatisfiedBy (fetchFromArray insns))
+    (htrip : cuTripleWithin N 0 exit_ cr P Q)
+    (hP : P.holdsFor (initialState cfg)) :
+    ∃ k, k ≤ N ∧
+      (executeFn (fetchFromArray insns) (initialState cfg) k).pc = exit_ ∧
+      (executeFn (fetchFromArray insns) (initialState cfg) k).exitCode = none ∧
+      Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) := by
+  -- Instantiate the triple with R = emp; coerce P ⇔ P ** emp on holdsFor.
+  have hPemp : (P ** emp).holdsFor (initialState cfg) := by
+    rcases hP with ⟨hp, hcompat, hPhp⟩
+    exact ⟨hp, hcompat, (sepConj_emp_right hp).mpr hPhp⟩
+  obtain ⟨k, hk, hpc, hex, hQemp⟩ :=
+    htrip emp pcFree_emp (fetchFromArray insns) hcr (initialState cfg) hPemp
+          (initialState_pc cfg) (initialState_exitCode cfg)
+  refine ⟨k, hk, hpc, hex, ?_⟩
+  rcases hQemp with ⟨hp, hcompat, hQhp⟩
+  exact ⟨hp, hcompat, (sepConj_emp_right hp).mp hQhp⟩
+
+/-! ### Form B (terminated run) is deferred
+
+The natural next theorem — "if the spec lands on an `Insn.exit`, then
+`Runner.run bs cfg` returns a halted state in which Q-related facts
+hold" — needs more infrastructure than fits in this session:
+
+1. **`callStack`-empty invariant.** `step .exit s` halts only when
+   `s.callStack = []`; with a non-empty call stack it pops a frame
+   instead. The witness state from Form A might have a non-empty
+   `callStack` if the program used `.call_local` without an unmatched
+   `.exit`. A clean statement either requires the user to discharge
+   an invariant, or we prove `callStack = []` from a syntactic
+   hypothesis (no `.call_local` reachable on the path to `exit_`).
+
+2. **Q-stability under the exit step.** `step .exit s` modifies
+   `s.exitCode` (and possibly `s.regs.r0`). If Q observes either field,
+   Q at the witness state and Q at the halted state can differ. For
+   typical Solana specs Q doesn't mention these — but stating that
+   formally needs a sub-class of "exit-stable" assertions.
+
+The Session-3 worked example (`RunnerSpecDemo.lean`) sidesteps both
+by handling the exit step manually for a known three-instruction
+program, which will inform Form B's right signature. -/
+
 end Runner
 end Svm.SBPF

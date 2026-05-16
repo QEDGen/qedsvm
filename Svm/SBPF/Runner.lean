@@ -688,6 +688,22 @@ def executeFnCpi (registry : Nat → Option ByteArray)
 
 /-! ## Entrypoints -/
 
+/-- Initial machine state for `Runner.run`. Extracted from the inline
+    let-binding so end-to-end soundness theorems (`RunnerBridge.lean`)
+    can refer to it by name and reason about its fields. -/
+def initialState (cfg : RunConfig) : State :=
+  { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+    mem     := loadInput emptyMem cfg.input
+    regions := runtimeRegions cfg.input.size
+    pc      := 0
+    exitCode := none
+    cuBudget := cfg.cuBudget }
+
+@[simp] theorem initialState_pc (cfg : RunConfig) : (initialState cfg).pc = 0 := rfl
+
+@[simp] theorem initialState_exitCode (cfg : RunConfig) :
+    (initialState cfg).exitCode = none := rfl
+
 /-- Decode `bytes` and run for up to `cfg.cuBudget` compute units. Returns
     the final machine state, or `none` if decoding fails.
 
@@ -697,15 +713,7 @@ def executeFnCpi (registry : Nat → Option ByteArray)
     - `some n` → clean exit with return code `n` -/
 def run (bytes : ByteArray) (cfg : RunConfig := {}) : Option State := do
   let insns ← Decode.decodeProgram bytes
-  let mem := loadInput emptyMem cfg.input
-  let s : State :=
-    { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
-      mem     := mem
-      regions := runtimeRegions cfg.input.size
-      pc      := 0
-      exitCode := none
-      cuBudget := cfg.cuBudget }
-  return executeFnCpi cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget
+  return executeFnCpi cfg.programRegistry (fetchFromArray insns) (initialState cfg) cfg.cuBudget
 
 /-- Convenience: return only the exit code if the program terminated. -/
 def runForExit (bytes : ByteArray) (cfg : RunConfig := {}) : Option Nat :=
