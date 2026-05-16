@@ -117,45 +117,28 @@ fn main() {
     // *only* the object containing that symbol from the archive,
     // leaving the rest (and the std/core duplicates) alone.
     //
-    // The list mirrors `pub extern "C" fn lean_*` in
-    // `rust-bridge/src/lib.rs`. When you add a new FFI export
-    // there, add it here too — otherwise programs that route to
-    // the new syscall via runtime dispatch will SIGSEGV with a
-    // dyld lookup of 0x0.
-    const FFI_SYMS: &[&str] = &[
-        "lean_sha256_agave",
-        "lean_sha512",
-        "lean_keccak256",
-        "lean_blake3",
-        "lean_secp256k1_recover",
-        "lean_curve_validate_edwards",
-        "lean_curve_validate_ristretto",
-        "lean_curve_edwards_add",
-        "lean_curve_edwards_sub",
-        "lean_curve_edwards_mul",
-        "lean_curve_ristretto_add",
-        "lean_curve_ristretto_sub",
-        "lean_curve_ristretto_mul",
-        "lean_curve_edwards_msm",
-        "lean_curve_ristretto_msm",
-        "lean_bls12_381_g1_decompress",
-        "lean_bls12_381_g2_decompress",
-        "lean_bls12_381_pairing_map",
-        "lean_alt_bn128_group_op",
-        "lean_alt_bn128_compression",
-        "lean_big_mod_exp",
-        "lean_poseidon",
-        "lean_ed25519_verify_strict",
-        "lean_secp256r1_verify",
-    ];
+    // Derive the symbol list by parsing `rust-bridge/src/lib.rs` for
+    // `pub extern "C" fn lean_*` signatures, so adding a new syscall
+    // export there automatically gets picked up here — no manual
+    // sync, no runtime SIGSEGV from a forgotten entry.
+    let bridge_src = workspace_root.join("rust-bridge").join("src").join("lib.rs");
+    let ffi_syms = parse_lean_exports(&bridge_src);
+    if ffi_syms.is_empty() {
+        panic!(
+            "Found 0 `pub extern \"C\" fn lean_*` exports in {} — \
+             refusing to link without any crypto FFI symbols.",
+            bridge_src.display()
+        );
+    }
     let undersym_prefix = if cfg!(target_os = "macos") { "_" } else { "" };
-    for sym in FFI_SYMS {
+    for sym in &ffi_syms {
         println!(
             "cargo:rustc-link-arg=-Wl,-u,{}{}",
             undersym_prefix, sym
         );
     }
     println!("cargo:rustc-link-lib=static=leanbridge");
+    println!("cargo:rerun-if-changed={}", bridge_src.display());
 
     // Export the binary's dynamic symbol table so the Lean dylibs'
     // `-undefined,dynamic_lookup` refs resolve at runtime.
@@ -177,4 +160,26 @@ fn run_capture(cmd: &str, args: &[&str]) -> Option<String> {
         return None;
     }
     String::from_utf8(out.stdout).ok()
+}
+
+/// Scrape `pub extern "C" fn lean_<name>(` declarations out of a Rust
+/// source file. Used to derive the `-Wl,-u` list from the bridge's
+/// actual exports rather than maintaining a parallel const here.
+fn parse_lean_exports(path: &std::path::Path) -> Vec<String> {
+    let src = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let needle = "pub extern \"C\" fn lean_";
+    let mut out = Vec::new();
+    for line in src.lines() {
+        let line = line.trim_start();
+        let Some(rest) = line.strip_prefix(needle) else { continue };
+        let name_tail: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name_tail.is_empty() {
+            out.push(format!("lean_{name_tail}"));
+        }
+    }
+    out
 }
