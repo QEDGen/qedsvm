@@ -998,4 +998,47 @@ elab_rules : tactic
       let pcfrees := (← pcfreeGoals.get).reverse
       dischargeGoals pcfrees (← `(tactic| sl_pcfree)) "sl_pcfree"
 
+/-! ## sl_rw_abs — Gap-3 workaround helper
+
+The `sl_block_iter` composition hits a kernel-level wall when SL atoms
+contain `wrapAdd r10V (toU64 -80)`-shaped addresses (~96K `Nat.rec`
+per iter at iter 5 of an 11-instruction macro — see
+`[[sl-block-iter-perm-rewrite]]`). The cost is structural to the spec
+form; surgical `@[irreducible]` attempts (Path A, 2026-05-17) confirmed
+no kernel-attribute change moves the bottleneck without breaking other
+proofs.
+
+The proven workaround (in `pda_n1_stack_macro_spec`) is to parameterize
+expensive atom addresses by abstract `Nat` variables with bridging
+equalities, so the kernel's `isDefEq` sees clean atoms. This macro
+reduces the manual rewrite boilerplate the workaround requires:
+
+Before (manual):
+```
+rw [← hDesc] at h2
+rw [← hDesc] at h4
+rw [← hOut] at h9
+```
+
+After:
+```
+sl_rw_abs [hDesc, hOut] at [h2, h4, h9]
+```
+
+The macro applies `try rw [← hAbs] at hN` for each (abstraction,
+hypothesis) cross-product, silently skipping cases where the rewrite
+doesn't apply. Use it after constructing the per-step specs and
+before `sl_block_iter`. -/
+
+syntax "sl_rw_abs" "[" ident,* "]" "at" "[" ident,* "]" : tactic
+
+open Lean Lean.Elab.Tactic in
+elab_rules : tactic
+  | `(tactic| sl_rw_abs [$abs,*] at [$hyps,*]) => withMainContext do
+      for h in hyps.getElems do
+        for a in abs.getElems do
+          try
+            evalTactic (← `(tactic| rw [← $a:ident] at $h:ident))
+          catch _ => pure ()
+
 end Svm.SBPF
