@@ -9,33 +9,40 @@ removing them doesn't touch `Svm.SBPF.*`. Lean proofs live under
 `Examples.*` (separate `lean_lib`); shell scripts run via
 `formal-svm-cli`.
 
-## Operational demos (shell)
+## Operational demos (cargo examples)
 
-Each script runs one or more hand-written sBPF binaries through
-`formal-svm-cli` (the CLI front-end for `Svm.SBPF.Runner.runElf`).
-Output shows the exit code, CU consumed, and any logs.
+Each cargo example loads a real Solana program (built externally), runs
+it through formal-svm's Lean reference VM via the Rust API, and prints
+exit code, CU consumed, and any logs.
 
-### `blueshift.sh` — 4 programs from https://github.com/blueshift-gg/asm
+### `blueshift_asm` — branching programs from https://github.com/blueshift-gg/asm
 
 ```
-./examples/blueshift.sh
+BLUESHIFT=/path/to/blueshift \
+  cargo run --release --example blueshift_asm \
+    --manifest-path formal-svm-rs/Cargo.toml
 ```
 
-Exercises:
+Exercises the two non-trivial branching programs (asm-slippage and
+asm-timeout) on both branches each. Skips asm-hello and asm-memo —
+they're `sol_log_` + load demos and don't add new coverage.
 
-| Program | Inputs | Demonstrates |
+| Program | Scenario | Result |
 |---|---|---|
-| `asm-hello` | (none) | `.rodata` load + `sol_log_` syscall |
-| `asm-memo` | `(count, len, data)` | Input parsing + `sol_log_` |
-| `asm-slippage` | Token-shaped account | Conditional branch + slippage error path |
-| `asm-timeout` | Clock-shaped sysvar layout | Slot comparison + early exit |
+| `asm-slippage` | avail=1000, min=500 → in-window | `Halted(0)`, 4 CU |
+| `asm-slippage` | avail=100, min=500 → slippage exceeded | `Halted(1)`, 108 CU, log: "Slippage exceeded" |
+| `asm-timeout` | current=50, target=100 → in window | `Halted(50)`, 4 CU (r0 = current slot) |
+| `asm-timeout` | current=100, target=50 → timed out | `Halted(1)`, 5 CU |
 
-Requires `~/code/blueshift/asm` to be checked out (or set `BLUESHIFT=…`).
+These programs use bespoke input layouts (not the Solana entrypoint
+serialization), so the example uses the low-level `run_buffer` API
+with explicit input-buffer construction in Rust.
 
 ### `doppler` cargo example — production oracle from https://github.com/blueshift-gg/doppler
 
 ```
-cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+DOPPLER_SO=/path/to/doppler_program.so \
+  cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
 ```
 
 Drives the doppler oracle program through `Svm::process_instruction`
@@ -49,12 +56,13 @@ Drives the doppler oracle program through `Svm::process_instruction`
 
 The example constructs Solana-shaped accounts and lets
 `formal_svm::serialize_parameters` place the bytes at the offsets
-doppler reads from — no manual buffer construction needed. The
-`doppler_program.so` is checked in at
-`formal-svm-rs/examples/doppler_program.so` (1136 bytes; rebuild
-from upstream by setting `feature(asm_experimental_arch)` and
-removing the spurious `#[no_mangle]` on `panic_handler` if your
-`cargo-build-sbf` rejects it).
+doppler reads from — no manual buffer construction needed.
+
+To build the `.so`: clone https://github.com/blueshift-gg/doppler, then
+`cd program && cargo-build-sbf`. The bundled `cargo-build-sbf` may
+reject `#[no_mangle]` on the panic_handler item; remove that line in
+`doppler/doppler/src/panic_handler.rs` if so. The .so lands in
+`/tmp/doppler/target/deploy/doppler_program.so`.
 
 ## Lean Hoare proofs
 

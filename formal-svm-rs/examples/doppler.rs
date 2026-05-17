@@ -16,14 +16,18 @@
 //! signature, so swap-in is trivial.
 //!
 //! Run:
-//!   cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+//!   # 1. Build doppler (see https://github.com/blueshift-gg/doppler).
+//!   #    `cargo-build-sbf` may reject the `#[no_mangle] #[panic_handler]`
+//!   #    combo — remove the `#[no_mangle]` line in
+//!   #    doppler/doppler/src/panic_handler.rs if so.
+//!   # 2. Point the example at the built .so:
+//!   DOPPLER_SO=/tmp/doppler/target/deploy/doppler_program.so \
+//!     cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
 
 use formal_svm::{ProgramResult, Svm};
 use solana_account::{Account, AccountSharedData, ReadableAccount};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
-
-const DOPPLER_SO: &[u8] = include_bytes!("doppler_program.so");
 
 // `admnz5UvRa93HM5nTrxXmsJ1rw2tvXMBFGauvCgzQhE` — doppler's hardcoded
 // admin pubkey (lifted from doppler/doppler/src/admin.rs).
@@ -85,12 +89,25 @@ fn scenario(label: &str, svm: &Svm, ix: &Instruction,
 }
 
 fn main() {
+    let so_path = std::env::var("DOPPLER_SO").unwrap_or_else(|_| {
+        eprintln!("\
+DOPPLER_SO env var not set. Build doppler from
+https://github.com/blueshift-gg/doppler and re-run with e.g.:
+
+  DOPPLER_SO=/tmp/doppler/target/deploy/doppler_program.so \\
+    cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+");
+        std::process::exit(1);
+    });
+    let doppler_so = std::fs::read(&so_path)
+        .unwrap_or_else(|e| panic!("failed to read DOPPLER_SO at {so_path}: {e}"));
+
     let admin_pk = Pubkey::from(ADMIN);
     let oracle_pk = pid(0xc0); // arbitrary oracle account key
     let program_id = pid(0xd0);
 
     let mut svm = Svm::default();
-    svm.add_program(&program_id, DOPPLER_SO);
+    svm.add_program(&program_id, &doppler_so);
 
     // === Scenario 1: happy path ===
     let admin_acct = AccountSharedData::from(Account {
