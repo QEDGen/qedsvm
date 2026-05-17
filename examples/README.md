@@ -32,26 +32,29 @@ Exercises:
 
 Requires `~/code/blueshift/asm` to be checked out (or set `BLUESHIFT=…`).
 
-### `doppler.sh` — production oracle program from https://github.com/blueshift-gg/doppler
+### `doppler` cargo example — production oracle from https://github.com/blueshift-gg/doppler
 
 ```
-./examples/doppler.sh
+cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
 ```
 
-Exercises all three code paths of doppler's `entrypoint`:
+Drives the doppler oracle program through `Svm::process_instruction`
+(the mollusk-shaped Rust API), exercising all three code paths:
 
 | Scenario | Path | Result |
 |---|---|---|
-| Admin OK + new_seq > current_seq | full update | `r0=0`, 21 CU, oracle state mutated |
-| Bad admin header | `Admin::check` inline asm | `r0=1`, 4 CU (`lddw r0, 1; exit`) |
+| Admin OK + new_seq > current_seq | full update | `r0=0`, 21 CU, oracle state mutated 100→101 |
+| Bad admin pubkey | `Admin::check` inline asm | `r0=1`, 7 CU (`lddw r0, 1; exit`) |
 | Stale sequence (new ≤ current) | `Oracle::check_and_update` inline asm | `r0=2`, 19 CU (`lddw r0, 2; exit`) |
 
-Requires `doppler_program.so` at `$DOPPLER_SO` (default
-`/tmp/doppler/target/deploy/doppler_program.so`). Build instructions
-are in the script header — note the bundled `cargo-build-sbf` rejects
-`#[no_mangle]` on the panic_handler item; the macro in
-`doppler/doppler/src/panic_handler.rs` needs that attribute removed
-before building.
+The example constructs Solana-shaped accounts and lets
+`formal_svm::serialize_parameters` place the bytes at the offsets
+doppler reads from — no manual buffer construction needed. The
+`doppler_program.so` is checked in at
+`formal-svm-rs/examples/doppler_program.so` (1136 bytes; rebuild
+from upstream by setting `feature(asm_experimental_arch)` and
+removing the spurious `#[no_mangle]` on `panic_handler` if your
+`cargo-build-sbf` rejects it).
 
 ## Lean Hoare proofs
 
