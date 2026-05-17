@@ -16,13 +16,19 @@
 //! signature, so swap-in is trivial.
 //!
 //! Run:
-//!   # 1. Build doppler (see https://github.com/blueshift-gg/doppler).
-//!   #    `cargo-build-sbf` may reject the `#[no_mangle] #[panic_handler]`
-//!   #    combo — remove the `#[no_mangle]` line in
-//!   #    doppler/doppler/src/panic_handler.rs if so.
-//!   # 2. Point the example at the built .so:
-//!   DOPPLER_SO=/tmp/doppler/target/deploy/doppler_program.so \
-//!     cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+//!   cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+//!
+//! The example self-bootstraps the doppler `.so`:
+//!   1. If `$DOPPLER_SO` is set, uses it.
+//!   2. Else, looks for a cached `target/examples-cache/doppler/doppler_program.so`.
+//!   3. Else, clones https://github.com/blueshift-gg/doppler, patches the
+//!      `#[no_mangle]`-on-panic_handler issue, runs `cargo-build-sbf`, caches
+//!      the output, and uses it.
+//!
+//! First run takes ~20s for the clone + build; subsequent runs hit the cache.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use formal_svm::{ProgramResult, Svm};
 use solana_account::{Account, AccountSharedData, ReadableAccount};
@@ -88,19 +94,64 @@ fn scenario(label: &str, svm: &Svm, ix: &Instruction,
     println!();
 }
 
-fn main() {
-    let so_path = std::env::var("DOPPLER_SO").unwrap_or_else(|_| {
-        eprintln!("\
-DOPPLER_SO env var not set. Build doppler from
-https://github.com/blueshift-gg/doppler and re-run with e.g.:
+/// Locate or build the doppler .so. Returns the path.
+///
+/// 1. `$DOPPLER_SO` override → used directly.
+/// 2. Cached `target/examples-cache/doppler/doppler_program.so` → used.
+/// 3. Otherwise clone + patch + build, then cache.
+fn locate_doppler_so() -> PathBuf {
+    if let Ok(p) = std::env::var("DOPPLER_SO") {
+        return PathBuf::from(p);
+    }
+    let crate_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let cache_dir = crate_root.join("target/examples-cache/doppler");
+    let so_path = cache_dir.join("doppler_program.so");
+    if so_path.exists() {
+        return so_path;
+    }
+    eprintln!(">> bootstrapping doppler (one-time clone + cargo-build-sbf) ...");
+    std::fs::create_dir_all(&cache_dir).expect("mkdir cache_dir");
 
-  DOPPLER_SO=/tmp/doppler/target/deploy/doppler_program.so \\
-    cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
-");
-        std::process::exit(1);
-    });
+    let src_dir = cache_dir.join("src");
+    if !src_dir.exists() {
+        run(Command::new("git")
+            .args(["clone", "--depth", "1", "https://github.com/blueshift-gg/doppler.git"])
+            .arg(&src_dir),
+            "git clone doppler");
+    }
+    // Patch the `#[no_mangle] #[panic_handler]` combo that the bundled rustc rejects.
+    patch_panic_handler(&src_dir.join("doppler/src/panic_handler.rs"));
+    run(Command::new("cargo-build-sbf")
+        .current_dir(src_dir.join("program")),
+        "cargo-build-sbf");
+    let built = src_dir.join("target/deploy/doppler_program.so");
+    std::fs::copy(&built, &so_path)
+        .unwrap_or_else(|e| panic!("copy {} → {}: {e}", built.display(), so_path.display()));
+    so_path
+}
+
+fn run(cmd: &mut Command, label: &str) {
+    let status = cmd.status().unwrap_or_else(|e| panic!("{label}: {e}"));
+    if !status.success() {
+        panic!("{label}: exited with {status}");
+    }
+}
+
+fn patch_panic_handler(path: &Path) {
+    let content = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let needle = "        #[no_mangle]\n        #[panic_handler]";
+    let patched = content.replace(needle, "        #[panic_handler]");
+    if patched != content {
+        std::fs::write(path, patched)
+            .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+    }
+}
+
+fn main() {
+    let so_path = locate_doppler_so();
     let doppler_so = std::fs::read(&so_path)
-        .unwrap_or_else(|e| panic!("failed to read DOPPLER_SO at {so_path}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to read .so at {}: {e}", so_path.display()));
 
     let admin_pk = Pubkey::from(ADMIN);
     let oracle_pk = pid(0xc0); // arbitrary oracle account key

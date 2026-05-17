@@ -9,40 +9,12 @@ removing them doesn't touch `Svm.SBPF.*`. Lean proofs live under
 `Examples.*` (separate `lean_lib`); shell scripts run via
 `formal-svm-cli`.
 
-## Operational demos (cargo examples)
+## Operational demo (cargo example)
 
-Each cargo example loads a real Solana program (built externally), runs
-it through formal-svm's Lean reference VM via the Rust API, and prints
-exit code, CU consumed, and any logs.
-
-### `blueshift_asm` — branching programs from https://github.com/blueshift-gg/asm
+### `doppler` — production oracle from https://github.com/blueshift-gg/doppler
 
 ```
-BLUESHIFT=/path/to/blueshift \
-  cargo run --release --example blueshift_asm \
-    --manifest-path formal-svm-rs/Cargo.toml
-```
-
-Exercises the two non-trivial branching programs (asm-slippage and
-asm-timeout) on both branches each. Skips asm-hello and asm-memo —
-they're `sol_log_` + load demos and don't add new coverage.
-
-| Program | Scenario | Result |
-|---|---|---|
-| `asm-slippage` | avail=1000, min=500 → in-window | `Halted(0)`, 4 CU |
-| `asm-slippage` | avail=100, min=500 → slippage exceeded | `Halted(1)`, 108 CU, log: "Slippage exceeded" |
-| `asm-timeout` | current=50, target=100 → in window | `Halted(50)`, 4 CU (r0 = current slot) |
-| `asm-timeout` | current=100, target=50 → timed out | `Halted(1)`, 5 CU |
-
-These programs use bespoke input layouts (not the Solana entrypoint
-serialization), so the example uses the low-level `run_buffer` API
-with explicit input-buffer construction in Rust.
-
-### `doppler` cargo example — production oracle from https://github.com/blueshift-gg/doppler
-
-```
-DOPPLER_SO=/path/to/doppler_program.so \
-  cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
 ```
 
 Drives the doppler oracle program through `Svm::process_instruction`
@@ -58,11 +30,17 @@ The example constructs Solana-shaped accounts and lets
 `formal_svm::serialize_parameters` place the bytes at the offsets
 doppler reads from — no manual buffer construction needed.
 
-To build the `.so`: clone https://github.com/blueshift-gg/doppler, then
-`cd program && cargo-build-sbf`. The bundled `cargo-build-sbf` may
-reject `#[no_mangle]` on the panic_handler item; remove that line in
-`doppler/doppler/src/panic_handler.rs` if so. The .so lands in
-`/tmp/doppler/target/deploy/doppler_program.so`.
+**Self-bootstrap**: the first run clones doppler, patches the
+`#[no_mangle]`-on-panic_handler issue, runs `cargo-build-sbf`, and
+caches the `.so` under `formal-svm-rs/target/examples-cache/doppler/`.
+Subsequent runs hit the cache. Requires `cargo-build-sbf` on PATH.
+
+To override the auto-bootstrap (e.g. with a pre-built .so):
+
+```
+DOPPLER_SO=/path/to/doppler_program.so \
+  cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+```
 
 ## Lean Hoare proofs
 
