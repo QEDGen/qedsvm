@@ -36,7 +36,7 @@
 import Svm.SBPF.MacroDemo
 import Svm.SBPF.RunnerBridge
 
-namespace Svm.SBPF.AsmTimeoutDemo
+namespace Examples.AsmTimeout
 
 open Svm.SBPF
 open Svm.SBPF.Runner
@@ -102,4 +102,4 @@ theorem asm_timeout_prefix_spec
   have h2 := jgt_reg_spec .r0 .r3 current target 2 4
   sl_block_iter [h0, h1, h2]
 
-end Svm.SBPF.AsmTimeoutDemo
+end Examples.AsmTimeout

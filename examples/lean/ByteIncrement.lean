@@ -20,7 +20,7 @@
 import Svm.SBPF.RunnerBridge
 import Svm.SBPF.MacroDemo
 
-namespace Svm.SBPF.Demo
+namespace Examples.ByteIncrement
 
 open Svm.SBPF
 open Svm.SBPF.Runner
@@ -492,4 +492,4 @@ theorem byteIncrementSo_run_terminates
       (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)
       hcs_witness
 
-end Svm.SBPF.Demo
+end Examples.ByteIncrement

@@ -51,3 +51,11 @@ extern_lib leanbridge pkg := do
 lean_lib Svm where
   roots := #[`Svm]
   precompileModules := true
+
+-- Examples — standalone proofs demonstrating the verification chain
+-- on real hand-written sBPF programs. Not part of the core library;
+-- build with `lake build Examples` to type-check the proofs.
+lean_lib Examples where
+  srcDir := "examples/lean"
+  roots := #[`ByteIncrement, `AsmTimeout]
+  precompileModules := true
