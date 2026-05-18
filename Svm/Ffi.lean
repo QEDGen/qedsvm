@@ -1,7 +1,7 @@
 /-
   Rust-facing FFI entrypoint.
 
-  Exposes a single C symbol — `formal_svm_run_elf_buffer` — that takes
+  Exposes a single C symbol — `qedsvm_run_elf_buffer` — that takes
   an ELF blob, an input buffer (the serialized accounts/instruction
   layout that real Solana programs deserialize via `entrypoint!`), and
   a CU budget. Drives `Runner.runElf` and serializes the observable
@@ -103,7 +103,7 @@ def encodeRun (s : State) (inputLen : Nat) (cuConsumed : UInt64) : ByteArray := 
     `cuBudget` compute units, and serializes the result (including
     `cuConsumed`). Total failure (couldn't decode the ELF) returns a
     single byte `0x00`. -/
-@[export formal_svm_run_elf_buffer]
+@[export qedsvm_run_elf_buffer]
 def runElfBuffer (elf input : ByteArray) (cuBudget : UInt64) : ByteArray :=
   let cfg : Runner.RunConfig := { input := input, cuBudget := cuBudget.toNat }
   match Runner.runElfWithFuel elf cfg with
@@ -182,7 +182,7 @@ where
     CPI support — `Svm::add_program` populates a map, we serialize it
     once, and the Lean runner consults it for each
     `.sol_invoke_signed{,_c}` call. -/
-@[export formal_svm_run_with_registry]
+@[export qedsvm_run_with_registry]
 def runWithRegistry (elf input registry : ByteArray) (cuBudget : UInt64)
     : ByteArray :=
   let cfg : Runner.RunConfig :=
@@ -213,7 +213,7 @@ the same `Nat` representation the dispatch table keys on. Non-
 precompile pids return `(r0=1, cu=0)` — callers are expected to
 gate this entrypoint behind their own precompile check, but the
 fallback is safe. -/
-@[export formal_svm_precompile_dispatch]
+@[export qedsvm_precompile_dispatch]
 def precompileDispatch (pidBytes ixData : ByteArray) : ByteArray :=
   let pid := pubkeyToNat pidBytes 0
   let r := match Svm.Native.Precompiles.dispatch pid ixData [] (fun _ => 0) with

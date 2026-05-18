@@ -534,25 +534,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
-name = "formal-svm-bridge"
-version = "0.1.0"
-dependencies = [
- "ark-bn254",
- "blake3",
- "cc",
- "curve25519-dalek",
- "ed25519-dalek",
- "libsecp256k1",
- "light-poseidon",
- "p256",
- "sha2 0.10.9",
- "sha3",
- "solana-big-mod-exp",
- "solana-bls12-381-syscall",
- "solana-bn254",
-]
-
-[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -817,6 +798,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "qedsvm-bridge"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "blake3",
+ "cc",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "libsecp256k1",
+ "light-poseidon",
+ "p256",
+ "sha2 0.10.9",
+ "sha3",
+ "solana-big-mod-exp",
+ "solana-bls12-381-syscall",
+ "solana-bn254",
 ]
 
 [[package]]

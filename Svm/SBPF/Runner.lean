@@ -141,7 +141,7 @@ def elfRegions (elfBytes : ByteArray) (header : Elf.Header)
 When a program issues `sol_invoke_signed{,_c}`, the callee expects its
 input buffer at `INPUT_START` to be a *fresh* `serialize_parameters`-
 shaped layout for the CPI's target — not the caller's input. We build
-this in Lean (mirroring `formal-svm-rs/src/serialize.rs`) so the
+this in Lean (mirroring `qedsvm-rs/src/serialize.rs`) so the
 callee deserializes the callee-specific accounts + ix_data, not the
 caller's.
 
@@ -311,7 +311,7 @@ parsed accounts. Two complications vs. N=1:
   onto the same underlying RefCell, so any mutation through the
   dup slot in the callee writes to the canonical slot's bytes —
   we only write back through the canonical slot's pointers. This
-  mirrors `formal-svm-rs/src/serialize.rs`'s `seen[]` loop.
+  mirrors `qedsvm-rs/src/serialize.rs`'s `seen[]` loop.
 - **Per-slot cumulative offset** into the sub-input. Each
   non-dup block has stride `88 + dataLen + align_pad + 10240 + 8`
   (different per account if data sizes differ). Dups are stride 8.
@@ -773,7 +773,7 @@ def runElfForExit (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option Nat :=
   (runElf elfBytes cfg).bind (·.exitCode)
 
 /-- ELF entrypoint that also surfaces remaining fuel, for CU accounting
-    in downstream consumers (e.g. the Rust harness in `formal-svm-rs`).
+    in downstream consumers (e.g. the Rust harness in `qedsvm-rs`).
 
     Returns `none` on ELF parse / decode failure, `some (state, remaining)`
     otherwise. The caller computes `cuConsumed = cfg.cuBudget - remaining`.

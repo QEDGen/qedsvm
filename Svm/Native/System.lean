@@ -474,13 +474,13 @@ blockhash), `AuthorizeNonceAccount` (rotates `authority`), or
 withdrawals to keep rent-exempt unless emptying entirely).
 
 `UpgradeNonceAccount` is a v0→v1 migration we treat as a no-op
-since formal-svm only models v1.
+since qedsvm only models v1.
 
 For `AdvanceNonceAccount` / `InitializeNonceAccount` we need a
 "current blockhash" — agave reads `RecentBlockhashes` sysvar
 account (deprecated but still threaded through this code path).
 We model that as a fixed 32-byte value (`RECENT_BLOCKHASH_STUB`)
-since formal-svm is per-instruction; mollusk's default supplies
+since qedsvm is per-instruction; mollusk's default supplies
 the same stub, so cross-engine equality holds. -/
 
 /-- Per-account nonce-data offsets within the account's `data` buffer
@@ -636,7 +636,7 @@ def execWithdrawNonceAccount (mem : Mem) (accts : List AcctInput)
   | _ => ⟨mem, 1, CU_DEFAULT⟩
 
 /-- Execute `UpgradeNonceAccount`. agave migrates v0 → v1 nonce
-    accounts here; formal-svm only models v1, so this is a no-op
+    accounts here; qedsvm only models v1, so this is a no-op
     when the account is already v1, and a failure for legacy v0
     (we don't model it). -/
 def execUpgradeNonceAccount (mem : Mem) (accts : List AcctInput) :

@@ -19,7 +19,7 @@
 --
 -- agave's `verify()` takes `instruction_datas: &[&[u8]]` and lets each
 -- offset entry pull bytes from any instruction in the transaction.
--- formal-svm processes one instruction at a time and has no access to
+-- qedsvm processes one instruction at a time and has no access to
 -- the surrounding transaction. We support exactly one shape:
 --
 --   - ed25519 / secp256r1: `instruction_index == u16::MAX (0xFFFF)`
@@ -34,7 +34,7 @@
 -- This matches the common construction where a single-instruction
 -- precompile invocation packs sig + pubkey + msg inline. Multi-
 -- instruction precompiles (sig in instruction[i], msg in
--- instruction[j]) are a runtime concern that formal-svm doesn't model.
+-- instruction[j]) are a runtime concern that qedsvm doesn't model.
 --
 -- ## CU charging
 --
@@ -44,7 +44,7 @@
 -- runtime — precompiles never enter the program runtime's CU meter.
 -- We charge the same per-signature cost here so the Native dispatch
 -- result mirrors agave's accounting; transactions that route through
--- formal-svm see a single net CU figure that matches the on-chain
+-- qedsvm see a single net CU figure that matches the on-chain
 -- charge.
 
 import Svm.Native.AcctInput

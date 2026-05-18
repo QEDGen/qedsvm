@@ -1,20 +1,20 @@
-# formal-svm examples
+# qedsvm examples
 
-Worked examples demonstrating formal-svm's reach: running real
+Worked examples demonstrating qedsvm's reach: running real
 hand-written sBPF programs through the Lean reference VM, and proving
 Lean Hoare specs over them.
 
 The examples are **independent of the core library** — modifying or
 removing them doesn't touch `Svm.SBPF.*`. Lean proofs live under
 `Examples.*` (separate `lean_lib`); shell scripts run via
-`formal-svm-cli`.
+`qedsvm-cli`.
 
 ## Operational demo (cargo example)
 
 ### `doppler` — production oracle from https://github.com/blueshift-gg/doppler
 
 ```
-cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+cargo run --release --example doppler --manifest-path qedsvm-rs/Cargo.toml
 ```
 
 Drives the doppler oracle program through `Svm::process_instruction`
@@ -27,19 +27,19 @@ Drives the doppler oracle program through `Svm::process_instruction`
 | Stale sequence (new ≤ current) | `Oracle::check_and_update` inline asm | `r0=2`, 19 CU (`lddw r0, 2; exit`) |
 
 The example constructs Solana-shaped accounts and lets
-`formal_svm::serialize_parameters` place the bytes at the offsets
+`qedsvm::serialize_parameters` place the bytes at the offsets
 doppler reads from — no manual buffer construction needed.
 
 **Self-bootstrap**: the first run clones doppler, patches the
 `#[no_mangle]`-on-panic_handler issue, runs `cargo-build-sbf`, and
-caches the `.so` under `formal-svm-rs/target/examples-cache/doppler/`.
+caches the `.so` under `qedsvm-rs/target/examples-cache/doppler/`.
 Subsequent runs hit the cache. Requires `cargo-build-sbf` on PATH.
 
 To override the auto-bootstrap (e.g. with a pre-built .so):
 
 ```
 DOPPLER_SO=/path/to/doppler_program.so \
-  cargo run --release --example doppler --manifest-path formal-svm-rs/Cargo.toml
+  cargo run --release --example doppler --manifest-path qedsvm-rs/Cargo.toml
 ```
 
 ## Lean Hoare proofs
@@ -59,7 +59,7 @@ Two variants of the byte-increment demo:
   in Lean. Three instructions (`ldx, add64, stx`) + `exit`.
 - `byteIncrementSoText` / `byteIncrementSoInsns` — the 40 `.text`
   bytes of `byte_increment.so` produced by `cargo-build-sbf` from
-  `formal-svm-rs/tests/fixtures/byte_increment_src/`. LLVM emits 5
+  `qedsvm-rs/tests/fixtures/byte_increment_src/`. LLVM emits 5
   instructions (the macro + `mov r0, 0` + `exit`).
 
 For each, theorems show:
@@ -90,11 +90,11 @@ hand-written sBPF program from blueshift) and proves:
   (timeout path) or pc=3 (in-window exit) based on `current > target`.
 
 First Hoare proof in the repo over a hand-written sBPF program from
-outside the formal-svm test fixtures.
+outside the qedsvm test fixtures.
 
 ## Why two halves
 
-**Operational** demos prove "this binary works under formal-svm" — a
+**Operational** demos prove "this binary works under qedsvm" — a
 single program, one input, one output. Cheap, broad coverage, ideal
 for showing the VM matches expectations.
 

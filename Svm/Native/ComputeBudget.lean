@@ -9,7 +9,7 @@
 -- limit). CPI into ComputeBudget is therefore a no-op from the
 -- callee's perspective.
 --
--- formal-svm models per-instruction, not per-transaction, so the
+-- qedsvm models per-instruction, not per-transaction, so the
 -- runtime-level behavior is out of scope (Tier 4 in the
 -- production-parity roadmap). What we DO model here is the CPI
 -- path: a BPF program that calls `invoke(&compute_budget_ix, ...)`

@@ -63,7 +63,7 @@ def findByAuthority (p_accounts : List Account) (p_authority : Pubkey) : Option 
 
 /-! ## List-update lemmas
 
-These were `axiom` declarations until formal-svm Phase 0; they are
+These were `axiom` declarations until qedsvm Phase 0; they are
 standard `List.map` / `List.find?` interaction theorems, provable in
 core Lean without Mathlib. Replaces the past comment "full proof would
 require more complex induction" — it doesn't. -/

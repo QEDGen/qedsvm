@@ -1,8 +1,26 @@
-# formal-svm Roadmap
+# qedsvm Roadmap
 
 The path from operational sBPF semantics to a usable verified macro assembler.
 
 The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Phase 1 CPI small-step → ... → Phase 6 crypto) with a methodology lifted from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm): separation logic over machine state, bounded Hoare triples, per-instruction specs, then macros built and verified compositionally on top. The original CPI work isn't dropped — it reappears as Phase D/E (CPI envelope and per-program effects, written as verified sBPF macros).
+
+## Status snapshot — 2026-05-18
+
+| Phase | Status | Notes |
+| --- | --- | --- |
+| Phase 0 — Axiom cleanup | ✅ shipped (v0.2.0) | `Account.lean` axioms eliminated; flat-`Mem` axioms naturally dropped once Phase A landed |
+| Phase A — Foundations | ✅ shipped | `SepLogic.lean`, `CPSSpec.lean`, `InstructionSpecs.lean` all live; pure-ALU + memory + branch specs in |
+| Phase B — Full ISA spec coverage | ✅ shipped | `SpecGen.lean` hand-dispatches a Hoare triple per `Insn` constructor (`sl_block_auto`) |
+| Phase C — Tactic suite | ✅ shipped (with one mitigation) | `sl_block_iter`, `sl_branch`, `sl_rw_abs` elab tactics in `SLTactic.lean`. Gap 3 (structural reduction ceiling) closed-with-mitigation via `sl_rw_abs` — kernel-attribute path confirmed dead |
+| Phase D — sBPF macro library | ✅ mostly shipped | Memory (`u64_memcpy_16`), control flow (`if_else`, 2-way dispatch), CPI envelope pieces (PDA n=0, n=1, full stack-VmSlice variant) all proven in `MacroDemo.lean`. Stack frame setup/teardown library polish + sized memcmp still open |
+| Phase E — Solana program library | ⚠️ partial | System `Transfer` shipped end-to-end via the `Native` path (byte + CU parity vs mollusk); rent-exempt enforcement integration tests landed. SPL Token / ATA / Anchor patterns not yet written as verified macros (Token + ATA are Core-BPF, so they ride the BPF VM + Loader v3 path today rather than a native dispatcher) |
+| Phase F — Differential testing | ✅ mostly shipped | 22 diff-mollusk fixtures + 5 precompile-dispatch + 11 svm_api + rent + thread-safety; `R_BPF_64_RELATIVE` + PT_LOAD-only ELFs + fuzz/sweep harness still open |
+| Phase G — ELF loader + arbitrary program execution | ✅ mostly shipped | Tier-1 #1 (region bounds), Tier-1 #2 (native programs aligned with Firedancer: System + ComputeBudget + BPF Loader v3 Upgradeable + ed25519/secp256k1/secp256r1 precompiles), Tier-1 #2b (precompile dispatch), all Tier-2 ship-blockers (rent enforcement, log-data base64, `sol_log_compute_units_` agave-parity, top-level CU limit). `executeFnCpi ≡ executeFn` bridge for non-CPI programs landed. Remaining: real CPI body (program registry + recursive `executeFn`), `R_BPF_64_RELATIVE`, PT_LOAD, `@[implemented_by]` native compile |
+| Phase H — Crypto syscalls + zkSVM | 🟡 partial | All 12 crypto syscalls (sha256/sha512/keccak256/blake3, secp256k1, curve25519, BLS12-381, alt_bn128, big_mod_exp, poseidon, PDA) shipped via Rust FFI bridge to the same crates agave uses — explicit trust statements per syscall. SHA-256 + Murmur3 are pure-Lean and kernel-reducible. zkSVM target not started |
+
+**Headline numbers**: 152 Lean jobs green, ~55 Rust tests green (22 diff-mollusk + 5 precompile + 11 svm_api + 17 other).
+
+**Rough completeness, weighted by impact, not LOC**: Phases 0–C done, D ~85%, E ~20%, F ~80%, G ~85%, H crypto-runtime ~90% / zkSVM 0%. Aggregate: **~70% of the original v0.3 plan shipped**, with the remaining work concentrated in Phase E (verified macros for SPL Token / ATA / Anchor) and Phase H (zkSVM target + any pure-Lean crypto port).
 
 ## Shipped
 
@@ -12,7 +30,7 @@ Removed the five `axiom` declarations in `Svm/Account.lean` (list-update lemmas,
 
 ## Current track: v0.3.x — Verified macro assembler
 
-### Phase A — Foundations *(in progress)*
+### Phase A — Foundations ✅
 
 The minimum needed to write the first Hoare-triple instruction spec.
 
@@ -93,10 +111,10 @@ Extract the sBPF semantics (`Svm.SBPF.Execute`) to executable Lean / native and 
 Every disagreement is either a bug in our semantics or evidence of cross-client divergence worth surfacing. This is the empirical answer to the "is the hand-written ISA correct" question — until it passes, every Phase-E spec inherits this uncertainty.
 
 **What's shipped (through 2026-05-14):**
-- `formal-svm-rs/` Rust crate exposes the Lean runner via a Mollusk-shaped API (`Svm::process_instruction(&ix, &accounts) -> InstructionResult`). Same types as published agave-master pins (`solana-pubkey`, `solana-instruction`, `solana-account`), so Mollusk tests can swap engines by changing one type name.
+- `qedsvm-rs/` Rust crate exposes the Lean runner via a Mollusk-shaped API (`Svm::process_instruction(&ix, &accounts) -> InstructionResult`). Same types as published agave-master pins (`solana-pubkey`, `solana-instruction`, `solana-account`), so Mollusk tests can swap engines by changing one type name.
 - Agave-conformant input-buffer serializer with round-trip test against `solana_program_entrypoint::deserialize`, plus byte-level known-offset checks.
 - Thread-safe Lean runtime access (process-wide `Mutex`, stress-tested at 8 threads × 50 iters × varied input sizes).
-- `tests/diff_mollusk.rs` (gated `--features diff-mollusk`): runs the same `Instruction` through `formal_svm::Svm` and `mollusk_svm::Mollusk`, asserting equality on `program_result`, `return_data`, `resulting_accounts`, `compute_units_consumed`.
+- `tests/diff_mollusk.rs` (gated `--features diff-mollusk`): runs the same `Instruction` through `qedsvm::Svm` and `mollusk_svm::Mollusk`, asserting equality on `program_result`, `return_data`, `resulting_accounts`, `compute_units_consumed`.
 - **Five real `cargo-build-sbf` fixtures pass byte-for-byte cross-engine equality**: minimal noop (CU=2), `solana_program::entrypoint!` noop (CU=98), `msg!("hi")` logger (CU=202), incrementer that mutates `accounts[0].data` and writes back (CU=321), and noop+instruction-data. The incrementer is the strongest end-to-end conformance claim: `entrypoint!()` deserializes input, `try_borrow_mut_data()` succeeds, `u64+1` write-back is byte-identical to mollusk's resulting accounts.
 - ELF + decoder coverage for actual `cargo-build-sbf` (3.1.11 / platform-tools v1.52) output: `e_entry` honored, `R_BPF_64_32` Murmur3 relocations applied, `0x85` call decoder is src-agnostic (syscall hash lookup first, else `.call_local` PC-relative), `0x8d callx` (indirect call) decoded.
 - **V0 stack frames** (`solana-sbpf::Interpreter::push_frame` semantics): `.call_local` pushes a `CallFrame(retPc, savedR6..savedR10)` and bumps `r10 += 0x2000` (stack_frame_gaps); `.exit` restores all six fields. Without this LLVM-emitted entrypoint deserializers iterate forever because their loop counter spills to the same `r10 + const` offset across sub-calls.

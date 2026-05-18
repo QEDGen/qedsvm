@@ -1,8 +1,8 @@
-# formal-svm
+# qedsvm
 
 A reference interpreter for the Solana Virtual Machine, in Lean 4, on the path to a verified macro assembler. Every sBPF instruction and every crypto syscall has a formal operational meaning the kernel can commit to.
 
-formal-svm is Lean's role compounded: **assembler**, **macro language**, **specification language**, **proof assistant**, and **runtime**, all at once. You can hand it real Solana ELF bytecode and get back a kernel-committed final `State` (registers, memory, exit code, logs, return data). And you can — once the spec layer is further along — write sBPF directly as Lean terms, specify each instruction or macro with a separation-logic Hoare triple, and have Lean check that the implementation meets the spec. Triples are bounded: every spec carries an explicit step count `N` that doubles as a verified compute-unit budget.
+qedsvm is Lean's role compounded: **assembler**, **macro language**, **specification language**, **proof assistant**, and **runtime**, all at once. You can hand it real Solana ELF bytecode and get back a kernel-committed final `State` (registers, memory, exit code, logs, return data). And you can — once the spec layer is further along — write sBPF directly as Lean terms, specify each instruction or macro with a separation-logic Hoare triple, and have Lean check that the implementation meets the spec. Triples are bounded: every spec carries an explicit step count `N` that doubles as a verified compute-unit budget.
 
 The methodology is borrowed from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm), which descends from Kennedy/Benton/Jensen/Dagand, *"Coq: The world's best macro assembler?"* (PPDP 2013). They built a verified macro assembler for RV64IM and used it to implement EVM opcodes as RISC-V macros with machine-checked specs. We do the same thing for sBPF, targeting Solana programs.
 
@@ -10,7 +10,7 @@ The methodology is borrowed from [Verified-zkEVM/evm-asm](https://github.com/Ver
 
 Solana programs ship as sBPF bytecode produced by rustc → LLVM → sBPF. The compiler is in the trusted computing base of every program on mainnet. A bug in the toolchain — or a divergence between what the developer reasoned about in Rust and what the bytecode actually does — silently undermines correctness even if the source code is right.
 
-formal-svm explores an alternative path for programs where this matters: **write the sBPF directly in Lean, prove it correct, and ship the bytecode**. The rustc pipeline never enters the picture. For CPI patterns, ATA derivations, signature checks, and the small handful of operations that bear most of the value on Solana, that compiler-free path is a soundness floor that no amount of source-level review reaches.
+qedsvm explores an alternative path for programs where this matters: **write the sBPF directly in Lean, prove it correct, and ship the bytecode**. The rustc pipeline never enters the picture. For CPI patterns, ATA derivations, signature checks, and the small handful of operations that bear most of the value on Solana, that compiler-free path is a soundness floor that no amount of source-level review reaches.
 
 The same semantics, run the other way, is a **reference interpreter** with agave-conformant crypto. That's what's shipped today.
 
@@ -108,7 +108,7 @@ Honest framing — the substrate is built; the verification machinery on top is 
 
 - **Bounded Hoare triples / spec layer.** `Svm/SBPF/{SepLogic,CPSSpec,InstructionSpecs}.lean` define `cuTripleWithin`, frame, seq, weaken, and the first per-instruction triple (`mov64_imm_spec`). Most of the spec library is ahead. `Svm/SBPF/MacroDemo.lean` shows two verified two-instruction macros as a proof of pattern.
 - **13 axioms in `Svm/SBPF/Memory.lean`** for the flat-memory coherence lemmas. These disappear with the byte-level separation-logic migration (Phase A); they're not load-bearing in the spec layer.
-- **Differential test against agave shipped end-to-end.** `formal-svm-rs/tests/diff_mollusk.rs` runs the same `Instruction` through `formal_svm::Svm` and `mollusk_svm::Mollusk`. Three program shapes cross-checked, each asserting byte-for-byte equality on `program_result`, `return_data`, `resulting_accounts`, *and* `compute_units_consumed`:
+- **Differential test against agave shipped end-to-end.** `qedsvm-rs/tests/diff_mollusk.rs` runs the same `Instruction` through `qedsvm::Svm` and `mollusk_svm::Mollusk`. Three program shapes cross-checked, each asserting byte-for-byte equality on `program_result`, `return_data`, `resulting_accounts`, *and* `compute_units_consumed`:
   - **Minimal noop** (`mov64 r0, 0; exit`, 2 instructions) — CU 2 on both sides.
   - **Real `solana_program::entrypoint!` noop** (~1923 sBPF instructions, full input-buffer deserializer macro) — CU 98 on both sides. Exercises proper call/return through the `.call_local`/`.exit` push-PC/pop-PC plumbing.
   - **Logger** (`msg!("hi")` → `sol_log_`) — CU 202 on both sides. Exercises:
@@ -180,11 +180,11 @@ rust-bridge/                   — cargo staticlib called BY Lean for crypto sys
     ├── lib.rs                  — extern "C" functions, one per @[extern] decl
     └── lean_ffi.rs             — Rust bindings to Lean's lean_object ABI
 
-Svm/Ffi.lean                   — @[export formal_svm_run_elf_buffer] entry
+Svm/Ffi.lean                   — @[export qedsvm_run_elf_buffer] entry
                                   (ByteArray wire format the Rust crate decodes)
 
-formal-svm-rs/                 — cargo crate that CALLS Lean — runs programs
-                                  against the formal-svm via a Mollusk-shape API
+qedsvm-rs/                 — cargo crate that CALLS Lean — runs programs
+                                  against the qedsvm via a Mollusk-shape API
 ├── Cargo.toml                  — solana-pubkey/instruction/account pinned to
 │                                agave master; mollusk-svm optional
 ├── build.rs                    — auto-enumerates Lake's 33 dylib outputs
@@ -222,8 +222,8 @@ theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat) :
 ## Use it — from Lean
 
 ```lean
-require formalSvm from git
-  "https://github.com/QEDGen/formal-svm.git" @ "main"
+require qedsvm from git
+  "https://github.com/QEDGen/qedsvm.git" @ "main"
 ```
 
 Then `import Svm` (or import selectively, e.g. `import Svm.SBPF.Runner`).
@@ -232,12 +232,12 @@ Standalone build: `lake build`. Lean toolchain pin: `lean-toolchain`.
 
 **Build prerequisites:** Lean (per `lean-toolchain`, fetched by `elan`) and `cargo` / `rustc` (any stable toolchain). Lake invokes `cargo build --release` automatically during `lake build`. No system crypto libraries required.
 
-## Use it — from Rust (`formal-svm-rs`)
+## Use it — from Rust (`qedsvm-rs`)
 
 A sibling crate exposes the Lean runner via a Mollusk-shaped API for differential testing of Solana programs against the formal semantics.
 
 ```rust
-use formal_svm::{ProgramResult, Svm};
+use qedsvm::{ProgramResult, Svm};
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 
@@ -259,12 +259,12 @@ Types (`Pubkey`, `Instruction`, `AccountMeta`, `AccountSharedData`) are the publ
 Differential testing against Mollusk (gated behind `--features diff-mollusk`):
 
 ```bash
-cd formal-svm-rs && cargo test --features diff-mollusk
+cd qedsvm-rs && cargo test --features diff-mollusk
 ```
 
 `tests/diff_mollusk.rs` runs a real `cargo-build-sbf`-produced ELF through both engines and asserts equality on `(program_result, return_data, resulting_accounts, compute_units_consumed)`.
 
-**Prerequisites:** `lake build` has run at least once in the repo root (the build script auto-enumerates the 33 `formalSvm_*.dylib` outputs from `.lake/build/`).
+**Prerequisites:** `lake build` has run at least once in the repo root (the build script auto-enumerates the 33 `qedsvm_*.dylib` outputs from `.lake/build/`).
 
 ## Roadmap
 

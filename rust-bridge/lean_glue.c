@@ -11,10 +11,10 @@
  * Rust can't call inline-only functions across the FFI boundary, so
  * we emit thin out-of-line wrappers here under different names
  * (`leanrt_*`). `rust-bridge/build.rs` compiles this file and links
- * the resulting object into `libformal_svm_bridge.a`; Rust calls
+ * the resulting object into `libqedsvm_bridge.a`; Rust calls
  * `leanrt_*` via `extern "C"` declarations in `src/lean_ffi.rs`.
  *
- * This is the only C in formal-svm — and it does no algorithmic work,
+ * This is the only C in qedsvm — and it does no algorithmic work,
  * just ABI translation. The actual crypto and inductive construction
  * live in Rust.
  */

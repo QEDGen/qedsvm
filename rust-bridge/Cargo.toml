@@ -1,12 +1,12 @@
 [package]
-name = "formal-svm-bridge"
-description = "Rust shim layer exposing agave's exact crypto crate calls to the formal-svm Lean runtime via a C ABI"
+name = "qedsvm-bridge"
+description = "Rust shim layer exposing agave's exact crypto crate calls to the qedsvm Lean runtime via a C ABI"
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
 [lib]
-name = "formal_svm_bridge"
+name = "qedsvm_bridge"
 crate-type = ["staticlib"]
 
 # All versions pinned to match agave's workspace pins

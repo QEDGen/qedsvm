@@ -38,6 +38,6 @@ jobs:
         run: |
           set -e
           if grep -rn '\bsorry\b' Svm/; then
-            echo "Found sorry — formal-svm does not ship sorries."
+            echo "Found sorry — qedsvm does not ship sorries."
             exit 1
           fi

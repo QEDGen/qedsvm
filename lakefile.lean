@@ -1,7 +1,7 @@
 import Lake
 open Lake DSL System
 
--- formal-svm — Lean 4 reference semantics for the Solana Virtual Machine.
+-- qedsvm — Lean 4 reference semantics for the Solana Virtual Machine.
 --
 -- Pure Lean 4, no Mathlib dependency. Anything that needs Mathlib-level
 -- reasoning (`Fin → α`, `BigOperators`, ring/omega over closed forms)
@@ -22,14 +22,14 @@ open Lake DSL System
 --   Svm.SBPF.*  — sBPF interpreter (ISA, Memory, Execute, WP tactic)
 --
 -- See README.md and ROADMAP.md for scope.
-package formalSvm
+package qedsvm
 
 target rustBridge pkg : FilePath := do
   let manifestJob ← inputTextFile <| pkg.dir / "rust-bridge" / "Cargo.toml"
   let libRsJob    ← inputTextFile <| pkg.dir / "rust-bridge" / "src" / "lib.rs"
   let leanFfiJob  ← inputTextFile <| pkg.dir / "rust-bridge" / "src" / "lean_ffi.rs"
   let manifest := pkg.dir / "rust-bridge" / "Cargo.toml"
-  let outFile  := pkg.dir / "rust-bridge" / "target" / "release" / "libformal_svm_bridge.a"
+  let outFile  := pkg.dir / "rust-bridge" / "target" / "release" / "libqedsvm_bridge.a"
   manifestJob.bindM fun _ =>
     libRsJob.bindM fun _ =>
       leanFfiJob.mapM fun _ => do

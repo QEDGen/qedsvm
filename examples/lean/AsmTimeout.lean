@@ -26,7 +26,7 @@
      either pc=3 (in-window exit) or pc=4 (timeout, lddw + exit).
 
   Demonstrates that *real* hand-written sBPF assembly admits a Lean
-  Hoare spec through formal-svm's macro infrastructure. The full
+  Hoare spec through qedsvm's macro infrastructure. The full
   end-to-end lift to `Runner.run` halted output requires either two
   separate macro proofs (one per exit branch) or an `sl_branch`
   variant with non-converging branches; the prefix proof here is the

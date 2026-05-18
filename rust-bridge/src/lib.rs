@@ -1,4 +1,4 @@
-//! Rust bridge for formal-svm's crypto syscalls.
+//! Rust bridge for qedsvm's crypto syscalls.
 //!
 //! Every export here is the direct target of a Lean `@[extern "name"]`
 //! declaration in `Svm/SBPF/*.lean`. Functions take/return Lean's

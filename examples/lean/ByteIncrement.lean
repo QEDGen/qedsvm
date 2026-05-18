@@ -204,7 +204,7 @@ theorem byteIncrement_run_terminates
 /-! ## Session 3b: LLVM-compiled .so demo
 
 The byte sequence below is the `.text` section content of
-`formal-svm-rs/tests/fixtures/byte_increment.so`, produced by
+`qedsvm-rs/tests/fixtures/byte_increment.so`, produced by
 `cargo-build-sbf` from `byte_increment_src/`. LLVM emits 5
 instructions: the same 3-instruction byte_increment macro, plus
 `mov r0, 0` (set return value) and `exit`.
@@ -229,7 +229,7 @@ pub extern "C" fn entrypoint(input: *mut u8) -> u64 {
 
 To verify this byte sequence stays in sync with `byte_increment.so`:
 ```sh
-cd formal-svm-rs/tests/fixtures/byte_increment_src && cargo-build-sbf
+cd qedsvm-rs/tests/fixtures/byte_increment_src && cargo-build-sbf
 xxd -s 0x120 -l 40 ../byte_increment.so
 ``` -/
 
