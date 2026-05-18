@@ -49,9 +49,9 @@
 
 import Svm.Native.AcctInput
 import Svm.SBPF.Machine
-import Svm.SBPF.Sha256
-import Svm.SBPF.Keccak256
-import Svm.SBPF.Secp256k1
+import Svm.Syscalls.Sha256
+import Svm.Syscalls.Keccak256
+import Svm.Syscalls.Secp256k1
 
 namespace Svm.Native.Precompiles
 

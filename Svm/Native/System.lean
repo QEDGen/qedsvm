@@ -15,7 +15,7 @@
 
 import Svm.Native.AcctInput
 import Svm.SBPF.Machine
-import Svm.SBPF.Sha256
+import Svm.Syscalls.Sha256
 
 namespace Svm.Native.System
 

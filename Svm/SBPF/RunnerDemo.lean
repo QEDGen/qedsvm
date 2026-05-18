@@ -11,11 +11,11 @@
 -/
 
 import Svm.SBPF.Runner
-import Svm.SBPF.Pda
-import Svm.SBPF.Poseidon
-import Svm.SBPF.Bls12_381
-import Svm.SBPF.AltBn128
-import Svm.SBPF.BigModExp
+import Svm.Syscalls.Pda
+import Svm.Syscalls.Poseidon
+import Svm.Syscalls.Bls12_381
+import Svm.Syscalls.AltBn128
+import Svm.Syscalls.BigModExp
 
 namespace Svm.SBPF.RunnerDemo
 

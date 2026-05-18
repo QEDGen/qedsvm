@@ -25,8 +25,8 @@
 -/
 
 import Svm.SBPF.Machine
-import Svm.SBPF.Sha256
-import Svm.SBPF.Curve25519
+import Svm.Syscalls.Sha256
+import Svm.Syscalls.Curve25519
 
 namespace Svm.SBPF
 namespace Pda

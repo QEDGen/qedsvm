@@ -128,47 +128,74 @@ Svm/
 ├── Account.lean               — Pubkey, Account, findBy{Key,Authority}
 ├── Cpi.lean                   — CpiInstruction envelope, program-ID registry,
 │                                SPL/System/ATA discriminators
+├── Ffi.lean                   — @[export qedsvm_run_elf_buffer] entry
+│                                (ByteArray wire format the Rust crate decodes)
 ├── SBPF.lean                  — sBPF kernel aggregator
-└── SBPF/
-    ├── ISA.lean               — Insn + Syscall enums (43 variants, full agave registry)
-    ├── Memory.lean            — byte-addressable Mem, region layout
-    ├── Region.lean            — region IDs (rodata/bytecode/stack/heap/input)
-    ├── Pubkey.lean            — sBPF-level pubkey reads
-    ├── Execute.lean           — RegFile, machine State, step, executeFn,
-    │                            execSyscall (every syscall arm in one place)
-    ├── Decode.lean            — sBPF bytecode parser (lddw + jump-target resolution)
-    ├── Elf.lean               — ELF64 loader (header, sections, .rodata, R_BPF_64_64)
-    ├── Murmur3.lean           — pure-Lean Murmur3-32
-    ├── SyscallHash.lean       — name → hash → typed Syscall (43 known)
-    ├── Runner.lean            — production entrypoint + executeFnCpi (CPI v1)
-    ├── RunnerDemo.lean        — 38 demos / 108 native_decide assertions
-    │                            (kept out of the production aggregator)
-    │
-    │   ─ Crypto modules (each calls rust-bridge with agave-pinned crates) ─
-    ├── Sha256.lean             — pure-Lean FIPS-180-4 + hashAgave audit hook
-    ├── Sha512.lean             — sha2 = 0.10.8
-    ├── Keccak256.lean          — sha3 = 0.10.8
-    ├── Blake3.lean             — blake3 = 1.8.5
-    ├── Secp256k1.lean          — libsecp256k1 = 0.7.2 (paritytech)
-    ├── Curve25519.lean         — curve25519-dalek = 4.1.3
-    │                             validate + group_op + multiscalar_mul
-    ├── Bls12_381.lean          — solana-bls12-381-syscall = 0.1.0
-    │                             decompress + pairing_map
-    ├── AltBn128.lean           — solana-bn254 = 3.2.1
-    │                             group_op + compression
-    ├── Poseidon.lean           — light-poseidon = 0.4.0, BN254 x⁵
-    ├── BigModExp.lean          — solana-big-mod-exp = 3.0.0
-    ├── Pda.lean                — pure-Lean PDA derivation
-    │                             (Sha256.hash + Curve25519.validateEdwards)
-    │
-    │   ─ Spec layer (early) ─
-    ├── SepLogic.lean           — PartialState, separation logic, points-to
-    ├── CPSSpec.lean            — cuTripleWithin, frame, seq, weaken
-    ├── InstructionSpecs.lean   — per-instruction triples (first one in)
-    ├── MacroDemo.lean          — verified two-instruction macros (proof of pattern)
-    ├── Patterns.lean           — concrete-fetch composition lemmas
-    ├── Tactic.lean             — misc tactics
-    └── WPTactic.lean           — wp_exec (legacy, for concrete programs)
+├── SBPF/                      — sBPF interpreter: ISA + memory + execution
+├── Syscalls/                  — syscall bodies (one file per logical group)
+└── Native/                    — native programs (System, ComputeBudget, BPF
+                                  Loader v3 Upgradeable, precompile dispatch)
+
+Svm/SBPF/                      — the interpreter
+├── ISA.lean                   — Insn + Syscall enums (full agave registry)
+├── Memory.lean                — byte-addressable Mem
+├── Region.lean                — region IDs (rodata/bytecode/stack/heap/input)
+├── Pubkey.lean                — sBPF-level pubkey reads
+├── Machine.lean               — State, RegFile, CallFrame, shared body helpers
+├── Execute.lean               — step, executeFn; 50-line execSyscall/syscallCu
+│                                dispatchers that fan out to Svm/Syscalls/*
+├── Decode.lean                — bytecode parser (lddw + jump-target resolution)
+├── Elf.lean                   — ELF64 loader (header, sections, .rodata,
+│                                R_BPF_64_32 Murmur3 relocations)
+├── Murmur3.lean               — pure-Lean Murmur3-32 (kernel-reducible)
+├── SyscallHash.lean           — name → hash → typed Syscall
+├── Runner.lean                — production entrypoint + executeFnCpi
+├── RunnerBridge.lean          — FFI wrapper consumed by Svm/Ffi.lean
+├── RunnerDemo.lean            — 38 demos / 108 native_decide assertions
+│                                (kept out of the production aggregator)
+│
+│   ─ Spec layer: Hoare triples over sBPF programs ─
+├── SepLogic.lean              — PartialState, separation logic, points-to
+├── CPSSpec.lean               — cuTripleWithin, frame, seq, weaken,
+│                                branch_merge
+├── InstructionSpecs.lean      — per-instruction triples (pure-ALU + memory
+│                                + branch + lddw + exit)
+├── SpecGen.lean               — sl_block_auto: hand-dispatched per-Insn lookup
+├── Patterns.lean              — concrete-fetch composition lemmas
+├── SLTactic.lean              — sl_block_iter / sl_branch / sl_rw_abs elab tactics
+├── MacroDemo.lean             — verified macros (lamport_transfer, memcpy_16,
+│                                if_else, 2-way dispatch, PDA n=0/n=1/stack)
+├── Tactic.lean                — misc tactics
+└── WPTactic.lean              — wp_exec (legacy, for concrete programs)
+
+Svm/Syscalls/                  — every syscall body (one logical group per file)
+├── Abort.lean                 — abort
+├── Logging.lean               — sol_log_, sol_log_pubkey, sol_log_64_,
+│                                sol_log_compute_units_, sol_log_data
+├── MemOps.lean                — sol_memcpy_/memmove_/memset_/memcmp_
+├── ReturnData.lean            — sol_set_return_data / sol_get_return_data
+├── Sysvar.lean                — sol_get_{clock,rent,epoch_schedule,
+│                                last_restart_slot}_sysvar
+├── Cpi.lean                   — sol_invoke_signed_c / sol_invoke_signed_rust
+├── Misc.lean                  — sol_get_stack_height + other small syscalls
+│
+│   ─ Crypto syscalls (each calls rust-bridge with agave-pinned crates,
+│     except Sha256/Murmur3 which are pure-Lean) ─
+├── Sha256.lean                — pure-Lean FIPS-180-4 + hashAgave audit hook
+├── Sha512.lean                — sha2 = 0.10.8
+├── Keccak256.lean             — sha3 = 0.10.8
+├── Blake3.lean                — blake3 = 1.8.5
+├── Secp256k1.lean             — libsecp256k1 = 0.7.2 (paritytech)
+├── Curve25519.lean            — curve25519-dalek = 4.1.3
+│                                validate + group_op + multiscalar_mul
+├── Bls12_381.lean             — solana-bls12-381-syscall = 0.1.0
+│                                decompress + pairing_map
+├── AltBn128.lean              — solana-bn254 = 3.2.1, group_op + compression
+├── Poseidon.lean              — light-poseidon = 0.4.0, BN254 x⁵
+├── BigModExp.lean             — solana-big-mod-exp = 3.0.0
+└── Pda.lean                   — sol_create_program_address +
+                                 sol_try_find_program_address (Sha256 +
+                                 Curve25519.validateEdwards)
 
 rust-bridge/                   — cargo staticlib called BY Lean for crypto syscalls
 ├── Cargo.toml                  — pinned versions matching agave master

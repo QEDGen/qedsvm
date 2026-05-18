@@ -88,7 +88,7 @@
 import Svm.Native.AcctInput
 import Svm.Native.System
 import Svm.SBPF.Machine
-import Svm.SBPF.Pda
+import Svm.Syscalls.Pda
 import Svm.Syscalls.Cpi
 
 namespace Svm.Native.BpfLoaderUpgradeable

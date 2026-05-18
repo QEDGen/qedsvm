@@ -10,17 +10,17 @@ import Svm.SBPF.Machine
 -- corresponding `cu` charge for the syscall(s) it owns; the
 -- dispatchers below are the only place a `Syscall` variant maps to
 -- those bodies.
-import Svm.SBPF.Sha256
-import Svm.SBPF.Sha512
-import Svm.SBPF.Keccak256
-import Svm.SBPF.Blake3
-import Svm.SBPF.Poseidon
-import Svm.SBPF.Secp256k1
-import Svm.SBPF.Curve25519
-import Svm.SBPF.Bls12_381
-import Svm.SBPF.AltBn128
-import Svm.SBPF.BigModExp
-import Svm.SBPF.Pda
+import Svm.Syscalls.Sha256
+import Svm.Syscalls.Sha512
+import Svm.Syscalls.Keccak256
+import Svm.Syscalls.Blake3
+import Svm.Syscalls.Poseidon
+import Svm.Syscalls.Secp256k1
+import Svm.Syscalls.Curve25519
+import Svm.Syscalls.Bls12_381
+import Svm.Syscalls.AltBn128
+import Svm.Syscalls.BigModExp
+import Svm.Syscalls.Pda
 -- Non-crypto syscall modules. Same shape: `exec` + `cu`.
 import Svm.Syscalls.Logging
 import Svm.Syscalls.MemOps
