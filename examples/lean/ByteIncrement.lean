@@ -18,7 +18,7 @@
 -/
 
 import Svm.SBPF.RunnerBridge
-import Svm.SBPF.MacroDemo
+import Svm.SBPF.Macros
 
 namespace Examples.ByteIncrement
 

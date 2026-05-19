@@ -11,7 +11,7 @@ import Svm.SBPF.CPSSpec
 import Svm.SBPF.InstructionSpecs
 import Svm.SBPF.SLTactic
 import Svm.SBPF.SpecGen
-import Svm.SBPF.MacroDemo
+import Svm.SBPF.Macros
 import Svm.SBPF.Murmur3
 import Svm.Syscalls.Sha256
 import Svm.Syscalls.Keccak256

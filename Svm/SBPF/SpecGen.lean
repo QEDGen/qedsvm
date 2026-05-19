@@ -28,7 +28,7 @@
       would pass manually.
 
   Dispatch is hand-coded per Insn ctor (`Svm/SBPF/SpecGen.lean::mkSpec`)
-  for the spec families currently used in `MacroDemo.lean`:
+  for the spec families currently used in `Macros.lean`:
   ALU imm + reg families (mov / add / sub / mul / and / or / xor /
   lsh / rsh / arsh, both 64-bit), `ldx` (4 widths), `stx` (4 widths).
   Adding a new family is a single case in `mkSpec`.

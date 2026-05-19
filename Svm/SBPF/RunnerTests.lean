@@ -17,7 +17,7 @@ import Svm.Syscalls.Bls12_381
 import Svm.Syscalls.AltBn128
 import Svm.Syscalls.BigModExp
 
-namespace Svm.SBPF.RunnerDemo
+namespace Svm.SBPF.RunnerTests
 
 open Svm.SBPF
 
@@ -1990,4 +1990,4 @@ example :
     BigModExp.modpow ⟨#[0x07]⟩ ⟨#[0x03]⟩ ⟨#[0x00, 0x00, 0x00]⟩
     = ⟨#[0x00, 0x00, 0x00]⟩ := by native_decide
 
-end Svm.SBPF.RunnerDemo
+end Svm.SBPF.RunnerTests

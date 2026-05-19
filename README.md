@@ -151,8 +151,10 @@ Svm/SBPF/                      — the interpreter
 ├── SyscallHash.lean           — name → hash → typed Syscall
 ├── Runner.lean                — production entrypoint + executeFnCpi
 ├── RunnerBridge.lean          — FFI wrapper consumed by Svm/Ffi.lean
-├── RunnerDemo.lean            — 38 demos / 108 native_decide assertions
-│                                (kept out of the production aggregator)
+├── RunnerTests.lean           — 38 native_decide runs over Runner.run on
+│                                hand-encoded bytecode + ELF (integration
+│                                tests; build-time guard against runner /
+│                                decoder regressions)
 │
 │   ─ Spec layer: Hoare triples over sBPF programs ─
 ├── SepLogic.lean              — PartialState, separation logic, points-to
@@ -163,8 +165,9 @@ Svm/SBPF/                      — the interpreter
 ├── SpecGen.lean               — sl_block_auto: hand-dispatched per-Insn lookup
 ├── Patterns.lean              — concrete-fetch composition lemmas
 ├── SLTactic.lean              — sl_block_iter / sl_branch / sl_rw_abs elab tactics
-├── MacroDemo.lean             — verified macros (lamport_transfer, memcpy_16,
-│                                if_else, 2-way dispatch, PDA n=0/n=1/stack)
+├── Macros.lean                — verified macro library (lamport_transfer,
+│                                memcpy_16, if_else, 2-way dispatch, PDA
+│                                n=0/n=1/stack); consumed by examples/
 ├── Tactic.lean                — misc tactics
 └── WPTactic.lean              — wp_exec (legacy, for concrete programs)
 
@@ -196,6 +199,11 @@ Svm/Syscalls/                  — every syscall body (one logical group per fil
 └── Pda.lean                   — sol_create_program_address +
                                  sol_try_find_program_address (Sha256 +
                                  Curve25519.validateEdwards)
+
+examples/lean/                 — separate Examples lean_lib, not in the
+                                  production aggregator (`lake build Examples`)
+├── ByteIncrement.lean         — hand-encoded byte_increment program + spec
+└── AsmTimeout.lean            — sBPF + Hoare spec for the asm-timeout demo
 
 rust-bridge/                   — cargo staticlib called BY Lean for crypto syscalls
 ├── Cargo.toml                  — pinned versions matching agave master

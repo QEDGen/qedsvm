@@ -33,7 +33,7 @@
   branching primitive itself, which is the most spec-revealing part.
 -/
 
-import Svm.SBPF.MacroDemo
+import Svm.SBPF.Macros
 import Svm.SBPF.RunnerBridge
 
 namespace Examples.AsmTimeout
