@@ -50,17 +50,17 @@ private def hex (n width : Nat) : String :=
 /-! ## Memory + register initialization -/
 
 /-- Empty memory: every byte is zero. -/
-def emptyMem : Mem := fun _ => 0
+def emptyMem : Mem := {}
 
 /-- Overlay a ByteArray onto memory starting at `baseAddr`. Outside the
-    overlaid range the underlying memory is preserved. -/
+    overlaid range the underlying memory is preserved.
+
+    Bytes are written into the `Mem` overlay one at a time (was a
+    function-form closure in the old `abbrev Mem` world; each byte
+    used to walk the entire chain on read). -/
 def loadBytesAt (mem : Mem) (bytes : ByteArray) (baseAddr : Nat) : Mem :=
-  fun a =>
-    if a < baseAddr then mem a
-    else
-      let offset := a - baseAddr
-      if offset < bytes.size then (bytes.get! offset).toNat
-      else mem a
+  (List.range bytes.size).foldl
+    (fun m i => Memory.writeU8 m (baseAddr + i) (bytes.get! i).toNat) mem
 
 /-- Overlay the input buffer at `INPUT_START`. -/
 def loadInput (mem : Mem) (input : ByteArray) : Mem :=

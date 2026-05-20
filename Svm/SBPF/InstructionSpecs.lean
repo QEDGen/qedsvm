@@ -2272,7 +2272,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
             exact PartialState.singletonMem_mem_other ha
           rw [PartialState.union_mem_of_left_none h_outer_h1_none] at hvm
           unfold Memory.writeU8
-          show (if a = effectiveAddr baseAddr off then newByteVal % 256 else s.mem a) = vm
+          simp only [Memory.Mem.read_put]
           rw [if_neg ha]
           apply hcm_mem a vm
           have h_P_none : h_P.mem a = none := by
@@ -3262,9 +3262,7 @@ theorem stxh_spec
               exact PartialState.singletonMemU16_mem_outside _ _ a (by omega)
             rw [PartialState.union_mem_of_left_none h_outer_none] at hvm
             unfold Memory.writeU16
-            show (if a = effectiveAddr baseAddr off then _
-                  else if a = effectiveAddr baseAddr off + 1 then _
-                  else s.mem a) = vm
+            simp only [Memory.Mem.read_put]
             rw [if_neg ha0, if_neg ha1]
             apply hcm_mem a vm
             have h_P_none : h_P.mem a = none := by
@@ -3871,11 +3869,7 @@ theorem stxw_spec
                   exact PartialState.singletonMemU32_mem_outside _ _ a (by omega)
                 rw [PartialState.union_mem_of_left_none h_outer_none] at hvm
                 unfold Memory.writeU32
-                show (if a = effectiveAddr baseAddr off then _
-                      else if a = effectiveAddr baseAddr off + 1 then _
-                      else if a = effectiveAddr baseAddr off + 2 then _
-                      else if a = effectiveAddr baseAddr off + 3 then _
-                      else s.mem a) = vm
+                simp only [Memory.Mem.read_put]
                 rw [if_neg ha0, if_neg ha1, if_neg ha2, if_neg ha3]
                 apply hcm_mem a vm
                 have h_P_none : h_P.mem a = none := by
@@ -4288,15 +4282,7 @@ theorem stxdw_spec
                           exact PartialState.singletonMemU64_mem_outside _ _ a (by omega)
                         rw [PartialState.union_mem_of_left_none h_outer_none] at hvm
                         unfold Memory.writeU64
-                        show (if a = effectiveAddr baseAddr off then _
-                              else if a = effectiveAddr baseAddr off + 1 then _
-                              else if a = effectiveAddr baseAddr off + 2 then _
-                              else if a = effectiveAddr baseAddr off + 3 then _
-                              else if a = effectiveAddr baseAddr off + 4 then _
-                              else if a = effectiveAddr baseAddr off + 5 then _
-                              else if a = effectiveAddr baseAddr off + 6 then _
-                              else if a = effectiveAddr baseAddr off + 7 then _
-                              else s.mem a) = vm
+                        simp only [Memory.Mem.read_put]
                         rw [if_neg ha0, if_neg ha1, if_neg ha2, if_neg ha3,
                             if_neg ha4, if_neg ha5, if_neg ha6, if_neg ha7]
                         apply hcm_mem a vm
@@ -4716,10 +4702,8 @@ theorem call_create_program_address_n0_spec
             | some bs => bs | none => outOldBytes).get! i).toNat := by
     cases h_cpa : Pda.createProgramAddress [] pidBytes with
     | some bs =>
-      show writeBytes s.mem r4V 32 bs (r4V + i) = _
-      unfold writeBytes
-      rw [if_pos ⟨Nat.le_add_right _ _, by omega⟩,
-          show r4V + i - r4V = i from by omega]
+      show (writeBytes s.mem r4V 32 bs).read (r4V + i) = _
+      exact writeBytes_read_inside _ _ _ _ _ hi
     | none =>
       show s.mem (r4V + i) = _
       exact hs_mem_r4 i hi
@@ -4728,9 +4712,8 @@ theorem call_create_program_address_n0_spec
       (commitOptional s r4V 32 (Pda.createProgramAddress [] pidBytes)).mem a = s.mem a := by
     cases Pda.createProgramAddress [] pidBytes with
     | some bs =>
-      show writeBytes s.mem r4V 32 bs a = _
-      unfold writeBytes
-      rw [if_neg (by rintro ⟨h1, h2⟩; omega)]
+      show (writeBytes s.mem r4V 32 bs).read a = _
+      exact writeBytes_read_outside _ _ _ _ _ h
     | none => rfl
   -- ==== Phase 6: assemble the witness for (Q ** R).holdsFor (executeFn fetch s 1). ====
   -- New partial state: same 6-atom structure as P, with two atoms updated.
@@ -5922,10 +5905,8 @@ theorem call_create_program_address_n1_spec
             | some bs => bs | none => outOldBytes).get! i).toNat := by
     cases h_cpa : Pda.createProgramAddress [seedBytes] pidBytes with
     | some bs =>
-      show writeBytes s.mem r4V 32 bs (r4V + i) = _
-      unfold writeBytes
-      rw [if_pos ⟨Nat.le_add_right _ _, by omega⟩,
-          show r4V + i - r4V = i from by omega]
+      show (writeBytes s.mem r4V 32 bs).read (r4V + i) = _
+      exact writeBytes_read_inside _ _ _ _ _ hi
     | none =>
       show s.mem (r4V + i) = _
       exact hs_out i hi
@@ -5933,9 +5914,8 @@ theorem call_create_program_address_n1_spec
       (commitOptional s r4V 32 (Pda.createProgramAddress [seedBytes] pidBytes)).mem a = s.mem a := by
     cases Pda.createProgramAddress [seedBytes] pidBytes with
     | some bs =>
-      show writeBytes s.mem r4V 32 bs a = _
-      unfold writeBytes
-      rw [if_neg (by rintro ⟨h1, h2⟩; omega)]
+      show (writeBytes s.mem r4V 32 bs).read a = _
+      exact writeBytes_read_outside _ _ _ _ _ h
     | none => rfl
   have h_post_exitCode :
       (commitOptional s r4V 32 (Pda.createProgramAddress [seedBytes] pidBytes)).exitCode

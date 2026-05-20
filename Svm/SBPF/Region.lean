@@ -31,8 +31,15 @@ def writeU64Chain (mem : Mem) : List (Nat × Nat) → Mem
 @[simp] theorem writeU64Chain_nil (mem : Mem) :
     writeU64Chain mem [] = mem := rfl
 
+-- `rfl` is correct here but in the post-Mem-refactor world the
+-- definitional check used to time out at whnf because `writeU64` now
+-- expands into an 8-deep `Mem.put` chain; the elaborator was reducing
+-- the inner expression on both sides. Spell out the iota step
+-- manually so whnf stays away from `writeU64`'s body.
 @[simp] theorem writeU64Chain_cons (mem : Mem) (a v : Nat) (rest : List (Nat × Nat)) :
-    writeU64Chain mem ((a, v) :: rest) = writeU64Chain (writeU64 mem a v) rest := rfl
+    writeU64Chain mem ((a, v) :: rest) = writeU64Chain (writeU64 mem a v) rest := by
+  show writeU64Chain (writeU64 mem a v) rest = writeU64Chain (writeU64 mem a v) rest
+  rfl
 
 /-- readU64 from below stack through a chain of U64 writes above stack. -/
 theorem readU64_writeU64Chain_frame (mem : Mem) (rAddr : Nat) (writes : List (Nat × Nat))

@@ -281,13 +281,62 @@ def hashSliceCost (mem : Memory.Mem) (descsAddr n : Nat) : Nat :=
     acc + Nat.max 10 (len / 2)) 0
 
 /-- Memory update that writes the first `len` bytes of `bs` to address
-    `out`, leaving everything else untouched. Equivalent to the
+    `out`, leaving everything else untouched. Equivalent to the old
     inline `fun a => if a ≥ out ∧ a - out < len then bs.get! (a - out)
-    else mem a` shape repeated across every crypto syscall body. -/
+    else mem a` shape repeated across every crypto syscall body.
+
+    Writes byte-by-byte into the `Mem` overlay so subsequent reads
+    take the O(1) HashMap path instead of walking a closure chain. -/
 def writeBytes (mem : Memory.Mem) (out len : Nat) (bs : ByteArray) : Memory.Mem :=
-  fun a =>
-    if a ≥ out ∧ a - out < len then (bs.get! (a - out)).toNat
-    else mem a
+  (List.range len).foldl
+    (fun m i => Memory.writeU8 m (out + i) (bs.get! i).toNat) mem
+
+/-- Reading `writeBytes` at an address outside the written window is
+    transparent. Replaces the old `unfold writeBytes; rw [if_neg ...]`
+    pattern in `InstructionSpecs.lean` (proofs that the
+    `Pda.createProgramAddress` write doesn't touch memory beyond
+    `[r4V, r4V + 32)`). The new fold-based body has no `if` to peel,
+    so this lemma takes its place. -/
+theorem writeBytes_read_outside (mem : Memory.Mem) (out len a : Nat) (bs : ByteArray)
+    (h : a < out ∨ a ≥ out + len) :
+    (writeBytes mem out len bs).read a = mem.read a := by
+  unfold writeBytes
+  induction len with
+  | zero => simp [List.range_zero]
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+    unfold Memory.writeU8
+    rw [Memory.Mem.read_put_other _ _ _ _ (by rcases h with h | h <;> omega)]
+    apply ih
+    rcases h with h | h
+    · exact Or.inl h
+    · exact Or.inr (by omega)
+
+/-- Reading `writeBytes` at an address inside the written window
+    returns the corresponding byte from `bs`. Replaces the old
+    `unfold writeBytes; rw [if_pos ...]` pattern — the new
+    fold-based body has no `if` to peel.
+
+    Requires `bs.get! j` to be < 256 (always true since `ByteArray.get!`
+    returns `UInt8`), which is needed because the underlying
+    `writeU8` stores `val % 256`. -/
+theorem writeBytes_read_inside (mem : Memory.Mem) (out len i : Nat) (bs : ByteArray)
+    (hi : i < len) :
+    (writeBytes mem out len bs).read (out + i) = (bs.get! i).toNat := by
+  unfold writeBytes
+  induction len with
+  | zero => omega
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+    unfold Memory.writeU8
+    by_cases h : i = n
+    · subst h
+      rw [Memory.Mem.read_put_self]
+      have : (bs.get! i).toNat < 256 := (bs.get! i).toNat_lt
+      omega
+    · rw [Memory.Mem.read_put_other _ _ _ _ (by omega)]
+      apply ih
+      omega
 
 /-- Commit an `Option ByteArray` result to state: success writes the
     bytes to `*out` (sized `outSize`) and sets `r0 := 0`; failure sets

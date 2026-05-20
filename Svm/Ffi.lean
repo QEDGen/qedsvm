@@ -236,7 +236,7 @@ fallback is safe. -/
 @[export qedsvm_precompile_dispatch]
 def precompileDispatch (pidBytes ixData : ByteArray) : ByteArray :=
   let pid := pubkeyToNat pidBytes 0
-  let r := match Svm.Native.Precompiles.dispatch pid ixData [] (fun _ => 0) with
+  let r := match Svm.Native.Precompiles.dispatch pid ixData [] ({} : Memory.Mem) with
            | some res => (UInt64.ofNat res.r0, UInt64.ofNat res.cu)
            | none     => (1, 0)
   encodeU64 r.1 ++ encodeU64 r.2

@@ -27,13 +27,13 @@ The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Pha
 | Phase D — sBPF macro library | ✅ mostly shipped | Memory (`u64_memcpy_16`), control flow (`if_else`, 2-way dispatch), CPI envelope pieces (PDA n=0, n=1, full stack-VmSlice variant) all proven in `MacroDemo.lean`. Stack frame setup/teardown library polish + sized memcmp still open |
 | Phase E — Solana program library | ⚠️ partial | System `Transfer` shipped end-to-end via the `Native` path (byte + CU parity vs mollusk); rent-exempt enforcement integration tests landed. SPL Token / ATA / Anchor patterns not yet written as verified macros (Token + ATA are Core-BPF, so they ride the BPF VM + Loader v3 path today rather than a native dispatcher) |
 | Phase F — Differential testing | ✅ mostly shipped | 25 diff-mollusk fixtures + 5 precompile-dispatch + 11 svm_api + rent + thread-safety; PT_LOAD-only ELFs + fuzz/sweep harness still open |
-| Phase G — ELF loader + arbitrary program execution | ✅ shipped | Tier-1 #1 (region bounds — `RegionTable` in `Memory.lean` traps OOR accesses with `ERR_ACCESS_VIOLATION`), Tier-1 #2 (native programs aligned with Firedancer: System + ComputeBudget + BPF Loader v3 Upgradeable + ed25519/secp256k1/secp256r1 precompiles), Tier-1 #2b (precompile dispatch), all Tier-2 ship-blockers (rent enforcement, log-data base64, `sol_log_compute_units_` agave-parity, top-level CU limit). `executeFnCpi ≡ executeFn` bridge for non-CPI programs landed. **Real CPI shipped**: program registry + recursive `executeFn`, ABI deserialization (Rust + C), account write-back, log/returnData propagation, proportional CU split, account aliasing detection, depth-2+ recursion, ixData propagation to callee, **PDA signer-seed promotion** (r4/r5 → `create_program_address(seeds, callerPid)` → promote matching AccountInfo to `is_signer=true`). **R_BPF_64_RELATIVE** applied to `.text` (lddw imm bump via `applyRelRelativeText`) and `.data.rel.ro` (pointer field shifts via `applyDataRelocations`). **Per-byte hash CU** (`hashSliceCost` in `Machine.lean`: `max(10, len/2)` per slice + 85 base) for sha256/sha512/keccak256/blake3, matching agave. PT_LOAD-only ELFs verified out of scope (agave rejects them). Remaining: `@[implemented_by]` native compile (throughput only — the functional `Mem` makes hot reads O(write-chain-length)) |
+| Phase G — ELF loader + arbitrary program execution | ✅ shipped | Tier-1 #1 (region bounds — `RegionTable` in `Memory.lean` traps OOR accesses with `ERR_ACCESS_VIOLATION`), Tier-1 #2 (native programs aligned with Firedancer: System + ComputeBudget + BPF Loader v3 Upgradeable + ed25519/secp256k1/secp256r1 precompiles), Tier-1 #2b (precompile dispatch), all Tier-2 ship-blockers (rent enforcement, log-data base64, `sol_log_compute_units_` agave-parity, top-level CU limit). `executeFnCpi ≡ executeFn` bridge for non-CPI programs landed. **Real CPI shipped**: program registry + recursive `executeFn`, ABI deserialization (Rust + C), account write-back, log/returnData propagation, proportional CU split, account aliasing detection, depth-2+ recursion, ixData propagation to callee, **PDA signer-seed promotion** (r4/r5 → `create_program_address(seeds, callerPid)` → promote matching AccountInfo to `is_signer=true`). **R_BPF_64_RELATIVE** applied to `.text` (lddw imm bump via `applyRelRelativeText`) and `.data.rel.ro` (pointer field shifts via `applyDataRelocations`). **Per-byte hash CU** (`hashSliceCost` in `Machine.lean`: `max(10, len/2)` per slice + 85 base) for sha256/sha512/keccak256/blake3, matching agave. **Mem refactor (2026-05-20)**: `Mem` is now a struct with a `Std.HashMap` overlay; diff_mollusk dropped from ~50 min → ~3 s (~1000×). PT_LOAD-only ELFs verified out of scope (agave rejects them) |
 | Phase H — Crypto syscalls | ✅ mostly shipped | All 12 crypto syscalls (sha256/sha512/keccak256/blake3, secp256k1, curve25519, BLS12-381, alt_bn128, big_mod_exp, poseidon, PDA) shipped via Rust FFI bridge to the same crates agave uses — explicit trust statements per syscall. SHA-256 + Murmur3 are pure-Lean and kernel-reducible. Pure-Lean ports of the remaining syscalls are a long-horizon followup, not on the production critical path |
 
 **Headline numbers**: 155 Lean jobs green, ~58 Rust tests green (25 diff-mollusk + 5 precompile + 11 svm_api + 17 other).
 
 **Rough completeness, weighted by impact, not LOC**:
-- *Production critical path* (Phases 0–C, F, G, H): Phases 0–C done, F ~82%, G ~100% (correctness), H ~90%. Aggregate: **~97% shipped on correctness**. Remaining: Phase F broader fixture coverage / fuzz harness. Throughput-only follow-up: Phase G `@[implemented_by]` native compile to speed up the functional `Mem` reads (the full diff-mollusk suite takes ~50min, dominated by `encodeRun`'s byte-by-byte `readBytes` walking the Mem write chain).
+- *Production critical path* (Phases 0–C, F, G, H): Phases 0–C done, F ~82%, G ~100% (correctness + throughput), H ~90%. Aggregate: **~97% shipped on correctness**. Remaining: Phase F broader fixture coverage / fuzz harness. The functional-`Mem` perf bottleneck is gone — `diff_mollusk` now finishes in ~3 s.
 - *Verified-macro track* (Phases D, E — not on the production critical path): D ~85%, E ~20%. Useful for writing programs in Lean; not required to execute compiled Solana programs.
 
 **Tooling-track ideas** live in [`docs/improvement-plan.md`](docs/improvement-plan.md) — orthogonal to the phase plan above.
@@ -243,16 +243,6 @@ clock-sysvar zero-fill.
   section headers (mollusk rejects an ELF with `e_shoff=0` as
   `FailedToParse("invalid file header")`). PT_LOAD-only ELFs are not
   valid Solana programs in agave; no support is needed.
-- **`@[implemented_by]` native compilation / Mem refactor**:
-  `State.mem` is a functional `Nat → Nat` (`abbrev`), so each `writeU*`
-  returns a fresh closure. After N writes the closure chain is N deep
-  and each byte read walks the whole chain — `diff_mollusk` takes
-  ~50 min, dominated by `encodeRun`'s FFI-return-path read loop.
-  Throughput-only, not correctness; defer until dev-loop pain forces
-  it. Full pickup-plan in [`docs/mem-refactor-plan.md`](docs/mem-refactor-plan.md)
-  — diagnosis, the 2026-05-20 attempted fix that was rolled back, the
-  ~25 InstructionSpecs proof failures it surfaced, the sequencing for
-  the next dedicated session, and 1–2 day estimate.
 
 **CPI status (2026-05-19)**: real CPI shipped through `executeFnCpiWithFuel`
 in `Svm/SBPF/Runner.lean`. Verified by 12 `diff_mollusk` fixtures (9 prior
@@ -279,9 +269,27 @@ engines fault on OOR access).
 len_i / 2)`. Matches agave's `mem_op_base_cost.max(sha256_byte_cost
 .saturating_mul(len / 2))` per-slice formula.
 
-**Estimate to "done-done"**: only PT_LOAD (small) for completeness;
-native compile is throughput, not correctness. Pure-Lean kernel crypto
-is Phase H follow-up, not on the production critical path.
+**Mem refactor status (2026-05-20)**: shipped. `Mem` is now a struct
+holding a `Nat → Nat` default and a `Std.HashMap Nat UInt8` overlay,
+with `CoeFun`/`Coe` instances keeping the old `mem a` and closure-form
+constructors source-compatible. `writeU*` go through `Mem.put` (marked
+`@[inline, irreducible]` so kernel `whnf` stops there during proof-time
+defeq); the per-byte fold in `Runner.loadBytesAt` and `Machine.writeBytes`
+inserts into the overlay so hot reads are O(1) instead of walking an
+N-deep closure chain. Proof side closed-with-mitigation via two
+`Mem.read`/`Mem.put` simp lemmas (`Mem.read_put_self`,
+`Mem.read_put_other`) plus an `@[simp]` if-form (`Mem.read_put`) that
+reconstructs the pre-refactor goal shape for existing
+`unfold Memory.writeU*; show (if ...)` patterns in
+`InstructionSpecs.lean`; `writeBytes_read_inside` /
+`writeBytes_read_outside` (`Machine.lean`) replace the old `if_pos` /
+`if_neg` proof steps in the `commitOptional` lemmas. Full diff-mollusk
+suite now runs in **~3 s** vs. ~50 min previously (~1000× speedup, all
+25 fixtures byte+CU-equal to mollusk).
+
+**Estimate to "done-done"**: only PT_LOAD (small) for completeness.
+Pure-Lean kernel crypto is Phase H follow-up, not on the production
+critical path.
 
 ### Phase H — Crypto syscalls
 

@@ -10,15 +10,96 @@
 -- Programs receive a pointer to the input buffer in r1 at entry.
 
 import Svm.SBPF.ISA
+import Std.Data.HashMap
 
 namespace Svm.SBPF.Memory
 
 open Svm.SBPF
 
-/-! ## Memory type -/
+/-! ## Memory type
 
-/-- Byte-addressable memory: maps addresses to byte values (0-255) -/
-abbrev Mem := Nat → Nat
+`Mem` was originally `abbrev Mem := Nat → Nat`. Each `writeU*` returned
+`fun a => if a = addr then val else mem a`, so after N writes a read
+walked an N-deep closure chain. For SPL Token (post-execution chain
+~thousands deep, input ~5 KB) that was tens of millions of Nat
+equality tests per `process_instruction`, making `diff_mollusk` take
+~50 minutes (dominated by `encodeRun`'s FFI-return-path
+`readBytes` walk).
+
+The fix is a thin overlay: writes go into a `Std.HashMap Nat UInt8`,
+reads check the overlay first and fall through to the `default`
+function on miss. The `Coe (Nat → Nat) Mem` instance keeps inline
+closure-style constructors (sysvar / Pda / Native syscall bodies)
+type-checking — they land in `default`, which is fine for cold paths
+that get few reads. The `CoeFun Mem (fun _ => Nat → Nat)` instance
+keeps the `mem a` application syntax compiling at every existing call
+site (readU*, readBytes, etc.). -/
+
+structure Mem where
+  default : Nat → Nat := fun _ => 0
+  overlay : Std.HashMap Nat UInt8 := {}
+
+/-- Look up a byte: overlay first, fall through to `default` on miss. -/
+@[inline] def Mem.read (m : Mem) (a : Nat) : Nat :=
+  match m.overlay[a]? with
+  | some b => b.toNat
+  | none   => m.default a
+
+/-- Insert a single byte into the overlay (mod 256).
+
+    `irreducible` so the kernel's `whnf` stops here during proof-time
+    defeq checks. With the old `Mem := Nat → Nat`, `writeU*` produced
+    a lambda which was a natural whnf head; the new struct-update
+    chain has no such head and whnf'd recursively into HashMap
+    internals, blowing heartbeat limits in `Region.lean` /
+    `InstructionSpecs.lean`. Keeping `Mem.put` opaque restores the
+    old proof behavior — everything still goes through the axioms /
+    `simp`/`rw` rules, never relying on transparent unfolding. -/
+@[inline, irreducible] def Mem.put (m : Mem) (addr val : Nat) : Mem :=
+  { m with overlay := m.overlay.insert addr (val % 256).toUInt8 }
+
+/-- Apply syntax: `mem a` desugars to `Mem.read mem a`. -/
+instance : CoeFun Mem (fun _ => Nat → Nat) := ⟨Mem.read⟩
+
+/-- A plain `Nat → Nat` lifts to a `Mem` whose overlay is empty and
+    whose `default` is the supplied function. Closure-style
+    constructors (`fun a => if cond then v else mem a`) ride this. -/
+instance : Coe (Nat → Nat) Mem := ⟨fun f => { default := f }⟩
+
+instance : Inhabited Mem := ⟨{}⟩
+
+/-! ## `Mem.put` / `Mem.read` interaction lemmas
+
+These are the semantic API for the overlay model: the rest of the
+code treats `Mem.put` and `Mem.read` as opaque (since `Mem.put` is
+`@[irreducible]`) and reasons via these two lemmas. Marked `@[simp]`
+so existing `unfold Memory.writeU8; simp` patterns in
+`InstructionSpecs.lean` close after the rewrite to `Mem.put`. -/
+
+@[simp] theorem Mem.read_put_self (m : Mem) (addr val : Nat) :
+    (Mem.put m addr val).read addr = val % 256 := by
+  unfold Mem.put Mem.read
+  simp
+
+@[simp] theorem Mem.read_put_other (m : Mem) (addr addr' val : Nat) (h : addr' ≠ addr) :
+    (Mem.put m addr val).read addr' = m.read addr' := by
+  unfold Mem.put Mem.read
+  simp [Std.HashMap.getElem?_insert, Ne.symm h]
+
+/-- if-form of `Mem.read (Mem.put ...) ...`. Recovers the shape that
+    the old `writeU8` produced after unfolding (`fun a => if a = addr
+    then val % 256 else mem a`), so existing
+    `unfold Memory.writeU8; show (if ...) = _` patterns in
+    `InstructionSpecs.lean` still match. Marked `@[simp]` so `simp`
+    after `unfold Memory.writeU*` reproduces the pre-refactor goal
+    shape automatically; subsumes `read_put_self` / `read_put_other`
+    in simp contexts (which remain as named lemmas for direct `rw`). -/
+@[simp] theorem Mem.read_put (m : Mem) (addr val a : Nat) :
+    Mem.read (Mem.put m addr val) a =
+      if a = addr then val % 256 else Mem.read m a := by
+  by_cases h : a = addr
+  · subst h; simp [Mem.read_put_self]
+  · simp [Mem.read_put_other _ _ _ _ h, h]
 
 /-! ## Region base addresses -/
 
@@ -75,40 +156,52 @@ def readU64 (mem : Mem) (addr : Nat) : Nat :=
   mem (addr + 6) % 256 * 0x1000000000000 +
   mem (addr + 7) % 256 * 0x100000000000000
 
-/-! ## Write operations (little-endian) -/
+/-! ## Write operations (little-endian)
 
-/-- Write 1 byte -/
+Each write returns a fresh `Mem` whose overlay has been updated with
+the new byte(s). The `default` function is preserved untouched, so any
+read of an address that wasn't overwritten still falls through to it.
+
+These are the only sites that actually take the overlay-fast-path —
+the closure-style constructors elsewhere (`Sysvar`, `Pda`, ...) land
+in `default` via `Coe` and pay the chain-walk cost on read. That's
+fine because they execute O(1) times per program run, whereas
+`writeU*` runs once per store instruction (millions of times). -/
+
+/-- Write 1 byte. Inserts `val % 256` at `addr`. -/
 def writeU8 (mem : Mem) (addr val : Nat) : Mem :=
-  fun a => if a = addr then val % 256 else mem a
+  Mem.put mem addr val
 
-/-- Write 2 bytes little-endian -/
+/-- Write 2 bytes little-endian.
+
+    NOTE: the put-chain is intentionally ordered with the *low* byte
+    outermost (`addr` last). When `simp [Mem.read_put]` peels off
+    layers, it produces the nested-if tree in the same order as the
+    pre-refactor `writeU16` lambda body (`if a = addr then ... else if
+    a = addr + 1 then ... else mem a`), so existing
+    `unfold Memory.writeU16; show (if ...) = _` patterns in
+    `InstructionSpecs.lean` still match without rewriting. -/
 def writeU16 (mem : Mem) (addr val : Nat) : Mem :=
-  fun a =>
-    if a = addr     then val % 0x100
-    else if a = addr + 1 then val / 0x100 % 0x100
-    else mem a
+  let m1 := Mem.put mem  (addr + 1)  (val / 0x100 % 0x100)
+  Mem.put m1                  addr        (val % 0x100)
 
-/-- Write 4 bytes little-endian -/
+/-- Write 4 bytes little-endian. Low byte outermost; see `writeU16`. -/
 def writeU32 (mem : Mem) (addr val : Nat) : Mem :=
-  fun a =>
-    if a = addr     then val % 0x100
-    else if a = addr + 1 then val / 0x100 % 0x100
-    else if a = addr + 2 then val / 0x10000 % 0x100
-    else if a = addr + 3 then val / 0x1000000 % 0x100
-    else mem a
+  let m1 := Mem.put mem  (addr + 3)  (val / 0x1000000 % 0x100)
+  let m2 := Mem.put m1   (addr + 2)  (val / 0x10000 % 0x100)
+  let m3 := Mem.put m2   (addr + 1)  (val / 0x100 % 0x100)
+  Mem.put m3             addr        (val % 0x100)
 
-/-- Write 8 bytes little-endian -/
+/-- Write 8 bytes little-endian. Low byte outermost; see `writeU16`. -/
 def writeU64 (mem : Mem) (addr val : Nat) : Mem :=
-  fun a =>
-    if a = addr     then val % 0x100
-    else if a = addr + 1 then val / 0x100 % 0x100
-    else if a = addr + 2 then val / 0x10000 % 0x100
-    else if a = addr + 3 then val / 0x1000000 % 0x100
-    else if a = addr + 4 then val / 0x100000000 % 0x100
-    else if a = addr + 5 then val / 0x10000000000 % 0x100
-    else if a = addr + 6 then val / 0x1000000000000 % 0x100
-    else if a = addr + 7 then val / 0x100000000000000 % 0x100
-    else mem a
+  let m1 := Mem.put mem  (addr + 7)  (val / 0x100000000000000 % 0x100)
+  let m2 := Mem.put m1   (addr + 6)  (val / 0x1000000000000 % 0x100)
+  let m3 := Mem.put m2   (addr + 5)  (val / 0x10000000000 % 0x100)
+  let m4 := Mem.put m3   (addr + 4)  (val / 0x100000000 % 0x100)
+  let m5 := Mem.put m4   (addr + 3)  (val / 0x1000000 % 0x100)
+  let m6 := Mem.put m5   (addr + 2)  (val / 0x10000 % 0x100)
+  let m7 := Mem.put m6   (addr + 1)  (val / 0x100 % 0x100)
+  Mem.put m7             addr        (val % 0x100)
 
 /-! ## Generic read/write by width -/
 
