@@ -1,8 +1,20 @@
 # qedsvm Roadmap
 
-The path from operational sBPF semantics to a usable verified macro assembler.
+The path to a correct, semantic-baseline SVM that can execute compiled Solana programs.
 
-The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Phase 1 CPI small-step → ... → Phase 6 crypto) with a methodology lifted from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm): separation logic over machine state, bounded Hoare triples, per-instruction specs, then macros built and verified compositionally on top. The original CPI work isn't dropped — it reappears as Phase D/E (CPI envelope and per-program effects, written as verified sBPF macros).
+## Scope
+
+**In scope (production goals):**
+- Correctness: a hand-written, auditable operational semantics for sBPF, with separation-logic Hoare triples per instruction.
+- Semantic baseline: byte-for-byte conformance with agave on real `cargo-build-sbf` output, enforced by differential testing.
+- Execution: load and run arbitrary compiled Solana programs (ELF .so → decoded → executed) including crypto syscalls and CPI.
+
+**Out of scope:**
+- **Validator-grade runtime.** Bank, slot lifecycle, account commits, consensus, gossip, leader schedule, vote processing — none of it. This is the program-execution layer, not the validator.
+- **zkSVM target.** Compiling the macro library to a zkVM is not pursued. CU bounds remain meaningful in Lean without a zk backend.
+- **A new verification tool.** This is the model + the assembler + the macro library. Tools that use it — QEDGen and others — live elsewhere.
+
+The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Phase 1 CPI small-step → ... → Phase 6 crypto) with a methodology lifted from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm): separation logic over machine state, bounded Hoare triples, per-instruction specs, then macros built and verified compositionally on top. The original CPI work isn't dropped — it reappears as Phase D/E (CPI envelope and per-program effects, written as verified sBPF macros). The verified-macro track (Phase D/E) is a longer-horizon deliverable that lets people *write* programs in Lean; it is not on the critical path to executing compiled programs.
 
 ## Status snapshot — 2026-05-18
 
@@ -14,13 +26,17 @@ The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Pha
 | Phase C — Tactic suite | ✅ shipped (with one mitigation) | `sl_block_iter`, `sl_branch`, `sl_rw_abs` elab tactics in `SLTactic.lean`. Gap 3 (structural reduction ceiling) closed-with-mitigation via `sl_rw_abs` — kernel-attribute path confirmed dead |
 | Phase D — sBPF macro library | ✅ mostly shipped | Memory (`u64_memcpy_16`), control flow (`if_else`, 2-way dispatch), CPI envelope pieces (PDA n=0, n=1, full stack-VmSlice variant) all proven in `MacroDemo.lean`. Stack frame setup/teardown library polish + sized memcmp still open |
 | Phase E — Solana program library | ⚠️ partial | System `Transfer` shipped end-to-end via the `Native` path (byte + CU parity vs mollusk); rent-exempt enforcement integration tests landed. SPL Token / ATA / Anchor patterns not yet written as verified macros (Token + ATA are Core-BPF, so they ride the BPF VM + Loader v3 path today rather than a native dispatcher) |
-| Phase F — Differential testing | ✅ mostly shipped | 22 diff-mollusk fixtures + 5 precompile-dispatch + 11 svm_api + rent + thread-safety; `R_BPF_64_RELATIVE` + PT_LOAD-only ELFs + fuzz/sweep harness still open |
-| Phase G — ELF loader + arbitrary program execution | ✅ mostly shipped | Tier-1 #1 (region bounds), Tier-1 #2 (native programs aligned with Firedancer: System + ComputeBudget + BPF Loader v3 Upgradeable + ed25519/secp256k1/secp256r1 precompiles), Tier-1 #2b (precompile dispatch), all Tier-2 ship-blockers (rent enforcement, log-data base64, `sol_log_compute_units_` agave-parity, top-level CU limit). `executeFnCpi ≡ executeFn` bridge for non-CPI programs landed. Remaining: real CPI body (program registry + recursive `executeFn`), `R_BPF_64_RELATIVE`, PT_LOAD, `@[implemented_by]` native compile |
-| Phase H — Crypto syscalls + zkSVM | 🟡 partial | All 12 crypto syscalls (sha256/sha512/keccak256/blake3, secp256k1, curve25519, BLS12-381, alt_bn128, big_mod_exp, poseidon, PDA) shipped via Rust FFI bridge to the same crates agave uses — explicit trust statements per syscall. SHA-256 + Murmur3 are pure-Lean and kernel-reducible. zkSVM target not started |
+| Phase F — Differential testing | ✅ mostly shipped | 25 diff-mollusk fixtures + 5 precompile-dispatch + 11 svm_api + rent + thread-safety; PT_LOAD-only ELFs + fuzz/sweep harness still open |
+| Phase G — ELF loader + arbitrary program execution | ✅ shipped | Tier-1 #1 (region bounds — `RegionTable` in `Memory.lean` traps OOR accesses with `ERR_ACCESS_VIOLATION`), Tier-1 #2 (native programs aligned with Firedancer: System + ComputeBudget + BPF Loader v3 Upgradeable + ed25519/secp256k1/secp256r1 precompiles), Tier-1 #2b (precompile dispatch), all Tier-2 ship-blockers (rent enforcement, log-data base64, `sol_log_compute_units_` agave-parity, top-level CU limit). `executeFnCpi ≡ executeFn` bridge for non-CPI programs landed. **Real CPI shipped**: program registry + recursive `executeFn`, ABI deserialization (Rust + C), account write-back, log/returnData propagation, proportional CU split, account aliasing detection, depth-2+ recursion, ixData propagation to callee, **PDA signer-seed promotion** (r4/r5 → `create_program_address(seeds, callerPid)` → promote matching AccountInfo to `is_signer=true`). **R_BPF_64_RELATIVE** applied to `.text` (lddw imm bump via `applyRelRelativeText`) and `.data.rel.ro` (pointer field shifts via `applyDataRelocations`). **Per-byte hash CU** (`hashSliceCost` in `Machine.lean`: `max(10, len/2)` per slice + 85 base) for sha256/sha512/keccak256/blake3, matching agave. PT_LOAD-only ELFs verified out of scope (agave rejects them). Remaining: `@[implemented_by]` native compile (throughput only — the functional `Mem` makes hot reads O(write-chain-length)) |
+| Phase H — Crypto syscalls | ✅ mostly shipped | All 12 crypto syscalls (sha256/sha512/keccak256/blake3, secp256k1, curve25519, BLS12-381, alt_bn128, big_mod_exp, poseidon, PDA) shipped via Rust FFI bridge to the same crates agave uses — explicit trust statements per syscall. SHA-256 + Murmur3 are pure-Lean and kernel-reducible. Pure-Lean ports of the remaining syscalls are a long-horizon followup, not on the production critical path |
 
-**Headline numbers**: 152 Lean jobs green, ~55 Rust tests green (22 diff-mollusk + 5 precompile + 11 svm_api + 17 other).
+**Headline numbers**: 155 Lean jobs green, ~58 Rust tests green (25 diff-mollusk + 5 precompile + 11 svm_api + 17 other).
 
-**Rough completeness, weighted by impact, not LOC**: Phases 0–C done, D ~85%, E ~20%, F ~80%, G ~85%, H crypto-runtime ~90% / zkSVM 0%. Aggregate: **~70% of the original v0.3 plan shipped**, with the remaining work concentrated in Phase E (verified macros for SPL Token / ATA / Anchor) and Phase H (zkSVM target + any pure-Lean crypto port).
+**Rough completeness, weighted by impact, not LOC**:
+- *Production critical path* (Phases 0–C, F, G, H): Phases 0–C done, F ~82%, G ~100% (correctness), H ~90%. Aggregate: **~97% shipped on correctness**. Remaining: Phase F broader fixture coverage / fuzz harness. Throughput-only follow-up: Phase G `@[implemented_by]` native compile to speed up the functional `Mem` reads (the full diff-mollusk suite takes ~50min, dominated by `encodeRun`'s byte-by-byte `readBytes` walking the Mem write chain).
+- *Verified-macro track* (Phases D, E — not on the production critical path): D ~85%, E ~20%. Useful for writing programs in Lean; not required to execute compiled Solana programs.
+
+**Tooling-track ideas** live in [`docs/improvement-plan.md`](docs/improvement-plan.md) — orthogonal to the phase plan above.
 
 ## Shipped
 
@@ -222,37 +238,55 @@ clock-sysvar zero-fill.
 
 **What's left to call Phase G done-done:**
 
-- **CPI** (`sol_invoke_signed_c`, `sol_invoke_signed_rust`): still a stub
-  (`r0 := 0`), now in `Svm/Syscalls/Cpi.lean`. Real semantics needs a
-  program registry, instruction-context construction, and recursive
-  `executeFn` invocation — overlaps Phase D/E and is best landed there.
-- **R_BPF_64_RELATIVE relocations** (shift `.rodata` mapping to
-  `MM_PROGRAM_START + sh_addr`, patch `lddw` imms).
-- **Region bounds enforcement**: `Mem` is total; agave faults on OOR
-  access. Honest programs unaffected.
-- **Per-byte hashing CU refinement** (`sha256_byte_cost = 1`, etc.):
-  fixed-cost today.
-- **PT_LOAD program headers**: alternative section-free load path used
-  by some stripped ELFs.
-- **`@[implemented_by]` native compilation**: `executeFn` runs through
-  Lean's kernel for `native_decide`; for real CLI throughput, wire the
-  hot functions to compiled C/Rust implementations.
+- **PT_LOAD program headers** ~~alternative section-free load path~~ —
+  **dropped from roadmap.** Verified that agave's SBF loader requires
+  section headers (mollusk rejects an ELF with `e_shoff=0` as
+  `FailedToParse("invalid file header")`). PT_LOAD-only ELFs are not
+  valid Solana programs in agave; no support is needed.
+- **`@[implemented_by]` native compilation / Mem refactor**:
+  `State.mem` is a functional `Nat → Nat` (`abbrev`), so each `writeU*`
+  returns a fresh closure. After N writes the closure chain is N deep
+  and each byte read walks the whole chain — `diff_mollusk` takes
+  ~50 min, dominated by `encodeRun`'s FFI-return-path read loop.
+  Throughput-only, not correctness; defer until dev-loop pain forces
+  it. Full pickup-plan in [`docs/mem-refactor-plan.md`](docs/mem-refactor-plan.md)
+  — diagnosis, the 2026-05-20 attempted fix that was rolled back, the
+  ~25 InstructionSpecs proof failures it surfaced, the sequencing for
+  the next dedicated session, and 1–2 day estimate.
 
-**Estimate to "done-done"**: 1–2 weeks for `R_BPF_64_RELATIVE` + region
-bounds + CPI stub-with-recursion + per-byte CU. Pure-Lean kernel/zk
-crypto is Phase H.
+**CPI status (2026-05-19)**: real CPI shipped through `executeFnCpiWithFuel`
+in `Svm/SBPF/Runner.lean`. Verified by 12 `diff_mollusk` fixtures (9 prior
++ 3 new probers — depth-2 chain, returnData round-trip, PDA signer
+promotion), all byte+CU-equal to mollusk. The dead `r0:=0` stub in
+`Svm/Syscalls/Cpi.lean` is only reached by `executeFn` (the non-CPI
+spec stepper); the production path goes through `executeFnCpi`.
 
-### Phase H — Crypto syscalls + zkSVM target
+**R_BPF_64_RELATIVE status (2026-05-19)**: shipped for `.text` (lddw
+imm `+= MM_REGION_SIZE`) and `.data.rel.ro` (pointer-field shifts).
+Verified by `rodata_addr_returner_matches_mollusk` (`.text` case) and
+by SPL Token / ATA / Pinocchio fixtures passing (depend on
+`.data.rel.ro` relocations). `.rodata`-content relocations are *not*
+applied — toolchain output puts relocatable pointers in
+`.data.rel.ro`, not `.rodata`, so the fast path is correct.
 
-- Crypto syscalls (Ed25519, secp256k1 recovery, sha2/sha3, alt_bn128). Likely path: Lean port of fiat-crypto / verified-crypto-primitives. Until shipped, these remain axiomatized with explicit trust statements.
-- Compile the macro library to a zkVM target (RISC-V-of-zk choice TBD). The same CU bound from each Hoare triple becomes the per-proof cycle budget.
+**Region bounds status (2026-05-19)**: shipped via `Memory.RegionTable`.
+`step` consults it on `.ldx`/`.st`/`.stx` and routes misses to
+`ERR_ACCESS_VIOLATION`. Verified by `oob_read_fails_on_both` (both
+engines fault on OOR access).
 
-**Estimate**: substantial. Crypto alone is its own project. zkSVM is a long horizon.
+**Per-byte hash CU status (2026-05-19)**: shipped via `hashSliceCost`
+(`Machine.lean`), used by all four hash syscalls: `cu = 85 + Σ max(10,
+len_i / 2)`. Matches agave's `mem_op_base_cost.max(sha256_byte_cost
+.saturating_mul(len / 2))` per-slice formula.
 
-## What is *not* on the roadmap
+**Estimate to "done-done"**: only PT_LOAD (small) for completeness;
+native compile is throughput, not correctness. Pure-Lean kernel crypto
+is Phase H follow-up, not on the production critical path.
 
-**F2 — verified extractable runtime.** A Lean implementation that replaces `solana-program-runtime` end-to-end (validator-grade) is a multi-year, multi-team effort. Phases A–H build the substrate it would start from, but shipping the runtime itself is out of scope.
+### Phase H — Crypto syscalls
 
-**Solana-side state.** Bank, slot lifecycle, account commits, consensus, gossip, leader schedule, vote processing. All out of scope. This repo is the *program execution* layer of the SVM, not the validator.
+All 12 crypto syscalls ship via Rust FFI to the same crates agave uses (`sha2`, `sha3`, `blake3`, `libsecp256k1`, `curve25519-dalek`, `ark-bn254`, `light-poseidon`, `num-bigint`), with explicit trust statements per syscall. SHA-256 and Murmur3 are pure-Lean and kernel-reducible.
 
-**A new verification tool.** This is the model + the assembler + the macro library. Tools that use it — QEDGen and others — live elsewhere.
+**Long-horizon followup (not production-critical):** pure-Lean ports of the remaining crypto primitives via fiat-crypto / verified-crypto-primitives. The Rust FFI bridge is the production path; pure-Lean ports tighten the TCB but aren't required to ship.
+
+**Production status**: shipped.

@@ -82,6 +82,18 @@ extern "C" {
         cu_budget: u64,
     ) -> lean_obj_res;
 
+    /// Same as `qedsvm_run_with_registry` but additionally accepts a
+    /// 32-byte `pid_bytes` for the top-level program. Threaded into
+    /// `State.progIdBytes`; the CPI handler uses it to derive PDAs
+    /// from caller-supplied signer seeds in `invoke_signed`.
+    pub fn qedsvm_run_with_registry_and_pid(
+        elf: lean_obj_arg,
+        input: lean_obj_arg,
+        registry: lean_obj_arg,
+        pid_bytes: lean_obj_arg,
+        cu_budget: u64,
+    ) -> lean_obj_res;
+
     /// Top-level dispatch for the three sig-verify precompiles
     /// (ed25519 / secp256k1 / secp256r1). agave routes these without
     /// entering the BPF VM; this entrypoint runs

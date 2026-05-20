@@ -134,6 +134,15 @@ structure State where
       `MM_HEAP_START` on each CPI sub-state since agave allocates the
       heap fresh per invocation. -/
   heapNext : Nat := 0x300000000
+  /-- 32-byte program-id of the program currently executing. Used
+      by `sol_invoke_signed{,_c}` to derive PDAs from caller-supplied
+      signer seeds (the derivation hashes seeds ++ programId ++
+      "ProgramDerivedAddress"). Set to the top-level program's id by
+      `Runner.initialState` from `RunConfig.progIdBytes`; reset to
+      the callee's id when constructing each CPI sub-state. Empty
+      (`ByteArray.empty`) means PDA derivation will fail closed —
+      safe default for code paths that don't need signer seeds. -/
+  progIdBytes : ByteArray := ByteArray.empty
   deriving Inhabited
 
 /-- Is the machine still running? -/

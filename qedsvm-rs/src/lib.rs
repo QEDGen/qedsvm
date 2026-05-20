@@ -89,6 +89,35 @@ pub fn run_buffer_with_registry(
     wire::decode(&bytes)
 }
 
+/// Like [`run_buffer_with_registry`] but also threads the top-level
+/// program's 32-byte pubkey into Lean's `State.progIdBytes`. Required
+/// for `invoke_signed` with PDA signer seeds: the CPI handler derives
+/// the PDA via `create_program_address(seeds, callerPid)`. Without
+/// the right `pid_bytes`, the derived PDA won't match any AccountInfo
+/// and no signer promotion happens.
+pub fn run_buffer_with_registry_and_pid(
+    elf: &[u8],
+    input: &[u8],
+    registry_blob: &[u8],
+    pid_bytes: &[u8; 32],
+    cu_budget: u64,
+) -> Result<RawResult, DecodeError> {
+    let g = ffi::lock();
+    let bytes = unsafe {
+        let elf_obj = ffi::alloc_bytearray(&g, elf);
+        let input_obj = ffi::alloc_bytearray(&g, input);
+        let registry_obj = ffi::alloc_bytearray(&g, registry_blob);
+        let pid_obj = ffi::alloc_bytearray(&g, pid_bytes);
+        let result_obj = ffi::qedsvm_run_with_registry_and_pid(
+            elf_obj, input_obj, registry_obj, pid_obj, cu_budget);
+        let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
+        ffi::dec_ref(&g, result_obj);
+        bytes
+    };
+    drop(g);
+    wire::decode(&bytes)
+}
+
 /// Drive the Lean precompile dispatcher
 /// (`Svm.Native.Precompiles.dispatch`) for the three sig-verify
 /// precompile pubkeys. Returns `(r0, compute_units_consumed)`:

@@ -24,6 +24,7 @@
 import Svm.SBPF.Decode
 import Svm.SBPF.Elf
 import Svm.Native
+import Svm.Syscalls.Pda
 
 namespace Svm.SBPF
 namespace Runner
@@ -425,6 +426,11 @@ structure RunConfig where
       as the id) to the callee's raw ELF-free bytecode. The CPI handler
       decodes on demand. Default: no callees — every CPI returns r0 := 1. -/
   programRegistry : Nat → Option ByteArray := fun _ => none
+  /-- 32-byte program-id of the top-level program being executed.
+      Threaded into `State.progIdBytes` so the CPI handler can derive
+      PDAs from caller-supplied signer seeds. Default empty — programs
+      that don't use `invoke_signed` with seeds are unaffected. -/
+  progIdBytes : ByteArray := ByteArray.empty
 
 /-! ## CPI-aware execution
 
@@ -447,6 +453,50 @@ v1 simplifications (tracked in `docs/next-session-plan.md`):
 - PDA signer seeds (`r4` / `r5`) are ignored.
 - The full caller CU budget is passed to the callee (no proportional
   split). Re-entrant CPI is supported transparently by the recursion. -/
+/-! ## PDA signer-seed promotion
+
+`invoke_signed` lets a caller act as a Program Derived Address: the
+caller supplies (signer_seeds : &[&[&[u8]]]) at r4/r5, agave derives a
+PDA from each inner seed-array using the caller's program-id, and any
+AccountInfo whose pubkey matches a derived PDA is promoted to
+is_signer=true on the callee side. Without this, callees can't
+distinguish a PDA invocation from a non-signer.
+
+Wire format at the syscall boundary (Rust slice fat pointers throughout):
+  r4: ptr to array of signer entries  (each entry 16B: ptr@+0, len@+8)
+  r5: number of signer entries
+  signer_entries[i]:  16B (ptr to inner seed array, len of inner array)
+  inner_seed_array[j]: 16B (ptr to seed bytes, len of seed bytes) -/
+
+/-- Read one signer's seeds (the `&[&[u8]]` at `signerAddr`) as a
+    list of byte slices. -/
+def readSignerSeeds (mem : Mem) (signerAddr : Nat) : List ByteArray :=
+  let innerPtr := Memory.readU64 mem signerAddr
+  let innerLen := Memory.readU64 mem (signerAddr + 8)
+  (List.range innerLen).map (fun j =>
+    let seedPtr := Memory.readU64 mem (innerPtr + j * 16)
+    let seedLen := Memory.readU64 mem (innerPtr + j * 16 + 8)
+    readMemBytes mem seedPtr seedLen)
+
+/-- For each signer in r4 (array of `&[&[u8]]` of length r5), derive
+    the PDA via create_program_address(seeds, callerPid). Returns the
+    32-byte derived pubkeys. -/
+def deriveSignerPdas (mem : Mem) (seedsAddr seedsLen : Nat)
+    (callerPid : ByteArray) : List ByteArray :=
+  (List.range seedsLen).filterMap (fun i =>
+    let seeds := readSignerSeeds mem (seedsAddr + i * 16)
+    Pda.createProgramAddress seeds callerPid)
+
+/-- Promote parsed account-infos: any account whose key matches a
+    derived PDA gets is_signer = true. Agave's seed-derived signer
+    promotion in `invoke_signed`. -/
+def promoteSigners (parsedAccts : List ParsedAcct)
+    (derivedPdas : List ByteArray) : List ParsedAcct :=
+  parsedAccts.map (fun p =>
+    if derivedPdas.any (fun pda => p.key == pda)
+    then { p with isSigner := true }
+    else p)
+
 /-- Compute the next state for one of the two CPI-call syscalls
     (`sol_invoke_signed` / `sol_invoke_signed_c`). Non-recursive — the
     recursive sub-VM invocation is supplied as the `runCallee` closure
@@ -477,8 +527,15 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
   let pid := (List.range 32).foldl
     (fun acc i => acc + (s.mem (pubkeyAddr + i) % 256) * 256^i) 0
   let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-  let parsedAccts : List ParsedAcct :=
+  let parsedAcctsRaw : List ParsedAcct :=
     parseAccountInfos s.mem s.regs.r2 accountCount
+  -- PDA signer-seed promotion: derive PDAs from r4/r5 using the
+  -- currently-running program's id (`s.progIdBytes`) and flip
+  -- is_signer=true on any parsed account whose key matches.
+  let derivedPdas : List ByteArray :=
+    deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
+  let parsedAccts : List ParsedAcct :=
+    promoteSigners parsedAcctsRaw derivedPdas
   -- Tier-2 #8 — account aliasing detection.
   let parsedArr : Array ParsedAcct := parsedAccts.toArray
   let aliasedWritability : Bool :=
@@ -581,7 +638,8 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
         -- the recursive `executeFnCpiWithFuel` invocation at `fuel'`
         -- (strictly smaller, so termination on `fuel` still holds).
         let runCallee (pidBytesIn : ByteArray) (parsedAcctsIn : List ParsedAcct)
-            (calleeBytes : ByteArray) : Option (State × Mem × Nat) :=
+            (ixDataIn : ByteArray) (calleeBytes : ByteArray)
+            : Option (State × Mem × Nat) :=
           let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader) := do
             let h ← Elf.parseHeader calleeBytes
             let textSec ← Elf.findSection calleeBytes h Elf.textName
@@ -597,7 +655,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             let calleeInsns ← Decode.decodeProgram textBytes
             let slots : List AcctSlot := buildAcctSlots parsedAcctsIn
             let subInput : ByteArray :=
-              buildCpiSubInputN slots pidBytesIn ByteArray.empty
+              buildCpiSubInputN slots pidBytesIn ixDataIn
             let subMem : Mem :=
               let baseMem := loadInput emptyMem subInput
               match headerOpt with
@@ -629,14 +687,15 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 elfRegions calleeBytes h textSec subInput.size
               | _, _ => runtimeRegions subInput.size
             let subS : State :=
-              { regs       := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
-                mem        := subMem
-                regions    := subRegions
-                pc         := entryPc
-                exitCode   := none
-                log        := s.log
-                returnData := ByteArray.empty
-                cuBudget   := fuel' }
+              { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+                mem         := subMem
+                regions     := subRegions
+                pc          := entryPc
+                exitCode    := none
+                log         := s.log
+                returnData  := ByteArray.empty
+                cuBudget    := fuel'
+                progIdBytes := pidBytesIn }
             let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
               (fetchFromArray calleeInsns) subS fuel'
             let newCallerMem : Mem := slots.foldl (fun mem slot =>
@@ -661,16 +720,32 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             let pubkeyAddr := s.regs.r1 + 48
             let pidBytes := readMemBytes s.mem pubkeyAddr 32
             let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            let parsedAccts := parseAccountInfos s.mem s.regs.r2 accountCount
+            -- Promote seed-derived PDAs to is_signer=true so the
+            -- callee's sub-input matches what cpiCallNextState
+            -- internally computes for Native/aliasing checks.
+            let parsedAcctsRaw := parseAccountInfos s.mem s.regs.r2 accountCount
+            let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
+            let parsedAccts := promoteSigners parsedAcctsRaw derivedPdas
+            -- Rust ABI Instruction: data:Vec at offset 24, layout
+            -- { ptr@+24, cap@+32, len@+40 }.
+            let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
+            let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 40)
+            let ixData    := readMemBytes s.mem ixDataPtr ixDataLen
             cpiCallNextState registry s .sol_invoke_signed fuel'
-              (runCallee pidBytes parsedAccts)
+              (runCallee pidBytes parsedAccts ixData)
           | .call .sol_invoke_signed_c =>
             let pubkeyAddr := Memory.readU64 s.mem s.regs.r1
             let pidBytes := readMemBytes s.mem pubkeyAddr 32
             let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            let parsedAccts := parseAccountInfos s.mem s.regs.r2 accountCount
+            let parsedAcctsRaw := parseAccountInfos s.mem s.regs.r2 accountCount
+            let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
+            let parsedAccts := promoteSigners parsedAcctsRaw derivedPdas
+            -- C ABI SolInstruction: data_addr@+24, data_len@+32.
+            let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
+            let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 32)
+            let ixData    := readMemBytes s.mem ixDataPtr ixDataLen
             cpiCallNextState registry s .sol_invoke_signed_c fuel'
-              (runCallee pidBytes parsedAccts)
+              (runCallee pidBytes parsedAccts ixData)
           | _ => step insn s
         if TRACE_STEPS then
           dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
@@ -692,12 +767,13 @@ def executeFnCpi (registry : Nat → Option ByteArray)
     let-binding so end-to-end soundness theorems (`RunnerBridge.lean`)
     can refer to it by name and reason about its fields. -/
 def initialState (cfg : RunConfig) : State :=
-  { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
-    mem     := loadInput emptyMem cfg.input
-    regions := runtimeRegions cfg.input.size
-    pc      := 0
-    exitCode := none
-    cuBudget := cfg.cuBudget }
+  { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+    mem         := loadInput emptyMem cfg.input
+    regions     := runtimeRegions cfg.input.size
+    pc          := 0
+    exitCode    := none
+    cuBudget    := cfg.cuBudget
+    progIdBytes := cfg.progIdBytes }
 
 @[simp] theorem initialState_pc (cfg : RunConfig) : (initialState cfg).pc = 0 := rfl
 
@@ -760,12 +836,13 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
             loadBytesAt mem₁ relocated (Elf.relocateSecAddr sec.addr)
           | none => mem₁
         let s : State :=
-          { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
-            mem     := mem
-            regions := elfRegions elfBytes header textSec cfg.input.size
-            pc      := 0
-            exitCode := none
-            cuBudget := cfg.cuBudget }
+          { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+            mem         := mem
+            regions     := elfRegions elfBytes header textSec cfg.input.size
+            pc          := 0
+            exitCode    := none
+            cuBudget    := cfg.cuBudget
+            progIdBytes := cfg.progIdBytes }
         some (executeFnCpi cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 /-- Convenience: ELF run returning only the exit code. -/
@@ -833,12 +910,13 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
         let entryPc := if h : entrySlot < slotMap.size
                        then slotMap[entrySlot]'h else 0
         let s : State :=
-          { regs    := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
-            mem     := mem
-            regions := elfRegions elfBytes header textSec cfg.input.size
-            pc      := entryPc
-            exitCode := none
-            cuBudget := cfg.cuBudget }
+          { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+            mem         := mem
+            regions     := elfRegions elfBytes header textSec cfg.input.size
+            pc          := entryPc
+            exitCode    := none
+            cuBudget    := cfg.cuBudget
+            progIdBytes := cfg.progIdBytes }
         some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 end Runner

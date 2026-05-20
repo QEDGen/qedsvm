@@ -121,6 +121,30 @@ const SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO: &[u8] =
 /// for the second native program.
 const COMPUTE_BUDGET_CALLER_SO: &[u8] =
     include_bytes!("fixtures/compute_budget_caller.so");
+/// Caller for the PDA-signer-seeds prober. Derives a PDA from
+/// `b"vault" + caller_id`, then `invoke_signed`s a callee passing the
+/// PDA as accounts[1] with is_signer=false. Source in
+/// `cpi_signed_pda_caller_src/`.
+const CPI_SIGNED_PDA_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/cpi_signed_pda_caller.so");
+/// Callee for the PDA prober. Writes 0xAA to accounts[0].data[0] if
+/// accounts[1].is_signer is true, else 0x55. Source in
+/// `cpi_signed_pda_callee_src/`.
+const CPI_SIGNED_PDA_CALLEE_SO: &[u8] =
+    include_bytes!("fixtures/cpi_signed_pda_callee.so");
+/// Caller that invokes a callee and copies its sol_get_return_data
+/// output into accounts[0].data. Source in `cpi_get_return_data_caller_src/`.
+const CPI_GET_RETURN_DATA_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/cpi_get_return_data_caller.so");
+/// Callee that sol_set_return_data's a fixed 4-byte payload.
+/// Source in `cpi_set_return_data_callee_src/`.
+const CPI_SET_RETURN_DATA_CALLEE_SO: &[u8] =
+    include_bytes!("fixtures/cpi_set_return_data_callee.so");
+/// Outer layer of a 3-program CPI chain. Forwards accounts[0] through
+/// `cpi_increment_caller.so` to `incrementer.so` (depth 2).
+/// Source in `cpi_depth_2_outer_src/`.
+const CPI_DEPTH_2_OUTER_SO: &[u8] =
+    include_bytes!("fixtures/cpi_depth_2_outer.so");
 
 fn pid(seed: u64) -> Pubkey {
     let mut b = [0u8; 32];
@@ -1771,5 +1795,285 @@ fn compute_budget_cpi_matches_mollusk() {
         "CU diverged for ComputeBudget CPI: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
+}
+
+/// Gap-prober for the PDA signer-seeds path of CPI. Caller derives
+/// a PDA from `b"vault" + caller_id`, passes it as accounts[1] in an
+/// `invoke_signed(...)` call with seeds `[&[b"vault", &[bump]]]`. The
+/// callee writes `0xAA` to `accounts[0].data[0]` if accounts[1]
+/// is_signer, else `0x55`. Mollusk promotes the PDA via the seeds;
+/// qedsvm currently ignores r4/r5 so the byte diverges. After
+/// implementing seed-derived signer promotion in the Lean executor,
+/// both engines should write `0xAA`.
+#[test]
+fn cpi_signed_pda_promotes_signer() {
+    let caller_id = pid(200);
+    let callee_id = pid(201);
+    let data_key  = pid(202);
+
+    let seed: &[u8] = b"vault";
+    let (pda, _bump) = Pubkey::find_program_address(&[seed], &caller_id);
+
+    let data: Vec<u8> = vec![0u8; 4];
+    let data_pre_fs = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: callee_id, executable: false, rent_epoch: 0,
+    });
+    let data_pre_ml = mollusk_account::Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: callee_id, executable: false, rent_epoch: 0,
+    };
+
+    // PDA account has no data; just exists so the AccountInfo can be
+    // located by the CPI handler.
+    let pda_pre_fs = AccountSharedData::from(Account {
+        lamports: 0, data: vec![],
+        owner: solana_sdk_ids::system_program::id(),
+        executable: false, rent_epoch: 0,
+    });
+    let pda_pre_ml = mollusk_account::Account {
+        lamports: 0, data: vec![],
+        owner: solana_sdk_ids::system_program::id(),
+        executable: false, rent_epoch: 0,
+    };
+
+    let callee_program_fs = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_ml = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(data_key, false),
+            AccountMeta::new_readonly(pda, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_SIGNED_PDA_CALLER_SO);
+    fs.add_program(&callee_id, CPI_SIGNED_PDA_CALLEE_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (data_key, data_pre_fs),
+        (pda, pda_pre_fs),
+        (callee_id, callee_program_fs),
+    ]).expect("qedsvm runs CPI signed PDA");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_SIGNED_PDA_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_SIGNED_PDA_CALLEE_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (data_key, data_pre_ml),
+        (pda, pda_pre_ml),
+        (callee_id, callee_program_ml),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    let (_, fs_data) = &fs_r.resulting_accounts[0];
+    let (_, ml_data) = &m_r.resulting_accounts[0];
+    assert_eq!(
+        fs_data.data()[0], 0xAA,
+        "qedsvm: PDA was not promoted to signer (got 0x{:02X}); mollusk byte is 0x{:02X}",
+        fs_data.data()[0], ml_data.data[0],
+    );
+    assert_eq!(ml_data.data[0], 0xAA, "mollusk PDA promotion sanity");
+}
+
+/// Caller invokes a callee that sol_set_return_data's [0xAB, 0xCD,
+/// 0xEF, 0x12], then sol_get_return_data and writes the bytes into
+/// accounts[0].data. Verifies returnData propagation across a CPI
+/// boundary.
+#[test]
+fn cpi_returns_data_propagates() {
+    let caller_id = pid(210);
+    let callee_id = pid(211);
+    let data_key  = pid(212);
+
+    let data: Vec<u8> = vec![0u8; 4];
+    // Caller writes to data_key after reading return_data, so caller
+    // must own it (agave enforces "only owner can mutate data").
+    let data_pre_fs = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: caller_id, executable: false, rent_epoch: 0,
+    });
+    let data_pre_ml = mollusk_account::Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: caller_id, executable: false, rent_epoch: 0,
+    };
+
+    let callee_program_fs = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_ml = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(data_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_GET_RETURN_DATA_CALLER_SO);
+    fs.add_program(&callee_id, CPI_SET_RETURN_DATA_CALLEE_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (data_key, data_pre_fs),
+        (callee_id, callee_program_fs),
+    ]).expect("qedsvm runs CPI returnData round-trip");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_GET_RETURN_DATA_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_SET_RETURN_DATA_CALLEE_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (data_key, data_pre_ml),
+        (callee_id, callee_program_ml),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    let (_, fs_data) = &fs_r.resulting_accounts[0];
+    let (_, ml_data) = &m_r.resulting_accounts[0];
+    let expected = [0xAB, 0xCD, 0xEF, 0x12];
+    assert_eq!(fs_data.data(), &expected,
+        "qedsvm: return_data not propagated (got {:?})", fs_data.data());
+    assert_eq!(ml_data.data.as_slice(), &expected,
+        "mollusk: return_data not propagated (got {:?})", ml_data.data);
+}
+
+/// 3-program CPI chain: outer → cpi_increment_caller → incrementer.
+/// Exercises depth-2 recursion in executeFnCpiWithFuel. The leaf
+/// bumps accounts[0].data[0..8] from 0 to 1; the test asserts that
+/// the increment is visible after the chain returns, on both engines.
+#[test]
+fn cpi_depth_2_chain_matches_mollusk() {
+    let outer_id  = pid(220);
+    let middle_id = pid(221);
+    let leaf_id   = pid(222);
+    let acct_key  = pid(223);
+
+    let data: Vec<u8> = vec![0u8; 16];
+    let acct_pre_fs = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: leaf_id, executable: false, rent_epoch: 0,
+    });
+    let acct_pre_ml = mollusk_account::Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: leaf_id, executable: false, rent_epoch: 0,
+    };
+
+    let middle_prog_fs = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let middle_prog_ml = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+    let leaf_prog_fs = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let leaf_prog_ml = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    // ix.data = middle_id || leaf_id (64 bytes)
+    let mut ix_data = Vec::with_capacity(64);
+    ix_data.extend_from_slice(&middle_id.to_bytes());
+    ix_data.extend_from_slice(&leaf_id.to_bytes());
+
+    let ix = Instruction {
+        program_id: outer_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new_readonly(middle_id, false),
+            AccountMeta::new_readonly(leaf_id, false),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&outer_id, CPI_DEPTH_2_OUTER_SO);
+    fs.add_program(&middle_id, CPI_INCREMENT_CALLER_SO);
+    fs.add_program(&leaf_id, INCREMENTER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct_key, acct_pre_fs),
+        (middle_id, middle_prog_fs),
+        (leaf_id, leaf_prog_fs),
+    ]).expect("qedsvm runs depth-2 CPI chain");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &outer_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_DEPTH_2_OUTER_SO);
+    m.add_program_with_loader_and_elf(
+        &middle_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_INCREMENT_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &leaf_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        INCREMENTER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, acct_pre_ml),
+        (middle_id, middle_prog_ml),
+        (leaf_id, leaf_prog_ml),
+    ]);
+
+    let our_logs: Vec<String> = fs_r.logs.iter()
+        .map(|b| String::from_utf8_lossy(b).into_owned()).collect();
+    eprintln!("DEPTH2 qedsvm cu={} result={:?} logs={our_logs:?}",
+        fs_r.compute_units_consumed, fs_r.program_result);
+    eprintln!("DEPTH2 mollusk cu={} result={:?}",
+        m_r.compute_units_consumed, m_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on depth-2 chain, got {:?}", m_r.program_result);
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on depth-2 chain, got {:?}; logs: {our_logs:?}",
+        fs_r.program_result);
+
+    let (_, fs_acct) = &fs_r.resulting_accounts[0];
+    let (_, ml_acct) = &m_r.resulting_accounts[0];
+    let mut expected = vec![0u8; 16];
+    expected[..8].copy_from_slice(&1u64.to_le_bytes());
+    assert_eq!(fs_acct.data(), expected.as_slice(),
+        "qedsvm: leaf increment not visible through depth-2 chain; got {:?}",
+        fs_acct.data());
+    assert_eq!(ml_acct.data.as_slice(), expected.as_slice(),
+        "mollusk: leaf increment not visible (sanity); got {:?}", ml_acct.data);
 }
 

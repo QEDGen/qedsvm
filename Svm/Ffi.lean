@@ -195,6 +195,26 @@ def runWithRegistry (elf input registry : ByteArray) (cuBudget : UInt64)
     let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
     encodeRun s input.size (UInt64.ofNat consumed)
 
+/-- Variant of `runWithRegistry` that additionally threads the
+    top-level program-id into `State.progIdBytes`. Needed for
+    `invoke_signed` with PDA signer seeds — the CPI handler derives
+    the PDA via `create_program_address(seeds, callerPid)`, and at
+    the top level the callerPid is the program identified by `pidBytes`. -/
+@[export qedsvm_run_with_registry_and_pid]
+def runWithRegistryAndPid
+    (elf input registry pidBytes : ByteArray) (cuBudget : UInt64)
+    : ByteArray :=
+  let cfg : Runner.RunConfig :=
+    { input           := input
+      cuBudget        := cuBudget.toNat
+      programRegistry := parseRegistry registry
+      progIdBytes     := pidBytes }
+  match Runner.runElfWithFuel elf cfg with
+  | none => encodeElfError
+  | some (s, fuelRemaining) =>
+    let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
+    encodeRun s input.size (UInt64.ofNat consumed)
+
 /-! ## Top-level precompile dispatch
 
 Agave's three sig-verify precompiles (`Ed25519SigVerify1111…`,

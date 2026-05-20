@@ -267,14 +267,21 @@ impl Svm {
             .filter(|(pid, _)| **pid != instruction.program_id)
             .map(|(pid, elf)| (pid.as_array(), elf.as_slice()))
             .collect();
-        let raw = if registry_entries.is_empty() {
-            // Fast path: no other programs, use the simpler entry that
-            // doesn't allocate a registry blob.
-            crate::run_buffer(elf, &input, self.cu_budget)
+        // Always thread `instruction.program_id` through so the Lean
+        // runner can derive PDAs for `invoke_signed`. The registry
+        // blob is empty when no other programs are registered.
+        let registry_blob = if registry_entries.is_empty() {
+            Vec::new()
         } else {
-            let registry_blob = crate::encode_registry(&registry_entries);
-            crate::run_buffer_with_registry(elf, &input, &registry_blob, self.cu_budget)
-        }
+            crate::encode_registry(&registry_entries)
+        };
+        let raw = crate::run_buffer_with_registry_and_pid(
+            elf,
+            &input,
+            &registry_blob,
+            instruction.program_id.as_array(),
+            self.cu_budget,
+        )
         .map_err(|e| match e {
             crate::DecodeError::ElfDecodeFailed => SvmError::ElfDecodeFailed,
             other => SvmError::InternalWireFormat(other),
