@@ -381,4 +381,12 @@ def commitOptional (s : State) (out outSize : Nat)
     (commitOptional s out outSize result).returnData = s.returnData := by
   cases result <;> simp [commitOptional]
 
+/-- `commitOptional` preserves the call stack in both arms. Marked
+    `@[simp]` so specs that own `callStackIs` can frame the stack
+    through PDA / curve / poseidon / big-mod-exp syscalls. -/
+@[simp] theorem commitOptional_preserves_callStack (s : State) (out outSize : Nat)
+    (result : Option ByteArray) :
+    (commitOptional s out outSize result).callStack = s.callStack := by
+  cases result <;> simp [commitOptional]
+
 end Svm.SBPF

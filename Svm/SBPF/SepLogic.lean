@@ -44,14 +44,14 @@ directly need the new field — they're locatable by `lake build`.
 /-- A partial view of an sBPF machine state. `some v` means we own the
     resource and assert its value is `v`; `none` means we don't own it.
 
-    `returnData` is `Option ByteArray`; default `none` means singleton
-    builders that use record-construction syntax pick up the default
-    automatically. -/
+    `returnData` and `callStack` default to `none` so singleton builders
+    that use record-construction syntax pick up the defaults automatically. -/
 structure PartialState where
   regs : Reg → Option Nat
   mem  : Nat → Option Nat
   pc   : Option Nat
   returnData : Option ByteArray := none
+  callStack : Option (List CallFrame) := none
   deriving Inhabited
 
 namespace PartialState
@@ -85,6 +85,13 @@ def singletonReturnData (rd : ByteArray) : PartialState :=
     pc   := none
     returnData := some rd }
 
+/-- Partial state owning exactly the call stack. -/
+def singletonCallStack (cs : List CallFrame) : PartialState :=
+  { regs := fun _ => none
+    mem  := fun _ => none
+    pc   := none
+    callStack := some cs }
+
 /-- Two partial states are disjoint if they never both own the same resource.
 
     Field-wise structure: each field of `PartialState` contributes one
@@ -97,6 +104,7 @@ structure Disjoint (h1 h2 : PartialState) : Prop where
   mem  : ∀ a, h1.mem  a = none ∨ h2.mem  a = none
   pc   : h1.pc = none ∨ h2.pc = none
   returnData : h1.returnData = none ∨ h2.returnData = none
+  callStack : h1.callStack = none ∨ h2.callStack = none
 
 /-- Left-biased union of two partial states. -/
 def union (h1 h2 : PartialState) : PartialState where
@@ -104,6 +112,7 @@ def union (h1 h2 : PartialState) : PartialState where
   mem  := fun a => match h1.mem  a with | some v => some v | none => h2.mem  a
   pc   := match h1.pc with | some v => some v | none => h2.pc
   returnData := match h1.returnData with | some v => some v | none => h2.returnData
+  callStack := match h1.callStack with | some v => some v | none => h2.callStack
 
 /-- A partial state is compatible with a full machine state if every
     owned resource agrees with the full state.
@@ -115,6 +124,7 @@ structure CompatibleWith (h : PartialState) (s : State) : Prop where
   mem  : ∀ a v, h.mem  a = some v → s.mem a = v
   pc   : ∀ v,   h.pc   = some v → s.pc = v
   returnData : ∀ rd, h.returnData = some rd → s.returnData = rd
+  callStack : ∀ cs, h.callStack = some cs → s.callStack = cs
 
 /-! ## Disjoint lemmas -/
 
@@ -123,7 +133,8 @@ theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
   { regs := fun r => (hd.regs r).symm
     mem  := fun a => (hd.mem a).symm
     pc   := hd.pc.symm
-    returnData := hd.returnData.symm }
+    returnData := hd.returnData.symm
+    callStack := hd.callStack.symm }
 
 /-! ## Singleton projection lemmas -/
 
@@ -144,6 +155,9 @@ theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
 @[simp] theorem singletonReg_returnData {r : Reg} {v : Nat} :
     (singletonReg r v).returnData = none := rfl
 
+@[simp] theorem singletonReg_callStack {r : Reg} {v : Nat} :
+    (singletonReg r v).callStack = none := rfl
+
 @[simp] theorem singletonMem_regs {a v : Nat} (r : Reg) :
     (singletonMem a v).regs r = none := rfl
 
@@ -161,6 +175,9 @@ theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
 @[simp] theorem singletonMem_returnData {a v : Nat} :
     (singletonMem a v).returnData = none := rfl
 
+@[simp] theorem singletonMem_callStack {a v : Nat} :
+    (singletonMem a v).callStack = none := rfl
+
 @[simp] theorem singletonPC_regs {v : Nat} (r : Reg) :
     (singletonPC v).regs r = none := rfl
 
@@ -173,6 +190,9 @@ theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
 @[simp] theorem singletonPC_returnData {v : Nat} :
     (singletonPC v).returnData = none := rfl
 
+@[simp] theorem singletonPC_callStack {v : Nat} :
+    (singletonPC v).callStack = none := rfl
+
 @[simp] theorem singletonReturnData_regs {rd : ByteArray} (r : Reg) :
     (singletonReturnData rd).regs r = none := rfl
 
@@ -184,6 +204,24 @@ theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
 
 @[simp] theorem singletonReturnData_returnData_self {rd : ByteArray} :
     (singletonReturnData rd).returnData = some rd := rfl
+
+@[simp] theorem singletonReturnData_callStack {rd : ByteArray} :
+    (singletonReturnData rd).callStack = none := rfl
+
+@[simp] theorem singletonCallStack_regs {cs : List CallFrame} (r : Reg) :
+    (singletonCallStack cs).regs r = none := rfl
+
+@[simp] theorem singletonCallStack_mem {cs : List CallFrame} (a : Nat) :
+    (singletonCallStack cs).mem a = none := rfl
+
+@[simp] theorem singletonCallStack_pc {cs : List CallFrame} :
+    (singletonCallStack cs).pc = none := rfl
+
+@[simp] theorem singletonCallStack_returnData {cs : List CallFrame} :
+    (singletonCallStack cs).returnData = none := rfl
+
+@[simp] theorem singletonCallStack_callStack_self {cs : List CallFrame} :
+    (singletonCallStack cs).callStack = some cs := rfl
 
 /-! ### singletonMemU64 — 8 consecutive bytes encoding a u64 value
 
@@ -215,6 +253,9 @@ def singletonMemU64 (addr v : Nat) : PartialState :=
 
 @[simp] theorem singletonMemU64_returnData {addr v : Nat} :
     (singletonMemU64 addr v).returnData = none := rfl
+
+@[simp] theorem singletonMemU64_callStack {addr v : Nat} :
+    (singletonMemU64 addr v).callStack = none := rfl
 
 theorem singletonMemU64_mem_0 (addr v : Nat) :
     (singletonMemU64 addr v).mem addr = some (v % 256) := by
@@ -349,6 +390,9 @@ def singletonMemU16 (addr v : Nat) : PartialState :=
 @[simp] theorem singletonMemU16_returnData {addr v : Nat} :
     (singletonMemU16 addr v).returnData = none := rfl
 
+@[simp] theorem singletonMemU16_callStack {addr v : Nat} :
+    (singletonMemU16 addr v).callStack = none := rfl
+
 theorem singletonMemU16_mem_0 (addr v : Nat) :
     (singletonMemU16 addr v).mem addr = some (v % 256) := by
   unfold singletonMemU16; simp
@@ -391,6 +435,9 @@ def singletonMemU32 (addr v : Nat) : PartialState :=
 
 @[simp] theorem singletonMemU32_returnData {addr v : Nat} :
     (singletonMemU32 addr v).returnData = none := rfl
+
+@[simp] theorem singletonMemU32_callStack {addr v : Nat} :
+    (singletonMemU32 addr v).callStack = none := rfl
 
 theorem singletonMemU32_mem_0 (addr v : Nat) :
     (singletonMemU32 addr v).mem addr = some (v % 256) := by
@@ -473,6 +520,9 @@ def singletonMem32Bytes (addr : Nat) (bs : ByteArray) : PartialState :=
 @[simp] theorem singletonMem32Bytes_returnData {addr : Nat} {bs : ByteArray} :
     (singletonMem32Bytes addr bs).returnData = none := rfl
 
+@[simp] theorem singletonMem32Bytes_callStack {addr : Nat} {bs : ByteArray} :
+    (singletonMem32Bytes addr bs).callStack = none := rfl
+
 /-- Byte at offset `i ∈ [0, 32)` equals `(bs.get! i).toNat`. The single
     parameterized lemma replaces 32 unrolled `_mem_i` lemmas. -/
 theorem singletonMem32Bytes_mem_at (addr : Nat) (bs : ByteArray) (i : Nat)
@@ -523,6 +573,9 @@ def singletonMemBytes (addr : Nat) (bs : ByteArray) : PartialState :=
 
 @[simp] theorem singletonMemBytes_returnData {addr : Nat} {bs : ByteArray} :
     (singletonMemBytes addr bs).returnData = none := rfl
+
+@[simp] theorem singletonMemBytes_callStack {addr : Nat} {bs : ByteArray} :
+    (singletonMemBytes addr bs).callStack = none := rfl
 
 /-- Byte at offset `i ∈ [0, bs.size)` equals `(bs.get! i).toNat`. -/
 theorem singletonMemBytes_mem_at (addr : Nat) (bs : ByteArray) (i : Nat)
@@ -634,12 +687,14 @@ theorem singletonMemU64_mem_outside (addr v : Nat) (a : Nat)
 @[simp] theorem empty_mem (a : Nat) : empty.mem a = none := rfl
 @[simp] theorem empty_pc : empty.pc = none := rfl
 @[simp] theorem empty_returnData : empty.returnData = none := rfl
+@[simp] theorem empty_callStack : empty.callStack = none := rfl
 
 theorem Disjoint_empty_left {h : PartialState} : empty.Disjoint h :=
   { regs := fun _ => Or.inl rfl
     mem  := fun _ => Or.inl rfl
     pc   := Or.inl rfl
-    returnData := Or.inl rfl }
+    returnData := Or.inl rfl
+    callStack := Or.inl rfl }
 
 theorem Disjoint_empty_right {h : PartialState} : h.Disjoint empty :=
   Disjoint_empty_left.symm
@@ -710,6 +765,29 @@ theorem union_returnData_of_left_some {h1 h2 : PartialState} {v : ByteArray}
       (match h1.returnData with | some v => some v | none => h2.returnData) :=
   rfl
 
+@[simp] theorem union_callStack_of_left_none {h1 h2 : PartialState}
+    (h : h1.callStack = none) : (h1.union h2).callStack = h2.callStack := by
+  show (match h1.callStack with | some v => some v | none => h2.callStack) =
+       h2.callStack
+  rw [h]
+
+theorem union_callStack_of_left_some {h1 h2 : PartialState}
+    {v : List CallFrame}
+    (h : h1.callStack = some v) : (h1.union h2).callStack = some v := by
+  show (match h1.callStack with | some v => some v | none => h2.callStack) =
+       some v
+  rw [h]
+
+@[simp] theorem union_callStack_eq_none_of_both {h1 h2 : PartialState}
+    (h1_cs : h1.callStack = none) (h2_cs : h2.callStack = none) :
+    (h1.union h2).callStack = none := by
+  rw [union_callStack_of_left_none h1_cs]; exact h2_cs
+
+@[simp] theorem union_callStack_eq_match (h1 h2 : PartialState) :
+    (h1.union h2).callStack =
+      (match h1.callStack with | some v => some v | none => h2.callStack) :=
+  rfl
+
 /-! ## Union lemmas -/
 
 theorem union_empty_left {h : PartialState} : empty.union h = h := by
@@ -717,20 +795,21 @@ theorem union_empty_left {h : PartialState} : empty.union h = h := by
   rfl
 
 theorem union_empty_right {h : PartialState} : h.union empty = h := by
-  obtain ⟨regs, mem, pc, rd⟩ := h
-  show PartialState.mk _ _ _ _ = _
+  obtain ⟨regs, mem, pc, rd, cs⟩ := h
+  show PartialState.mk _ _ _ _ _ = _
   simp only [PartialState.mk.injEq]
-  refine ⟨?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · funext r; cases regs r <;> rfl
   · funext a; cases mem  a <;> rfl
   · cases pc <;> rfl
   · cases rd <;> rfl
+  · cases cs <;> rfl
 
 theorem union_comm_of_disjoint {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
     h1.union h2 = h2.union h1 := by
-  show PartialState.mk _ _ _ _ = PartialState.mk _ _ _ _
+  show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
   simp only [PartialState.mk.injEq]
-  refine ⟨?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · funext r
     rcases hd.regs r with h | h
     · rw [h]; cases h2.regs r <;> rfl
@@ -745,6 +824,9 @@ theorem union_comm_of_disjoint {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
   · rcases hd.returnData with h | h
     · rw [h]; cases h2.returnData <;> rfl
     · rw [h]; cases h1.returnData <;> rfl
+  · rcases hd.callStack with h | h
+    · rw [h]; cases h2.callStack <;> rfl
+    · rw [h]; cases h1.callStack <;> rfl
 
 /-! ## Field-level "owned by union iff owned by either" lemmas -/
 
@@ -778,20 +860,30 @@ theorem union_returnData_eq_none_iff {h1 h2 : PartialState} :
   · cases h2.returnData <;> simp
   · simp
 
+theorem union_callStack_eq_none_iff {h1 h2 : PartialState} :
+    (h1.union h2).callStack = none ↔
+      h1.callStack = none ∧ h2.callStack = none := by
+  show (match h1.callStack with | some v => some v | none => h2.callStack) =
+       none ↔ _
+  cases h1.callStack
+  · cases h2.callStack <;> simp
+  · simp
+
 /-! ## Union associativity -/
 
 theorem union_assoc {h1 h2 h3 : PartialState} :
     h1.union (h2.union h3) = (h1.union h2).union h3 := by
-  obtain ⟨r1, m1, p1, d1⟩ := h1
-  obtain ⟨r2, m2, p2, d2⟩ := h2
-  obtain ⟨r3, m3, p3, d3⟩ := h3
-  show PartialState.mk _ _ _ _ = PartialState.mk _ _ _ _
+  obtain ⟨r1, m1, p1, d1, c1⟩ := h1
+  obtain ⟨r2, m2, p2, d2, c2⟩ := h2
+  obtain ⟨r3, m3, p3, d3, c3⟩ := h3
+  show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
   simp only [PartialState.mk.injEq, union]
-  refine ⟨?_, ?_, ?_, ?_⟩
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
   · funext r; cases r1 r <;> cases r2 r <;> cases r3 r <;> rfl
   · funext a; cases m1 a <;> cases m2 a <;> cases m3 a <;> rfl
   · cases p1 <;> cases p2 <;> cases p3 <;> rfl
   · cases d1 <;> cases d2 <;> cases d3 <;> rfl
+  · cases c1 <;> cases c2 <;> cases c3 <;> rfl
 
 /-! ## Disjoint redistribution under union -/
 
@@ -813,6 +905,10 @@ theorem Disjoint_of_union_left {h1 h2 h3 : PartialState}
     rcases hd.returnData with hl | hl
     · left; exact union_returnData_eq_none_iff.mp hl |>.1
     · right; exact hl
+  callStack := by
+    rcases hd.callStack with hl | hl
+    · left; exact union_callStack_eq_none_iff.mp hl |>.1
+    · right; exact hl
 
 theorem Disjoint_of_union_right {h1 h2 h3 : PartialState}
     (hd : (h1.union h2).Disjoint h3) : h2.Disjoint h3 where
@@ -831,6 +927,10 @@ theorem Disjoint_of_union_right {h1 h2 h3 : PartialState}
   returnData := by
     rcases hd.returnData with hl | hl
     · left; exact union_returnData_eq_none_iff.mp hl |>.2
+    · right; exact hl
+  callStack := by
+    rcases hd.callStack with hl | hl
+    · left; exact union_callStack_eq_none_iff.mp hl |>.2
     · right; exact hl
 
 theorem Disjoint_union_of_both {h1 h2 h3 : PartialState}
@@ -856,6 +956,12 @@ theorem Disjoint_union_of_both {h1 h2 h3 : PartialState}
   returnData := by
     rcases hd1.returnData with hl | hl <;> rcases hd2.returnData with hl' | hl'
     · left; exact union_returnData_eq_none_iff.mpr ⟨hl, hl'⟩
+    · right; exact hl'
+    · right; exact hl
+    · right; exact hl
+  callStack := by
+    rcases hd1.callStack with hl | hl <;> rcases hd2.callStack with hl' | hl'
+    · left; exact union_callStack_eq_none_iff.mpr ⟨hl, hl'⟩
     · right; exact hl'
     · right; exact hl
     · right; exact hl
@@ -945,6 +1051,12 @@ def returnDataIs (rd : ByteArray) : Assertion :=
   fun h => h = PartialState.singletonReturnData rd
 
 @[inherit_doc] notation:50 "↦ReturnData " rd => returnDataIs rd
+
+/-- The call stack equals `cs`, and that's all we own. -/
+def callStackIs (cs : List CallFrame) : Assertion :=
+  fun h => h = PartialState.singletonCallStack cs
+
+@[inherit_doc] notation:50 "↦CallStack " cs => callStackIs cs
 
 /-! ## Structural lemmas for `**` -/
 

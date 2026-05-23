@@ -32,16 +32,9 @@ def Insn.isCallLocal : Insn → Bool
   | .call_local _ => true
   | _             => false
 
-/-- `commitOptional` preserves `callStack` in both arms. Companion
-    to `commitOptional_preserves_regions` at `Machine.lean:313`; lets
-    `execSyscall_preserves_callStack`'s blanket simp close every
-    syscall arm whose body ends in `commitOptional` (PDA-create,
-    curve ops, big-mod-exp, poseidon, …) without case-splitting on
-    `result`. -/
-@[simp] theorem commitOptional_preserves_callStack (s : State) (out outSize : Nat)
-    (result : Option ByteArray) :
-    (commitOptional s out outSize result).callStack = s.callStack := by
-  cases result <;> simp [commitOptional]
+-- `commitOptional_preserves_callStack` lives in `Machine.lean` (moved
+-- there during lift #3 so it's in scope for `InstructionSpecs.lean` —
+-- RunnerBridge imports CPSSpec downstream of InstructionSpecs).
 
 /-- `execTryFind` preserves `callStack` in both match arms. Companion
     to `execTryFind_preserves_regions` at `Pda.lean:193`. -/
