@@ -4728,6 +4728,89 @@ theorem call_sol_set_return_data_spec (r0Old : Nat) (pc : Nat) :
     (fun s hex => by simp [step, execSyscall, ReturnData.execSet]; exact hex)
     r0Old
 
+/-! ## Silent-syscall helper: `cuTripleWithin_syscall_silent`
+
+For syscalls whose `step` is a no-op on `PartialState` (regs, mem, pc
+all match modulo `pc + 1`). The spec is `emp ↓ emp` — the syscall
+advances pc by 1 and consumes fuel/CU but doesn't observably touch
+any SL-tracked resource. Composed with the frame rule, it transports
+any pc-free assertion through the call. -/
+
+theorem cuTripleWithin_syscall_silent
+    (sc : Syscall) (pc : Nat)
+    (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs)
+    (h_step_mem  : ∀ s : State, (step (.call sc) s).mem = s.mem)
+    (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
+    (h_step_exit : ∀ s : State, s.exitCode = none →
+        (step (.call sc) s).exitCode = none) :
+    cuTripleWithin 1 pc (pc + 1)
+      (CodeReq.singleton pc (.call sc))
+      emp
+      emp := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  obtain ⟨hp, hcompat, hP, hR, _, hu, hPemp, hRsat⟩ := hPR
+  obtain ⟨hcr_regs, hcm_mem, hcm_pc⟩ := hcompat
+  have hfetch : fetch s.pc = some (.call sc) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_zero]
+  have hexec_regs : (executeFn fetch s 1).regs = s.regs := by
+    rw [hstep_eq]; exact h_step_regs s
+  have hexec_mem : (executeFn fetch s 1).mem = s.mem := by
+    rw [hstep_eq]; exact h_step_mem s
+  have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
+    rw [hstep_eq]; exact h_step_pc s
+  have hexec_exit : (executeFn fetch s 1).exitCode = none := by
+    rw [hstep_eq]; exact h_step_exit s hex
+  -- hp = empty.union h_R = h_R; transport hcompat to (executeFn fetch s 1).
+  have hP_empty : hP = PartialState.empty := hPemp
+  have hp_eq : hp = hR := by
+    rw [← hu, hP_empty, PartialState.union_empty_left]
+  refine ⟨1, Nat.le_refl 1, ?_, hexec_exit, ?_⟩
+  · rw [hexec_pc, hpc]
+  · refine ⟨PartialState.empty.union hR, ?_, PartialState.empty, hR,
+            ?_, rfl, rfl, hRsat⟩
+    · refine ⟨?_, ?_, ?_⟩
+      · intro r v hvr
+        rw [PartialState.union_regs_of_left_none
+            (PartialState.empty_regs r)] at hvr
+        rw [hexec_regs]
+        exact hcr_regs r v (hp_eq ▸ hvr)
+      · intro a v hva
+        rw [PartialState.union_mem_of_left_none
+            (PartialState.empty_mem a)] at hva
+        rw [hexec_mem]
+        exact hcm_mem a v (hp_eq ▸ hva)
+      · intro v hvp
+        rw [PartialState.union_pc_of_left_none
+            PartialState.empty_pc] at hvp
+        have hR_no_pc : hR.pc = none := hRfree _ hRsat
+        rw [hR_no_pc] at hvp
+        nomatch hvp
+    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      · left; exact PartialState.empty_regs r
+      · left; exact PartialState.empty_mem a
+      · left; exact PartialState.empty_pc
+
+/-! ## Syscall: `sol_remaining_compute_units`
+
+Opaque in our model: `execRemainingComputeUnits s := s` (no register,
+memory, or returnData change). At the SL level, the syscall is silent
+— just advances pc by 1 and consumes its base CU charge. -/
+
+theorem call_sol_remaining_compute_units_spec (pc : Nat) :
+    cuTripleWithin 1 pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_remaining_compute_units))
+      emp
+      emp :=
+  cuTripleWithin_syscall_silent .sol_remaining_compute_units pc
+    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
+    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
+    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
+    (fun s hex => by simp [step, execSyscall, Misc.execRemainingComputeUnits]; exact hex)
+
 /-! ## Syscall: `sol_create_program_address` (n=0 seed case)
 
 The degenerate (zero-seed) form of the PDA syscall: the caller passes
