@@ -703,4 +703,105 @@ theorem cuTripleWithin.toExec {N entry exit_ : Nat} {cr : CodeReq}
       Q.holdsFor (executeFn fetch s k) :=
   h.toMem.toExec hcr hP hpc hex trivial
 
+/-! ## Terminating triple — abort / panic / success-exit
+
+`cuTripleWithin` requires `exitCode = none` post — it cannot express
+"this program intentionally aborts at this PC with this error code".
+`cuTripleAbortsWithin` is the dual: starting from any state where `P` holds
+(plus a pc-free frame), within `nSteps` execution reaches `exitCode = some
+errCode`. There is **no post-condition** on the partial state — once the
+program aborts, the only spec content is the exit code.
+
+This unlocks the `exit` / `sol_panic_` / `abort` instructions and, by
+sequencing, error-path `require` patterns of the form
+`P { c₁ } Q ∧ Q { c₂ } aborts → P { c₁; c₂ } aborts`. -/
+
+/-- `cuTripleAbortsWithin N entry cr P errCode`:
+
+    For every pc-free frame `R` and every instruction-fetch function
+    `fetch` honoring the code requirement `cr`, starting from a state
+    where `P ** R` holds, the program counter equals `entry`, and the
+    machine is running (exitCode = none), execution reaches in at most
+    `N` steps a state whose `exitCode` is `some errCode`.
+
+    Frame rule is built in (universal R, R must be pc-free).
+    There is no post-condition on the partial state. -/
+def cuTripleAbortsWithin (nSteps : Nat) (entry : Nat) (cr : CodeReq)
+    (P : Assertion) (errCode : Nat) : Prop :=
+  ∀ (R : Assertion), R.pcFree →
+  ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
+  ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    ∃ k, k ≤ nSteps ∧
+      (executeFn fetch s k).exitCode = some errCode
+
+/-- Rule of consequence (pre-weakening) for aborting triples. There is no
+    post to weaken — abort triples have no post. -/
+theorem cuTripleAbortsWithin_weaken {nSteps : Nat} {entry : Nat} {cr : CodeReq}
+    {P P' : Assertion} {errCode : Nat}
+    (hpre : ∀ h, P' h → P h)
+    (h : cuTripleAbortsWithin nSteps entry cr P errCode) :
+    cuTripleAbortsWithin nSteps entry cr P' errCode := by
+  intro R hR fetch hcr s hP'R hpc hex
+  have hPR : (P ** R).holdsFor s := by
+    obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
+    exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
+  exact h R hR fetch hcr s hPR hpc hex
+
+/-- Monotonicity in the step bound: an aborting triple with bound `N` is
+    also one with bound `N' ≥ N`. -/
+theorem cuTripleAbortsWithin_mono_nSteps {nSteps nSteps' : Nat} {entry : Nat}
+    {cr : CodeReq} {P : Assertion} {errCode : Nat}
+    (hle : nSteps ≤ nSteps')
+    (h : cuTripleAbortsWithin nSteps entry cr P errCode) :
+    cuTripleAbortsWithin nSteps' entry cr P errCode := by
+  intro R hR fetch hcr s hPR hpc hex
+  obtain ⟨k, hk, hex'⟩ := h R hR fetch hcr s hPR hpc hex
+  exact ⟨k, Nat.le_trans hk hle, hex'⟩
+
+/-- Sequencing into abort: a non-terminating triple `P { c₁ } Q` chained
+    with an aborting triple `Q { c₂ } aborts` yields an aborting triple
+    `P { c₁; c₂ } aborts`. Bounds sum, code requirements disjoint-union.
+
+    Mirrors `cuTripleWithin_seq`, but the second segment is an
+    `cuTripleAbortsWithin` and the result has no post-state. This is the
+    composition rule that lets error-path checks compose: run some
+    discriminant decoding under `cuTripleWithin`, then dispatch to an
+    `abort` / `sol_panic_` block under `cuTripleAbortsWithin`. -/
+theorem cuTripleAbortsWithin_seq_abort {N1 N2 : Nat} {pc1 pc2 : Nat}
+    {cr1 cr2 : CodeReq}
+    (hd : cr1.Disjoint cr2)
+    {P Q : Assertion} {errCode : Nat}
+    (h1 : cuTripleWithin N1 pc1 pc2 cr1 P Q)
+    (h2 : cuTripleAbortsWithin N2 pc2 cr2 Q errCode) :
+    cuTripleAbortsWithin (N1 + N2) pc1 (cr1.union cr2) P errCode := by
+  intro F hF fetch hcr s hPF hpc hex
+  have hcr1 := CodeReq.SatisfiedBy_of_union_left hcr
+  have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
+  obtain ⟨k1, hk1, hpc_mid, hex_mid, hQF⟩ := h1 F hF fetch hcr1 s hPF hpc hex
+  obtain ⟨k2, hk2, hex_end⟩ :=
+    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid
+  refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_⟩
+  rw [executeFn_compose]; exact hex_end
+
+/-- Frame rule (right) for aborting triples: adding a pc-free assertion
+    `F` to the precondition preserves the triple. Since there is no
+    post, only the pre is reshaped. -/
+theorem cuTripleAbortsWithin_frame_right (F : Assertion) (hF : F.pcFree)
+    {N : Nat} {pc : Nat} {cr : CodeReq} {P : Assertion} {errCode : Nat}
+    (h : cuTripleAbortsWithin N pc cr P errCode) :
+    cuTripleAbortsWithin N pc cr (P ** F) errCode := by
+  intro R hR fetch hcr s hPFR hpc hex
+  have hFR_pcfree : (F ** R).pcFree := pcFree_sepConj hF hR
+  have hP_FR : (P ** (F ** R)).holdsFor s := holdsFor_sepConj_assoc.mp hPFR
+  exact h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex
+
+/-- Frame rule (left) for aborting triples. -/
+theorem cuTripleAbortsWithin_frame_left (F : Assertion) (hF : F.pcFree)
+    {N : Nat} {pc : Nat} {cr : CodeReq} {P : Assertion} {errCode : Nat}
+    (h : cuTripleAbortsWithin N pc cr P errCode) :
+    cuTripleAbortsWithin N pc cr (F ** P) errCode :=
+  cuTripleAbortsWithin_weaken
+    (fun hp hFP => (sepConj_comm hp).mp hFP)
+    (cuTripleAbortsWithin_frame_right F hF h)
+
 end Svm.SBPF
