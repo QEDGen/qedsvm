@@ -113,16 +113,20 @@ The spec layer turns a decoded `List Insn` into something you can prove against 
 
 ### Per-instruction triples — `Svm/SBPF/InstructionSpecs.lean`
 
-**106 theorems covering essentially the entire user-facing ISA**:
+**110 theorems covering essentially the entire user-facing ISA**:
 
 - **ALU 64-bit** (13 ops × {imm, reg}) — `mov`, `add`, `sub`, `mul`, `div`, `mod`, `or`, `and`, `xor`, `lsh`, `rsh`, `arsh`, `neg`.
 - **ALU 32-bit** (13 ops × {imm, reg}) — same op set, result zero-extended.
 - **Conditional jumps** (11 ops × {imm, reg}) — `jeq`, `jne`, `jgt`, `jge`, `jlt`, `jle`, `jsgt`, `jsge`, `jslt`, `jsle`, `jset`.
-- **Unconditional**: `ja`, `lddw`, `exit`, `callx` (value-dependent exit PC).
+- **Unconditional**: `ja`, `lddw`, `callx` (value-dependent exit PC).
 - **Memory** (byte-level `↦ₘ` predicate): `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`.
-- **Syscall specs**: `sol_create_program_address` (n=0, n=1), all 5 `sol_log_*` variants, `sol_get_stack_height`, `sol_set_return_data`. The recurring "writes r0 only, leaves regs/mem/pc otherwise alone" pattern is factored into `cuTripleWithin_syscall_writes_r0_only` — each concrete syscall spec then reduces to ~12 lines (four `simp` projection lemmas + the helper call).
+- **Syscall specs (11)**: `sol_create_program_address` (n=0, n=1) plus 9 r0-only-write syscalls — all 5 `sol_log_*` variants, `sol_get_stack_height`, `sol_set_return_data`, `sol_get_epoch_stake`, `sol_get_processed_sibling_instruction`, `sol_get_sysvar` (generic), `.unknown` (parametric over hash). The recurring "writes r0 only, leaves regs/mem/pc otherwise alone" pattern is factored into `cuTripleWithin_syscall_writes_r0_only` — each concrete syscall spec reduces to ~12 lines (four `simp` projection lemmas + the helper call).
 
-Open per-instruction gaps: `call` / `call_local` (call-stack frames need a `PartialState` extension), memory-writing syscalls (sysvar zero-fills, `sol_get_return_data`, `sol_memcpy`/`memset`/`memcmp`, crypto), store-immediate at non-byte widths (`sth` / `stw` / `stdw`).
+Open per-instruction gaps:
+- `exit`, `abort`, `sol_panic_` — terminating instructions (set `exitCode := some`); need a separate "terminating triple" type since `cuTripleWithin` requires `exitCode = none` post.
+- `call` / `call_local` — call-stack frames need a `PartialState` extension to track `callStack`.
+- Memory-writing syscalls — sysvar zero-fills (`sol_get_clock_sysvar` etc.), `sol_get_return_data`, `sol_memcpy` / `memset` / `memcmp`, crypto syscalls (sha256, secp256k1, …). Each needs memory atoms in pre/post; closer to the ~400-line `sol_create_program_address` template.
+- Store-immediate at non-byte widths (`sth` / `stw` / `stdw`) — need new ~150-line helper lemmas per width.
 
 ### Composition tactics — `Svm/SBPF/{SLTactic,SpecGen,Patterns}.lean`
 

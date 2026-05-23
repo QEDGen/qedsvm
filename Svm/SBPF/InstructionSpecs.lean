@@ -4641,6 +4641,75 @@ theorem call_sol_log_data_spec (r0Old : Nat) (pc : Nat) :
     (fun s hex => by simp [step, execSyscall, Logging.execLogData]; exact hex)
     r0Old
 
+/-! ## Syscall: `sol_get_epoch_stake`
+
+Returns 0 in `r0` (stake not modeled). Memory unchanged. -/
+
+theorem call_sol_get_epoch_stake_spec (r0Old : Nat) (pc : Nat) :
+    cuTripleWithin 1 pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_get_epoch_stake))
+      (.r0 ↦ᵣ r0Old)
+      (.r0 ↦ᵣ 0) :=
+  cuTripleWithin_syscall_writes_r0_only .sol_get_epoch_stake 0 pc
+    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
+    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
+    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
+    (fun s hex => by simp [step, execSyscall, Sysvar.execEpochStake]; exact hex)
+    r0Old
+
+/-! ## Syscall: `sol_get_processed_sibling_instruction`
+
+Sibling-instruction tracking is not modeled; the syscall returns 0
+in `r0` and otherwise leaves state unchanged. -/
+
+theorem call_sol_get_processed_sibling_instruction_spec
+    (r0Old : Nat) (pc : Nat) :
+    cuTripleWithin 1 pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_get_processed_sibling_instruction))
+      (.r0 ↦ᵣ r0Old)
+      (.r0 ↦ᵣ 0) :=
+  cuTripleWithin_syscall_writes_r0_only
+    .sol_get_processed_sibling_instruction 0 pc
+    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
+    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
+    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
+    (fun s hex => by simp [step, execSyscall, Misc.execProcessedSibling]; exact hex)
+    r0Old
+
+/-! ## Syscall: `sol_get_sysvar` (generic accessor)
+
+Returns 0 in `r0`; per-sysvar getters (`sol_get_{clock,rent,...}_sysvar`)
+are the modeled path that actually populates the output buffer. -/
+
+theorem call_sol_get_sysvar_spec (r0Old : Nat) (pc : Nat) :
+    cuTripleWithin 1 pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_get_sysvar))
+      (.r0 ↦ᵣ r0Old)
+      (.r0 ↦ᵣ 0) :=
+  cuTripleWithin_syscall_writes_r0_only .sol_get_sysvar 0 pc
+    (fun s => by simp [step, execSyscall, Misc.execGetSysvar])
+    (fun s => by simp [step, execSyscall, Misc.execGetSysvar])
+    (fun s => by simp [step, execSyscall, Misc.execGetSysvar])
+    (fun s hex => by simp [step, execSyscall, Misc.execGetSysvar]; exact hex)
+    r0Old
+
+/-! ## Syscall: `.unknown` (unrecognized hash)
+
+For any unrecognized syscall hash, agave aborts; we return 0 in `r0`
+so programs that test against opaque hashes don't spuriously fail. -/
+
+theorem call_sol_unknown_spec (hash r0Old : Nat) (pc : Nat) :
+    cuTripleWithin 1 pc (pc + 1)
+      (CodeReq.singleton pc (.call (.unknown hash)))
+      (.r0 ↦ᵣ r0Old)
+      (.r0 ↦ᵣ 0) :=
+  cuTripleWithin_syscall_writes_r0_only (.unknown hash) 0 pc
+    (fun s => by simp [step, execSyscall, Misc.execUnknown])
+    (fun s => by simp [step, execSyscall, Misc.execUnknown])
+    (fun s => by simp [step, execSyscall, Misc.execUnknown])
+    (fun s hex => by simp [step, execSyscall, Misc.execUnknown]; exact hex)
+    r0Old
+
 /-! ## Syscall: `sol_set_return_data`
 
 `sol_set_return_data(ptr, len)`: replace `State.returnData` with the
