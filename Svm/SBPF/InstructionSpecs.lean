@@ -8636,6 +8636,77 @@ theorem call_sol_memmove_spec
     simp only [step, execSyscall, MemOps.execCopy]
     exact hex
 
+/-! ## Syscall: `sol_memcmp`
+
+`sol_memcmp(p1, p2, n, out)`: lexicographically compare `n = r3` bytes
+at `[r1, r1+n)` and `[r2, r2+n)`, write the i32 result (encoded as u32:
+0, 0xFFFFFFFF for -1, or 1) to `*r4`. Sets `r0 := 0`.
+
+Most complex mem-op spec — 8 atoms total: 5 reg atoms (r0..r4),
+2 read-only ↦Bytes atoms (p1Bytes, p2Bytes), 1 write-only ↦U32 atom
+at r4V. The post-state characterizes the written value via
+`memcmpResultU32`, a pure function of the input ByteArrays.
+
+The proof requires a fold-equality lemma (`execCmp_fold_eq`) that
+relates the `s.mem`-based fold in `MemOps.execCmp` to the
+ByteArray-based fold in `memcmpFold`, under the coherence hypotheses
+provided by the `↦Bytes` atoms in the precondition. -/
+
+/-- ByteArray-based lexicographic comparison fold. Mirrors the
+    `s.mem`-based fold inside `MemOps.execCmp`, but reads bytes from
+    a `ByteArray` instead of `State.mem`. Returns -1 / 0 / 1 (i32). -/
+def memcmpFold (p1 p2 : ByteArray) (n : Nat) : Int :=
+  (List.range n).foldl (fun acc i =>
+    if acc ≠ 0 then acc
+    else
+      let va := (p1.get! i).toNat
+      let vb := (p2.get! i).toNat
+      if va < vb then (-1 : Int)
+      else if va > vb then 1
+      else 0) 0
+
+/-- The u32 result written at `*r4` by `sol_memcmp`: 0 for equal,
+    0xFFFFFFFF for p1 < p2 (i32 -1 reinterpreted as u32), 1 for
+    p1 > p2. -/
+def memcmpResultU32 (p1 p2 : ByteArray) (n : Nat) : Nat :=
+  let cmp := memcmpFold p1 p2 n
+  if cmp = 0 then 0
+  else if cmp < 0 then 0xFFFFFFFF
+  else 1
+
+/-- Under coherence (`s.mem (pV + i) = (pBytes.get! i).toNat` for both
+    p1 and p2), the `s.mem`-based fold in `execCmp` equals the
+    ByteArray-based `memcmpFold`. Proved by induction on `n` using
+    the fact that `(UInt8.toNat _) < 256`, so the `% 256` in the
+    `s.mem`-side cancels. -/
+private theorem execCmp_fold_eq (s : State) (p1V p2V n : Nat)
+    (p1Bytes p2Bytes : ByteArray)
+    (hp1 : ∀ i, i < n → s.mem (p1V + i) = (p1Bytes.get! i).toNat)
+    (hp2 : ∀ i, i < n → s.mem (p2V + i) = (p2Bytes.get! i).toNat) :
+    (List.range n).foldl (fun acc i =>
+      if acc ≠ 0 then acc
+      else
+        let va := s.mem (p1V + i) % 256
+        let vb := s.mem (p2V + i) % 256
+        if va < vb then (-1 : Int)
+        else if va > vb then 1
+        else 0) (0 : Int) = memcmpFold p1Bytes p2Bytes n := by
+  unfold memcmpFold
+  induction n with
+  | zero => rfl
+  | succ k ih =>
+    have hp1' : ∀ i, i < k → s.mem (p1V + i) = (p1Bytes.get! i).toNat :=
+      fun i hi => hp1 i (Nat.lt_succ_of_lt hi)
+    have hp2' : ∀ i, i < k → s.mem (p2V + i) = (p2Bytes.get! i).toNat :=
+      fun i hi => hp2 i (Nat.lt_succ_of_lt hi)
+    simp only [List.range_succ, List.foldl_append, List.foldl_cons, List.foldl_nil]
+    rw [ih hp1' hp2']
+    have hpv1 : s.mem (p1V + k) = (p1Bytes.get! k).toNat := hp1 k (Nat.lt_succ_self k)
+    have hpv2 : s.mem (p2V + k) = (p2Bytes.get! k).toNat := hp2 k (Nat.lt_succ_self k)
+    have h1lt : (p1Bytes.get! k).toNat < 256 := (p1Bytes.get! k).toNat_lt
+    have h2lt : (p2Bytes.get! k).toNat < 256 := (p2Bytes.get! k).toNat_lt
+    rw [hpv1, hpv2, Nat.mod_eq_of_lt h1lt, Nat.mod_eq_of_lt h2lt]
+
 /-! ## Syscall: `sol_get_clock_sysvar`
 
 Writes 40 bytes of zeros at `*r1`, sets `r0 := 0`. First multi-region
