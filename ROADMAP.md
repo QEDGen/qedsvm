@@ -50,6 +50,8 @@ The methodology — separation logic over machine state, bounded Hoare triples, 
 
 **Tooling-track ideas** live in [`docs/improvement-plan.md`](docs/improvement-plan.md) — orthogonal to the phase plan above.
 
+**Deferred architectural lifts** (SL track, post-mem-op-family closeout) — terminating triples, returnData SL atom, callStack in PartialState, memory-coherence axiom cleanup, crypto family trust-statement batch. Design sketches and priority order in [`docs/deferred-arch-lifts.md`](docs/deferred-arch-lifts.md). None are production blockers.
+
 ## Shipped
 
 ### v0.2.0 — Phase 0: Axiom cleanup (partial) ✅
