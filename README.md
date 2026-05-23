@@ -113,16 +113,16 @@ The spec layer turns a decoded `List Insn` into something you can prove against 
 
 ### Per-instruction triples — `Svm/SBPF/InstructionSpecs.lean`
 
-**99 theorems covering essentially the entire user-facing ISA**:
+**106 theorems covering essentially the entire user-facing ISA**:
 
 - **ALU 64-bit** (13 ops × {imm, reg}) — `mov`, `add`, `sub`, `mul`, `div`, `mod`, `or`, `and`, `xor`, `lsh`, `rsh`, `arsh`, `neg`.
 - **ALU 32-bit** (13 ops × {imm, reg}) — same op set, result zero-extended.
 - **Conditional jumps** (11 ops × {imm, reg}) — `jeq`, `jne`, `jgt`, `jge`, `jlt`, `jle`, `jsgt`, `jsge`, `jslt`, `jsle`, `jset`.
 - **Unconditional**: `ja`, `lddw`, `exit`, `callx` (value-dependent exit PC).
 - **Memory** (byte-level `↦ₘ` predicate): `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`.
-- **Syscall specs**: `sol_create_program_address` n=0 and n=1.
+- **Syscall specs**: `sol_create_program_address` (n=0, n=1), all 5 `sol_log_*` variants, `sol_get_stack_height`, `sol_set_return_data`. The recurring "writes r0 only, leaves regs/mem/pc otherwise alone" pattern is factored into `cuTripleWithin_syscall_writes_r0_only` — each concrete syscall spec then reduces to ~12 lines (four `simp` projection lemmas + the helper call).
 
-Open per-instruction gaps: `call` / `call_local` (call-stack frames need a `PartialState` extension), per-syscall triples beyond PDA, store-immediate at non-byte widths (`sth` / `stw` / `stdw`).
+Open per-instruction gaps: `call` / `call_local` (call-stack frames need a `PartialState` extension), memory-writing syscalls (sysvar zero-fills, `sol_get_return_data`, `sol_memcpy`/`memset`/`memcmp`, crypto), store-immediate at non-byte widths (`sth` / `stw` / `stdw`).
 
 ### Composition tactics — `Svm/SBPF/{SLTactic,SpecGen,Patterns}.lean`
 
@@ -161,7 +161,7 @@ Authoring new macros to cover SPL Token / ATA / full Anchor patterns is a longer
 ## What's not done yet
 
 - **Call-frame Hoare triples for `call_local` / `.exit`.** The runner's push-PC/pop-PC plumbing works at the execution level (V0 stack frames), but `PartialState` doesn't yet track `callStack`. Adding it is a multi-session design problem (new points-to predicate, frame property, threading through composition). `callx` is shipped (tail-call style, no callStack push).
-- **Per-syscall Hoare triples beyond PDA.** Each one is ~400 lines of partial-state destructure proof following the `sol_create_program_address_n0_spec` template. The executable semantics is in place; writing the specs is hours of work each.
+- **Memory-writing syscall triples.** The 7 "writes r0 only" syscalls ship via the helper; the remaining (sysvar zero-fill, `sol_get_return_data`, `sol_memcpy`/`memset`/`memcmp`, crypto) need memory atoms in pre/post and don't fit the helper. Each is closer to the ~400-line `sol_create_program_address` template.
 - **Store-immediate triples for non-byte widths.** `stb_spec` ships via a 165-line helper; `sth` / `stw` / `stdw` need parallel helpers at the same scale.
 - **17 axioms in `Memory.lean`** for byte-level read/write coherence. Removing them is a byte-level memory model refactor with the same surface but proved coherence lemmas.
 - **Phase F broader fixture coverage** — more SPL Token / ATA / Pinocchio escrow positive paths, plus a fuzz/sweep harness over generated `Vec<Insn>`. Cheap surface, high regression-catch rate.

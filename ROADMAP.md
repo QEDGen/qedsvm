@@ -38,9 +38,9 @@ The methodology — separation logic over machine state, bounded Hoare triples, 
 
 *Production critical path* — two deliverables:
 - **Reference interpreter** (Phases 0, F, G, H): Phase 0 done, F ~82%, G ~100% (correctness + throughput), H ~90%. Aggregate: **~95% shipped**. Remaining: Phase F broader fixture coverage + fuzz harness; long-horizon pure-Lean crypto ports (not gating).
-- **Spec layer** (Phases A, B, C): A/B/C all shipped on the ALU + memory + branch surface. Coverage: 99 per-instruction Hoare triples in `InstructionSpecs.lean` (full 64- and 32-bit ALU × {imm, reg}; full conditional jumps × {imm, reg}; `ja`, `lddw`, `exit`, **`callx`** [value-dependent exit PC]; `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`; div/mod). Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) live in `SLTactic.lean`; `sl_block_auto` (`SpecGen.lean`) dispatches full 64-bit ALU + 32-bit ALU + `lddw` + `ldx`/`stx`. Aggregate: **~85% shipped**. Remaining (all multi-session, not session-scale):
+- **Spec layer** (Phases A, B, C): A/B/C all shipped on the ALU + memory + branch surface. Coverage: 106 per-instruction Hoare triples in `InstructionSpecs.lean` (full 64- and 32-bit ALU × {imm, reg}; full conditional jumps × {imm, reg}; `ja`, `lddw`, `exit`, `callx`; `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`; div/mod; **9 syscall specs** — both PDA variants + all 5 `sol_log_*` + `sol_get_stack_height` + `sol_set_return_data` via the new `cuTripleWithin_syscall_writes_r0_only` helper for r0-only-writes patterns). Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) live in `SLTactic.lean`; `sl_block_auto` (`SpecGen.lean`) dispatches full 64-bit ALU + 32-bit ALU + `lddw` + `ldx`/`stx`. Aggregate: **~88% shipped**. Remaining:
   - Per-instruction triples for `call` / `call_local` (need `callStack` in `PartialState`)
-  - Per-syscall triples beyond PDA n=0/n=1 (~400-line proofs each)
+  - Memory-writing syscall triples (sysvar zero-fill, `sol_get_return_data`, `sol_memcpy`/`memset`/`memcmp`, crypto — each ~400-line `sol_create_program_address`-style proof)
   - Store-immediate triples at non-byte widths (need new ~150-line helper lemmas per width)
   - **17 read/write-coherence axioms in `Memory.lean`** (byte-level memory model refactor)
 
