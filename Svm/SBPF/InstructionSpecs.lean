@@ -40,8 +40,9 @@ theorem cuTripleWithin_1reg_write
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
-  obtain ⟨hd_regs, _, _⟩ := hd
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hd_regs := hd.regs
   have hfetch : fetch s.pc = some insn := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hp_regs_dst : hp.regs dst = some vOld := by
@@ -122,8 +123,9 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
   -- hreg : h1 = singletonReg dst vOld  →  rewrite h1 throughout.
   rw [hreg] at hu hd
   clear hreg h1
-  obtain ⟨hcr_regs, hcm_mem, _hcp_pc⟩ := hcompat
-  obtain ⟨hd_regs, _hd_mem, _hd_pc⟩ := hd
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hd_regs := hd.regs
   -- 2. Fetch resolves to the mov64 instruction at PC.
   have hfetch : fetch s.pc = some (.mov64 dst (.imm imm)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
@@ -225,11 +227,12 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
   rw [h_dst_eq] at hu_PQ hd_dst_src
   rw [h_src_eq] at hu_PQ hd_dst_src
   clear h_dst_eq h_src_eq h_dst h_src
-  obtain ⟨hcr_regs, hcm_mem, _hcp_pc⟩ := hcompat
-  obtain ⟨hd_PQR_regs, _, _⟩ := hd_PQR
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hd_PQR_regs := hd_PQR.regs
   -- 2. dst ≠ src from inner disjointness.
   have hne_dst_src : dst ≠ src := by
-    obtain ⟨hd_inner_regs, _, _⟩ := hd_dst_src
+    have hd_inner_regs := hd_dst_src.regs
     intro habs
     rcases hd_inner_regs dst with h | h
     · rw [PartialState.singletonReg_regs_self] at h; nomatch h
@@ -512,10 +515,11 @@ theorem cuTripleWithin_2reg_write
   rw [h_dst_eq] at hu_PQ hd_dst_src
   rw [h_src_eq] at hu_PQ hd_dst_src
   clear h_dst_eq h_src_eq h_dst h_src
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
-  obtain ⟨hd_PQR_regs, _, _⟩ := hd_PQR
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hd_PQR_regs := hd_PQR.regs
   have hne_dst_src : dst ≠ src := by
-    obtain ⟨hd_inner_regs, _, _⟩ := hd_dst_src
+    have hd_inner_regs := hd_dst_src.regs
     intro habs
     rcases hd_inner_regs dst with h | h
     · rw [PartialState.singletonReg_regs_self] at h; nomatch h
@@ -1151,7 +1155,8 @@ theorem cuTripleWithin_1reg_cjump
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hp_regs_dst : hp.regs dst = some vDst := by
     rw [← hu]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -1205,9 +1210,10 @@ theorem cuTripleWithin_2reg_cjump
   rw [h_dst_eq] at hu_PQ hd_dst_src
   rw [h_src_eq] at hu_PQ hd_dst_src
   clear h_dst_eq h_src_eq h_dst h_src
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_dst_src : dst ≠ src := by
-    obtain ⟨hd_inner_regs, _, _⟩ := hd_dst_src
+    have hd_inner_regs := hd_dst_src.regs
     intro habs
     rcases hd_inner_regs dst with h | h
     · rw [PartialState.singletonReg_regs_self] at h; nomatch h
@@ -1615,9 +1621,10 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
   rw [h_mem_pred] at hu_src_mem hd_src_mem
   rw [h_dst_pred] at hu_dst_SM hd_dst_SM
   clear h_src_pred h_mem_pred h_dst_pred h_src h_mem h_dst
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_dst_src : dst ≠ src := by
-    obtain ⟨hd_dst_SM_regs, _, _⟩ := hd_dst_SM
+    have hd_dst_SM_regs := hd_dst_SM.regs
     intro habs
     rcases hd_dst_SM_regs dst with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -1667,7 +1674,8 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
         executeFn_step fetch s 0 _ hex hfetch,
         executeFn_zero,
         h_step s hs_regs_dst hs_regs_src hs_mem_addr h_region]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_dst : h_R.regs dst = none := by
     rcases hd_PR_regs dst with hl | hr
     · rw [h_P_regs_dst] at hl; nomatch hl
@@ -1888,9 +1896,10 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
   rw [h_mem_pred] at hu_val_mem hd_val_mem
   rw [h_base_pred] at hu_base_VM hd_base_VM
   clear h_val_pred h_mem_pred h_base_pred h_val h_mem h_base
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_base_val : baseReg ≠ valReg := by
-    obtain ⟨hd_base_VM_regs, _, _⟩ := hd_base_VM
+    have hd_base_VM_regs := hd_base_VM.regs
     intro habs
     rcases hd_base_VM_regs baseReg with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -1940,7 +1949,8 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
         executeFn_step fetch s 0 _ hex hfetch,
         executeFn_zero,
         h_step s hs_regs_base hs_regs_val h_region]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_base : h_R.regs baseReg = none := by
     rcases hd_PR_regs baseReg with hl | hr
     · rw [h_P_regs_base] at hl; nomatch hl
@@ -2172,7 +2182,8 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
   rw [h_base_pred] at hu_base_mem hd_base_mem
   rw [h_mem_pred] at hu_base_mem hd_base_mem
   clear h_base_pred h_mem_pred h_base h_mem
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have h_P_regs_base : h_P.regs baseReg = some baseAddr := by
     rw [← hu_base_mem]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -2195,7 +2206,8 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
         executeFn_step fetch s 0 _ hex hfetch,
         executeFn_zero,
         h_step s hs_regs_base h_region]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_base : h_R.regs baseReg = none := by
     rcases hd_PR_regs baseReg with hl | hr
     · rw [h_P_regs_base] at hl; nomatch hl
@@ -2367,10 +2379,11 @@ theorem ldxdw_spec
   rw [h_mem_pred] at hu_src_mem hd_src_mem
   rw [h_dst_pred] at hu_dst_SM hd_dst_SM
   clear h_src_pred h_mem_pred h_dst_pred h_src h_mem h_dst
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- dst ≠ src from inner disjointness (matches ldxb's pattern).
   have hne_dst_src : dst ≠ src := by
-    obtain ⟨hd_dst_SM_regs, _, _⟩ := hd_dst_SM
+    have hd_dst_SM_regs := hd_dst_SM.regs
     intro habs
     rcases hd_dst_SM_regs dst with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -2501,7 +2514,8 @@ theorem ldxdw_spec
     simp only [step, hs_regs_src, Width.bytes, if_pos h_region,
                Memory.readByWidth, h_readU64]
   -- ===== h_R cannot own dst, src, or any of the 8 mem bytes =====
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_dst : h_R.regs dst = none := by
     rcases hd_PR_regs dst with hl | hr
     · rw [h_P_regs_dst] at hl; nomatch hl
@@ -2805,9 +2819,10 @@ theorem ldxh_spec
   rw [h_mem_pred] at hu_src_mem hd_src_mem
   rw [h_dst_pred] at hu_dst_SM hd_dst_SM
   clear h_src_pred h_mem_pred h_dst_pred h_src h_mem h_dst
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_dst_src : dst ≠ src := by
-    obtain ⟨hd_dst_SM_regs, _, _⟩ := hd_dst_SM
+    have hd_dst_SM_regs := hd_dst_SM.regs
     intro habs
     rcases hd_dst_SM_regs dst with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -2872,7 +2887,8 @@ theorem ldxh_spec
         executeFn_zero]
     simp only [step, hs_regs_src, Width.bytes, if_pos h_region,
                Memory.readByWidth, h_readU16]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_dst : h_R.regs dst = none := by
     rcases hd_PR_regs dst with hl | hr
     · rw [h_P_regs_dst] at hl; nomatch hl
@@ -3073,9 +3089,10 @@ theorem stxh_spec
   rw [h_mem_pred] at hu_val_mem hd_val_mem
   rw [h_base_pred] at hu_base_VM hd_base_VM
   clear h_val_pred h_mem_pred h_base_pred h_val h_mem h_base
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_base_val : baseReg ≠ valReg := by
-    obtain ⟨hd_base_VM_regs, _, _⟩ := hd_base_VM
+    have hd_base_VM_regs := hd_base_VM.regs
     intro habs
     rcases hd_base_VM_regs baseReg with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -3134,7 +3151,8 @@ theorem stxh_spec
         executeFn_zero]
     simp only [step, hs_regs_base, Width.bytes, if_pos h_region,
                Memory.writeByWidth, hs_regs_val]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_base : h_R.regs baseReg = none := by
     rcases hd_PR_regs baseReg with hl | hr
     · rw [h_P_regs_base] at hl; nomatch hl
@@ -3348,9 +3366,10 @@ theorem ldxw_spec
   rw [h_mem_pred] at hu_src_mem hd_src_mem
   rw [h_dst_pred] at hu_dst_SM hd_dst_SM
   clear h_src_pred h_mem_pred h_dst_pred h_src h_mem h_dst
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_dst_src : dst ≠ src := by
-    obtain ⟨hd_dst_SM_regs, _, _⟩ := hd_dst_SM
+    have hd_dst_SM_regs := hd_dst_SM.regs
     intro habs
     rcases hd_dst_SM_regs dst with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -3428,7 +3447,8 @@ theorem ldxw_spec
         executeFn_zero]
     simp only [step, hs_regs_src, Width.bytes, if_pos h_region,
                Memory.readByWidth, h_readU32]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_dst : h_R.regs dst = none := by
     rcases hd_PR_regs dst with hl | hr
     · rw [h_P_regs_dst] at hl; nomatch hl
@@ -3656,9 +3676,10 @@ theorem stxw_spec
   rw [h_mem_pred] at hu_val_mem hd_val_mem
   rw [h_base_pred] at hu_base_VM hd_base_VM
   clear h_val_pred h_mem_pred h_base_pred h_val h_mem h_base
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_base_val : baseReg ≠ valReg := by
-    obtain ⟨hd_base_VM_regs, _, _⟩ := hd_base_VM
+    have hd_base_VM_regs := hd_base_VM.regs
     intro habs
     rcases hd_base_VM_regs baseReg with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -3709,7 +3730,8 @@ theorem stxw_spec
         executeFn_zero]
     simp only [step, hs_regs_base, Width.bytes, if_pos h_region,
                Memory.writeByWidth, hs_regs_val]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_base : h_R.regs baseReg = none := by
     rcases hd_PR_regs baseReg with hl | hr
     · rw [h_P_regs_base] at hl; nomatch hl
@@ -3973,9 +3995,10 @@ theorem stxdw_spec
   rw [h_mem_pred] at hu_val_mem hd_val_mem
   rw [h_base_pred] at hu_base_VM hd_base_VM
   clear h_val_pred h_mem_pred h_base_pred h_val h_mem h_base
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   have hne_base_val : baseReg ≠ valReg := by
-    obtain ⟨hd_base_VM_regs, _, _⟩ := hd_base_VM
+    have hd_base_VM_regs := hd_base_VM.regs
     intro habs
     rcases hd_base_VM_regs baseReg with hl | hr
     · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
@@ -4033,7 +4056,8 @@ theorem stxdw_spec
         executeFn_zero]
     simp only [step, hs_regs_base, Width.bytes, if_pos h_region,
                Memory.writeByWidth, hs_regs_val]
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   have h_R_no_base : h_R.regs baseReg = none := by
     rcases hd_PR_regs baseReg with hl | hr
     · rw [h_P_regs_base] at hl; nomatch hl
@@ -4389,7 +4413,9 @@ theorem ja_spec (target pc : Nat) :
   -- so hp = hR; rewrite for compat reasoning below
   rw [hP1] at hd
   clear hP1 h1
-  obtain ⟨hcr_regs, hcm_mem, hcp_pc⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hcp_pc := hcompat.pc
   have hfetch : fetch s.pc = some (.ja target) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 = { s with pc := target } := by
@@ -4472,8 +4498,9 @@ theorem cuTripleWithin_syscall_writes_r0_only
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
-  obtain ⟨hd_regs, _, _⟩ := hd
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hd_regs := hd.regs
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
@@ -4749,7 +4776,9 @@ theorem cuTripleWithin_syscall_silent
       emp := by
   intro R hRfree fetch hcr s hPR hpc hex
   obtain ⟨hp, hcompat, hP, hR, _, hu, hPemp, hRsat⟩ := hPR
-  obtain ⟨hcr_regs, hcm_mem, hcm_pc⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hcm_pc := hcompat.pc
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
@@ -4861,12 +4890,13 @@ theorem call_create_program_address_n0_spec
   rw [h_b4_pred] at hu_b3_b4 hd_b3_b4
   clear h_r0_pred h_r2_pred h_r3_pred h_r4_pred h_b3_pred h_b4_pred
   clear h_r0 h_r2 h_r3 h_r4 h_b3 h_b4
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: range disjointness between [r3V..r3V+32) and [r4V..r4V+32). ====
   -- Derive the strong "ranges fully disjoint" statement from hd_b3_b4 by
   -- specializing on a concrete in-range address.
   have h_ranges_disjoint : r3V + 32 ≤ r4V ∨ r4V + 32 ≤ r3V := by
-    obtain ⟨_, hd_mem, _⟩ := hd_b3_b4
+    have hd_mem := hd_b3_b4.mem
     rcases hd_mem r4V with hl | hr
     · -- r3-atom doesn't own r4V. Either r4V is below r3V or past r3V+32.
       rcases Nat.lt_or_ge r4V r3V with h | h
@@ -5132,7 +5162,9 @@ theorem call_create_program_address_n0_spec
   · rw [hexec]; show _ = none; rw [h_post_exitCode]; exact hex
   · rw [hexec]
     -- ===== h_R cannot own any of P's affected slots. =====
-    obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+    have hd_PR_regs := hd_PR.regs
+    have hd_PR_mem := hd_PR.mem
+    have hd_PR_pc := hd_PR.pc
     have h_R_no_r0 : h_R.regs .r0 = none := by
       rcases hd_PR_regs .r0 with hl | hr
       · rw [h_P_regs_r0] at hl; nomatch hl
@@ -5564,7 +5596,8 @@ theorem call_create_program_address_n1_spec
   clear h_a0_pred h_a1_pred h_a2_pred h_a3_pred h_a4_pred
   clear h_d0_pred h_d1_pred h_s_pred h_b3_pred h_b4_pred
   clear h_a0 h_a1 h_a2 h_a3 h_a4 h_d0 h_d1 h_s h_b3 h_b4
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: pairwise range disjointness for the 4 memory regions. ====
   -- Memory regions:
   --   D0: [r1V .. r1V+8)             (descriptor.ptr, ↦U64)
@@ -5639,7 +5672,7 @@ theorem call_create_program_address_n1_spec
       a < seedPtr ∨ a ≥ seedPtr + seedBytes.size := by
     intro a h1 h2
     obtain ⟨v_D0, hv_D0⟩ := PartialState.singletonMemU64_mem_isSome r1V seedPtr a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D0_S
+    have hd_mem := hd_D0_S.mem
     rcases Nat.lt_or_ge a seedPtr with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (seedPtr + seedBytes.size) with hlt | hge2
@@ -5655,7 +5688,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_S, hv_S⟩ :=
       PartialState.singletonMemBytes_mem_isSome seedPtr seedBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D0_S
+    have hd_mem := hd_D0_S.mem
     rcases Nat.lt_or_ge a r1V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r1V + 8) with hlt | hge2
@@ -5670,7 +5703,7 @@ theorem call_create_program_address_n1_spec
       a < r3V ∨ a ≥ r3V + 32 := by
     intro a h1 h2
     obtain ⟨v_D0, hv_D0⟩ := PartialState.singletonMemU64_mem_isSome r1V seedPtr a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D0_B3
+    have hd_mem := hd_D0_B3.mem
     rcases Nat.lt_or_ge a r3V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r3V + 32) with hlt | hge2
@@ -5685,7 +5718,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B3, hv_B3⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r3V pidBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D0_B3
+    have hd_mem := hd_D0_B3.mem
     rcases Nat.lt_or_ge a r1V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r1V + 8) with hlt | hge2
@@ -5700,7 +5733,7 @@ theorem call_create_program_address_n1_spec
       a < r4V ∨ a ≥ r4V + 32 := by
     intro a h1 h2
     obtain ⟨v_D0, hv_D0⟩ := PartialState.singletonMemU64_mem_isSome r1V seedPtr a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D0_B4
+    have hd_mem := hd_D0_B4.mem
     rcases Nat.lt_or_ge a r4V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r4V + 32) with hlt | hge2
@@ -5715,7 +5748,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B4, hv_B4⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r4V outOldBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D0_B4
+    have hd_mem := hd_D0_B4.mem
     rcases Nat.lt_or_ge a r1V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r1V + 8) with hlt | hge2
@@ -5731,7 +5764,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_D1, hv_D1⟩ :=
       PartialState.singletonMemU64_mem_isSome (r1V + 8) seedBytes.size a ⟨h1, by omega⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D1_S
+    have hd_mem := hd_D1_S.mem
     rcases Nat.lt_or_ge a seedPtr with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (seedPtr + seedBytes.size) with hlt | hge2
@@ -5746,7 +5779,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_S, hv_S⟩ :=
       PartialState.singletonMemBytes_mem_isSome seedPtr seedBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D1_S
+    have hd_mem := hd_D1_S.mem
     rcases Nat.lt_or_ge a (r1V + 8) with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r1V + 16) with hlt | hge2
@@ -5763,7 +5796,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_D1, hv_D1⟩ :=
       PartialState.singletonMemU64_mem_isSome (r1V + 8) seedBytes.size a ⟨h1, by omega⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D1_B3
+    have hd_mem := hd_D1_B3.mem
     rcases Nat.lt_or_ge a r3V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r3V + 32) with hlt | hge2
@@ -5778,7 +5811,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B3, hv_B3⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r3V pidBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D1_B3
+    have hd_mem := hd_D1_B3.mem
     rcases Nat.lt_or_ge a (r1V + 8) with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r1V + 16) with hlt | hge2
@@ -5795,7 +5828,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_D1, hv_D1⟩ :=
       PartialState.singletonMemU64_mem_isSome (r1V + 8) seedBytes.size a ⟨h1, by omega⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D1_B4
+    have hd_mem := hd_D1_B4.mem
     rcases Nat.lt_or_ge a r4V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r4V + 32) with hlt | hge2
@@ -5810,7 +5843,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B4, hv_B4⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r4V outOldBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_D1_B4
+    have hd_mem := hd_D1_B4.mem
     rcases Nat.lt_or_ge a (r1V + 8) with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r1V + 16) with hlt | hge2
@@ -5827,7 +5860,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_S, hv_S⟩ :=
       PartialState.singletonMemBytes_mem_isSome seedPtr seedBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_S_B3
+    have hd_mem := hd_S_B3.mem
     rcases Nat.lt_or_ge a r3V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r3V + 32) with hlt | hge2
@@ -5842,7 +5875,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B3, hv_B3⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r3V pidBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_S_B3
+    have hd_mem := hd_S_B3.mem
     rcases Nat.lt_or_ge a seedPtr with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (seedPtr + seedBytes.size) with hlt | hge2
@@ -5859,7 +5892,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_S, hv_S⟩ :=
       PartialState.singletonMemBytes_mem_isSome seedPtr seedBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_S_B4
+    have hd_mem := hd_S_B4.mem
     rcases Nat.lt_or_ge a r4V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r4V + 32) with hlt | hge2
@@ -5874,7 +5907,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B4, hv_B4⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r4V outOldBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_S_B4
+    have hd_mem := hd_S_B4.mem
     rcases Nat.lt_or_ge a seedPtr with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (seedPtr + seedBytes.size) with hlt | hge2
@@ -5891,7 +5924,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B3, hv_B3⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r3V pidBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_b3_b4
+    have hd_mem := hd_b3_b4.mem
     rcases Nat.lt_or_ge a r4V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r4V + 32) with hlt | hge2
@@ -5906,7 +5939,7 @@ theorem call_create_program_address_n1_spec
     intro a h1 h2
     obtain ⟨v_B4, hv_B4⟩ :=
       PartialState.singletonMem32Bytes_mem_isSome r4V outOldBytes a ⟨h1, h2⟩
-    obtain ⟨_, hd_mem, _⟩ := hd_b3_b4
+    have hd_mem := hd_b3_b4.mem
     rcases Nat.lt_or_ge a r3V with hl | hge
     · left; exact hl
     rcases Nat.lt_or_ge a (r3V + 32) with hlt | hge2
@@ -6341,37 +6374,37 @@ theorem call_create_program_address_n1_spec
   · rw [hexec]
     -- ===== h_R non-ownership facts. =====
     have h_R_no_r0 : h_R.regs .r0 = none := by
-      rcases hd_PR.1 .r0 with hl | hr
+      rcases hd_PR.regs .r0 with hl | hr
       · rw [h_P_regs_r0] at hl; nomatch hl
       · exact hr
     have h_R_no_r1 : h_R.regs .r1 = none := by
-      rcases hd_PR.1 .r1 with hl | hr
+      rcases hd_PR.regs .r1 with hl | hr
       · rw [h_P_regs_r1] at hl; nomatch hl
       · exact hr
     have h_R_no_r2 : h_R.regs .r2 = none := by
-      rcases hd_PR.1 .r2 with hl | hr
+      rcases hd_PR.regs .r2 with hl | hr
       · rw [h_P_regs_r2] at hl; nomatch hl
       · exact hr
     have h_R_no_r3 : h_R.regs .r3 = none := by
-      rcases hd_PR.1 .r3 with hl | hr
+      rcases hd_PR.regs .r3 with hl | hr
       · rw [h_P_regs_r3] at hl; nomatch hl
       · exact hr
     have h_R_no_r4 : h_R.regs .r4 = none := by
-      rcases hd_PR.1 .r4 with hl | hr
+      rcases hd_PR.regs .r4 with hl | hr
       · rw [h_P_regs_r4] at hl; nomatch hl
       · exact hr
     have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
     -- h_R doesn't own mem in any of the 5 regions. Pattern: pick a sentinel
     -- in the atom's range; the SL-disjointness via hd_PR rules out h_R.
     have h_R_no_mem_d0 (a : Nat) (h : r1V ≤ a ∧ a < r1V + 8) : h_R.mem a = none := by
-      rcases hd_PR.2.1 a with hl | hr
+      rcases hd_PR.mem a with hl | hr
       · obtain ⟨v, hv⟩ := PartialState.singletonMemU64_mem_isSome r1V seedPtr a h
         have hT5 : h_T5.mem a = some v := by
           rw [← hu_d0_T6]; exact PartialState.union_mem_of_left_some hv
         rw [h_P_mem_eq_T5 a, hT5] at hl; nomatch hl
       · exact hr
     have h_R_no_mem_d1 (a : Nat) (h : r1V + 8 ≤ a ∧ a < r1V + 16) : h_R.mem a = none := by
-      rcases hd_PR.2.1 a with hl | hr
+      rcases hd_PR.mem a with hl | hr
       · obtain ⟨v, hv⟩ :=
           PartialState.singletonMemU64_mem_isSome (r1V + 8) seedBytes.size a ⟨h.1, by omega⟩
         have hT6 : h_T6.mem a = some v := by
@@ -6385,7 +6418,7 @@ theorem call_create_program_address_n1_spec
       · exact hr
     have h_R_no_mem_s (a : Nat) (h : seedPtr ≤ a ∧ a < seedPtr + seedBytes.size) :
         h_R.mem a = none := by
-      rcases hd_PR.2.1 a with hl | hr
+      rcases hd_PR.mem a with hl | hr
       · obtain ⟨v, hv⟩ := PartialState.singletonMemBytes_mem_isSome seedPtr seedBytes a h
         have hT7 : h_T7.mem a = some v := by
           rw [← hu_s_T8]; exact PartialState.union_mem_of_left_some hv
@@ -6406,7 +6439,7 @@ theorem call_create_program_address_n1_spec
         rw [h_P_mem_eq_T5 a, hT5] at hl; nomatch hl
       · exact hr
     have h_R_no_mem_b3 (a : Nat) (h : r3V ≤ a ∧ a < r3V + 32) : h_R.mem a = none := by
-      rcases hd_PR.2.1 a with hl | hr
+      rcases hd_PR.mem a with hl | hr
       · obtain ⟨v, hv⟩ := PartialState.singletonMem32Bytes_mem_isSome r3V pidBytes a h
         have hT8 : h_T8.mem a = some v := by
           rw [← hu_b3_b4]; exact PartialState.union_mem_of_left_some hv
@@ -6433,7 +6466,7 @@ theorem call_create_program_address_n1_spec
         rw [h_P_mem_eq_T5 a, hT5] at hl; nomatch hl
       · exact hr
     have h_R_no_mem_b4 (a : Nat) (h : r4V ≤ a ∧ a < r4V + 32) : h_R.mem a = none := by
-      rcases hd_PR.2.1 a with hl | hr
+      rcases hd_PR.mem a with hl | hr
       · obtain ⟨v, hv⟩ := PartialState.singletonMem32Bytes_mem_isSome r4V outOldBytes a h
         have hT8 : h_T8.mem a = some v := by
           rw [← hu_b3_b4,
@@ -6954,7 +6987,7 @@ theorem call_create_program_address_n1_spec
               (h_P_new_regs_other r h0 h1 h2 h3 h4)] at hvr
           rw [h_post_regs_other r h0]
           have h_P_none : h_P.regs r = none := by
-            rcases hd_PR.1 r with hl | hr
+            rcases hd_PR.regs r with hl | hr
             · exact hl
             · rw [hr] at hvr; nomatch hvr
           exact hcr_regs r vr (by rw [← hu_PR,
@@ -7128,7 +7161,7 @@ theorem call_create_program_address_n1_spec
           rw [PartialState.union_mem_of_left_none h_P_new_none] at hvm
           rw [h_post_mem_outside a h4_out]
           have h_P_none : h_P.mem a = none := by
-            rcases hd_PR.2.1 a with hl | hr
+            rcases hd_PR.mem a with hl | hr
             · exact hl
             · rw [hr] at hvm; nomatch hvm
           exact hcm_mem a vm (by rw [← hu_PR,
@@ -7249,7 +7282,8 @@ theorem cuTripleWithin_syscall_writesR1Bytes
   rw [h_r1_pred] at hu_r1_b hd_r1_b
   rw [h_b_pred] at hu_r1_b hd_r1_b
   clear h_r0_pred h_r1_pred h_b_pred h_r0 h_r1 h_b
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   have h_T1_regs_r1 : h_T1.regs .r1 = some r1V := by
     rw [← hu_r1_b]
@@ -7295,7 +7329,9 @@ theorem cuTripleWithin_syscall_writesR1Bytes
     rw [hstep_eq]; apply h_step_mem_out s a
     rw [hs_r1_field]; exact h
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
-  obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have hd_PR_pc := hd_PR.pc
   have h_R_no_r0 : h_R.regs .r0 = none := by
     rcases hd_PR_regs .r0 with hl | hr
     · rw [h_P_regs_r0] at hl; nomatch hl
@@ -7517,7 +7553,8 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
   rw [h_b_pred]  at hu_r3_b hd_r3_b
   clear h_r0_pred h_r1_pred h_r2_pred h_r3_pred h_b_pred
         h_r0 h_r1 h_r2 h_r3 h_b
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   have h_T3_regs_r3 : h_T3.regs .r3 = some r3V := by
     rw [← hu_r3_b]
@@ -7608,7 +7645,9 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     apply h_step_mem_out s hs_r3_field a
     rw [hs_r1_field]; exact h
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
-  obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have hd_PR_pc := hd_PR.pc
   have h_R_no_r0 : h_R.regs .r0 = none := by
     rcases hd_PR_regs .r0 with hl | hr
     · rw [h_P_regs_r0] at hl; nomatch hl
@@ -8000,7 +8039,8 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   rw [h_b_pred]   at hu_src_b hd_src_b
   clear h_r0_pred h_r1_pred h_r2_pred h_r3_pred h_src_pred h_b_pred
         h_r0 h_r1 h_r2 h_r3 h_src h_b
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   -- Source-bytes mem facts:
   have h_T4_mem_src (j : Nat) (hj : j < r3V) :
@@ -8098,7 +8138,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
       -- By disjointness hd_src_b: at any address, either src or b owns it, not both.
       -- Pick the side: b owns (r1V + i) (just shown via singletonMemBytes_mem_at on bsOld).
       -- So src must not own it.
-      obtain ⟨_, hd_mem, _⟩ := hd_src_b
+      have hd_mem := hd_src_b.mem
       rcases hd_mem (r1V + i) with hl | hr
       · exact hl
       · rw [hr] at h_b_some; nomatch h_b_some
@@ -8153,7 +8193,9 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     apply h_step_mem_out s hs_r3_field a
     rw [hs_r1_field]; exact h
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
-  obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have hd_PR_pc := hd_PR.pc
   have h_R_no_r0 : h_R.regs .r0 = none := by
     rcases hd_PR_regs .r0 with hl | hr
     · rw [h_P_regs_r0] at hl; nomatch hl
@@ -8202,7 +8244,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
             fun a => ?_,
             Or.inl PartialState.singletonMemBytes_pc⟩
-    obtain ⟨_, hd_pre_mem, _⟩ := hd_src_b
+    have hd_pre_mem := hd_src_b.mem
     rcases hd_pre_mem a with hsrc_none | hb_none
     · left; exact hsrc_none
     · right
@@ -8354,7 +8396,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
          some (srcBytes.get! i).toNat
     -- The src atom at the post (range [r2V, r2V+r3V)) is disjoint from dst (r1V+i).
     -- From hd_src_b_new (which we just derived), src.mem (r1V+i) = none.
-    obtain ⟨_, hd_post_mem, _⟩ := hd_src_b_new
+    have hd_post_mem := hd_src_b_new.mem
     have hbsLt : i < srcBytes.size := by rw [hsrcSize]; exact hi
     have h_b_some : h_b_new.mem (r1V + i) = some (srcBytes.get! i).toNat :=
       PartialState.singletonMemBytes_mem_at r1V srcBytes i hbsLt
@@ -8745,7 +8787,8 @@ theorem call_sol_memcmp_spec
   rw [h_out_pred] at hu_p2_out hd_p2_out
   clear h_r0_pred h_r1_pred h_r2_pred h_r3_pred h_r4_pred h_p1_pred h_p2_pred h_out_pred
         h_r0 h_r1 h_r2 h_r3 h_r4 h_p1 h_p2 h_out
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: reg climbs (r4 through r0) ====
   have h_T4_regs_r4 : h_T4.regs .r4 = some r4V := by
     rw [← hu_r4_T5]
@@ -8868,7 +8911,7 @@ theorem call_sol_memcmp_spec
   have h_p1_no_p2 (j : Nat) (hj : j < r3V) :
       (PartialState.singletonMemBytes r1V p1Bytes).mem (r2V + j) = none := by
     -- T6 owns (r2V + j) via p2 atom, so by hd_p1_T6, p1 doesn't.
-    obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+    have hd_mem := hd_p1_T6.mem
     -- T6.mem (r2V + j) = some (p2Bytes.get! j).toNat
     have hsz2_lt : j < p2Bytes.size := by rw [hsz2]; exact hj
     have h_T6_some : h_T6.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
@@ -8985,7 +9028,9 @@ theorem call_sol_memcmp_spec
     have h3 : a ≠ r4V + 3 := by rcases h with hl | hr <;> omega
     rw [if_neg h0, if_neg h1, if_neg h2, if_neg h3]
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
-  obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have hd_PR_pc := hd_PR.pc
   have h_R_no_r0 : h_R.regs .r0 = none := by
     rcases hd_PR_regs .r0 with hl | hr
     · rw [h_P_regs_r0] at hl; nomatch hl
@@ -9026,7 +9071,7 @@ theorem call_sol_memcmp_spec
       | 2, _ => exact ⟨_, PartialState.singletonMemU32_mem_2 _ _⟩
       | 3, _ => exact ⟨_, PartialState.singletonMemU32_mem_3 _ _⟩
     have h_p2_none : (PartialState.singletonMemBytes r2V p2Bytes).mem (r4V + k) = none := by
-      obtain ⟨_, hd_mem, _⟩ := hd_p2_out
+      have hd_mem := hd_p2_out.mem
       obtain ⟨v, hv⟩ := h_out_some
       rcases hd_mem (r4V + k) with hl | hr
       · exact hl
@@ -9042,7 +9087,7 @@ theorem call_sol_memcmp_spec
       | 2, _ => rw [PartialState.singletonMemU32_mem_2]; exact Option.some_ne_none _
       | 3, _ => rw [PartialState.singletonMemU32_mem_3]; exact Option.some_ne_none _
     have h_p1_none : (PartialState.singletonMemBytes r1V p1Bytes).mem (r4V + k) = none := by
-      obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+      have hd_mem := hd_p1_T6.mem
       rcases hd_mem (r4V + k) with hl | hr
       · exact hl
       · exact absurd hr h_T6_some
@@ -9108,7 +9153,7 @@ theorem call_sol_memcmp_spec
             Or.inl PartialState.singletonMemBytes_pc⟩
     -- Pointwise mem disjointness derived from hd_p2_out (pre): same ranges since
     -- p2_new is p2Bytes (same as pre) and out_new is U32 at r4V (same range).
-    obtain ⟨_, hd_pre_mem, _⟩ := hd_p2_out
+    have hd_pre_mem := hd_p2_out.mem
     rcases hd_pre_mem a with hl | hr
     · left; exact hl
     · right
@@ -9138,7 +9183,7 @@ theorem call_sol_memcmp_spec
   have hd_p1_T6_new : h_p1_new.Disjoint h_T6_new := by
     refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
             fun a => ?_, ?_⟩
-    · obtain ⟨_, hd_pre_mem, _⟩ := hd_p1_T6
+    · have hd_pre_mem := hd_p1_T6.mem
       rcases hd_pre_mem a with hl | hr
       · left; exact hl
       · right
@@ -9384,7 +9429,7 @@ theorem call_sol_memcmp_spec
       | 2, _ => rw [PartialState.singletonMemU32_mem_2]; exact Option.some_ne_none _
       | 3, _ => rw [PartialState.singletonMemU32_mem_3]; exact Option.some_ne_none _
     have h_p1_none : (PartialState.singletonMemBytes r1V p1Bytes).mem (r4V + k) = none := by
-      obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+      have hd_mem := hd_p1_T6.mem
       rcases hd_mem (r4V + k) with hl | hr
       · exact hl
       · exact absurd hr h_T6_some_pre
@@ -9398,7 +9443,7 @@ theorem call_sol_memcmp_spec
       | 2, _ => exact ⟨_, PartialState.singletonMemU32_mem_2 _ _⟩
       | 3, _ => exact ⟨_, PartialState.singletonMemU32_mem_3 _ _⟩
     have h_p2_none : (PartialState.singletonMemBytes r2V p2Bytes).mem (r4V + k) = none := by
-      obtain ⟨_, hd_mem, _⟩ := hd_p2_out
+      have hd_mem := hd_p2_out.mem
       obtain ⟨v, hv⟩ := h_out_pre_some
       rcases hd_mem (r4V + k) with hl | hr
       · exact hl
@@ -9572,7 +9617,7 @@ theorem call_sol_memcmp_spec
             apply PartialState.singletonMemBytes_mem_at
             rw [hsz1]; exact h_lt
           have h_T6_none : h_T6.mem (r1V + (a - r1V)) = none := by
-            obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+            have hd_mem := hd_p1_T6.mem
             rcases hd_mem (r1V + (a - r1V)) with hl | hr
             · rw [h_p1_some] at hl; nomatch hl
             · exact hr
@@ -9623,7 +9668,7 @@ theorem call_sol_memcmp_spec
             apply PartialState.singletonMemBytes_mem_at
             rw [hsz2]; exact h_lt
           have h_out_pre_none : (PartialState.singletonMemU32 r4V outOld).mem (r2V + (a - r2V)) = none := by
-            obtain ⟨_, hd_mem, _⟩ := hd_p2_out
+            have hd_mem := hd_p2_out.mem
             rcases hd_mem (r2V + (a - r2V)) with hl | hr
             · rw [h_p2_some] at hl; nomatch hl
             · exact hr
@@ -9995,7 +10040,8 @@ theorem call_sol_get_last_restart_slot_spec
   rw [h_r1_pred] at hu_r1_b hd_r1_b
   rw [h_b_pred] at hu_r1_b hd_r1_b
   clear h_r0_pred h_r1_pred h_b_pred h_r0 h_r1 h_b
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   have h_T1_regs_r1 : h_T1.regs .r1 = some r1V := by
     rw [← hu_r1_b]
@@ -10061,7 +10107,9 @@ theorem call_sol_get_last_restart_slot_spec
       · omega
     rw [if_neg hneg]
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
-  obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have hd_PR_pc := hd_PR.pc
   have h_R_no_r0 : h_R.regs .r0 = none := by
     rcases hd_PR_regs .r0 with hl | hr
     · rw [h_P_regs_r0] at hl; nomatch hl
@@ -10266,7 +10314,8 @@ theorem call_sol_get_fees_sysvar_spec
   rw [h_r1_pred] at hu_r1_b hd_r1_b
   rw [h_b_pred] at hu_r1_b hd_r1_b
   clear h_r0_pred h_r1_pred h_b_pred h_r0 h_r1 h_b
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
   -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   have h_T1_regs_r1 : h_T1.regs .r1 = some r1V := by
     rw [← hu_r1_b]
@@ -10327,7 +10376,9 @@ theorem call_sol_get_fees_sysvar_spec
       · omega
     rw [if_neg hneg]
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
-  obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have hd_PR_pc := hd_PR.pc
   have h_R_no_r0 : h_R.regs .r0 = none := by
     rcases hd_PR_regs .r0 with hl | hr
     · rw [h_P_regs_r0] at hl; nomatch hl
@@ -10612,7 +10663,7 @@ theorem exit_aborts_spec (vR0 pc : Nat) :
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
-  obtain ⟨hcr_regs, _, _⟩ := hcompat
+  have hcr_regs := hcompat.regs
   have hp_regs_r0 : hp.regs .r0 = some vR0 := by
     rw [← hu]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -10675,8 +10726,10 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
   rw [h_r0_pred] at hu_r0_r hd_r0_r
   rw [h_r_pred] at hu_r0_r hd_r0_r
   clear h_r0_pred h_r_pred h_r0 h_r
-  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
-  obtain ⟨hd_PR_regs, hd_PR_mem, _⟩ := hd_PR
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
   -- hP.regs at r0 and r.
   have hP_regs_r0 : hP.regs .r0 = some r0Old := by
     rw [← hu_r0_r]; exact PartialState.union_regs_of_left_some

@@ -20,7 +20,26 @@ import Svm.SBPF.Execute
 
 namespace Svm.SBPF
 
-/-! ## PartialState — partial ownership of registers, memory, PC -/
+/-! ## PartialState — partial ownership of registers, memory, PC
+
+Extending `PartialState` with a new resource field (e.g., the future
+`returnData : Option ByteArray` of deferred lift #2):
+
+1. Add the field to `PartialState` below.
+2. Add a `singletonX` builder + projection lemmas (mirror the existing
+   `singletonPC` pattern — defaults the new field to `none` on the
+   other singletons via `@[simp]` lemmas).
+3. Add one clause to `Disjoint` and one to `CompatibleWith` for the
+   new field.
+4. Extend `union` (and its `union_X_of_left_*` / `union_X_eq_none_iff`
+   field helpers). `union_empty_left`/`union_empty_right`/`union_assoc`
+   pick up the new field automatically once the `match` is added.
+
+Destructure sites are stable: `hd.regs` / `hd.mem` / `hd.pc` continue
+to work after a new field appears at the bottom of either structure.
+Only construction sites that build `Disjoint` or `CompatibleWith`
+directly need the new field — they're locatable by `lake build`.
+-/
 
 /-- A partial view of an sBPF machine state. `some v` means we own the
     resource and assert its value is `v`; `none` means we don't own it. -/
@@ -54,11 +73,17 @@ def singletonPC (v : Nat) : PartialState :=
     mem  := fun _ => none
     pc   := some v }
 
-/-- Two partial states are disjoint if they never both own the same resource. -/
-def Disjoint (h1 h2 : PartialState) : Prop :=
-  (∀ r, h1.regs r = none ∨ h2.regs r = none) ∧
-  (∀ a, h1.mem  a = none ∨ h2.mem  a = none) ∧
-  (h1.pc = none ∨ h2.pc = none)
+/-- Two partial states are disjoint if they never both own the same resource.
+
+    Field-wise structure: each field of `PartialState` contributes one
+    disjointness clause. Adding a new field to `PartialState` adds one
+    clause here — call sites that access `hd.regs` / `hd.mem` / `hd.pc`
+    keep working unchanged; only construction sites need to provide the
+    new field. -/
+structure Disjoint (h1 h2 : PartialState) : Prop where
+  regs : ∀ r, h1.regs r = none ∨ h2.regs r = none
+  mem  : ∀ a, h1.mem  a = none ∨ h2.mem  a = none
+  pc   : h1.pc = none ∨ h2.pc = none
 
 /-- Left-biased union of two partial states. -/
 def union (h1 h2 : PartialState) : PartialState where
@@ -67,18 +92,22 @@ def union (h1 h2 : PartialState) : PartialState where
   pc   := match h1.pc with | some v => some v | none => h2.pc
 
 /-- A partial state is compatible with a full machine state if every
-    owned resource agrees with the full state. -/
-def CompatibleWith (h : PartialState) (s : State) : Prop :=
-  (∀ r v, h.regs r = some v → s.regs.get r = v) ∧
-  (∀ a v, h.mem  a = some v → s.mem a = v) ∧
-  (∀ v,   h.pc   = some v → s.pc = v)
+    owned resource agrees with the full state.
+
+    Mirrors `Disjoint` — field-wise structure, one clause per
+    `PartialState` field. -/
+structure CompatibleWith (h : PartialState) (s : State) : Prop where
+  regs : ∀ r v, h.regs r = some v → s.regs.get r = v
+  mem  : ∀ a v, h.mem  a = some v → s.mem a = v
+  pc   : ∀ v,   h.pc   = some v → s.pc = v
 
 /-! ## Disjoint lemmas -/
 
 theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
-    h2.Disjoint h1 := by
-  obtain ⟨hr, hm, hpc⟩ := hd
-  exact ⟨fun r => (hr r).symm, fun a => (hm a).symm, hpc.symm⟩
+    h2.Disjoint h1 :=
+  { regs := fun r => (hd.regs r).symm
+    mem  := fun a => (hd.mem a).symm
+    pc   := hd.pc.symm }
 
 /-! ## Singleton projection lemmas -/
 
@@ -544,8 +573,10 @@ theorem singletonMemU64_mem_outside (addr v : Nat) (a : Nat)
 @[simp] theorem empty_mem (a : Nat) : empty.mem a = none := rfl
 @[simp] theorem empty_pc : empty.pc = none := rfl
 
-theorem Disjoint_empty_left {h : PartialState} : empty.Disjoint h := by
-  refine ⟨fun _ => Or.inl rfl, fun _ => Or.inl rfl, Or.inl rfl⟩
+theorem Disjoint_empty_left {h : PartialState} : empty.Disjoint h :=
+  { regs := fun _ => Or.inl rfl
+    mem  := fun _ => Or.inl rfl
+    pc   := Or.inl rfl }
 
 theorem Disjoint_empty_right {h : PartialState} : h.Disjoint empty :=
   Disjoint_empty_left.symm
@@ -603,19 +634,18 @@ theorem union_empty_right {h : PartialState} : h.union empty = h := by
 
 theorem union_comm_of_disjoint {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
     h1.union h2 = h2.union h1 := by
-  obtain ⟨hr, hm, hpc⟩ := hd
   show PartialState.mk _ _ _ = PartialState.mk _ _ _
   simp only [PartialState.mk.injEq]
   refine ⟨?_, ?_, ?_⟩
   · funext r
-    rcases hr r with h | h
+    rcases hd.regs r with h | h
     · rw [h]; cases h2.regs r <;> rfl
     · rw [h]; cases h1.regs r <;> rfl
   · funext a
-    rcases hm a with h | h
+    rcases hd.mem a with h | h
     · rw [h]; cases h2.mem a <;> rfl
     · rw [h]; cases h1.mem a <;> rfl
-  · rcases hpc with h | h
+  · rcases hd.pc with h | h
     · rw [h]; cases h2.pc <;> rfl
     · rw [h]; cases h1.pc <;> rfl
 
@@ -659,49 +689,51 @@ theorem union_assoc {h1 h2 h3 : PartialState} :
 /-! ## Disjoint redistribution under union -/
 
 theorem Disjoint_of_union_left {h1 h2 h3 : PartialState}
-    (hd : (h1.union h2).Disjoint h3) : h1.Disjoint h3 := by
-  obtain ⟨hr, hm, hpc⟩ := hd
-  refine ⟨fun r => ?_, fun a => ?_, ?_⟩
-  · rcases hr r with hl | hl
+    (hd : (h1.union h2).Disjoint h3) : h1.Disjoint h3 where
+  regs := fun r => by
+    rcases hd.regs r with hl | hl
     · left; exact (union_regs_eq_none_iff.mp hl).1
     · right; exact hl
-  · rcases hm a with hl | hl
+  mem := fun a => by
+    rcases hd.mem a with hl | hl
     · left; exact (union_mem_eq_none_iff.mp hl).1
     · right; exact hl
-  · rcases hpc with hl | hl
+  pc := by
+    rcases hd.pc with hl | hl
     · left; exact union_pc_eq_none_iff.mp hl |>.1
     · right; exact hl
 
 theorem Disjoint_of_union_right {h1 h2 h3 : PartialState}
-    (hd : (h1.union h2).Disjoint h3) : h2.Disjoint h3 := by
-  obtain ⟨hr, hm, hpc⟩ := hd
-  refine ⟨fun r => ?_, fun a => ?_, ?_⟩
-  · rcases hr r with hl | hl
+    (hd : (h1.union h2).Disjoint h3) : h2.Disjoint h3 where
+  regs := fun r => by
+    rcases hd.regs r with hl | hl
     · left; exact (union_regs_eq_none_iff.mp hl).2
     · right; exact hl
-  · rcases hm a with hl | hl
+  mem := fun a => by
+    rcases hd.mem a with hl | hl
     · left; exact (union_mem_eq_none_iff.mp hl).2
     · right; exact hl
-  · rcases hpc with hl | hl
+  pc := by
+    rcases hd.pc with hl | hl
     · left; exact union_pc_eq_none_iff.mp hl |>.2
     · right; exact hl
 
 theorem Disjoint_union_of_both {h1 h2 h3 : PartialState}
-    (hd1 : h1.Disjoint h3) (hd2 : h2.Disjoint h3) : (h1.union h2).Disjoint h3 := by
-  obtain ⟨hr1, hm1, hpc1⟩ := hd1
-  obtain ⟨hr2, hm2, hpc2⟩ := hd2
-  refine ⟨fun r => ?_, fun a => ?_, ?_⟩
-  · rcases hr1 r with hl | hl <;> rcases hr2 r with hl' | hl'
+    (hd1 : h1.Disjoint h3) (hd2 : h2.Disjoint h3) : (h1.union h2).Disjoint h3 where
+  regs := fun r => by
+    rcases hd1.regs r with hl | hl <;> rcases hd2.regs r with hl' | hl'
     · left; exact union_regs_eq_none_iff.mpr ⟨hl, hl'⟩
     · right; exact hl'
     · right; exact hl
     · right; exact hl
-  · rcases hm1 a with hl | hl <;> rcases hm2 a with hl' | hl'
+  mem := fun a => by
+    rcases hd1.mem a with hl | hl <;> rcases hd2.mem a with hl' | hl'
     · left; exact union_mem_eq_none_iff.mpr ⟨hl, hl'⟩
     · right; exact hl'
     · right; exact hl
     · right; exact hl
-  · rcases hpc1 with hl | hl <;> rcases hpc2 with hl' | hl'
+  pc := by
+    rcases hd1.pc with hl | hl <;> rcases hd2.pc with hl' | hl'
     · left; exact union_pc_eq_none_iff.mpr ⟨hl, hl'⟩
     · right; exact hl'
     · right; exact hl
