@@ -219,80 +219,392 @@ def writeByWidth (mem : Mem) (addr val : Nat) : Svm.SBPF.Width → Mem
   | .word  => writeU32 mem addr val
   | .dword => writeU64 mem addr val
 
-/-! ## Memory axioms
+/-! ## Per-byte read lemmas for `writeU{8,16,32,64}`
 
-These are provable from the concrete definitions above via byte decomposition
-lemmas, but stated as axioms to keep proofs tractable. The key property is that
-little-endian encode/decode is a round-trip for values within range. -/
+For each write width, `read_at_i` computes the result of reading the
+i-th byte of the just-written value, and `read_other` propagates a
+read at any address outside the write footprint. The round-trip and
+disjoint theorems below are then mechanical: read-after-write is
+`read_at_i` (one per byte of the read), and read-disjoint-from-write
+is `read_other` (one per byte of the read).
+
+All proofs unfold to one or two `Mem.put` layers and discharge via
+`Mem.read_put_self` / `Mem.read_put_other` plus a constant-base
+`omega` for the byte-extraction arithmetic. -/
+
+theorem writeU8_read_at (mem : Mem) (addr val : Nat) :
+    (writeU8 mem addr val).read addr = val % 256 := by
+  unfold writeU8; rw [Mem.read_put_self]
+
+theorem writeU8_read_other (mem : Mem) (addr val a : Nat) (h : a ≠ addr) :
+    (writeU8 mem addr val).read a = mem.read a := by
+  unfold writeU8; exact Mem.read_put_other mem addr a val h
+
+theorem writeU16_read_at_0 (mem : Mem) (addr val : Nat) :
+    (writeU16 mem addr val).read addr = val % 256 := by
+  unfold writeU16; rw [Mem.read_put_self]; omega
+
+theorem writeU16_read_at_1 (mem : Mem) (addr val : Nat) :
+    (writeU16 mem addr val).read (addr + 1) = val / 256 % 256 := by
+  unfold writeU16
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 1 ≠ addr),
+      Mem.read_put_self]
+  omega
+
+theorem writeU16_read_other (mem : Mem) (addr val a : Nat)
+    (h0 : a ≠ addr) (h1 : a ≠ addr + 1) :
+    (writeU16 mem addr val).read a = mem.read a := by
+  unfold writeU16
+  rw [Mem.read_put_other _ _ _ _ h0,
+      Mem.read_put_other _ _ _ _ h1]
+
+theorem writeU32_read_at_0 (mem : Mem) (addr val : Nat) :
+    (writeU32 mem addr val).read addr = val % 256 := by
+  unfold writeU32; rw [Mem.read_put_self]; omega
+
+theorem writeU32_read_at_1 (mem : Mem) (addr val : Nat) :
+    (writeU32 mem addr val).read (addr + 1) = val / 256 % 256 := by
+  unfold writeU32
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 1 ≠ addr),
+      Mem.read_put_self]
+  omega
+
+theorem writeU32_read_at_2 (mem : Mem) (addr val : Nat) :
+    (writeU32 mem addr val).read (addr + 2) = val / 65536 % 256 := by
+  unfold writeU32
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 2 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 2 ≠ addr + 1),
+      Mem.read_put_self]
+  omega
+
+theorem writeU32_read_at_3 (mem : Mem) (addr val : Nat) :
+    (writeU32 mem addr val).read (addr + 3) = val / 16777216 % 256 := by
+  unfold writeU32
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 3 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 3 ≠ addr + 1),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 3 ≠ addr + 2),
+      Mem.read_put_self]
+  omega
+
+theorem writeU32_read_other (mem : Mem) (addr val a : Nat)
+    (h0 : a ≠ addr) (h1 : a ≠ addr + 1) (h2 : a ≠ addr + 2) (h3 : a ≠ addr + 3) :
+    (writeU32 mem addr val).read a = mem.read a := by
+  unfold writeU32
+  rw [Mem.read_put_other _ _ _ _ h0,
+      Mem.read_put_other _ _ _ _ h1,
+      Mem.read_put_other _ _ _ _ h2,
+      Mem.read_put_other _ _ _ _ h3]
+
+theorem writeU64_read_at_0 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read addr = val % 256 := by
+  unfold writeU64; rw [Mem.read_put_self]; omega
+
+theorem writeU64_read_at_1 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read (addr + 1) = val / 256 % 256 := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 1 ≠ addr),
+      Mem.read_put_self]
+  omega
+
+theorem writeU64_read_at_2 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read (addr + 2) = val / 65536 % 256 := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 2 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 2 ≠ addr + 1),
+      Mem.read_put_self]
+  omega
+
+theorem writeU64_read_at_3 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read (addr + 3) = val / 16777216 % 256 := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 3 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 3 ≠ addr + 1),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 3 ≠ addr + 2),
+      Mem.read_put_self]
+  omega
+
+theorem writeU64_read_at_4 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read (addr + 4) = val / 4294967296 % 256 := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 4 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 4 ≠ addr + 1),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 4 ≠ addr + 2),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 4 ≠ addr + 3),
+      Mem.read_put_self]
+  omega
+
+theorem writeU64_read_at_5 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read (addr + 5) = val / 1099511627776 % 256 := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 5 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 5 ≠ addr + 1),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 5 ≠ addr + 2),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 5 ≠ addr + 3),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 5 ≠ addr + 4),
+      Mem.read_put_self]
+  omega
+
+theorem writeU64_read_at_6 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read (addr + 6) = val / 281474976710656 % 256 := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 6 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 6 ≠ addr + 1),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 6 ≠ addr + 2),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 6 ≠ addr + 3),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 6 ≠ addr + 4),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 6 ≠ addr + 5),
+      Mem.read_put_self]
+  omega
+
+theorem writeU64_read_at_7 (mem : Mem) (addr val : Nat) :
+    (writeU64 mem addr val).read (addr + 7) = val / 72057594037927936 % 256 := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ (by omega : addr + 7 ≠ addr),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 7 ≠ addr + 1),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 7 ≠ addr + 2),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 7 ≠ addr + 3),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 7 ≠ addr + 4),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 7 ≠ addr + 5),
+      Mem.read_put_other _ _ _ _ (by omega : addr + 7 ≠ addr + 6),
+      Mem.read_put_self]
+  omega
+
+theorem writeU64_read_other (mem : Mem) (addr val a : Nat)
+    (h0 : a ≠ addr) (h1 : a ≠ addr + 1) (h2 : a ≠ addr + 2) (h3 : a ≠ addr + 3)
+    (h4 : a ≠ addr + 4) (h5 : a ≠ addr + 5) (h6 : a ≠ addr + 6) (h7 : a ≠ addr + 7) :
+    (writeU64 mem addr val).read a = mem.read a := by
+  unfold writeU64
+  rw [Mem.read_put_other _ _ _ _ h0,
+      Mem.read_put_other _ _ _ _ h1,
+      Mem.read_put_other _ _ _ _ h2,
+      Mem.read_put_other _ _ _ _ h3,
+      Mem.read_put_other _ _ _ _ h4,
+      Mem.read_put_other _ _ _ _ h5,
+      Mem.read_put_other _ _ _ _ h6,
+      Mem.read_put_other _ _ _ _ h7]
+
+/-! ## Memory coherence theorems (previously axioms; see history)
+
+Little-endian encode/decode is a round-trip for values within range
+(same-address group) and a write doesn't disturb reads outside its
+footprint (disjoint group). Each proof reduces to the per-byte
+lemmas above plus a constant-base `omega` for the LE arithmetic. -/
 
 /-! ### Same-address round-trip -/
 
 /-- Reading back a U64 from the address it was just written to yields the original value -/
-axiom readU64_writeU64_same (mem : Mem) (addr val : Nat)
+theorem readU64_writeU64_same (mem : Mem) (addr val : Nat)
     (h : val < 2 ^ 64) :
-    readU64 (writeU64 mem addr val) addr = val
+    readU64 (writeU64 mem addr val) addr = val := by
+  unfold readU64
+  show (writeU64 mem addr val).read addr % 256 +
+       (writeU64 mem addr val).read (addr + 1) % 256 * 0x100 +
+       (writeU64 mem addr val).read (addr + 2) % 256 * 0x10000 +
+       (writeU64 mem addr val).read (addr + 3) % 256 * 0x1000000 +
+       (writeU64 mem addr val).read (addr + 4) % 256 * 0x100000000 +
+       (writeU64 mem addr val).read (addr + 5) % 256 * 0x10000000000 +
+       (writeU64 mem addr val).read (addr + 6) % 256 * 0x1000000000000 +
+       (writeU64 mem addr val).read (addr + 7) % 256 * 0x100000000000000 = val
+  rw [writeU64_read_at_0, writeU64_read_at_1, writeU64_read_at_2, writeU64_read_at_3,
+      writeU64_read_at_4, writeU64_read_at_5, writeU64_read_at_6, writeU64_read_at_7]
+  omega
 
 /-- Reading back a U32 from the address it was just written to yields the original value -/
-axiom readU32_writeU32_same (mem : Mem) (addr val : Nat)
+theorem readU32_writeU32_same (mem : Mem) (addr val : Nat)
     (h : val < 2 ^ 32) :
-    readU32 (writeU32 mem addr val) addr = val
+    readU32 (writeU32 mem addr val) addr = val := by
+  unfold readU32
+  show (writeU32 mem addr val).read addr % 256 +
+       (writeU32 mem addr val).read (addr + 1) % 256 * 0x100 +
+       (writeU32 mem addr val).read (addr + 2) % 256 * 0x10000 +
+       (writeU32 mem addr val).read (addr + 3) % 256 * 0x1000000 = val
+  rw [writeU32_read_at_0, writeU32_read_at_1, writeU32_read_at_2, writeU32_read_at_3]
+  omega
 
 /-- Reading back a U8 from the address it was just written to yields the original value -/
-axiom readU8_writeU8_same (mem : Mem) (addr val : Nat)
+theorem readU8_writeU8_same (mem : Mem) (addr val : Nat)
     (h : val < 2 ^ 8) :
-    readU8 (writeU8 mem addr val) addr = val
+    readU8 (writeU8 mem addr val) addr = val := by
+  unfold readU8
+  show (writeU8 mem addr val).read addr % 256 = val
+  rw [writeU8_read_at]
+  omega
 
-/-! ### Disjoint-address axioms (single-premise, within same region) -/
+/-! ### Disjoint-address theorems (single-premise, within same region) -/
 
 /-- Writing a U64 does not affect reads from non-overlapping addresses -/
-axiom readU64_writeU64_disjoint (mem : Mem) (rAddr wAddr val : Nat)
+theorem readU64_writeU64_disjoint (mem : Mem) (rAddr wAddr val : Nat)
     (h : rAddr + 8 ≤ wAddr ∨ wAddr + 8 ≤ rAddr) :
-    readU64 (writeU64 mem wAddr val) rAddr = readU64 mem rAddr
+    readU64 (writeU64 mem wAddr val) rAddr = readU64 mem rAddr := by
+  unfold readU64
+  show (writeU64 mem wAddr val).read rAddr % 256 +
+       (writeU64 mem wAddr val).read (rAddr + 1) % 256 * 0x100 +
+       (writeU64 mem wAddr val).read (rAddr + 2) % 256 * 0x10000 +
+       (writeU64 mem wAddr val).read (rAddr + 3) % 256 * 0x1000000 +
+       (writeU64 mem wAddr val).read (rAddr + 4) % 256 * 0x100000000 +
+       (writeU64 mem wAddr val).read (rAddr + 5) % 256 * 0x10000000000 +
+       (writeU64 mem wAddr val).read (rAddr + 6) % 256 * 0x1000000000000 +
+       (writeU64 mem wAddr val).read (rAddr + 7) % 256 * 0x100000000000000 = _
+  rw [writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega)]
 
 /-- Writing a U32 does not affect U64 reads from non-overlapping addresses -/
-axiom readU64_writeU32_disjoint (mem : Mem) (rAddr wAddr val : Nat)
+theorem readU64_writeU32_disjoint (mem : Mem) (rAddr wAddr val : Nat)
     (h : rAddr + 8 ≤ wAddr ∨ wAddr + 4 ≤ rAddr) :
-    readU64 (writeU32 mem wAddr val) rAddr = readU64 mem rAddr
+    readU64 (writeU32 mem wAddr val) rAddr = readU64 mem rAddr := by
+  unfold readU64
+  show (writeU32 mem wAddr val).read rAddr % 256 +
+       (writeU32 mem wAddr val).read (rAddr + 1) % 256 * 0x100 +
+       (writeU32 mem wAddr val).read (rAddr + 2) % 256 * 0x10000 +
+       (writeU32 mem wAddr val).read (rAddr + 3) % 256 * 0x1000000 +
+       (writeU32 mem wAddr val).read (rAddr + 4) % 256 * 0x100000000 +
+       (writeU32 mem wAddr val).read (rAddr + 5) % 256 * 0x10000000000 +
+       (writeU32 mem wAddr val).read (rAddr + 6) % 256 * 0x1000000000000 +
+       (writeU32 mem wAddr val).read (rAddr + 7) % 256 * 0x100000000000000 = _
+  rw [writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega)]
 
 /-- Writing a U16 does not affect U64 reads from non-overlapping addresses -/
-axiom readU64_writeU16_disjoint (mem : Mem) (rAddr wAddr val : Nat)
+theorem readU64_writeU16_disjoint (mem : Mem) (rAddr wAddr val : Nat)
     (h : rAddr + 8 ≤ wAddr ∨ wAddr + 2 ≤ rAddr) :
-    readU64 (writeU16 mem wAddr val) rAddr = readU64 mem rAddr
+    readU64 (writeU16 mem wAddr val) rAddr = readU64 mem rAddr := by
+  unfold readU64
+  show (writeU16 mem wAddr val).read rAddr % 256 +
+       (writeU16 mem wAddr val).read (rAddr + 1) % 256 * 0x100 +
+       (writeU16 mem wAddr val).read (rAddr + 2) % 256 * 0x10000 +
+       (writeU16 mem wAddr val).read (rAddr + 3) % 256 * 0x1000000 +
+       (writeU16 mem wAddr val).read (rAddr + 4) % 256 * 0x100000000 +
+       (writeU16 mem wAddr val).read (rAddr + 5) % 256 * 0x10000000000 +
+       (writeU16 mem wAddr val).read (rAddr + 6) % 256 * 0x1000000000000 +
+       (writeU16 mem wAddr val).read (rAddr + 7) % 256 * 0x100000000000000 = _
+  rw [writeU16_read_other _ _ _ _ (by omega) (by omega),
+      writeU16_read_other _ _ _ _ (by omega) (by omega),
+      writeU16_read_other _ _ _ _ (by omega) (by omega),
+      writeU16_read_other _ _ _ _ (by omega) (by omega),
+      writeU16_read_other _ _ _ _ (by omega) (by omega),
+      writeU16_read_other _ _ _ _ (by omega) (by omega),
+      writeU16_read_other _ _ _ _ (by omega) (by omega),
+      writeU16_read_other _ _ _ _ (by omega) (by omega)]
 
 /-- Writing a U8 does not affect U64 reads from non-overlapping addresses -/
-axiom readU64_writeU8_disjoint (mem : Mem) (rAddr wAddr val : Nat)
+theorem readU64_writeU8_disjoint (mem : Mem) (rAddr wAddr val : Nat)
     (h : wAddr < rAddr ∨ rAddr + 8 ≤ wAddr) :
-    readU64 (writeU8 mem wAddr val) rAddr = readU64 mem rAddr
+    readU64 (writeU8 mem wAddr val) rAddr = readU64 mem rAddr := by
+  unfold readU64
+  show (writeU8 mem wAddr val).read rAddr % 256 +
+       (writeU8 mem wAddr val).read (rAddr + 1) % 256 * 0x100 +
+       (writeU8 mem wAddr val).read (rAddr + 2) % 256 * 0x10000 +
+       (writeU8 mem wAddr val).read (rAddr + 3) % 256 * 0x1000000 +
+       (writeU8 mem wAddr val).read (rAddr + 4) % 256 * 0x100000000 +
+       (writeU8 mem wAddr val).read (rAddr + 5) % 256 * 0x10000000000 +
+       (writeU8 mem wAddr val).read (rAddr + 6) % 256 * 0x1000000000000 +
+       (writeU8 mem wAddr val).read (rAddr + 7) % 256 * 0x100000000000000 = _
+  rw [writeU8_read_other _ _ _ _ (by omega),
+      writeU8_read_other _ _ _ _ (by omega),
+      writeU8_read_other _ _ _ _ (by omega),
+      writeU8_read_other _ _ _ _ (by omega),
+      writeU8_read_other _ _ _ _ (by omega),
+      writeU8_read_other _ _ _ _ (by omega),
+      writeU8_read_other _ _ _ _ (by omega),
+      writeU8_read_other _ _ _ _ (by omega)]
 
 /-- Writing a U64 does not affect U32 reads from non-overlapping addresses -/
-axiom readU32_writeU64_disjoint (mem : Mem) (rAddr wAddr val : Nat)
+theorem readU32_writeU64_disjoint (mem : Mem) (rAddr wAddr val : Nat)
     (h : rAddr + 4 ≤ wAddr ∨ wAddr + 8 ≤ rAddr) :
-    readU32 (writeU64 mem wAddr val) rAddr = readU32 mem rAddr
+    readU32 (writeU64 mem wAddr val) rAddr = readU32 mem rAddr := by
+  unfold readU32
+  show (writeU64 mem wAddr val).read rAddr % 256 +
+       (writeU64 mem wAddr val).read (rAddr + 1) % 256 * 0x100 +
+       (writeU64 mem wAddr val).read (rAddr + 2) % 256 * 0x10000 +
+       (writeU64 mem wAddr val).read (rAddr + 3) % 256 * 0x1000000 = _
+  rw [writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega),
+      writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega)]
 
 /-- Writing a U32 does not affect U32 reads from non-overlapping addresses -/
-axiom readU32_writeU32_disjoint (mem : Mem) (rAddr wAddr val : Nat)
+theorem readU32_writeU32_disjoint (mem : Mem) (rAddr wAddr val : Nat)
     (h : rAddr + 4 ≤ wAddr ∨ wAddr + 4 ≤ rAddr) :
-    readU32 (writeU32 mem wAddr val) rAddr = readU32 mem rAddr
+    readU32 (writeU32 mem wAddr val) rAddr = readU32 mem rAddr := by
+  unfold readU32
+  show (writeU32 mem wAddr val).read rAddr % 256 +
+       (writeU32 mem wAddr val).read (rAddr + 1) % 256 * 0x100 +
+       (writeU32 mem wAddr val).read (rAddr + 2) % 256 * 0x10000 +
+       (writeU32 mem wAddr val).read (rAddr + 3) % 256 * 0x1000000 = _
+  rw [writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega),
+      writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega)]
 
 /-- Writing a U64 does not affect individual byte reads outside the written range -/
-axiom readU8_writeU64_outside (mem : Mem) (bAddr wAddr val : Nat)
+theorem readU8_writeU64_outside (mem : Mem) (bAddr wAddr val : Nat)
     (h : bAddr < wAddr ∨ wAddr + 8 ≤ bAddr) :
-    readU8 (writeU64 mem wAddr val) bAddr = readU8 mem bAddr
+    readU8 (writeU64 mem wAddr val) bAddr = readU8 mem bAddr := by
+  unfold readU8
+  show (writeU64 mem wAddr val).read bAddr % 256 = _
+  rw [writeU64_read_other _ _ _ _
+        (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega)]
 
 /-- Writing a U32 does not affect byte reads outside the written range -/
-axiom readU8_writeU32_outside (mem : Mem) (bAddr wAddr val : Nat)
+theorem readU8_writeU32_outside (mem : Mem) (bAddr wAddr val : Nat)
     (h : bAddr < wAddr ∨ wAddr + 4 ≤ bAddr) :
-    readU8 (writeU32 mem wAddr val) bAddr = readU8 mem bAddr
+    readU8 (writeU32 mem wAddr val) bAddr = readU8 mem bAddr := by
+  unfold readU8
+  show (writeU32 mem wAddr val).read bAddr % 256 = _
+  rw [writeU32_read_other _ _ _ _ (by omega) (by omega) (by omega) (by omega)]
 
 /-- Writing a U16 does not affect byte reads outside the written range -/
-axiom readU8_writeU16_outside (mem : Mem) (bAddr wAddr val : Nat)
+theorem readU8_writeU16_outside (mem : Mem) (bAddr wAddr val : Nat)
     (h : bAddr < wAddr ∨ wAddr + 2 ≤ bAddr) :
-    readU8 (writeU16 mem wAddr val) bAddr = readU8 mem bAddr
+    readU8 (writeU16 mem wAddr val) bAddr = readU8 mem bAddr := by
+  unfold readU8
+  show (writeU16 mem wAddr val).read bAddr % 256 = _
+  rw [writeU16_read_other _ _ _ _ (by omega) (by omega)]
 
 /-- Writing a U8 does not affect byte reads at different addresses -/
-axiom readU8_writeU8_disjoint (mem : Mem) (rAddr wAddr val : Nat)
+theorem readU8_writeU8_disjoint (mem : Mem) (rAddr wAddr val : Nat)
     (h : rAddr ≠ wAddr) :
-    readU8 (writeU8 mem wAddr val) rAddr = readU8 mem rAddr
+    readU8 (writeU8 mem wAddr val) rAddr = readU8 mem rAddr := by
+  unfold readU8
+  show (writeU8 mem wAddr val).read rAddr % 256 = _
+  rw [writeU8_read_other _ _ _ _ h]
 
 /-! ### Region frame axioms (two-premise: read below STACK_START, write above)
 
@@ -377,7 +689,10 @@ listing the valid `[start, start + size)` intervals plus their
 writability. The Lean `step` consults the table on `.ldx` / `.st` /
 `.stx` and routes a miss to `ERR_ACCESS_VIOLATION`.
 
-Total `Mem` is preserved, so the 13 SepLogic axioms above stay sound. -/
+Total `Mem` is preserved, so the SepLogic coherence theorems above
+stay sound (they were 13 axioms until 2026-05-23; now proved from
+`Mem.put` / `Mem.read_put_self` / `Mem.read_put_other` via the
+per-byte `writeU*_read_at_i` / `writeU*_read_other` lemmas). -/
 
 structure Region where
   start    : Nat
