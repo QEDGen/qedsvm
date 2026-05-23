@@ -1,22 +1,32 @@
 # qedsvm
 
-A reference interpreter for the Solana Virtual Machine, in Lean 4, on the path to a verified macro assembler. Every sBPF instruction and every crypto syscall has a formal operational meaning the kernel can commit to.
+A reference interpreter and verification substrate for the Solana Virtual Machine, in Lean 4. Hand-written, hand-auditable operational semantics for sBPF that runs real compiled Solana programs byte-for-byte against agave, and a per-instruction Hoare-triple spec layer for proving properties of those programs.
 
-qedsvm is Lean's role compounded: **assembler**, **macro language**, **specification language**, **proof assistant**, and **runtime**, all at once. You can hand it real Solana ELF bytecode and get back a kernel-committed final `State` (registers, memory, exit code, logs, return data). And you can — once the spec layer is further along — write sBPF directly as Lean terms, specify each instruction or macro with a separation-logic Hoare triple, and have Lean check that the implementation meets the spec. Triples are bounded: every spec carries an explicit step count `N` that doubles as a verified compute-unit budget.
+## Two production deliverables
 
-The methodology is borrowed from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm), which descends from Kennedy/Benton/Jensen/Dagand, *"Coq: The world's best macro assembler?"* (PPDP 2013). They built a verified macro assembler for RV64IM and used it to implement EVM opcodes as RISC-V macros with machine-checked specs. We do the same thing for sBPF, targeting Solana programs.
+**1. Run compiled programs.** Hand `qedsvm` a Solana `.so` produced by `cargo-build-sbf`, accounts, and an instruction; get back `program_result`, `return_data`, modified `resulting_accounts`, and `compute_units_consumed` — byte-for-byte conformant with agave / mollusk on every fixture we've thrown at it. Crypto syscalls call the same Rust crates agave does, version-pinned to agave's master `Cargo.toml`.
 
-## What it's for
+**2. Verify compiled programs against specs.** Decode the same ELF to `List Insn`, then use per-instruction separation-logic Hoare triples and composition tactics to prove the program meets a property. Triples are bounded: every spec carries an explicit step count `N` that doubles as a verified compute-unit budget. This is the path for programs you didn't author — take an externally compiled `.so`, decompile to sBPF, prove its observable behavior equals a separation-logic spec.
 
-Solana programs ship as sBPF bytecode produced by rustc → LLVM → sBPF. The compiler is in the trusted computing base of every program on mainnet. A bug in the toolchain — or a divergence between what the developer reasoned about in Rust and what the bytecode actually does — silently undermines correctness even if the source code is right.
+The two together: ground-truth execution **and** provable properties on the same model, with no rustc in the trust base on the verification side.
 
-qedsvm explores an alternative path for programs where this matters: **write the sBPF directly in Lean, prove it correct, and ship the bytecode**. The rustc pipeline never enters the picture. For CPI patterns, ATA derivations, signature checks, and the small handful of operations that bear most of the value on Solana, that compiler-free path is a soundness floor that no amount of source-level review reaches.
+## Scope
 
-The same semantics, run the other way, is a **reference interpreter** with agave-conformant crypto. That's what's shipped today.
+**In scope** (production goals):
 
-## What's shipped
+- **Correctness** — a hand-written, auditable operational semantics for sBPF.
+- **Semantic baseline** — byte-for-byte conformance with agave on real `cargo-build-sbf` output, enforced by differential testing against mollusk.
+- **Execution** — load and run arbitrary compiled Solana programs (ELF .so → decoded → executed), including crypto syscalls and CPI.
+- **Spec layer** — per-instruction Hoare triples covering the full user-facing ISA, with composition tactics so a decompiled program can be proved against a separation-logic spec, carrying a verified CU bound.
 
-The reference-interpreter layer is functionally complete. **101 lake jobs green, zero new sorry/axiom** beyond the 13 pre-existing `Memory.lean` coherence axioms (scheduled for removal by the byte-level separation-logic migration in Phase A).
+**Out of scope**:
+
+- **Validator-grade runtime.** Bank, slot lifecycle, account commits, consensus, gossip, leader schedule, vote processing — none of it. This is the program-execution layer, not the validator.
+- **zkSVM target.** Compiling to a zkVM is not pursued. CU bounds remain meaningful in Lean alone.
+- **Writing sBPF directly in Lean as the program-authoring story.** A small in-tree macro library exists as a proof-of-pattern (lamport transfer, PDA derivation, 2-way dispatch, fixed-size memcpy), but a full verified macro library for SPL Token / ATA / Anchor patterns is a longer-horizon track, not gating production.
+- **A new verification tool.** This is the model + the spec layer that tools sit on. QEDGen and other consumers live elsewhere.
+
+## What's shipped — execution
 
 ### sBPF runner — `Svm/SBPF/Runner.lean`
 
@@ -32,11 +42,13 @@ Runner.runForExit    : ByteArray → RunConfig → Option Nat
 Runner.runElfForExit : ByteArray → RunConfig → Option Nat
 ```
 
-- Full ALU (64- and 32-bit, imm and reg sources), all conditional + unconditional jumps, `exit`, `call`, load/store across all four widths. Two-pass decoder so `lddw` (which occupies two 8-byte slots) and branch offsets resolve correctly.
-- **ELF64** loader: header + section table walk, name lookup in `.shstrtab`, `.text` and `.rodata` extraction with their `sh_addr`s. **R_BPF_64_64 relocations** applied before decode — the universal pattern across Anchor, Pinocchio, native-Rust, and Quasar binaries.
-- **Syscall hash dispatch**: pure-Lean Murmur3-32, precomputed hashes for all 43 names in the `Syscall` enum (matches agave's full registry). The decoder's `call` arm produces *typed* `Syscall` variants directly from the bytes.
-- **Observable side channels**: `State.log` and `State.returnData`, populated by `sol_log_*` and `sol_set_return_data` and untouched by separation-logic assertions, so existing Hoare triples stay unaffected.
-- **CPI v1**: `Runner.executeFnCpi` is a CPI-aware execution loop. For `sol_invoke_signed[_c]` it consults `programRegistry`, decodes the callee, runs it recursively with caller memory inherited, and writes the callee's exit code into caller `r0`. v1 stubs documented in `docs/next-session-plan.md` (no `SolInstruction` reader, no account write-back, no PDA seeds, no CU split).
+- Full ALU (64- and 32-bit, imm and reg sources), all conditional + unconditional jumps, `exit`, `call`, load/store across all four widths. Two-pass decoder so `lddw` (two 8-byte slots) and branch offsets resolve correctly.
+- **ELF64** loader: header + section table walk, name lookup in `.shstrtab`, `.text` and `.rodata` extraction with their `sh_addr`s. `R_BPF_64_64`, `R_BPF_64_32`, and `R_BPF_64_RELATIVE` relocations applied before decode — the universal pattern across Anchor, Pinocchio, native-Rust, and Quasar binaries.
+- **V0 stack frames** (`solana-sbpf::Interpreter::push_frame` semantics): `.call_local` pushes a `CallFrame(retPc, savedR6..savedR10)` and bumps `r10 += 0x2000`; `.exit` restores all six. Required for cargo-build-sbf's entrypoint deserializer not to alias spilled locals across sub-calls.
+- **Region bounds enforcement**: `Memory.RegionTable` traps OOR accesses with `ERR_ACCESS_VIOLATION` on `.ldx`/`.st`/`.stx`.
+- **Syscall hash dispatch**: pure-Lean Murmur3-32, precomputed hashes for all names in the `Syscall` enum (matches agave's full registry). The decoder's `call` arm produces *typed* `Syscall` variants directly from the bytes.
+- **CPI (real)**: `Runner.executeFnCpiWithFuel` — program registry + recursive `executeFn`, ABI deserialization (Rust + C), account write-back, log/returnData propagation, proportional CU split, account aliasing detection, depth-2+ recursion, ixData propagation, **PDA signer-seed promotion** (r4/r5 → `create_program_address(seeds, callerPid)` → promote matching AccountInfo to `is_signer=true`).
+- **Native programs** (Firedancer-aligned): System, ComputeBudget, BPF Loader v3 Upgradeable, ed25519 / secp256k1 / secp256r1 precompile dispatch.
 
 ### Crypto syscalls — agave-conformant via `rust-bridge/`
 
@@ -59,66 +71,108 @@ Every cryptographic primitive calls the same crate agave's runtime calls, versio
 | `sol_poseidon` (BN254 x⁵) | `light-poseidon = 0.4.0`, `ark-bn254 = 0.5.0` | ✅ |
 | `sol_big_mod_exp` | `solana-big-mod-exp = 3.0.0` (→ `num-bigint`) | ✅ |
 
-A `native_decide`-verified audit (`Svm/SBPF/RunnerDemo.lean` Demo 28) confirms the pure-Lean SHA-256 is byte-equivalent to `sha2 = 0.10.8` across a sweep of inputs (empty / single byte / "abc" / fox pangram / 256B / 1025B / 4096B). Production paths for Keccak and BLAKE3 go through the same crates directly, so the audit there is structural rather than empirical.
+A `native_decide`-verified audit confirms the pure-Lean SHA-256 is byte-equivalent to `sha2 = 0.10.8` across a sweep of inputs. Per-byte CU costs match agave's `mem_op_base_cost.max(byte_cost.saturating_mul(len / 2))` per-slice formula.
 
 ### Other syscalls
 
 | Syscall | Behavior |
 |---|---|
 | `sol_log_`, `sol_log_pubkey` | Append bytes to `State.log` |
-| `sol_log_64_`, `sol_log_compute_units_`, `sol_log_data` | Empty marker push (full formatting TODO) |
+| `sol_log_64_`, `sol_log_compute_units_`, `sol_log_data` | Agave-parity formatting (`compute_units_` matches mollusk; `log_data` base64-encodes per slice) |
 | `sol_memcpy`, `sol_memmove`, `sol_memset`, `sol_memcmp` | Real byte-level semantics on `Mem` |
 | `sol_set_return_data`, `sol_get_return_data` | Round-trip via `State.returnData` |
-| `sol_get_stack_height` | Returns 1 (top-level depth; CPI depth tracking deferred) |
-| `sol_get_clock_sysvar`, `sol_get_rent_sysvar`, `sol_get_epoch_schedule_sysvar`, `sol_get_last_restart_slot`, `sol_get_fees_sysvar`, `sol_get_epoch_rewards_sysvar` | Zero-fill the output buffer (real sysvar values vary by epoch; zero is the safe default) |
-| `sol_create_program_address`, `sol_try_find_program_address` | **Pure-Lean PDA derivation** (no new bridge code; composed of `Sha256.hash` + `Curve25519.validateEdwards` for the off-curve check) |
-| `sol_invoke_signed`, `sol_invoke_signed_c` | CPI v1 (via `executeFnCpi`) |
-| `abort`, `sol_panic_` | Set `exitCode := some ERR_ABORT`; `sol_panic_` also pushes the panic message to `State.log` |
-| `sol_alloc_free_`, `sol_get_epoch_stake` | Documented stubs (deprecated / unmodeled) |
+| `sol_get_stack_height` | Tracks CPI depth |
+| `sol_get_{clock,rent,epoch_schedule,last_restart_slot,fees,epoch_rewards}_sysvar` | Zero-fill the output buffer (real sysvar values vary by epoch; zero is the safe default) |
+| `sol_create_program_address`, `sol_try_find_program_address` | **Pure-Lean PDA derivation** (`Sha256.hash` + `Curve25519.validateEdwards`) |
+| `sol_invoke_signed`, `sol_invoke_signed_c` | Real CPI (see Runner above) |
+| `abort`, `sol_panic_` | Set `exitCode := some ERR_ABORT`; `sol_panic_` also pushes the panic message |
 
-### Verification — `Svm/SBPF/RunnerDemo.lean`
+### Differential testing — `qedsvm-rs/tests/diff_mollusk.rs`
 
-38 demos / 108 `native_decide`-verified assertions, kept out of the production aggregator. Coverage:
+25 real `cargo-build-sbf` fixtures cross-checked against `mollusk_svm::Mollusk`, each asserting byte-for-byte equality on `(program_result, return_data, resulting_accounts, compute_units_consumed)`. Highlights:
 
-- Raw ALU + jumps + memory ops + backward-loop counting.
-- ELF round trips: `.text`-only, with `.rodata`, with `R_BPF_64_64` relocations.
-- Typed syscall dispatch via Murmur3 round trip.
-- `sol_memcpy` / `sol_memset` / `sol_memcmp` byte-level verification.
-- `sol_log_` content inspection, return-data round trip, sysvar zero-fill.
-- SHA-256 / Keccak / Blake3 / Sha512 against known test vectors + the SHA-256 ↔ agave conformance audit.
-- secp256k1 recovery with a deterministic signature + `invalidRecoveryId` + `invalidSignature` + signature malleability.
-- Full curve25519: basepoint validation, group ops (ADD/SUB/MUL × Edwards/Ristretto) against pre-computed doubled basepoints, MSM with N=1, N=2, distinct scalars.
-- BLS12-381 G1/G2 decompression + pairing `e(g1, g2)` on the canonical generators.
-- alt_bn128 ADD/MUL on the BN254 generator (1, 2), compression round-trip.
-- Poseidon BN254 x⁵ in BE and LE against the official `solana-poseidon` test vector.
-- PDA: well-known agave vector (`["Talking", "Squirrels"]`, BPFLoaderUpgradeable → `2fnQrn...`), plus negative tests for over-length seeds, too-many seeds, malformed pubkey.
-- CPI: two-program registry, callee exits with `0x77`, caller propagates; unknown-pid → `r0 := 1`.
-- `abort` → exit with `ERR_ABORT`.
-- `sol_big_mod_exp` test vectors (3² mod 5, 2¹⁰ mod 1000, edge cases).
+- Minimal noop (CU 2), `solana_program::entrypoint!` noop (~1923 instructions, CU 98), `msg!("hi")` logger (CU 202), incrementer with `try_borrow_mut_data()` write-back (CU 321), Doppler-style account-data manipulation.
+- CPI: depth-2 recursion, returnData round-trip, PDA signer promotion.
+- OOR access faults `ERR_ACCESS_VIOLATION` on both engines.
+- SPL Token, ATA, Pinocchio fixtures (validate `.data.rel.ro` relocations).
 
-### Architecture — `rust-bridge/` + `lean_glue.c`
+After the 2026-05-20 `Mem` refactor (struct + `Std.HashMap` overlay, see `Memory.lean`), the full diff-mollusk suite finishes in **~3 s** vs. ~50 min previously (~1000× speedup).
+
+## What's shipped — verification (spec layer)
+
+The spec layer turns a decoded `List Insn` into something you can prove against a separation-logic spec.
+
+### Foundations — `Svm/SBPF/{SepLogic,CPSSpec}.lean`
+
+- **`PartialState`** — partial heap over registers, memory bytes, PC.
+- **`Assertion := PartialState → Prop`** with separating conjunction `**`, `emp`, points-to `r ↦ᵣ v`, `addr ↦ₘ b`, `pcIs v`.
+- **`holdsFor : Assertion → State → Prop`** bridge to the executable `State`.
+- **`cuTripleWithin (N : Nat) (entry exit_ : Nat) (cr : CodeReq) (P Q : Assertion) : Prop`** — bounded Hoare triple. `N` is the verified step count / CU bound.
+- **`cuBranchWithin`** — two-exit variant for conditional jumps.
+- **Structural rules**: `weaken`, `seq`, `frame` (baked into the definition), `mono_nSteps`, `refl`, `branch_merge`.
+
+### Per-instruction triples — `Svm/SBPF/InstructionSpecs.lean`
+
+**99 theorems covering essentially the entire user-facing ISA**:
+
+- **ALU 64-bit** (13 ops × {imm, reg}) — `mov`, `add`, `sub`, `mul`, `div`, `mod`, `or`, `and`, `xor`, `lsh`, `rsh`, `arsh`, `neg`.
+- **ALU 32-bit** (13 ops × {imm, reg}) — same op set, result zero-extended.
+- **Conditional jumps** (11 ops × {imm, reg}) — `jeq`, `jne`, `jgt`, `jge`, `jlt`, `jle`, `jsgt`, `jsge`, `jslt`, `jsle`, `jset`.
+- **Unconditional**: `ja`, `lddw`, `exit`, `callx` (value-dependent exit PC).
+- **Memory** (byte-level `↦ₘ` predicate): `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`.
+- **Syscall specs**: `sol_create_program_address` n=0 and n=1.
+
+Open per-instruction gaps: `call` / `call_local` (call-stack frames need a `PartialState` extension), per-syscall triples beyond PDA, store-immediate at non-byte widths (`sth` / `stw` / `stdw`).
+
+### Composition tactics — `Svm/SBPF/{SLTactic,SpecGen,Patterns}.lean`
+
+- **`sl_block_iter`** — auto-applies per-instruction specs left-to-right over a `List Insn`, summing CU bounds and threading PCs.
+- **`sl_branch`** — drives `cuBranchWithin` through `branch_merge` for if/else patterns.
+- **`sl_rw_abs`** — rewriting under abstraction, mitigating Lean's structural-reduction ceiling for large fetch maps.
+- **`sl_block_auto`** — hand-dispatched per-Insn spec lookup. Dispatches the full 64-bit and 32-bit ALU (imm + reg) including `neg64`/`neg32`, `lddw`, and `ldx`/`stx` at all four widths. `div`/`mod` not auto-dispatched (their specs carry a `divisor ≠ 0` side condition the helper doesn't auto-supply — use `sl_block_iter` with manual hypotheses). The foundation a decompile-and-verify tool would compose against.
+- **`Patterns.lean`** — concrete-fetch composition lemmas for end-to-end `executeFn`-level statements.
+
+### Trust base
+
+- **Hand-written ISA semantics** in `Svm/SBPF/{Execute,Decode,Memory}.lean`.
+- **Crypto primitives** through `rust-bridge/` to agave-pinned crates (explicit per-syscall trust statement).
+- **17 read/write-coherence axioms in `Memory.lean`** for byte-level memory operations. Documented; targeted for elimination by a byte-level memory model refactor.
+
+Everything else is proved.
+
+## What's shipped — verified macro library (in-tree, off the production critical path)
+
+`Svm/SBPF/Macros.lean` carries 13 macros, each a list-of-`Insn` definition + a bounded Hoare triple + a verified CU bound:
+
+- **Simple ALU**: `two_mov`, `add_constants`, `mov_then_add_reg`, `load_then_add`.
+- **Memory**: `byte_increment`, `u64_memcpy_16` (fixed-size 16-byte copy).
+- **Lamports**: `lamport_transfer` (read both balances, sub from src, add to dst, write back).
+- **Control flow**: `if_else`, `spl_token_2way_dispatch` (discriminator switch).
+- **PDA**: `pda_n0`, `pda_n1`, `pda_n1_stack` (three configurations — no seeds, one seed in regs, one seed via stack VmSlice).
+
+These are **proof-of-pattern**, not a shipping verified-macro library. They demonstrate that:
+
+1. Sequences proved with per-instruction triples actually compose under the tactic suite.
+2. Real on-chain patterns (lamport math, PDA derive, dispatch) admit clean separation-logic specs.
+3. The macros can be reused as *recognizable shapes* when verifying decompiled programs — a future tool could spot a `lamport_transfer`-shaped instruction sequence in compiled output and discharge it with the existing triple.
+
+Authoring new macros to cover SPL Token / ATA / full Anchor patterns is a longer-horizon track — not gating production.
+
+## What's not done yet
+
+- **Call-frame Hoare triples for `call_local` / `.exit`.** The runner's push-PC/pop-PC plumbing works at the execution level (V0 stack frames), but `PartialState` doesn't yet track `callStack`. Adding it is a multi-session design problem (new points-to predicate, frame property, threading through composition). `callx` is shipped (tail-call style, no callStack push).
+- **Per-syscall Hoare triples beyond PDA.** Each one is ~400 lines of partial-state destructure proof following the `sol_create_program_address_n0_spec` template. The executable semantics is in place; writing the specs is hours of work each.
+- **Store-immediate triples for non-byte widths.** `stb_spec` ships via a 165-line helper; `sth` / `stw` / `stdw` need parallel helpers at the same scale.
+- **17 axioms in `Memory.lean`** for byte-level read/write coherence. Removing them is a byte-level memory model refactor with the same surface but proved coherence lemmas.
+- **Phase F broader fixture coverage** — more SPL Token / ATA / Pinocchio escrow positive paths, plus a fuzz/sweep harness over generated `Vec<Insn>`. Cheap surface, high regression-catch rate.
+- **`sol_get_processed_sibling_instruction`** — needs an instruction-trace state we don't model.
+- **`sol_get_sysvar` (generic accessor)** — needs a sysvar registry keyed by sysvar-id.
+
+## Architecture — `rust-bridge/` + `lean_glue.c`
 
 Crypto goes through a single 8-file Rust staticlib (`rust-bridge/`) pinning agave's exact dependency versions. The ~30-line `rust-bridge/lean_glue.c` re-exports Lean's `static inline` runtime helpers (`lean_alloc_sarray`, `lean_alloc_ctor`, `lean_box`, …) as out-of-line symbols so Rust can call them at the FFI boundary; that's the only C in the project. `build.rs` runs `lean --print-prefix` to find `lean/lean.h` and compiles `lean_glue.c` via `cc-rs`. Lake's `target rustBridge` invokes `cargo build --release` automatically during `lake build`.
 
 When agave bumps a crypto crate version, `rust-bridge/Cargo.toml` bumps in lockstep — that is the *whole point* of the crate.
-
-## What's not done yet
-
-Honest framing — the substrate is built; the verification machinery on top is early.
-
-- **Bounded Hoare triples / spec layer.** `Svm/SBPF/{SepLogic,CPSSpec,InstructionSpecs}.lean` define `cuTripleWithin`, frame, seq, weaken, and the first per-instruction triple (`mov64_imm_spec`). Most of the spec library is ahead. `Svm/SBPF/MacroDemo.lean` shows two verified two-instruction macros as a proof of pattern.
-- **13 axioms in `Svm/SBPF/Memory.lean`** for the flat-memory coherence lemmas. These disappear with the byte-level separation-logic migration (Phase A); they're not load-bearing in the spec layer.
-- **Differential test against agave shipped end-to-end.** `qedsvm-rs/tests/diff_mollusk.rs` runs the same `Instruction` through `qedsvm::Svm` and `mollusk_svm::Mollusk`. Three program shapes cross-checked, each asserting byte-for-byte equality on `program_result`, `return_data`, `resulting_accounts`, *and* `compute_units_consumed`:
-  - **Minimal noop** (`mov64 r0, 0; exit`, 2 instructions) — CU 2 on both sides.
-  - **Real `solana_program::entrypoint!` noop** (~1923 sBPF instructions, full input-buffer deserializer macro) — CU 98 on both sides. Exercises proper call/return through the `.call_local`/`.exit` push-PC/pop-PC plumbing.
-  - **Logger** (`msg!("hi")` → `sol_log_`) — CU 202 on both sides. Exercises:
-    - `R_BPF_64_32` relocation patching: imm gets overwritten with `Murmur3-32("sol_log_") = 0x207559bd` at load time
-    - the unified function-key decoder (0x85 → if `SyscallHash.fromHash imm` is a known syscall, route to `.call syscall`; else `.call_local`)
-    - the agave-conformant per-syscall CU table (`syscall_base_cost = 100`, with variable-length-aware costs for `sol_log_`, `sol_memcpy_`, sha256/keccak/blake3, secp256k1, BLS12-381, alt_bn128, big_mod_exp, Poseidon, PDA derivation, CPI, sysvars).
-- **Call-frame caveat.** The return stack tracks return PCs only; callee-saved register preservation (r6–r9, r10 / frame-pointer arithmetic) is *not* modeled. Programs that rely on r6–r9 surviving across a call (rather than spilling them explicitly, which `cargo-build-sbf` typically does) will misbehave — full call-frame modeling is Phase D.
-- **`sol_get_processed_sibling_instruction`** — needs an instruction-trace state we don't model (single-instruction execution today).
-- **`sol_get_sysvar` (generic accessor)** — needs a sysvar registry keyed by sysvar-id.
-- **CPI v2 deferments**: no `SolInstruction` reader, no callee account-input serialization, no account write-back, no PDA-signer seed validation, no CU-budget split, no stack-depth tracking. Today's CPI works for tests that pass program-id as a `Nat` directly via `r1`.
 
 ## Layout
 
@@ -129,101 +183,74 @@ Svm/
 ├── Cpi.lean                   — CpiInstruction envelope, program-ID registry,
 │                                SPL/System/ATA discriminators
 ├── Ffi.lean                   — @[export qedsvm_run_elf_buffer] entry
-│                                (ByteArray wire format the Rust crate decodes)
 ├── SBPF.lean                  — sBPF kernel aggregator
-├── SBPF/                      — sBPF interpreter: ISA + memory + execution
+├── SBPF/                      — sBPF interpreter + spec layer
 ├── Syscalls/                  — syscall bodies (one file per logical group)
-└── Native/                    — native programs (System, ComputeBudget, BPF
-                                  Loader v3 Upgradeable, precompile dispatch)
+└── Native/                    — native programs (System, ComputeBudget,
+                                 BPF Loader v3 Upgradeable, precompile dispatch)
 
-Svm/SBPF/                      — the interpreter
+Svm/SBPF/                      — interpreter + spec layer
 ├── ISA.lean                   — Insn + Syscall enums (full agave registry)
-├── Memory.lean                — byte-addressable Mem
+├── Memory.lean                — byte-addressable Mem (struct + HashMap overlay)
 ├── Region.lean                — region IDs (rodata/bytecode/stack/heap/input)
 ├── Pubkey.lean                — sBPF-level pubkey reads
 ├── Machine.lean               — State, RegFile, CallFrame, shared body helpers
-├── Execute.lean               — step, executeFn; 50-line execSyscall/syscallCu
-│                                dispatchers that fan out to Svm/Syscalls/*
+├── Execute.lean               — step, executeFn; execSyscall/syscallCu dispatchers
 ├── Decode.lean                — bytecode parser (lddw + jump-target resolution)
-├── Elf.lean                   — ELF64 loader (header, sections, .rodata,
-│                                R_BPF_64_32 Murmur3 relocations)
+├── Elf.lean                   — ELF64 loader (R_BPF_64_{64,32,RELATIVE})
 ├── Murmur3.lean               — pure-Lean Murmur3-32 (kernel-reducible)
 ├── SyscallHash.lean           — name → hash → typed Syscall
-├── Runner.lean                — production entrypoint + executeFnCpi
+├── Runner.lean                — production entrypoint + executeFnCpiWithFuel
 ├── RunnerBridge.lean          — FFI wrapper consumed by Svm/Ffi.lean
-├── RunnerTests.lean           — 38 native_decide runs over Runner.run on
-│                                hand-encoded bytecode + ELF (integration
-│                                tests; build-time guard against runner /
-│                                decoder regressions)
+├── RunnerTests.lean           — native_decide runs over Runner.run on
+│                                hand-encoded bytecode + ELF
 │
-│   ─ Spec layer: Hoare triples over sBPF programs ─
+│   ─ Spec layer ─
 ├── SepLogic.lean              — PartialState, separation logic, points-to
-├── CPSSpec.lean               — cuTripleWithin, frame, seq, weaken,
-│                                branch_merge
-├── InstructionSpecs.lean      — per-instruction triples (pure-ALU + memory
-│                                + branch + lddw + exit)
+├── CPSSpec.lean               — cuTripleWithin, frame, seq, weaken, branch_merge
+├── InstructionSpecs.lean      — 98 per-instruction Hoare triples
 ├── SpecGen.lean               — sl_block_auto: hand-dispatched per-Insn lookup
 ├── Patterns.lean              — concrete-fetch composition lemmas
-├── SLTactic.lean              — sl_block_iter / sl_branch / sl_rw_abs elab tactics
-├── Macros.lean                — verified macro library (lamport_transfer,
-│                                memcpy_16, if_else, 2-way dispatch, PDA
-│                                n=0/n=1/stack); consumed by examples/
+├── SLTactic.lean              — sl_block_iter / sl_branch / sl_rw_abs tactics
+├── Macros.lean                — 13 in-tree macros (proof-of-pattern; off the
+│                                production critical path)
 ├── Tactic.lean                — misc tactics
 └── WPTactic.lean              — wp_exec (legacy, for concrete programs)
 
 Svm/Syscalls/                  — every syscall body (one logical group per file)
-├── Abort.lean                 — abort
-├── Logging.lean               — sol_log_, sol_log_pubkey, sol_log_64_,
-│                                sol_log_compute_units_, sol_log_data
+├── Abort.lean                 — abort, sol_panic_
+├── Logging.lean               — sol_log_, sol_log_pubkey, sol_log_data, …
 ├── MemOps.lean                — sol_memcpy_/memmove_/memset_/memcmp_
 ├── ReturnData.lean            — sol_set_return_data / sol_get_return_data
-├── Sysvar.lean                — sol_get_{clock,rent,epoch_schedule,
-│                                last_restart_slot}_sysvar
+├── Sysvar.lean                — sol_get_{clock,rent,epoch_schedule,…}_sysvar
 ├── Cpi.lean                   — sol_invoke_signed_c / sol_invoke_signed_rust
 ├── Misc.lean                  — sol_get_stack_height + other small syscalls
 │
-│   ─ Crypto syscalls (each calls rust-bridge with agave-pinned crates,
-│     except Sha256/Murmur3 which are pure-Lean) ─
+│   ─ Crypto (rust-bridge with agave-pinned crates;
+│             Sha256/Murmur3 are pure-Lean) ─
 ├── Sha256.lean                — pure-Lean FIPS-180-4 + hashAgave audit hook
-├── Sha512.lean                — sha2 = 0.10.8
-├── Keccak256.lean             — sha3 = 0.10.8
-├── Blake3.lean                — blake3 = 1.8.5
-├── Secp256k1.lean             — libsecp256k1 = 0.7.2 (paritytech)
-├── Curve25519.lean            — curve25519-dalek = 4.1.3
-│                                validate + group_op + multiscalar_mul
-├── Bls12_381.lean             — solana-bls12-381-syscall = 0.1.0
-│                                decompress + pairing_map
-├── AltBn128.lean              — solana-bn254 = 3.2.1, group_op + compression
-├── Poseidon.lean              — light-poseidon = 0.4.0, BN254 x⁵
-├── BigModExp.lean             — solana-big-mod-exp = 3.0.0
+├── Sha512.lean, Keccak256.lean, Blake3.lean
+├── Secp256k1.lean, Curve25519.lean
+├── Bls12_381.lean, AltBn128.lean
+├── Poseidon.lean, BigModExp.lean
 └── Pda.lean                   — sol_create_program_address +
-                                 sol_try_find_program_address (Sha256 +
-                                 Curve25519.validateEdwards)
+                                 sol_try_find_program_address
 
-examples/lean/                 — separate Examples lean_lib, not in the
-                                  production aggregator (`lake build Examples`)
+examples/lean/                 — separate Examples lean_lib
 ├── ByteIncrement.lean         — hand-encoded byte_increment program + spec
 └── AsmTimeout.lean            — sBPF + Hoare spec for the asm-timeout demo
 
-rust-bridge/                   — cargo staticlib called BY Lean for crypto syscalls
+rust-bridge/                   — cargo staticlib called BY Lean for crypto
 ├── Cargo.toml                  — pinned versions matching agave master
-├── Cargo.lock                  — checked in for reproducibility
-├── build.rs                    — compiles lean_glue.c via cc-rs
-├── lean_glue.c                 — ~30 lines: re-exports Lean's static-inline
-│                                runtime helpers as out-of-line symbols
-└── src/
-    ├── lib.rs                  — extern "C" functions, one per @[extern] decl
-    └── lean_ffi.rs             — Rust bindings to Lean's lean_object ABI
+├── build.rs, lean_glue.c
+└── src/{lib.rs,lean_ffi.rs}
 
-Svm/Ffi.lean                   — @[export qedsvm_run_elf_buffer] entry
-                                  (ByteArray wire format the Rust crate decodes)
-
-qedsvm-rs/                 — cargo crate that CALLS Lean — runs programs
-                                  against the qedsvm via a Mollusk-shape API
+qedsvm-rs/                     — cargo crate that CALLS Lean — runs programs
+                                 against qedsvm via a Mollusk-shape API
 ├── Cargo.toml                  — solana-pubkey/instruction/account pinned to
 │                                agave master; mollusk-svm optional
-├── build.rs                    — auto-enumerates Lake's 33 dylib outputs
-├── csrc/init_glue.c            — wrappers for Lean's static-inline init/IO helpers
+├── build.rs                    — auto-enumerates Lake's dylib outputs
+├── csrc/init_glue.c            — wrappers for Lean's init/IO helpers
 └── src/
     ├── ffi.rs                  — Lean runtime lock + alloc/dec_ref/init
     ├── wire.rs                 — decode the Lean-side ByteArray result
@@ -232,28 +259,6 @@ qedsvm-rs/                 — cargo crate that CALLS Lean — runs programs
     └── svm.rs                  — Svm::process_instruction → InstructionResult
 ```
 
-## Lean as several things at once
-
-```lean
--- 1. Reference interpreter — runs real ELF binaries
-example : Runner.runElfForExit anchorBinary { cuBudget := 200_000 } = some 0 := by
-  native_decide
-
--- 2. Macro language: any Lean function producing instructions
-def push_const (n : Nat) (dst : Reg) : List Insn :=
-  if n = 0 then [.mov64 dst (.imm 0)] else [.lddw dst (.ofNat n)]
-
--- 3. Specification language: separation-logic Hoare triples
-theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
-      ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
-      ((dst ↦ᵣ v)    ** (src ↦ᵣ v)) := by ...
-
--- 4. Proof assistant: Lean's kernel checks the proof
-```
-
-(1) is shipped end-to-end. (3) and (4) work for the small handful of instruction specs in `InstructionSpecs.lean` plus the two macros in `MacroDemo.lean`; growing that library to full ISA coverage is Phase B.
-
 ## Use it — from Lean
 
 ```lean
@@ -261,11 +266,31 @@ require qedsvm from git
   "https://github.com/QEDGen/qedsvm.git" @ "main"
 ```
 
-Then `import Svm` (or import selectively, e.g. `import Svm.SBPF.Runner`).
+Then `import Svm` (or import selectively, e.g. `import Svm.SBPF.Runner` for the executor, `import Svm.SBPF.InstructionSpecs` for the spec layer).
 
 Standalone build: `lake build`. Lean toolchain pin: `lean-toolchain`.
 
 **Build prerequisites:** Lean (per `lean-toolchain`, fetched by `elan`) and `cargo` / `rustc` (any stable toolchain). Lake invokes `cargo build --release` automatically during `lake build`. No system crypto libraries required.
+
+### Run a compiled program
+
+```lean
+example : Runner.runElfForExit anchorBinary { cuBudget := 200_000 } = some 0 := by
+  native_decide
+```
+
+### Prove a sequence against a spec
+
+```lean
+-- Per-instruction triple from InstructionSpecs.lean
+theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat) :
+    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
+      ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
+      ((dst ↦ᵣ v)    ** (src ↦ᵣ v))
+
+-- Composed via sl_block_iter for a decoded List Insn
+example : cuTripleWithin 2 0 2 someCode P Q := by sl_block_iter
+```
 
 ## Use it — from Rust (`qedsvm-rs`)
 
@@ -297,28 +322,31 @@ Differential testing against Mollusk (gated behind `--features diff-mollusk`):
 cd qedsvm-rs && cargo test --features diff-mollusk
 ```
 
-`tests/diff_mollusk.rs` runs a real `cargo-build-sbf`-produced ELF through both engines and asserts equality on `(program_result, return_data, resulting_accounts, compute_units_consumed)`.
+`tests/diff_mollusk.rs` runs real `cargo-build-sbf`-produced ELFs through both engines and asserts equality on `(program_result, return_data, resulting_accounts, compute_units_consumed)`.
 
-**Prerequisites:** `lake build` has run at least once in the repo root (the build script auto-enumerates the 33 `qedsvm_*.dylib` outputs from `.lake/build/`).
+**Prerequisites:** `lake build` has run at least once in the repo root (the build script auto-enumerates the `qedsvm_*.dylib` outputs from `.lake/build/`).
 
 ## Roadmap
 
-See `ROADMAP.md`. Headline phases:
+See `ROADMAP.md`. Production track:
 
-- **A — Foundations**: SepLogic, bounded triples, first instruction specs *(in progress)*
-- **B — Full ISA coverage**: one Hoare-triple spec per `Insn` constructor
-- **C — Tactic suite**: composition automation (`runBlock`, frame inference, etc.)
-- **D — Macro library**: memory ops, stack frames, control flow, CPI envelopes as verified sBPF macros
-- **E — Solana program library**: System program ops, SPL Token transfers, ATA derive, common CPI patterns — each a verified macro with proven CU bound
-- **F — Differential testing**: oracle alignment against `solana-sbpf` / Firedancer
-- **G — ELF loader + execution** ✅ shipped
-- **H — Crypto syscalls + zkSVM target**: ✅ crypto shipped; zkSVM target outstanding
+- **Phase A — Foundations**: SepLogic, bounded triples, first instruction specs ✅
+- **Phase B — Full ISA coverage**: per-instruction Hoare triples ✅ (98 theorems)
+- **Phase C — Tactic suite**: composition automation (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) ✅
+- **Phase F — Differential testing**: byte-for-byte cross-engine agreement on `cargo-build-sbf` output ✅ (25 fixtures + 5 precompile + 11 svm_api + rent + thread-safety; broader fixture / fuzz harness open)
+- **Phase G — ELF loader + execution** ✅
+- **Phase H — Crypto syscalls** ✅
+
+Off the production critical path (in-tree, longer horizon):
+
+- **Phase D — sBPF macro library**: stack-frame patterns, sized memcmp, more control-flow combinators.
+- **Phase E — Solana program library**: SPL Token / ATA / Anchor patterns as verified macros.
 
 ## Origin
 
 Extracted on 2026-05-12 from [QEDGen/solana-skills](https://github.com/QEDGen/solana-skills), which used it as the runtime model for spec-driven verification of Solana programs. The split gives the SVM model its own life as an ecosystem artifact.
 
-The v0.3 re-scope to a verified macro assembler tracks the methodology of [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm) — read their README and the PPDP 2013 paper if you want the methodology in its original form.
+The separation-logic / bounded-Hoare-triple methodology is borrowed from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm), which descends from Kennedy/Benton/Jensen/Dagand, *"Coq: The world's best macro assembler?"* (PPDP 2013). evm-asm built a verified macro assembler for RV64IM and used it to author EVM opcodes as RISC-V macros with machine-checked specs. qedsvm takes the same spec machinery but applies it primarily to **verifying compiled programs** (the decompile-and-prove direction), with macro authoring as a secondary, in-tree track.
 
 ## License
 

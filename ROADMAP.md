@@ -1,22 +1,24 @@
 # qedsvm Roadmap
 
-The path to a correct, semantic-baseline SVM that can execute compiled Solana programs.
+The path to a correct, semantic-baseline SVM that (1) executes compiled Solana programs byte-for-byte against agave and (2) lets tools verify those same programs against separation-logic specs.
 
 ## Scope
 
 **In scope (production goals):**
-- Correctness: a hand-written, auditable operational semantics for sBPF, with separation-logic Hoare triples per instruction.
-- Semantic baseline: byte-for-byte conformance with agave on real `cargo-build-sbf` output, enforced by differential testing.
-- Execution: load and run arbitrary compiled Solana programs (ELF .so → decoded → executed) including crypto syscalls and CPI.
+- **Correctness**: a hand-written, auditable operational semantics for sBPF.
+- **Semantic baseline**: byte-for-byte conformance with agave on real `cargo-build-sbf` output, enforced by differential testing against mollusk.
+- **Execution**: load and run arbitrary compiled Solana programs (ELF .so → decoded → executed) including crypto syscalls and CPI.
+- **Spec layer**: per-instruction Hoare triples covering the full user-facing ISA, plus composition tactics, so a decompiled `List Insn` can be proved against a separation-logic spec with a verified CU bound. This is the verification path for externally compiled programs.
 
 **Out of scope:**
 - **Validator-grade runtime.** Bank, slot lifecycle, account commits, consensus, gossip, leader schedule, vote processing — none of it. This is the program-execution layer, not the validator.
-- **zkSVM target.** Compiling the macro library to a zkVM is not pursued. CU bounds remain meaningful in Lean without a zk backend.
-- **A new verification tool.** This is the model + the assembler + the macro library. Tools that use it — QEDGen and others — live elsewhere.
+- **zkSVM target.** Compiling Lean output to a zkVM is not pursued. CU bounds remain meaningful in Lean without a zk backend.
+- **Writing sBPF directly in Lean as the program-authoring story.** A small in-tree macro library (`Macros.lean`) exists as proof-of-pattern, but a full verified macro library for SPL Token / ATA / Anchor patterns (Phase D/E) is a longer-horizon track and does not gate production.
+- **A new verification tool.** This is the model + the spec layer that tools sit on. QEDGen and other consumers live elsewhere.
 
-The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Phase 1 CPI small-step → ... → Phase 6 crypto) with a methodology lifted from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm): separation logic over machine state, bounded Hoare triples, per-instruction specs, then macros built and verified compositionally on top. The original CPI work isn't dropped — it reappears as Phase D/E (CPI envelope and per-program effects, written as verified sBPF macros). The verified-macro track (Phase D/E) is a longer-horizon deliverable that lets people *write* programs in Lean; it is not on the critical path to executing compiled programs.
+The methodology — separation logic over machine state, bounded Hoare triples, per-instruction specs, composition tactics — is lifted from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm). evm-asm's primary use is *authoring* verified RV64IM macros; qedsvm's primary use is *verifying decompiled* sBPF against specs. The original CPI work reappears as Phase D/E (CPI envelope and per-program effects as verified macros), which remains useful but is off the production critical path.
 
-## Status snapshot — 2026-05-18
+## Status snapshot — 2026-05-23 (afternoon)
 
 | Phase | Status | Notes |
 | --- | --- | --- |
@@ -33,8 +35,17 @@ The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Pha
 **Headline numbers**: 155 Lean jobs green, ~58 Rust tests green (25 diff-mollusk + 5 precompile + 11 svm_api + 17 other).
 
 **Rough completeness, weighted by impact, not LOC**:
-- *Production critical path* (Phases 0–C, F, G, H): Phases 0–C done, F ~82%, G ~100% (correctness + throughput), H ~90%. Aggregate: **~97% shipped on correctness**. Remaining: Phase F broader fixture coverage / fuzz harness. The functional-`Mem` perf bottleneck is gone — `diff_mollusk` now finishes in ~3 s.
-- *Verified-macro track* (Phases D, E — not on the production critical path): D ~85%, E ~20%. Useful for writing programs in Lean; not required to execute compiled Solana programs.
+
+*Production critical path* — two deliverables:
+- **Reference interpreter** (Phases 0, F, G, H): Phase 0 done, F ~82%, G ~100% (correctness + throughput), H ~90%. Aggregate: **~95% shipped**. Remaining: Phase F broader fixture coverage + fuzz harness; long-horizon pure-Lean crypto ports (not gating).
+- **Spec layer** (Phases A, B, C): A/B/C all shipped on the ALU + memory + branch surface. Coverage: 99 per-instruction Hoare triples in `InstructionSpecs.lean` (full 64- and 32-bit ALU × {imm, reg}; full conditional jumps × {imm, reg}; `ja`, `lddw`, `exit`, **`callx`** [value-dependent exit PC]; `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`; div/mod). Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) live in `SLTactic.lean`; `sl_block_auto` (`SpecGen.lean`) dispatches full 64-bit ALU + 32-bit ALU + `lddw` + `ldx`/`stx`. Aggregate: **~85% shipped**. Remaining (all multi-session, not session-scale):
+  - Per-instruction triples for `call` / `call_local` (need `callStack` in `PartialState`)
+  - Per-syscall triples beyond PDA n=0/n=1 (~400-line proofs each)
+  - Store-immediate triples at non-byte widths (need new ~150-line helper lemmas per width)
+  - **17 read/write-coherence axioms in `Memory.lean`** (byte-level memory model refactor)
+
+*Off the production critical path* — verified-macro authoring track:
+- Phase D (~85%), Phase E (~20%). Useful for writing programs directly in Lean; not required to run or verify compiled Solana programs.
 
 **Tooling-track ideas** live in [`docs/improvement-plan.md`](docs/improvement-plan.md) — orthogonal to the phase plan above.
 
@@ -44,7 +55,11 @@ The v0.3 re-scope replaces the earlier phase plan (Phase 0 axiom cleanup → Pha
 
 Removed the five `axiom` declarations in `Svm/Account.lean` (list-update lemmas, now real theorems in core Lean). The 13 read/write-coherence axioms in `Svm/SBPF/Memory.lean` were left as a follow-up — they don't disappear with `simp` lemmas on the flat `Mem` model, but they're naturally eliminated by the byte-level separation-logic memory introduced in Phase A. After Phase A, the macro library uses byte-level `↦ₘ` predicates, the flat `Mem` axioms drop out, and the trust base is the hand-written ISA semantics + crypto primitives only.
 
-## Current track: v0.3.x — Verified macro assembler
+## Current track: v0.3.x — Reference interpreter + spec layer
+
+The headline track has two deliverables: (1) the reference interpreter that runs compiled Solana programs byte-for-byte against agave (Phases F/G/H) and (2) the per-instruction Hoare-triple spec layer that lets tools verify those compiled programs against separation-logic specs (Phases A/B/C). The verified-macro library (Phases D/E) sits on top of (2) but is for *authoring* sBPF in Lean and is not on the production critical path.
+
+The phases below are numbered in their original Phase A → E order for continuity with prior status updates; treat the A/B/C phases as a production sub-track and D/E as off-critical-path.
 
 ### Phase A — Foundations ✅
 

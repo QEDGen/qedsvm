@@ -1032,3 +1032,34 @@ theorem pda_n1_stack_macro_executeFn
     vSlotPtr_old vSlotLen_old seedBytes pidBytes outOldBytes descAddr outAddr
     hDesc hOut hpid hslen_lt).toExec hcr hP hpc hex h_reg
 
+/-! ## SpecGen extension smoke tests
+
+Confirm `sl_block_auto` dispatches the new Insn families (32-bit ALU,
+`neg64`/`neg32`, `lddw`, div/mod) added in this session. Each `example`
+is a tiny linear sequence; if any dispatch arm is mis-wired,
+`sl_block_auto` throws at elaboration time and the build breaks. -/
+
+example (vOld1 vOld2 : Nat) :
+    cuTripleWithin 2 0 2
+      ((CodeReq.singleton 0 (.lddw .r1 42)).union
+       (CodeReq.singleton 1 (.add32 .r2 (.imm 5))))
+      ((.r1 ↦ᵣ vOld1) ** (.r2 ↦ᵣ vOld2))
+      ((.r1 ↦ᵣ toU64 42) ** (.r2 ↦ᵣ wrapAdd32 vOld2 (toU64 5))) := by
+  sl_block_auto
+
+example (vOld : Nat) :
+    cuTripleWithin 2 0 2
+      ((CodeReq.singleton 0 (.neg64 .r1)).union
+       (CodeReq.singleton 1 (.neg32 .r1)))
+      (.r1 ↦ᵣ vOld)
+      (.r1 ↦ᵣ wrapNeg32 (wrapNeg vOld)) := by
+  sl_block_auto
+
+example (vOld : Nat) :
+    cuTripleWithin 2 0 2
+      ((CodeReq.singleton 0 (.mov32 .r1 (.imm 100))).union
+       (CodeReq.singleton 1 (.mul32 .r1 (.imm 3))))
+      (.r1 ↦ᵣ vOld)
+      (.r1 ↦ᵣ wrapMul32 (toU64 100 % U32_MODULUS) (toU64 3)) := by
+  sl_block_auto
+

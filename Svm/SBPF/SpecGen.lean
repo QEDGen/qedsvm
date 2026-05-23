@@ -27,10 +27,22 @@
       becomes (e.g.) `srcLam < 2 ^ 64` — the same hypothesis the user
       would pass manually.
 
-  Dispatch is hand-coded per Insn ctor (`Svm/SBPF/SpecGen.lean::mkSpec`)
-  for the spec families currently used in `Macros.lean`:
-  ALU imm + reg families (mov / add / sub / mul / and / or / xor /
-  lsh / rsh / arsh, both 64-bit), `ldx` (4 widths), `stx` (4 widths).
+  Dispatch is hand-coded per Insn ctor (`Svm/SBPF/SpecGen.lean::mkSpec`).
+  Covered families:
+  - 64-bit ALU imm + reg (mov / add / sub / mul / and / or / xor /
+    lsh / rsh / arsh), `neg64`
+  - 32-bit ALU imm + reg (same op set, result zero-extended), `neg32`
+  - `lddw`, `ldx` (4 widths), `stx` (4 widths)
+
+  Not covered:
+  - `div` / `mod` (64- and 32-bit): specs carry a `divisor ≠ 0` side
+    condition that the current `aluSpec` helper doesn't supply.
+    Use `sl_block_iter` with a manual `have h := div64_imm_spec ...`.
+  - Conditional jumps, `ja`, `exit`: non-linear; routed through
+    `sl_branch` (the conditional-jump tactic) instead.
+  - `call_local` / `callx`: call-stack triples pending a PartialState
+    extension to track the call stack.
+
   Adding a new family is a single case in `mkSpec`.
 
   Future: replace the hand-dispatch with a `@[spec_gen]` attribute that
@@ -141,6 +153,23 @@ private def ldxSpec
   | _ =>
     throwError m!"SpecGen: unknown Width ctor in {w}"
 
+/-- 1-register negation (`.neg64 dst` / `.neg32 dst`). No Src arg —
+    just `dst` plus the standard `dst ≠ .r10` side condition. -/
+private def negSpec (pcLit dst : Expr) (specName : Name) : MetaM SpecApp := do
+  let hne ← mkNeqR10 dst
+  let vOld ← mkNatMVar
+  let app ← mkAppM specName #[dst, vOld, pcLit, hne]
+  return { app, sideGoals := [] }
+
+/-- LDDW (`.lddw dst imm`). Two ctor args (`dst : Reg`, `imm : Int`) —
+    not wrapped in a Src ctor. Spec signature mirrors `mov64_imm_spec`
+    minus the `.imm` unwrap. -/
+private def lddwSpec (pcLit dst imm : Expr) : MetaM SpecApp := do
+  let hne ← mkNeqR10 dst
+  let vOld ← mkNatMVar
+  let app ← mkAppM ``Svm.SBPF.lddw_spec #[dst, imm, vOld, pcLit, hne]
+  return { app, sideGoals := [] }
+
 /-- STX. Pattern: `.stx width baseReg off valReg`. No side conds. -/
 private def stxSpec
     (pcLit w baseReg off valReg : Expr) :
@@ -202,6 +231,48 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
   | ``Svm.SBPF.Insn.arsh64 =>
     aluSpec pcLit args[0]! args[1]!
       ``Svm.SBPF.arsh64_imm_spec ``Svm.SBPF.arsh64_reg_spec
+  | ``Svm.SBPF.Insn.neg64  =>
+    negSpec pcLit args[0]! ``Svm.SBPF.neg64_spec
+  -- div/mod (64- and 32-bit, imm + reg) intentionally NOT dispatched
+  -- here: their specs carry an `hnz : divisor ≠ 0` side condition that
+  -- the current `aluSpec` helper doesn't supply. Use `sl_block_iter`
+  -- with a manual `have h := div64_imm_spec ... hnz` for now.
+  -- 32-bit ALU (result zero-extended; spec signatures identical to 64-bit).
+  | ``Svm.SBPF.Insn.mov32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.mov32_imm_spec ``Svm.SBPF.mov32_reg_spec
+  | ``Svm.SBPF.Insn.add32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.add32_imm_spec ``Svm.SBPF.add32_reg_spec
+  | ``Svm.SBPF.Insn.sub32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.sub32_imm_spec ``Svm.SBPF.sub32_reg_spec
+  | ``Svm.SBPF.Insn.mul32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.mul32_imm_spec ``Svm.SBPF.mul32_reg_spec
+  | ``Svm.SBPF.Insn.and32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.and32_imm_spec ``Svm.SBPF.and32_reg_spec
+  | ``Svm.SBPF.Insn.or32   =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.or32_imm_spec ``Svm.SBPF.or32_reg_spec
+  | ``Svm.SBPF.Insn.xor32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.xor32_imm_spec ``Svm.SBPF.xor32_reg_spec
+  | ``Svm.SBPF.Insn.lsh32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.lsh32_imm_spec ``Svm.SBPF.lsh32_reg_spec
+  | ``Svm.SBPF.Insn.rsh32  =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.rsh32_imm_spec ``Svm.SBPF.rsh32_reg_spec
+  | ``Svm.SBPF.Insn.arsh32 =>
+    aluSpec pcLit args[0]! args[1]!
+      ``Svm.SBPF.arsh32_imm_spec ``Svm.SBPF.arsh32_reg_spec
+  | ``Svm.SBPF.Insn.neg32  =>
+    negSpec pcLit args[0]! ``Svm.SBPF.neg32_spec
+  -- Load 64-bit immediate (not wrapped in `Src`).
+  | ``Svm.SBPF.Insn.lddw =>
+    lddwSpec pcLit args[0]! args[1]!
   | ``Svm.SBPF.Insn.ldx =>
     ldxSpec pcLit args[0]! args[1]! args[2]! args[3]!
   | ``Svm.SBPF.Insn.stx =>

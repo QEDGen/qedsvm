@@ -4419,6 +4419,32 @@ theorem ja_spec (target pc : Nat) :
       rw [hR_no_pc] at hvp
       nomatch hvp
 
+/-! ## Indirect call: `callx`
+
+`.callx reg` is sBPF's indirect call. Semantically (per `Execute.lean`)
+it is a tail-call / panic-path-style jump: PC moves to `regs[reg]`, no
+`callStack` push, no register writes. The Hoare triple is the closest
+analogue to `ja_spec` but the exit PC is value-dependent (`vReg` rather
+than a literal `target`). The caller must already know the value held
+in `reg` at entry to compose this spec into a chain — that's typical
+for verifying a decompiled program where you've reasoned about `reg`
+upstream.
+
+Built by specializing `cuTripleWithin_1reg_cjump` with `cond := True`
+and `target := vReg` — the `if True then vReg else pc + 1` reduces to
+`vReg`, giving the unconditional value-dependent jump shape we want. -/
+
+/-- `callx reg`: indirect call. PC moves from `pc` to `regs[reg]` in
+    one step. The pre/post both retain `reg ↦ᵣ vReg` since `reg` is
+    only read. -/
+theorem callx_spec (reg : Reg) (vReg pc : Nat) :
+    cuTripleWithin 1 pc vReg
+      (CodeReq.singleton pc (.callx reg))
+      (reg ↦ᵣ vReg) (reg ↦ᵣ vReg) := by
+  have h := cuTripleWithin_1reg_cjump reg vReg pc vReg (.callx reg) True
+    (fun s hreg => by simp only [step, if_true]; rw [hreg])
+  simpa using h
+
 /-! ## Syscall: `sol_create_program_address` (n=0 seed case)
 
 The degenerate (zero-seed) form of the PDA syscall: the caller passes
