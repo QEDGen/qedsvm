@@ -32,25 +32,32 @@ The methodology — separation logic over machine state, bounded Hoare triples, 
 | Phase G — ELF loader + arbitrary program execution | ✅ shipped | Tier-1 #1 (region bounds — `RegionTable` in `Memory.lean` traps OOR accesses with `ERR_ACCESS_VIOLATION`), Tier-1 #2 (native programs aligned with Firedancer: System + ComputeBudget + BPF Loader v3 Upgradeable + ed25519/secp256k1/secp256r1 precompiles), Tier-1 #2b (precompile dispatch), all Tier-2 ship-blockers (rent enforcement, log-data base64, `sol_log_compute_units_` agave-parity, top-level CU limit). `executeFnCpi ≡ executeFn` bridge for non-CPI programs landed. **Real CPI shipped**: program registry + recursive `executeFn`, ABI deserialization (Rust + C), account write-back, log/returnData propagation, proportional CU split, account aliasing detection, depth-2+ recursion, ixData propagation to callee, **PDA signer-seed promotion** (r4/r5 → `create_program_address(seeds, callerPid)` → promote matching AccountInfo to `is_signer=true`). **R_BPF_64_RELATIVE** applied to `.text` (lddw imm bump via `applyRelRelativeText`) and `.data.rel.ro` (pointer field shifts via `applyDataRelocations`). **Per-byte hash CU** (`hashSliceCost` in `Machine.lean`: `max(10, len/2)` per slice + 85 base) for sha256/sha512/keccak256/blake3, matching agave. **Mem refactor (2026-05-20)**: `Mem` is now a struct with a `Std.HashMap` overlay; diff_mollusk dropped from ~50 min → ~3 s (~1000×). PT_LOAD-only ELFs verified out of scope (agave rejects them) |
 | Phase H — Crypto syscalls | ✅ mostly shipped | All 12 crypto syscalls (sha256/sha512/keccak256/blake3, secp256k1, curve25519, BLS12-381, alt_bn128, big_mod_exp, poseidon, PDA) shipped via Rust FFI bridge to the same crates agave uses — explicit trust statements per syscall. SHA-256 + Murmur3 are pure-Lean and kernel-reducible. Pure-Lean ports of the remaining syscalls are a long-horizon followup, not on the production critical path |
 
-**Headline numbers**: 155 Lean jobs green, ~58 Rust tests green (25 diff-mollusk + 5 precompile + 11 svm_api + 17 other).
+**Headline numbers**: 158 Lean jobs green, ~58 Rust tests green (25 diff-mollusk + 5 precompile + 11 svm_api + 17 other).
 
 **Rough completeness, weighted by impact, not LOC**:
 
 *Production critical path* — two deliverables:
 - **Reference interpreter** (Phases 0, F, G, H): Phase 0 done, F ~82%, G ~100% (correctness + throughput), H ~90%. Aggregate: **~95% shipped**. Remaining: Phase F broader fixture coverage + fuzz harness; long-horizon pure-Lean crypto ports (not gating).
-- **Spec layer** (Phases A, B, C): A/B/C all shipped on the ALU + memory + branch surface. Coverage: 110 per-instruction Hoare triples in `InstructionSpecs.lean` (full 64- and 32-bit ALU × {imm, reg}; full conditional jumps × {imm, reg}; `ja`, `lddw`, `callx`; `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`; div/mod; **11 syscall specs** — both PDA variants + 9 r0-only-write syscalls [all 5 `sol_log_*`, `sol_get_stack_height`, `sol_set_return_data`, `sol_get_epoch_stake`, `sol_get_processed_sibling_instruction`, `sol_get_sysvar`, `.unknown`] via the `cuTripleWithin_syscall_writes_r0_only` helper). Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) live in `SLTactic.lean`; `sl_block_auto` (`SpecGen.lean`) dispatches full 64-bit ALU + 32-bit ALU + `lddw` + `ldx`/`stx`. Aggregate: **~90% shipped**. Remaining:
-  - Terminating-instruction triples for `exit` / `abort` / `sol_panic_` (need a separate triple type — `cuTripleWithin` requires `exitCode = none` post)
-  - Per-instruction triples for `call` / `call_local` (need `callStack` in `PartialState`)
-  - Memory-writing syscall triples (sysvar zero-fill, `sol_get_return_data`, `sol_memcpy`/`memset`/`memcmp`, crypto — each ~400-line `sol_create_program_address`-style proof)
+- **Spec layer** (Phases A, B, C): A/B/C all shipped on the ALU + memory + branch surface. Coverage: 127 per-instruction Hoare triples in `InstructionSpecs.lean` (full 64- and 32-bit ALU × {imm, reg}; full conditional jumps × {imm, reg}; `ja`, `lddw`, `callx`; `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`; div/mod; **20+ syscall specs** — both PDA variants, the 10 r0-only-write syscalls (log family + sysvar getters + `.unknown`) via `cuTripleWithin_syscall_writes_r0_only`, the mem-op family (`sol_memset`, `sol_memcpy`, `sol_memmove`, `sol_memcmp`), the sysvar-getter family (`sol_get_clock_sysvar`, `sol_get_epoch_rewards_sysvar`, `sol_get_rent_sysvar`, `sol_get_epoch_schedule_sysvar`, `sol_get_fees_sysvar`, `sol_get_last_restart_slot`), `sol_remaining_compute_units`, 3 terminating triples (`exit` / `abort` / `sol_panic_` via `cuTripleAbortsWithin`), and 6 crypto error-path triples). Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) live in `SLTactic.lean`; `sl_block_auto` (`SpecGen.lean`) dispatches full 64-bit ALU + 32-bit ALU + `lddw` + `ldx`/`stx`. Aggregate: **~92% shipped**. Remaining:
+  - Per-instruction triples for `call` / `call_local` (need `callStack` in `PartialState` — see deferred lift #3)
+  - Crypto syscall **success-path** triples (each ~400-line `sol_create_program_address`-style proof — the trust statements + error-path triples landed at commit `9948b3a`)
+  - Refined `sol_set_return_data` / `sol_get_return_data` exposing returnData round-trip (need `returnData` SL atom — see deferred lift #2)
   - Store-immediate triples at non-byte widths (need new ~150-line helper lemmas per width)
-  - **17 read/write-coherence axioms in `Memory.lean`** (byte-level memory model refactor)
 
 *Off the production critical path* — verified-macro authoring track:
 - Phase D (~85%), Phase E (~20%). Useful for writing programs directly in Lean; not required to run or verify compiled Solana programs.
 
 **Tooling-track ideas** live in [`docs/improvement-plan.md`](docs/improvement-plan.md) — orthogonal to the phase plan above.
 
-**Deferred architectural lifts** (SL track, post-mem-op-family closeout) — terminating triples, returnData SL atom, callStack in PartialState, memory-coherence axiom cleanup, crypto family trust-statement batch. Design sketches and priority order in [`docs/deferred-arch-lifts.md`](docs/deferred-arch-lifts.md). None are production blockers.
+**Deferred architectural lifts** (SL track, post-mem-op-family closeout). Design sketches and priority order in [`docs/deferred-arch-lifts.md`](docs/deferred-arch-lifts.md). Status as of 2026-05-23:
+- ✅ #1 terminating triples (`cuTripleAbortsWithin` + `exit`/`abort`/`sol_panic_`) — `96c4df9`
+- ✅ #4 memory-coherence axiom cleanup (13 axioms → theorems) — `2b86be5`
+- ✅ #5 crypto trust statements (21 axioms in `Svm/SBPF/CryptoTrust.lean` + 6 error-path triples; success-path triples deferred) — `9948b3a`
+- ❌ #2 returnData SL atom — deferred. 2026-05-23 finding: propagation cost is ~1500 LoC (2-3× the doc's estimate), since extending `PartialState` breaks every `Disjoint` / `CompatibleWith` destructure and constructor across the 127 specs.
+- ❌ #3 callStack in PartialState — deferred. Same propagation cost as #2.
+- **Prereq option ("lift #0")**: one-time redesign of `Disjoint` / `CompatibleWith` from n-tuple `Prop` to field-wise `ResourceSet`-style, making future field additions O(1) instead of O(all specs). Pays for itself across #2 AND #3.
+
+None are production blockers.
 
 ## Shipped
 
