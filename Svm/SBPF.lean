@@ -24,6 +24,7 @@ import Svm.Syscalls.Poseidon
 import Svm.Syscalls.Bls12_381
 import Svm.Syscalls.AltBn128
 import Svm.Syscalls.BigModExp
+import Svm.SBPF.CryptoTrust
 import Svm.SBPF.SyscallHash
 import Svm.SBPF.Decode
 import Svm.SBPF.Elf
