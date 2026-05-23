@@ -8679,6 +8679,7 @@ def memcmpResultU32 (p1 p2 : ByteArray) (n : Nat) : Nat :=
     ByteArray-based `memcmpFold`. Proved by induction on `n` using
     the fact that `(UInt8.toNat _) < 256`, so the `% 256` in the
     `s.mem`-side cancels. -/
+@[simp]
 private theorem execCmp_fold_eq (s : State) (p1V p2V n : Nat)
     (p1Bytes p2Bytes : ByteArray)
     (hp1 : ∀ i, i < n → s.mem (p1V + i) = (p1Bytes.get! i).toNat)
@@ -8706,6 +8707,1025 @@ private theorem execCmp_fold_eq (s : State) (p1V p2V n : Nat)
     have h1lt : (p1Bytes.get! k).toNat < 256 := (p1Bytes.get! k).toNat_lt
     have h2lt : (p2Bytes.get! k).toNat < 256 := (p2Bytes.get! k).toNat_lt
     rw [hpv1, hpv2, Nat.mod_eq_of_lt h1lt, Nat.mod_eq_of_lt h2lt]
+
+/-- `sol_memcmp(p1, p2, n, out)` Hoare triple. Reads `n = r3` bytes
+    at `[r1, r1+n)` and `[r2, r2+n)` (both preserved), writes the u32
+    comparison result `memcmpResultU32 p1Bytes p2Bytes r3V` to `*r4`.
+    Sets `r0 := 0`. Separation logic implies the three memory regions
+    (p1 at r1V, p2 at r2V, output u32 at r4V) are pairwise disjoint. -/
+theorem call_sol_memcmp_spec
+    (r0Old r1V r2V r3V r4V outOld pc : Nat)
+    (p1Bytes p2Bytes : ByteArray)
+    (hsz1 : p1Bytes.size = r3V) (hsz2 : p2Bytes.size = r3V) :
+    cuTripleWithin 1 pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_memcmp))
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V)
+       ** (r1V ↦Bytes p1Bytes) ** (r2V ↦Bytes p2Bytes) ** (r4V ↦U32 outOld))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V)
+       ** (r1V ↦Bytes p1Bytes) ** (r2V ↦Bytes p2Bytes)
+       ** (r4V ↦U32 (memcmpResultU32 p1Bytes p2Bytes r3V))) := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  let cmpResult := memcmpResultU32 p1Bytes p2Bytes r3V
+  -- ==== Phase 1: 8-atom destructure. ====
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
+  obtain ⟨h_r1, h_T2, hd_r1_T2, hu_r1_T2, h_r1_pred, h_T2_sat⟩ := h_T1_sat
+  obtain ⟨h_r2, h_T3, hd_r2_T3, hu_r2_T3, h_r2_pred, h_T3_sat⟩ := h_T2_sat
+  obtain ⟨h_r3, h_T4, hd_r3_T4, hu_r3_T4, h_r3_pred, h_T4_sat⟩ := h_T3_sat
+  obtain ⟨h_r4, h_T5, hd_r4_T5, hu_r4_T5, h_r4_pred, h_T5_sat⟩ := h_T4_sat
+  obtain ⟨h_p1, h_T6, hd_p1_T6, hu_p1_T6, h_p1_pred, h_T6_sat⟩ := h_T5_sat
+  obtain ⟨h_p2, h_out, hd_p2_out, hu_p2_out, h_p2_pred, h_out_pred⟩ := h_T6_sat
+  rw [h_r0_pred] at hu_r0_T1 hd_r0_T1
+  rw [h_r1_pred] at hu_r1_T2 hd_r1_T2
+  rw [h_r2_pred] at hu_r2_T3 hd_r2_T3
+  rw [h_r3_pred] at hu_r3_T4 hd_r3_T4
+  rw [h_r4_pred] at hu_r4_T5 hd_r4_T5
+  rw [h_p1_pred] at hu_p1_T6 hd_p1_T6
+  rw [h_p2_pred] at hu_p2_out hd_p2_out
+  rw [h_out_pred] at hu_p2_out hd_p2_out
+  clear h_r0_pred h_r1_pred h_r2_pred h_r3_pred h_r4_pred h_p1_pred h_p2_pred h_out_pred
+        h_r0 h_r1 h_r2 h_r3 h_r4 h_p1 h_p2 h_out
+  obtain ⟨hcr_regs, hcm_mem, _⟩ := hcompat
+  -- ==== Phase 2: reg climbs (r4 through r0) ====
+  have h_T4_regs_r4 : h_T4.regs .r4 = some r4V := by
+    rw [← hu_r4_T5]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_T3_regs_r3 : h_T3.regs .r3 = some r3V := by
+    rw [← hu_r3_T4]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_T3_regs_r4 : h_T3.regs .r4 = some r4V := by
+    rw [← hu_r3_T4,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r4 ≠ Reg.r3))]
+    exact h_T4_regs_r4
+  have h_T2_regs_r2 : h_T2.regs .r2 = some r2V := by
+    rw [← hu_r2_T3]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_T2_regs_r3 : h_T2.regs .r3 = some r3V := by
+    rw [← hu_r2_T3,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r3 ≠ Reg.r2))]
+    exact h_T3_regs_r3
+  have h_T2_regs_r4 : h_T2.regs .r4 = some r4V := by
+    rw [← hu_r2_T3,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r4 ≠ Reg.r2))]
+    exact h_T3_regs_r4
+  have h_T1_regs_r1 : h_T1.regs .r1 = some r1V := by
+    rw [← hu_r1_T2]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_T1_regs_r2 : h_T1.regs .r2 = some r2V := by
+    rw [← hu_r1_T2,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r2 ≠ Reg.r1))]
+    exact h_T2_regs_r2
+  have h_T1_regs_r3 : h_T1.regs .r3 = some r3V := by
+    rw [← hu_r1_T2,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r3 ≠ Reg.r1))]
+    exact h_T2_regs_r3
+  have h_T1_regs_r4 : h_T1.regs .r4 = some r4V := by
+    rw [← hu_r1_T2,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r4 ≠ Reg.r1))]
+    exact h_T2_regs_r4
+  have h_P_regs_r0 : h_P.regs .r0 = some r0Old := by
+    rw [← hu_r0_T1]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_regs_r1 : h_P.regs .r1 = some r1V := by
+    rw [← hu_r0_T1,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r1 ≠ Reg.r0))]
+    exact h_T1_regs_r1
+  have h_P_regs_r2 : h_P.regs .r2 = some r2V := by
+    rw [← hu_r0_T1,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r2 ≠ Reg.r0))]
+    exact h_T1_regs_r2
+  have h_P_regs_r3 : h_P.regs .r3 = some r3V := by
+    rw [← hu_r0_T1,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r3 ≠ Reg.r0))]
+    exact h_T1_regs_r3
+  have h_P_regs_r4 : h_P.regs .r4 = some r4V := by
+    rw [← hu_r0_T1,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r4 ≠ Reg.r0))]
+    exact h_T1_regs_r4
+  have hp_regs_r0 : hp.regs .r0 = some r0Old := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r0
+  have hp_regs_r1 : hp.regs .r1 = some r1V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r1
+  have hp_regs_r2 : hp.regs .r2 = some r2V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r2
+  have hp_regs_r3 : hp.regs .r3 = some r3V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r3
+  have hp_regs_r4 : hp.regs .r4 = some r4V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r4
+  have hs_regs_r0 : s.regs.get .r0 = r0Old := hcr_regs .r0 r0Old hp_regs_r0
+  have hs_regs_r1 : s.regs.get .r1 = r1V := hcr_regs .r1 r1V hp_regs_r1
+  have hs_regs_r2 : s.regs.get .r2 = r2V := hcr_regs .r2 r2V hp_regs_r2
+  have hs_regs_r3 : s.regs.get .r3 = r3V := hcr_regs .r3 r3V hp_regs_r3
+  have hs_regs_r4 : s.regs.get .r4 = r4V := hcr_regs .r4 r4V hp_regs_r4
+  have hs_r1_field : s.regs.r1 = r1V := hs_regs_r1
+  have hs_r2_field : s.regs.r2 = r2V := hs_regs_r2
+  have hs_r3_field : s.regs.r3 = r3V := hs_regs_r3
+  have hs_r4_field : s.regs.r4 = r4V := hs_regs_r4
+  -- ==== Phase 2 (cont'd): mem facts for p1, p2, out ====
+  -- p1 at r1V (sits at h_T5 layer).
+  have h_T5_mem_p1 (i : Nat) (hi : i < r3V) :
+      h_T5.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [← hu_p1_T6]
+    have hsz_lt : i < p1Bytes.size := by rw [hsz1]; exact hi
+    exact PartialState.union_mem_of_left_some
+      (PartialState.singletonMemBytes_mem_at r1V p1Bytes i hsz_lt)
+  have h_T4_mem_p1 (i : Nat) (hi : i < r3V) :
+      h_T4.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [← hu_r4_T5,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T5_mem_p1 i hi
+  have h_T3_mem_p1 (i : Nat) (hi : i < r3V) :
+      h_T3.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [← hu_r3_T4,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T4_mem_p1 i hi
+  have h_T2_mem_p1 (i : Nat) (hi : i < r3V) :
+      h_T2.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [← hu_r2_T3,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T3_mem_p1 i hi
+  have h_T1_mem_p1 (i : Nat) (hi : i < r3V) :
+      h_T1.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [← hu_r1_T2,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T2_mem_p1 i hi
+  have h_P_mem_p1 (i : Nat) (hi : i < r3V) :
+      h_P.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [← hu_r0_T1,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T1_mem_p1 i hi
+  -- p2 at r2V (sits at h_T6 layer). Need h_p1.mem (r2V + j) = none first.
+  have h_p1_no_p2 (j : Nat) (hj : j < r3V) :
+      (PartialState.singletonMemBytes r1V p1Bytes).mem (r2V + j) = none := by
+    -- T6 owns (r2V + j) via p2 atom, so by hd_p1_T6, p1 doesn't.
+    obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+    -- T6.mem (r2V + j) = some (p2Bytes.get! j).toNat
+    have hsz2_lt : j < p2Bytes.size := by rw [hsz2]; exact hj
+    have h_T6_some : h_T6.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+      rw [← hu_p2_out]
+      exact PartialState.union_mem_of_left_some
+        (PartialState.singletonMemBytes_mem_at r2V p2Bytes j hsz2_lt)
+    rcases hd_mem (r2V + j) with hl | hr
+    · exact hl
+    · rw [h_T6_some] at hr; nomatch hr
+  have h_T5_mem_p2 (j : Nat) (hj : j < r3V) :
+      h_T5.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [← hu_p1_T6,
+        PartialState.union_mem_of_left_none (h_p1_no_p2 j hj),
+        ← hu_p2_out]
+    have hsz_lt : j < p2Bytes.size := by rw [hsz2]; exact hj
+    exact PartialState.union_mem_of_left_some
+      (PartialState.singletonMemBytes_mem_at r2V p2Bytes j hsz_lt)
+  have h_T4_mem_p2 (j : Nat) (hj : j < r3V) :
+      h_T4.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [← hu_r4_T5,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T5_mem_p2 j hj
+  have h_T3_mem_p2 (j : Nat) (hj : j < r3V) :
+      h_T3.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [← hu_r3_T4,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T4_mem_p2 j hj
+  have h_T2_mem_p2 (j : Nat) (hj : j < r3V) :
+      h_T2.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [← hu_r2_T3,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T3_mem_p2 j hj
+  have h_T1_mem_p2 (j : Nat) (hj : j < r3V) :
+      h_T1.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [← hu_r1_T2,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T2_mem_p2 j hj
+  have h_P_mem_p2 (j : Nat) (hj : j < r3V) :
+      h_P.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [← hu_r0_T1,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T1_mem_p2 j hj
+  -- Convert h_P.mem facts to s.mem facts via hcm_mem
+  have hp_mem_p1 (i : Nat) (hi : i < r3V) :
+      hp.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [← hu_PR]; exact PartialState.union_mem_of_left_some (h_P_mem_p1 i hi)
+  have hp_mem_p2 (j : Nat) (hj : j < r3V) :
+      hp.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [← hu_PR]; exact PartialState.union_mem_of_left_some (h_P_mem_p2 j hj)
+  have hs_mem_p1 (i : Nat) (hi : i < r3V) :
+      s.mem (r1V + i) = (p1Bytes.get! i).toNat := hcm_mem _ _ (hp_mem_p1 i hi)
+  have hs_mem_p2 (j : Nat) (hj : j < r3V) :
+      s.mem (r2V + j) = (p2Bytes.get! j).toNat := hcm_mem _ _ (hp_mem_p2 j hj)
+  -- ==== Phase 3: fetch + step projections ====
+  have hfetch : fetch s.pc = some (.call .sol_memcmp) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = step (.call .sol_memcmp) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  -- Compute (step .sol_memcmp s) symbolically using execCmp_fold_eq.
+  -- The mem' is writeU32 s.mem r4V cmpResult; the regs.r0 := 0.
+  have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
+    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp]
+  have hexec_exit : (executeFn fetch s 1).exitCode = none := by
+    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp]; exact hex
+  have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
+    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp]
+  -- The mem after step equals writeU32 s.mem s.regs.r4 cmpResult, where cmpResult
+  -- is the i32-encoded comparison value derived from execCmp's fold. The fold
+  -- equality lemma (execCmp_fold_eq) converts the s.mem-based fold to memcmpFold
+  -- under coherence; this gives us memcmpResultU32 at the end.
+  have hexec_mem_eq :
+      (executeFn fetch s 1).mem =
+        Memory.writeU32 s.mem r4V cmpResult := by
+    rw [hstep_eq]
+    simp only [step, execSyscall, MemOps.execCmp]
+    -- Convert all s.regs.{r1, r2, r3, r4} → fixed parameter values
+    rw [hs_r4_field, hs_r1_field, hs_r2_field, hs_r3_field]
+    show Memory.writeU32 s.mem r4V _ = Memory.writeU32 s.mem r4V cmpResult
+    congr 1
+    -- Goal: <s.mem-based cmpU32> = cmpResult
+    show _ = memcmpResultU32 p1Bytes p2Bytes r3V
+    unfold memcmpResultU32
+    rw [execCmp_fold_eq s r1V r2V r3V p1Bytes p2Bytes hs_mem_p1 hs_mem_p2]
+  -- Per-byte mem values after the U32 write at r4V (4 LE bytes of cmpResult).
+  have hexec_mem_u32_0 : (executeFn fetch s 1).mem r4V = cmpResult % 256 := by
+    rw [hexec_mem_eq]
+    unfold Memory.writeU32; simp
+  have hexec_mem_u32_1 :
+      (executeFn fetch s 1).mem (r4V + 1) = cmpResult / 0x100 % 256 := by
+    rw [hexec_mem_eq]
+    unfold Memory.writeU32
+    simp [show r4V + 1 ≠ r4V from by omega]
+  have hexec_mem_u32_2 :
+      (executeFn fetch s 1).mem (r4V + 2) = cmpResult / 0x10000 % 256 := by
+    rw [hexec_mem_eq]
+    unfold Memory.writeU32
+    simp [show r4V + 2 ≠ r4V from by omega, show r4V + 2 ≠ r4V + 1 from by omega]
+  have hexec_mem_u32_3 :
+      (executeFn fetch s 1).mem (r4V + 3) = cmpResult / 0x1000000 % 256 := by
+    rw [hexec_mem_eq]
+    unfold Memory.writeU32
+    simp [show r4V + 3 ≠ r4V from by omega, show r4V + 3 ≠ r4V + 1 from by omega,
+          show r4V + 3 ≠ r4V + 2 from by omega]
+  -- Outside writeU32 range, mem is unchanged.
+  have hexec_mem_outside_u32 (a : Nat) (h : a < r4V ∨ a ≥ r4V + 4) :
+      (executeFn fetch s 1).mem a = s.mem a := by
+    rw [hexec_mem_eq]
+    unfold Memory.writeU32
+    simp only [Memory.Mem.read_put]
+    have h0 : a ≠ r4V := by rcases h with hl | hr <;> omega
+    have h1 : a ≠ r4V + 1 := by rcases h with hl | hr <;> omega
+    have h2 : a ≠ r4V + 2 := by rcases h with hl | hr <;> omega
+    have h3 : a ≠ r4V + 3 := by rcases h with hl | hr <;> omega
+    rw [if_neg h0, if_neg h1, if_neg h2, if_neg h3]
+  -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
+  obtain ⟨hd_PR_regs, hd_PR_mem, hd_PR_pc⟩ := hd_PR
+  have h_R_no_r0 : h_R.regs .r0 = none := by
+    rcases hd_PR_regs .r0 with hl | hr
+    · rw [h_P_regs_r0] at hl; nomatch hl
+    · exact hr
+  have h_R_no_r1 : h_R.regs .r1 = none := by
+    rcases hd_PR_regs .r1 with hl | hr
+    · rw [h_P_regs_r1] at hl; nomatch hl
+    · exact hr
+  have h_R_no_r2 : h_R.regs .r2 = none := by
+    rcases hd_PR_regs .r2 with hl | hr
+    · rw [h_P_regs_r2] at hl; nomatch hl
+    · exact hr
+  have h_R_no_r3 : h_R.regs .r3 = none := by
+    rcases hd_PR_regs .r3 with hl | hr
+    · rw [h_P_regs_r3] at hl; nomatch hl
+    · exact hr
+  have h_R_no_r4 : h_R.regs .r4 = none := by
+    rcases hd_PR_regs .r4 with hl | hr
+    · rw [h_P_regs_r4] at hl; nomatch hl
+    · exact hr
+  have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
+  have h_R_no_mem_p1 (i : Nat) (hi : i < r3V) : h_R.mem (r1V + i) = none := by
+    rcases hd_PR_mem (r1V + i) with hl | hr
+    · rw [h_P_mem_p1 i hi] at hl; nomatch hl
+    · exact hr
+  have h_R_no_mem_p2 (j : Nat) (hj : j < r3V) : h_R.mem (r2V + j) = none := by
+    rcases hd_PR_mem (r2V + j) with hl | hr
+    · rw [h_P_mem_p2 j hj] at hl; nomatch hl
+    · exact hr
+  -- For r4V's U32 region: h_P.mem (r4V + k) = some <byte k of outOld>
+  -- (derived via h_T6 → h_out atom).
+  have h_T6_mem_out (k : Nat) (hk : k < 4) :
+      h_T6.mem (r4V + k) = (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) := by
+    have h_out_some : ∃ v, (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) = some v := by
+      match k, hk with
+      | 0, _ => exact ⟨_, by rw [show r4V + 0 = r4V from rfl]; exact PartialState.singletonMemU32_mem_0 _ _⟩
+      | 1, _ => exact ⟨_, PartialState.singletonMemU32_mem_1 _ _⟩
+      | 2, _ => exact ⟨_, PartialState.singletonMemU32_mem_2 _ _⟩
+      | 3, _ => exact ⟨_, PartialState.singletonMemU32_mem_3 _ _⟩
+    have h_p2_none : (PartialState.singletonMemBytes r2V p2Bytes).mem (r4V + k) = none := by
+      obtain ⟨_, hd_mem, _⟩ := hd_p2_out
+      obtain ⟨v, hv⟩ := h_out_some
+      rcases hd_mem (r4V + k) with hl | hr
+      · exact hl
+      · rw [hv] at hr; nomatch hr
+    rw [← hu_p2_out, PartialState.union_mem_of_left_none h_p2_none]
+  have h_T5_mem_out (k : Nat) (hk : k < 4) :
+      h_T5.mem (r4V + k) = (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) := by
+    have h_T6_some : h_T6.mem (r4V + k) ≠ none := by
+      rw [h_T6_mem_out k hk]
+      match k, hk with
+      | 0, _ => rw [show r4V + 0 = r4V from rfl, PartialState.singletonMemU32_mem_0]; exact Option.some_ne_none _
+      | 1, _ => rw [PartialState.singletonMemU32_mem_1]; exact Option.some_ne_none _
+      | 2, _ => rw [PartialState.singletonMemU32_mem_2]; exact Option.some_ne_none _
+      | 3, _ => rw [PartialState.singletonMemU32_mem_3]; exact Option.some_ne_none _
+    have h_p1_none : (PartialState.singletonMemBytes r1V p1Bytes).mem (r4V + k) = none := by
+      obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+      rcases hd_mem (r4V + k) with hl | hr
+      · exact hl
+      · exact absurd hr h_T6_some
+    rw [← hu_p1_T6, PartialState.union_mem_of_left_none h_p1_none]
+    exact h_T6_mem_out k hk
+  have h_T4_mem_out (k : Nat) (hk : k < 4) :
+      h_T4.mem (r4V + k) = (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) := by
+    rw [← hu_r4_T5,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T5_mem_out k hk
+  have h_T3_mem_out (k : Nat) (hk : k < 4) :
+      h_T3.mem (r4V + k) = (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) := by
+    rw [← hu_r3_T4,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T4_mem_out k hk
+  have h_T2_mem_out (k : Nat) (hk : k < 4) :
+      h_T2.mem (r4V + k) = (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) := by
+    rw [← hu_r2_T3,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T3_mem_out k hk
+  have h_T1_mem_out (k : Nat) (hk : k < 4) :
+      h_T1.mem (r4V + k) = (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) := by
+    rw [← hu_r1_T2,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T2_mem_out k hk
+  have h_P_mem_out (k : Nat) (hk : k < 4) :
+      h_P.mem (r4V + k) = (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) := by
+    rw [← hu_r0_T1,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact h_T1_mem_out k hk
+  have h_R_no_mem_out (k : Nat) (hk : k < 4) : h_R.mem (r4V + k) = none := by
+    have h_some : ∃ v, h_P.mem (r4V + k) = some v := by
+      rw [h_P_mem_out k hk]
+      match k, hk with
+      | 0, _ => exact ⟨_, by rw [show r4V + 0 = r4V from rfl]; exact PartialState.singletonMemU32_mem_0 _ _⟩
+      | 1, _ => exact ⟨_, PartialState.singletonMemU32_mem_1 _ _⟩
+      | 2, _ => exact ⟨_, PartialState.singletonMemU32_mem_2 _ _⟩
+      | 3, _ => exact ⟨_, PartialState.singletonMemU32_mem_3 _ _⟩
+    obtain ⟨v, hv⟩ := h_some
+    rcases hd_PR_mem (r4V + k) with hl | hr
+    · rw [hv] at hl; nomatch hl
+    · exact hr
+  -- ==== Phase 5: build the new post partial state. ====
+  let h_r0_new : PartialState := PartialState.singletonReg .r0 0
+  let h_r1_new : PartialState := PartialState.singletonReg .r1 r1V
+  let h_r2_new : PartialState := PartialState.singletonReg .r2 r2V
+  let h_r3_new : PartialState := PartialState.singletonReg .r3 r3V
+  let h_r4_new : PartialState := PartialState.singletonReg .r4 r4V
+  let h_p1_new : PartialState := PartialState.singletonMemBytes r1V p1Bytes
+  let h_p2_new : PartialState := PartialState.singletonMemBytes r2V p2Bytes
+  let h_out_new : PartialState := PartialState.singletonMemU32 r4V cmpResult
+  let h_T6_new : PartialState := h_p2_new.union h_out_new
+  let h_T5_new : PartialState := h_p1_new.union h_T6_new
+  let h_T4_new : PartialState := h_r4_new.union h_T5_new
+  let h_T3_new : PartialState := h_r3_new.union h_T4_new
+  let h_T2_new : PartialState := h_r2_new.union h_T3_new
+  let h_T1_new : PartialState := h_r1_new.union h_T2_new
+  let h_P_new : PartialState := h_r0_new.union h_T1_new
+  -- Inner disjointness: p2_new ⊥ out_new. Same address ranges as pre.
+  have hd_p2_out_new : h_p2_new.Disjoint h_out_new := by
+    refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
+            fun a => ?_,
+            Or.inl PartialState.singletonMemBytes_pc⟩
+    -- Pointwise mem disjointness derived from hd_p2_out (pre): same ranges since
+    -- p2_new is p2Bytes (same as pre) and out_new is U32 at r4V (same range).
+    obtain ⟨_, hd_pre_mem, _⟩ := hd_p2_out
+    rcases hd_pre_mem a with hl | hr
+    · left; exact hl
+    · right
+      -- (singletonMemU32 r4V outOld).mem a = none → (singletonMemU32 r4V cmpResult).mem a = none
+      -- Both atoms have same range [r4V, r4V+4); none-ness is range-based.
+      by_cases h : r4V ≤ a ∧ a < r4V + 4
+      · exfalso
+        obtain ⟨h1, h2⟩ := h
+        have h_some : ∃ v : Nat, (PartialState.singletonMemU32 r4V outOld).mem a = some v := by
+          rcases Nat.lt_or_ge a (r4V + 1) with hl' | hge'
+          · exact ⟨outOld % 256, by rw [show a = r4V from by omega]; exact PartialState.singletonMemU32_mem_0 _ _⟩
+          rcases Nat.lt_or_ge a (r4V + 2) with hl' | hge'
+          · exact ⟨outOld / 0x100 % 256, by rw [show a = r4V + 1 from by omega]; exact PartialState.singletonMemU32_mem_1 _ _⟩
+          rcases Nat.lt_or_ge a (r4V + 3) with hl' | hge'
+          · exact ⟨outOld / 0x10000 % 256, by rw [show a = r4V + 2 from by omega]; exact PartialState.singletonMemU32_mem_2 _ _⟩
+          · exact ⟨outOld / 0x1000000 % 256, by rw [show a = r4V + 3 from by omega]; exact PartialState.singletonMemU32_mem_3 _ _⟩
+        obtain ⟨v, hv⟩ := h_some
+        rw [hv] at hr; nomatch hr
+      · apply PartialState.singletonMemU32_mem_outside
+        rcases Nat.lt_or_ge a r4V with hl' | hge'
+        · left; exact hl'
+        · right
+          rcases Nat.lt_or_ge a (r4V + 4) with hlt | hge''
+          · exact absurd ⟨hge', hlt⟩ h
+          · exact hge''
+  -- p1_new ⊥ T6_new = p2_new ∪ out_new. Same as pre by analogous range argument.
+  have hd_p1_T6_new : h_p1_new.Disjoint h_T6_new := by
+    refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
+            fun a => ?_, ?_⟩
+    · obtain ⟨_, hd_pre_mem, _⟩ := hd_p1_T6
+      rcases hd_pre_mem a with hl | hr
+      · left; exact hl
+      · right
+        -- T6_pre.mem a = none → T6_new.mem a = none
+        -- T6_pre = p2 ∪ out_pre; T6_new = p2 ∪ out_new (same p2, same out range).
+        -- T6_pre.mem a = none means both p2 and out_pre are none at a.
+        -- T6_new.mem a = union of p2 and out_new. Both atoms same range conditions.
+        show (h_p2_new.union h_out_new).mem a = none
+        -- Reduce T6_pre.mem a = none to "p2.mem a = none ∧ out_pre.mem a = none".
+        have h_p2_none : (PartialState.singletonMemBytes r2V p2Bytes).mem a = none := by
+          rw [← hu_p2_out] at hr
+          have hp2 := PartialState.union_mem_eq_none_iff.mp hr
+          exact hp2.1
+        have h_out_pre_none : (PartialState.singletonMemU32 r4V outOld).mem a = none := by
+          rw [← hu_p2_out] at hr
+          have hp2 := PartialState.union_mem_eq_none_iff.mp hr
+          exact hp2.2
+        rw [PartialState.union_mem_of_left_none h_p2_none]
+        -- Goal: h_out_new.mem a = none. Same range as out_pre.
+        by_cases h : r4V ≤ a ∧ a < r4V + 4
+        · exfalso
+          obtain ⟨h1, h2⟩ := h
+          have h_some : ∃ v : Nat, (PartialState.singletonMemU32 r4V outOld).mem a = some v := by
+            rcases Nat.lt_or_ge a (r4V + 1) with hl' | hge'
+            · exact ⟨outOld % 256, by rw [show a = r4V from by omega]; exact PartialState.singletonMemU32_mem_0 _ _⟩
+            rcases Nat.lt_or_ge a (r4V + 2) with hl' | hge'
+            · exact ⟨outOld / 0x100 % 256, by rw [show a = r4V + 1 from by omega]; exact PartialState.singletonMemU32_mem_1 _ _⟩
+            rcases Nat.lt_or_ge a (r4V + 3) with hl' | hge'
+            · exact ⟨outOld / 0x10000 % 256, by rw [show a = r4V + 2 from by omega]; exact PartialState.singletonMemU32_mem_2 _ _⟩
+            · exact ⟨outOld / 0x1000000 % 256, by rw [show a = r4V + 3 from by omega]; exact PartialState.singletonMemU32_mem_3 _ _⟩
+          obtain ⟨v, hv⟩ := h_some
+          rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+        · apply PartialState.singletonMemU32_mem_outside
+          rcases Nat.lt_or_ge a r4V with hl' | hge'
+          · left; exact hl'
+          · right
+            rcases Nat.lt_or_ge a (r4V + 4) with hlt | hge''
+            · exact absurd ⟨hge', hlt⟩ h
+            · exact hge''
+    · left; exact PartialState.singletonMemBytes_pc
+  -- Disjointness for the inner reg-mem chain: each reg atom is regs-only, no mem.
+  have hd_r4_T5_new : h_r4_new.Disjoint h_T5_new := by
+    refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
+            Or.inl PartialState.singletonReg_pc⟩
+    by_cases hr4 : r = .r4
+    · right
+      show h_T5_new.regs r = none
+      show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      exact PartialState.singletonMemU32_regs r
+    · left; exact PartialState.singletonReg_regs_other hr4
+  have hd_r3_T4_new : h_r3_new.Disjoint h_T4_new := by
+    refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
+            Or.inl PartialState.singletonReg_pc⟩
+    by_cases hr3 : r = .r3
+    · right
+      show h_T4_new.regs r = none
+      show ((PartialState.singletonReg .r4 r4V).union h_T5_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr3 ▸ (by decide : Reg.r3 ≠ Reg.r4)))]
+      show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      exact PartialState.singletonMemU32_regs r
+    · left; exact PartialState.singletonReg_regs_other hr3
+  have hd_r2_T3_new : h_r2_new.Disjoint h_T3_new := by
+    refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
+            Or.inl PartialState.singletonReg_pc⟩
+    by_cases hr2 : r = .r2
+    · right
+      show h_T3_new.regs r = none
+      show ((PartialState.singletonReg .r3 r3V).union h_T4_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr2 ▸ (by decide : Reg.r2 ≠ Reg.r3)))]
+      show ((PartialState.singletonReg .r4 r4V).union h_T5_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr2 ▸ (by decide : Reg.r2 ≠ Reg.r4)))]
+      show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      exact PartialState.singletonMemU32_regs r
+    · left; exact PartialState.singletonReg_regs_other hr2
+  have hd_r1_T2_new : h_r1_new.Disjoint h_T2_new := by
+    refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
+            Or.inl PartialState.singletonReg_pc⟩
+    by_cases hr1 : r = .r1
+    · right
+      show h_T2_new.regs r = none
+      show ((PartialState.singletonReg .r2 r2V).union h_T3_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr1 ▸ (by decide : Reg.r1 ≠ Reg.r2)))]
+      show ((PartialState.singletonReg .r3 r3V).union h_T4_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr1 ▸ (by decide : Reg.r1 ≠ Reg.r3)))]
+      show ((PartialState.singletonReg .r4 r4V).union h_T5_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr1 ▸ (by decide : Reg.r1 ≠ Reg.r4)))]
+      show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      exact PartialState.singletonMemU32_regs r
+    · left; exact PartialState.singletonReg_regs_other hr1
+  have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
+    refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
+            Or.inl PartialState.singletonReg_pc⟩
+    by_cases hr0 : r = .r0
+    · right
+      show h_T1_new.regs r = none
+      show ((PartialState.singletonReg .r1 r1V).union h_T2_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr0 ▸ (by decide : Reg.r0 ≠ Reg.r1)))]
+      show ((PartialState.singletonReg .r2 r2V).union h_T3_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr0 ▸ (by decide : Reg.r0 ≠ Reg.r2)))]
+      show ((PartialState.singletonReg .r3 r3V).union h_T4_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr0 ▸ (by decide : Reg.r0 ≠ Reg.r3)))]
+      show ((PartialState.singletonReg .r4 r4V).union h_T5_new).regs r = none
+      rw [PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (hr0 ▸ (by decide : Reg.r0 ≠ Reg.r4)))]
+      show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).regs r = none
+      rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+      exact PartialState.singletonMemU32_regs r
+    · left; exact PartialState.singletonReg_regs_other hr0
+  -- h_P_new reg projections
+  have h_P_new_regs_r0 : h_P_new.regs .r0 = some 0 :=
+    PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_new_regs_climb_r (r : Reg) (h0 : r ≠ .r0) :
+      h_P_new.regs r = h_T1_new.regs r := by
+    show ((PartialState.singletonReg .r0 0).union h_T1_new).regs r = h_T1_new.regs r
+    exact PartialState.union_regs_of_left_none
+      (PartialState.singletonReg_regs_other h0)
+  have h_P_new_regs_r1 : h_P_new.regs .r1 = some r1V := by
+    rw [h_P_new_regs_climb_r .r1 (by decide)]
+    show ((PartialState.singletonReg .r1 r1V).union h_T2_new).regs .r1 = some r1V
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_new_regs_r2 : h_P_new.regs .r2 = some r2V := by
+    rw [h_P_new_regs_climb_r .r2 (by decide)]
+    show ((PartialState.singletonReg .r1 r1V).union h_T2_new).regs .r2 = some r2V
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other (by decide : Reg.r2 ≠ Reg.r1))]
+    show ((PartialState.singletonReg .r2 r2V).union h_T3_new).regs .r2 = some r2V
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_new_regs_r3 : h_P_new.regs .r3 = some r3V := by
+    rw [h_P_new_regs_climb_r .r3 (by decide)]
+    show ((PartialState.singletonReg .r1 r1V).union h_T2_new).regs .r3 = some r3V
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other (by decide : Reg.r3 ≠ Reg.r1))]
+    show ((PartialState.singletonReg .r2 r2V).union h_T3_new).regs .r3 = some r3V
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other (by decide : Reg.r3 ≠ Reg.r2))]
+    show ((PartialState.singletonReg .r3 r3V).union h_T4_new).regs .r3 = some r3V
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_new_regs_r4 : h_P_new.regs .r4 = some r4V := by
+    rw [h_P_new_regs_climb_r .r4 (by decide)]
+    show ((PartialState.singletonReg .r1 r1V).union h_T2_new).regs .r4 = some r4V
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other (by decide : Reg.r4 ≠ Reg.r1))]
+    show ((PartialState.singletonReg .r2 r2V).union h_T3_new).regs .r4 = some r4V
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other (by decide : Reg.r4 ≠ Reg.r2))]
+    show ((PartialState.singletonReg .r3 r3V).union h_T4_new).regs .r4 = some r4V
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other (by decide : Reg.r4 ≠ Reg.r3))]
+    show ((PartialState.singletonReg .r4 r4V).union h_T5_new).regs .r4 = some r4V
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_new_regs_other (r : Reg)
+      (h0 : r ≠ .r0) (h1 : r ≠ .r1) (h2 : r ≠ .r2) (h3 : r ≠ .r3) (h4 : r ≠ .r4) :
+      h_P_new.regs r = none := by
+    rw [h_P_new_regs_climb_r r h0]
+    show ((PartialState.singletonReg .r1 r1V).union h_T2_new).regs r = none
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other h1)]
+    show ((PartialState.singletonReg .r2 r2V).union h_T3_new).regs r = none
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other h2)]
+    show ((PartialState.singletonReg .r3 r3V).union h_T4_new).regs r = none
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other h3)]
+    show ((PartialState.singletonReg .r4 r4V).union h_T5_new).regs r = none
+    rw [PartialState.union_regs_of_left_none
+        (PartialState.singletonReg_regs_other h4)]
+    show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).regs r = none
+    rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+    show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).regs r = none
+    rw [PartialState.union_regs_of_left_none (PartialState.singletonMemBytes_regs r)]
+    exact PartialState.singletonMemU32_regs r
+  -- h_P_new mem projections: regs contribute nothing.
+  have h_P_new_mem_eq_T5 (a : Nat) : h_P_new.mem a = h_T5_new.mem a := by
+    show ((PartialState.singletonReg .r0 0).union h_T1_new).mem a = h_T5_new.mem a
+    rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    show ((PartialState.singletonReg .r1 r1V).union h_T2_new).mem a = h_T5_new.mem a
+    rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    show ((PartialState.singletonReg .r2 r2V).union h_T3_new).mem a = h_T5_new.mem a
+    rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    show ((PartialState.singletonReg .r3 r3V).union h_T4_new).mem a = h_T5_new.mem a
+    rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    show ((PartialState.singletonReg .r4 r4V).union h_T5_new).mem a = h_T5_new.mem a
+    rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+  -- Specifically for the 3 mem regions:
+  have h_P_new_mem_p1 (i : Nat) (hi : i < r3V) :
+      h_P_new.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
+    rw [h_P_new_mem_eq_T5]
+    show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).mem (r1V + i) = _
+    have hsz_lt : i < p1Bytes.size := by rw [hsz1]; exact hi
+    exact PartialState.union_mem_of_left_some
+      (PartialState.singletonMemBytes_mem_at r1V p1Bytes i hsz_lt)
+  have h_P_new_mem_p2 (j : Nat) (hj : j < r3V) :
+      h_P_new.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+    rw [h_P_new_mem_eq_T5]
+    show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).mem (r2V + j) = _
+    -- p1 doesn't own r2V + j (from hd_p1_T6_new which we'll derive).
+    have hsz_lt : j < p2Bytes.size := by rw [hsz2]; exact hj
+    have h_p2_some : (PartialState.singletonMemBytes r2V p2Bytes).mem (r2V + j) =
+        some (p2Bytes.get! j).toNat :=
+      PartialState.singletonMemBytes_mem_at r2V p2Bytes j hsz_lt
+    have h_T6_some : h_T6_new.mem (r2V + j) = some (p2Bytes.get! j).toNat := by
+      show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).mem (r2V + j) = _
+      exact PartialState.union_mem_of_left_some h_p2_some
+    -- p1.mem (r2V + j) = none follows from pre disjointness hd_p1_T6.
+    have h_p1_none : (PartialState.singletonMemBytes r1V p1Bytes).mem (r2V + j) = none :=
+      h_p1_no_p2 j hj
+    rw [PartialState.union_mem_of_left_none h_p1_none]
+    exact h_T6_some
+  have h_P_new_mem_out (k : Nat) (hk : k < 4) :
+      h_P_new.mem (r4V + k) =
+        (PartialState.singletonMemU32 r4V cmpResult).mem (r4V + k) := by
+    rw [h_P_new_mem_eq_T5]
+    show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).mem (r4V + k) = _
+    -- p1.mem (r4V + k) = none from hd_p1_T6 (since T6 owns the addr via out atom).
+    have h_T6_some_pre : h_T6.mem (r4V + k) ≠ none := by
+      rw [h_T6_mem_out k hk]
+      match k, hk with
+      | 0, _ => rw [show r4V + 0 = r4V from rfl, PartialState.singletonMemU32_mem_0]; exact Option.some_ne_none _
+      | 1, _ => rw [PartialState.singletonMemU32_mem_1]; exact Option.some_ne_none _
+      | 2, _ => rw [PartialState.singletonMemU32_mem_2]; exact Option.some_ne_none _
+      | 3, _ => rw [PartialState.singletonMemU32_mem_3]; exact Option.some_ne_none _
+    have h_p1_none : (PartialState.singletonMemBytes r1V p1Bytes).mem (r4V + k) = none := by
+      obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+      rcases hd_mem (r4V + k) with hl | hr
+      · exact hl
+      · exact absurd hr h_T6_some_pre
+    rw [PartialState.union_mem_of_left_none h_p1_none]
+    show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).mem (r4V + k) = _
+    -- p2.mem (r4V + k) = none from hd_p2_out similarly.
+    have h_out_pre_some : ∃ v, (PartialState.singletonMemU32 r4V outOld).mem (r4V + k) = some v := by
+      match k, hk with
+      | 0, _ => exact ⟨_, by rw [show r4V + 0 = r4V from rfl]; exact PartialState.singletonMemU32_mem_0 _ _⟩
+      | 1, _ => exact ⟨_, PartialState.singletonMemU32_mem_1 _ _⟩
+      | 2, _ => exact ⟨_, PartialState.singletonMemU32_mem_2 _ _⟩
+      | 3, _ => exact ⟨_, PartialState.singletonMemU32_mem_3 _ _⟩
+    have h_p2_none : (PartialState.singletonMemBytes r2V p2Bytes).mem (r4V + k) = none := by
+      obtain ⟨_, hd_mem, _⟩ := hd_p2_out
+      obtain ⟨v, hv⟩ := h_out_pre_some
+      rcases hd_mem (r4V + k) with hl | hr
+      · exact hl
+      · rw [hv] at hr; nomatch hr
+    rw [PartialState.union_mem_of_left_none h_p2_none]
+  have h_P_new_mem_outside (a : Nat)
+      (h_dst_p1 : a < r1V ∨ a ≥ r1V + r3V)
+      (h_dst_p2 : a < r2V ∨ a ≥ r2V + r3V)
+      (h_dst_out : a < r4V ∨ a ≥ r4V + 4) :
+      h_P_new.mem a = none := by
+    rw [h_P_new_mem_eq_T5]
+    show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).mem a = none
+    have h_p1_none : (PartialState.singletonMemBytes r1V p1Bytes).mem a = none := by
+      apply PartialState.singletonMemBytes_mem_outside
+      rcases h_dst_p1 with hl | hr
+      · left; exact hl
+      · right; rw [hsz1]; exact hr
+    rw [PartialState.union_mem_of_left_none h_p1_none]
+    show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).mem a = none
+    have h_p2_none : (PartialState.singletonMemBytes r2V p2Bytes).mem a = none := by
+      apply PartialState.singletonMemBytes_mem_outside
+      rcases h_dst_p2 with hl | hr
+      · left; exact hl
+      · right; rw [hsz2]; exact hr
+    rw [PartialState.union_mem_of_left_none h_p2_none]
+    exact PartialState.singletonMemU32_mem_outside r4V cmpResult a h_dst_out
+  have h_P_new_pc : h_P_new.pc = none := by
+    show ((PartialState.singletonReg .r0 0).union h_T1_new).pc = none
+    rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+    show ((PartialState.singletonReg .r1 r1V).union h_T2_new).pc = none
+    rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+    show ((PartialState.singletonReg .r2 r2V).union h_T3_new).pc = none
+    rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+    show ((PartialState.singletonReg .r3 r3V).union h_T4_new).pc = none
+    rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+    show ((PartialState.singletonReg .r4 r4V).union h_T5_new).pc = none
+    rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+    show ((PartialState.singletonMemBytes r1V p1Bytes).union h_T6_new).pc = none
+    rw [PartialState.union_pc_of_left_none PartialState.singletonMemBytes_pc]
+    show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).pc = none
+    rw [PartialState.union_pc_of_left_none PartialState.singletonMemBytes_pc]
+    exact PartialState.singletonMemU32_pc
+  -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
+  have hd_PnewR : h_P_new.Disjoint h_R := by
+    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · by_cases h0 : r = .r0
+      · right; rw [h0]; exact h_R_no_r0
+      by_cases h1 : r = .r1
+      · right; rw [h1]; exact h_R_no_r1
+      by_cases h2 : r = .r2
+      · right; rw [h2]; exact h_R_no_r2
+      by_cases h3 : r = .r3
+      · right; rw [h3]; exact h_R_no_r3
+      by_cases h4 : r = .r4
+      · right; rw [h4]; exact h_R_no_r4
+      · left; exact h_P_new_regs_other r h0 h1 h2 h3 h4
+    · by_cases h_p1 : r1V ≤ a ∧ a < r1V + r3V
+      · right
+        obtain ⟨h1, h2⟩ := h_p1
+        have h_eq : a = r1V + (a - r1V) := by omega
+        have h_lt : a - r1V < r3V := by omega
+        rw [h_eq]; exact h_R_no_mem_p1 _ h_lt
+      by_cases h_p2 : r2V ≤ a ∧ a < r2V + r3V
+      · right
+        obtain ⟨h1, h2⟩ := h_p2
+        have h_eq : a = r2V + (a - r2V) := by omega
+        have h_lt : a - r2V < r3V := by omega
+        rw [h_eq]; exact h_R_no_mem_p2 _ h_lt
+      by_cases h_out : r4V ≤ a ∧ a < r4V + 4
+      · right
+        obtain ⟨h1, h2⟩ := h_out
+        have h_eq : a = r4V + (a - r4V) := by omega
+        have h_lt : a - r4V < 4 := by omega
+        rw [h_eq]; exact h_R_no_mem_out _ h_lt
+      · left
+        apply h_P_new_mem_outside
+        · rcases Nat.lt_or_ge a r1V with h | h
+          · left; exact h
+          · rcases Nat.lt_or_ge a (r1V + r3V) with h' | h'
+            · exact absurd ⟨h, h'⟩ h_p1
+            · right; exact h'
+        · rcases Nat.lt_or_ge a r2V with h | h
+          · left; exact h
+          · rcases Nat.lt_or_ge a (r2V + r3V) with h' | h'
+            · exact absurd ⟨h, h'⟩ h_p2
+            · right; exact h'
+        · rcases Nat.lt_or_ge a r4V with h | h
+          · left; exact h
+          · rcases Nat.lt_or_ge a (r4V + 4) with h' | h'
+            · exact absurd ⟨h, h'⟩ h_out
+            · right; exact h'
+    · left; exact h_P_new_pc
+  -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  · rw [hexec_pc, hpc]
+  · exact hexec_exit
+  · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
+            ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
+             h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
+             h_r2_new, h_T3_new, hd_r2_T3_new, rfl, rfl,
+             h_r3_new, h_T4_new, hd_r3_T4_new, rfl, rfl,
+             h_r4_new, h_T5_new, hd_r4_T5_new, rfl, rfl,
+             h_p1_new, h_T6_new, hd_p1_T6_new, rfl, rfl,
+             h_p2_new, h_out_new, hd_p2_out_new, rfl, rfl, rfl⟩,
+            h_R_sat⟩
+    refine ⟨?_, ?_, ?_⟩
+    -- regs
+    · intro r vr hvr
+      by_cases h0 : r = .r0
+      · rw [h0] at hvr
+        rw [PartialState.union_regs_of_left_some h_P_new_regs_r0] at hvr
+        have hvr0 : vr = 0 := (Option.some.inj hvr).symm
+        rw [h0, hexec_regs, hvr0]
+        exact RegFile.get_set_self _ _ _ (by decide : (.r0 : Reg) ≠ .r10)
+      by_cases h1 : r = .r1
+      · rw [h1] at hvr
+        rw [PartialState.union_regs_of_left_some h_P_new_regs_r1] at hvr
+        have hvr1 : vr = r1V := (Option.some.inj hvr).symm
+        rw [h1, hexec_regs, hvr1,
+            RegFile.get_set_diff _ _ _ _ (by decide : (.r1 : Reg) ≠ .r0)]
+        exact hs_regs_r1
+      by_cases h2 : r = .r2
+      · rw [h2] at hvr
+        rw [PartialState.union_regs_of_left_some h_P_new_regs_r2] at hvr
+        have hvr2 : vr = r2V := (Option.some.inj hvr).symm
+        rw [h2, hexec_regs, hvr2,
+            RegFile.get_set_diff _ _ _ _ (by decide : (.r2 : Reg) ≠ .r0)]
+        exact hs_regs_r2
+      by_cases h3 : r = .r3
+      · rw [h3] at hvr
+        rw [PartialState.union_regs_of_left_some h_P_new_regs_r3] at hvr
+        have hvr3 : vr = r3V := (Option.some.inj hvr).symm
+        rw [h3, hexec_regs, hvr3,
+            RegFile.get_set_diff _ _ _ _ (by decide : (.r3 : Reg) ≠ .r0)]
+        exact hs_regs_r3
+      by_cases h4 : r = .r4
+      · rw [h4] at hvr
+        rw [PartialState.union_regs_of_left_some h_P_new_regs_r4] at hvr
+        have hvr4 : vr = r4V := (Option.some.inj hvr).symm
+        rw [h4, hexec_regs, hvr4,
+            RegFile.get_set_diff _ _ _ _ (by decide : (.r4 : Reg) ≠ .r0)]
+        exact hs_regs_r4
+      · rw [PartialState.union_regs_of_left_none
+            (h_P_new_regs_other r h0 h1 h2 h3 h4)] at hvr
+        rw [hexec_regs, RegFile.get_set_diff _ _ _ _ h0]
+        have h_P_none : h_P.regs r = none := by
+          rcases hd_PR_regs r with hl | hr
+          · exact hl
+          · rw [hr] at hvr; nomatch hvr
+        apply hcr_regs r vr
+        rw [← hu_PR, PartialState.union_regs_of_left_none h_P_none]
+        exact hvr
+    -- mem
+    · intro a vm hvm
+      by_cases h_p1_addr : r1V ≤ a ∧ a < r1V + r3V
+      · obtain ⟨h1, h2⟩ := h_p1_addr
+        have h_eq : a = r1V + (a - r1V) := by omega
+        have h_lt : a - r1V < r3V := by omega
+        rw [h_eq] at hvm ⊢
+        rw [PartialState.union_mem_of_left_some
+            (h_P_new_mem_p1 _ h_lt)] at hvm
+        have hvmEq : vm = (p1Bytes.get! (a - r1V)).toNat :=
+          (Option.some.inj hvm).symm
+        -- (executeFn ...).mem (r1V + (a - r1V)) is preserved (outside the writeU32 range).
+        have h_out_range : (r1V + (a - r1V)) < r4V ∨ (r1V + (a - r1V)) ≥ r4V + 4 := by
+          -- The U32 region at r4V is disjoint from the p1 region at r1V (from pre disjointness).
+          -- Specifically, the p1 atom has (r1V + (a - r1V)) since (a - r1V) < r3V = p1Bytes.size.
+          -- p1 ⊥ T6 ⊇ out. So (r1V + (a - r1V)) is outside the out range.
+          have h_p1_some : (PartialState.singletonMemBytes r1V p1Bytes).mem (r1V + (a - r1V)) =
+              some (p1Bytes.get! (a - r1V)).toNat := by
+            apply PartialState.singletonMemBytes_mem_at
+            rw [hsz1]; exact h_lt
+          have h_T6_none : h_T6.mem (r1V + (a - r1V)) = none := by
+            obtain ⟨_, hd_mem, _⟩ := hd_p1_T6
+            rcases hd_mem (r1V + (a - r1V)) with hl | hr
+            · rw [h_p1_some] at hl; nomatch hl
+            · exact hr
+          -- T6 contains the out U32 atom; T6.mem none at this addr means out is also none.
+          have h_out_pre_none : (PartialState.singletonMemU32 r4V outOld).mem (r1V + (a - r1V)) = none := by
+            rw [← hu_p2_out] at h_T6_none
+            exact (PartialState.union_mem_eq_none_iff.mp h_T6_none).2
+          rcases Nat.lt_or_ge (r1V + (a - r1V)) r4V with hlt | hge
+          · left; exact hlt
+          rcases Nat.lt_or_ge (r1V + (a - r1V)) (r4V + 4) with hlt' | hge'
+          · -- Inside [r4V, r4V+4); contradict h_out_pre_none.
+            exfalso
+            rcases Nat.lt_or_ge (r1V + (a - r1V)) (r4V + 1) with h_a | h_a
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r1V + (a - r1V)) = some (outOld % 256) := by
+                rw [show r1V + (a - r1V) = r4V from by omega]
+                exact PartialState.singletonMemU32_mem_0 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+            rcases Nat.lt_or_ge (r1V + (a - r1V)) (r4V + 2) with h_a | h_a
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r1V + (a - r1V)) = some (outOld / 0x100 % 256) := by
+                rw [show r1V + (a - r1V) = r4V + 1 from by omega]
+                exact PartialState.singletonMemU32_mem_1 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+            rcases Nat.lt_or_ge (r1V + (a - r1V)) (r4V + 3) with h_a | h_a
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r1V + (a - r1V)) = some (outOld / 0x10000 % 256) := by
+                rw [show r1V + (a - r1V) = r4V + 2 from by omega]
+                exact PartialState.singletonMemU32_mem_2 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r1V + (a - r1V)) = some (outOld / 0x1000000 % 256) := by
+                rw [show r1V + (a - r1V) = r4V + 3 from by omega]
+                exact PartialState.singletonMemU32_mem_3 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+          · right; exact hge'
+        rw [hexec_mem_outside_u32 _ h_out_range, hvmEq]
+        exact hs_mem_p1 _ h_lt
+      by_cases h_p2_addr : r2V ≤ a ∧ a < r2V + r3V
+      · obtain ⟨h1, h2⟩ := h_p2_addr
+        have h_eq : a = r2V + (a - r2V) := by omega
+        have h_lt : a - r2V < r3V := by omega
+        rw [h_eq] at hvm ⊢
+        rw [PartialState.union_mem_of_left_some
+            (h_P_new_mem_p2 _ h_lt)] at hvm
+        have hvmEq : vm = (p2Bytes.get! (a - r2V)).toNat :=
+          (Option.some.inj hvm).symm
+        -- Same logic: r2V + (a-r2V) is in p2 range, disjoint from out range.
+        have h_out_range : (r2V + (a - r2V)) < r4V ∨ (r2V + (a - r2V)) ≥ r4V + 4 := by
+          have h_p2_some : (PartialState.singletonMemBytes r2V p2Bytes).mem (r2V + (a - r2V)) =
+              some (p2Bytes.get! (a - r2V)).toNat := by
+            apply PartialState.singletonMemBytes_mem_at
+            rw [hsz2]; exact h_lt
+          have h_out_pre_none : (PartialState.singletonMemU32 r4V outOld).mem (r2V + (a - r2V)) = none := by
+            obtain ⟨_, hd_mem, _⟩ := hd_p2_out
+            rcases hd_mem (r2V + (a - r2V)) with hl | hr
+            · rw [h_p2_some] at hl; nomatch hl
+            · exact hr
+          rcases Nat.lt_or_ge (r2V + (a - r2V)) r4V with hlt | hge
+          · left; exact hlt
+          rcases Nat.lt_or_ge (r2V + (a - r2V)) (r4V + 4) with hlt' | hge'
+          · exfalso
+            rcases Nat.lt_or_ge (r2V + (a - r2V)) (r4V + 1) with h_a | h_a
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r2V + (a - r2V)) = some (outOld % 256) := by
+                rw [show r2V + (a - r2V) = r4V from by omega]
+                exact PartialState.singletonMemU32_mem_0 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+            rcases Nat.lt_or_ge (r2V + (a - r2V)) (r4V + 2) with h_a | h_a
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r2V + (a - r2V)) = some (outOld / 0x100 % 256) := by
+                rw [show r2V + (a - r2V) = r4V + 1 from by omega]
+                exact PartialState.singletonMemU32_mem_1 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+            rcases Nat.lt_or_ge (r2V + (a - r2V)) (r4V + 3) with h_a | h_a
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r2V + (a - r2V)) = some (outOld / 0x10000 % 256) := by
+                rw [show r2V + (a - r2V) = r4V + 2 from by omega]
+                exact PartialState.singletonMemU32_mem_2 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+            · have hv : (PartialState.singletonMemU32 r4V outOld).mem (r2V + (a - r2V)) = some (outOld / 0x1000000 % 256) := by
+                rw [show r2V + (a - r2V) = r4V + 3 from by omega]
+                exact PartialState.singletonMemU32_mem_3 _ _
+              rw [hv] at h_out_pre_none; nomatch h_out_pre_none
+          · right; exact hge'
+        rw [hexec_mem_outside_u32 _ h_out_range, hvmEq]
+        exact hs_mem_p2 _ h_lt
+      by_cases h_out_addr : r4V ≤ a ∧ a < r4V + 4
+      · obtain ⟨h1, h2⟩ := h_out_addr
+        -- 4-case split on which byte of the U32 region
+        rcases Nat.lt_or_ge a (r4V + 1) with h_a | h_a
+        · have h_eq : a = r4V := by omega
+          rw [h_eq] at hvm
+          have h_pnew_some : h_P_new.mem r4V = some (cmpResult % 256) := by
+            have h := h_P_new_mem_out 0 (by omega)
+            rw [show r4V + 0 = r4V from rfl] at h
+            rw [h]; exact PartialState.singletonMemU32_mem_0 _ _
+          rw [PartialState.union_mem_of_left_some h_pnew_some] at hvm
+          have hvmEq : vm = cmpResult % 256 := (Option.some.inj hvm).symm
+          rw [h_eq, hvmEq]; exact hexec_mem_u32_0
+        rcases Nat.lt_or_ge a (r4V + 2) with h_a | h_a
+        · have h_eq : a = r4V + 1 := by omega
+          rw [h_eq] at hvm
+          have h_pnew_some : h_P_new.mem (r4V + 1) = some (cmpResult / 0x100 % 256) := by
+            have h := h_P_new_mem_out 1 (by omega)
+            rw [h]; exact PartialState.singletonMemU32_mem_1 _ _
+          rw [PartialState.union_mem_of_left_some h_pnew_some] at hvm
+          have hvmEq : vm = cmpResult / 0x100 % 256 := (Option.some.inj hvm).symm
+          rw [h_eq, hvmEq]; exact hexec_mem_u32_1
+        rcases Nat.lt_or_ge a (r4V + 3) with h_a | h_a
+        · have h_eq : a = r4V + 2 := by omega
+          rw [h_eq] at hvm
+          have h_pnew_some : h_P_new.mem (r4V + 2) = some (cmpResult / 0x10000 % 256) := by
+            have h := h_P_new_mem_out 2 (by omega)
+            rw [h]; exact PartialState.singletonMemU32_mem_2 _ _
+          rw [PartialState.union_mem_of_left_some h_pnew_some] at hvm
+          have hvmEq : vm = cmpResult / 0x10000 % 256 := (Option.some.inj hvm).symm
+          rw [h_eq, hvmEq]; exact hexec_mem_u32_2
+        · have h_eq : a = r4V + 3 := by omega
+          rw [h_eq] at hvm
+          have h_pnew_some : h_P_new.mem (r4V + 3) = some (cmpResult / 0x1000000 % 256) := by
+            have h := h_P_new_mem_out 3 (by omega)
+            rw [h]; exact PartialState.singletonMemU32_mem_3 _ _
+          rw [PartialState.union_mem_of_left_some h_pnew_some] at hvm
+          have hvmEq : vm = cmpResult / 0x1000000 % 256 := (Option.some.inj hvm).symm
+          rw [h_eq, hvmEq]; exact hexec_mem_u32_3
+      · -- Outside all three ranges.
+        have h_out_p1 : a < r1V ∨ a ≥ r1V + r3V := by
+          rcases Nat.lt_or_ge a r1V with h | h
+          · left; exact h
+          · rcases Nat.lt_or_ge a (r1V + r3V) with h' | h'
+            · exact absurd ⟨h, h'⟩ h_p1_addr
+            · right; exact h'
+        have h_out_p2 : a < r2V ∨ a ≥ r2V + r3V := by
+          rcases Nat.lt_or_ge a r2V with h | h
+          · left; exact h
+          · rcases Nat.lt_or_ge a (r2V + r3V) with h' | h'
+            · exact absurd ⟨h, h'⟩ h_p2_addr
+            · right; exact h'
+        have h_out_out : a < r4V ∨ a ≥ r4V + 4 := by
+          rcases Nat.lt_or_ge a r4V with h | h
+          · left; exact h
+          · rcases Nat.lt_or_ge a (r4V + 4) with h' | h'
+            · exact absurd ⟨h, h'⟩ h_out_addr
+            · right; exact h'
+        rw [PartialState.union_mem_of_left_none
+            (h_P_new_mem_outside a h_out_p1 h_out_p2 h_out_out)] at hvm
+        rw [hexec_mem_outside_u32 a h_out_out]
+        have h_P_none : h_P.mem a = none := by
+          rcases hd_PR_mem a with hl | hr
+          · exact hl
+          · rw [hr] at hvm; nomatch hvm
+        apply hcm_mem a vm
+        rw [← hu_PR, PartialState.union_mem_of_left_none h_P_none]
+        exact hvm
+    -- pc
+    · intro vp hvp
+      rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
+      rw [h_R_no_pc] at hvp
+      nomatch hvp
 
 /-! ## Syscall: `sol_get_clock_sysvar`
 
