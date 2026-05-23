@@ -73,7 +73,7 @@ theorem cuTripleWithin_1reg_write
   · rw [hexec]
     refine ⟨(PartialState.singletonReg dst vNew).union hR, ?_,
             PartialState.singletonReg dst vNew, hR, ?_, rfl, rfl, hRsat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r v hvr
         by_cases hr : r = dst
         · rw [hr] at hvr
@@ -98,7 +98,24 @@ theorem cuTripleWithin_1reg_write
             PartialState.singletonReg_pc] at hvp
         rw [hR_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hr : r = dst
         · rw [hr]; right; exact hR_no_dst
@@ -167,7 +184,7 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     refine ⟨(PartialState.singletonReg dst (toU64 imm)).union hR, ?_,
             PartialState.singletonReg dst (toU64 imm), hR, ?_, rfl, rfl, hRsat⟩
     · -- Compatibility of the new partial state with s'.
-      refine ⟨?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_⟩
       · -- regs
         intro r v hvr
         by_cases hr : r = dst
@@ -195,8 +212,25 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
             PartialState.singletonReg_pc] at hvp
         rw [hR_no_pc] at hvp
         simp at hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu]; exact hva))
     · -- Disjointness: singletonReg dst (toU64 imm) is disjoint from hR.
-      refine ⟨?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hr : r = dst
         · rw [hr]; right; exact hR_no_dst
@@ -298,7 +332,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
              ?_, rfl, rfl, rfl⟩,
             hR_sat⟩
     · -- Compatibility.
-      refine ⟨?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         by_cases hrdst : r = dst
         · -- r = dst: inner union picks (singletonReg dst v).regs dst = some v.
@@ -359,8 +393,27 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
               PartialState.singletonReg_pc)] at hvp
         rw [hR_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PQR,
+                    ← hu_PQ,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PQR,
+                    ← hu_PQ,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PQR]; exact hva))
     · -- (singletonReg dst v ⊎ singletonReg src v).Disjoint hR
-      refine ⟨?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact hR_no_dst
@@ -378,7 +431,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonReg_pc
     · -- (singletonReg dst v).Disjoint (singletonReg src v)
-      refine ⟨?_, ?_, ?_⟩
+      refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact PartialState.singletonReg_regs_other hne_dst_src
@@ -578,7 +631,7 @@ theorem cuTripleWithin_2reg_write
             ⟨PartialState.singletonReg dst vNew, PartialState.singletonReg src v,
              ?_, rfl, rfl, rfl⟩,
             hR_sat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         by_cases hrdst : r = dst
         · have hinner_dst :
@@ -636,7 +689,26 @@ theorem cuTripleWithin_2reg_write
               PartialState.singletonReg_pc)] at hvp
         rw [hR_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PQR,
+                    ← hu_PQ,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PQR,
+                    ← hu_PQ,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PQR]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact hR_no_dst
@@ -653,7 +725,7 @@ theorem cuTripleWithin_2reg_write
       · left
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonReg_pc
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact PartialState.singletonReg_regs_other hne_dst_src
@@ -1177,7 +1249,7 @@ theorem cuTripleWithin_1reg_cjump
   · rw [hexec]
     refine ⟨(PartialState.singletonReg dst vDst).union hR, ?_,
             PartialState.singletonReg dst vDst, hR, hd, rfl, rfl, hRsat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     · intro r vr hvr
       have hp_vr : hp.regs r = some vr := hu ▸ hvr
       exact hcr_regs r vr hp_vr
@@ -1191,6 +1263,23 @@ theorem cuTripleWithin_1reg_cjump
         exact hR_no_pc
       rw [hunion_pc_none] at hvp
       nomatch hvp
+    · intro rd hva
+      first
+      | exact hcompat.returnData rd hva
+      | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+         exact hcompat.returnData rd
+           (by rw [
+                  ← hu,
+                  PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+               exact hva))
+      | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+         exact hcompat.returnData rd
+           (by rw [
+                  ← hu,
+                  PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+               exact hva))
+      | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+         exact hcompat.returnData rd (by rw [← hu]; exact hva))
 
 /-- Generic 2-register-read conditional jump: instruction reads `dst`
     (value `vDst`) and `src` (value `vSrc`), tests `cond`, jumps. Same
@@ -1255,7 +1344,7 @@ theorem cuTripleWithin_2reg_cjump
              PartialState.singletonReg src vSrc,
              ?_, rfl, rfl, rfl⟩,
             hR_sat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr; exact hcr_regs r vr hvr
       · intro a vm hvm; exact hcm_mem a vm hvm
       · -- Show hp.pc = none, which is true since both inner singletons + hR are pc-free
@@ -1267,6 +1356,25 @@ theorem cuTripleWithin_2reg_cjump
           exact hR_no_pc
         rw [this] at hvp
         nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PQR,
+                    ← hu_PQ,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PQR,
+                    ← hu_PQ,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PQR]; exact hva))
     · -- Outer disjointness: (singletonReg dst vDst ⊎ singletonReg src vSrc) ⫫ hR
       -- Same as hd_PQR after the hu_PQ rewrite
       have : ((PartialState.singletonReg dst vDst).union
@@ -1706,7 +1814,7 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
               PartialState.singletonMem (effectiveAddr baseAddr off) byteVal,
               hd_src_mem, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         show (s.regs.set dst vNew).get r = vr
         by_cases hrdst : r = dst
@@ -1805,7 +1913,28 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
         rw [PartialState.union_pc_of_left_none h_outer_h1_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact h_R_no_dst
@@ -1828,7 +1957,7 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMem_pc
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrdst : r = dst
         · right
           rw [hrdst,
@@ -1982,7 +2111,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
               ?_, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
     -- (a) Compat of the new witness with the post state (post = { s with mem := ..., pc := s.pc + 1 }).
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         -- regs are unchanged in the post state
         show s.regs.get r = vr
@@ -2087,8 +2216,29 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
         rw [PartialState.union_pc_of_left_none h_outer_h1_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
     -- (b) Outer disjointness: new witness ⊥ h_R.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrbase : r = baseReg
         · rw [hrbase]; right; exact h_R_no_base
@@ -2112,7 +2262,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMem_pc
     -- (c) Inner disjointness: singletonReg baseReg ⊥ (singletonReg valReg ⊎ singletonMem addr).
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrbase : r = baseReg
         · right
           rw [hrbase,
@@ -2124,7 +2274,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
       · left; exact PartialState.singletonReg_pc
     -- (d) Innermost disjointness: singletonReg valReg ⊥ singletonMem addr.
     -- singletonMem has no regs, singletonReg has no mem, neither owns pc.
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right; exact PartialState.singletonMem_regs r
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
@@ -2230,7 +2380,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
              ?_, rfl, rfl, rfl⟩,
             h_R_sat⟩
     -- (a) Compat of the new witness with the post state.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         show s.regs.get r = vr
         by_cases hrbase : r = baseReg
@@ -2303,8 +2453,27 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
         rw [PartialState.union_pc_of_left_none h_outer_h1_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
     -- (b) Outer disjointness: new witness ⊥ h_R.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrbase : r = baseReg
         · rw [hrbase]; right; exact h_R_no_base
@@ -2322,7 +2491,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMem_pc
     -- (c) Inner disjointness: singletonReg ⊥ singletonMem.
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right; exact PartialState.singletonMem_regs r
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
@@ -2549,7 +2718,7 @@ theorem ldxdw_spec
               hd_src_mem, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
     -- (a) Compat: regs, mem (9-case), pc.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       -- regs:
       · intro r vr hvr
         show (s.regs.set dst v).get r = vr
@@ -2744,8 +2913,29 @@ theorem ldxdw_spec
         rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
     -- (b) Outer disjointness: new witness ⊥ h_R.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact h_R_no_dst
@@ -2783,7 +2973,7 @@ theorem ldxdw_spec
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU64_pc
     -- (c) Inner disjointness: singletonReg dst v ⊥ (singletonReg src baseAddr ⊎ singletonMemU64 ...).
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrdst : r = dst
         · right
           rw [hrdst,
@@ -2923,7 +3113,7 @@ theorem ldxh_spec
               PartialState.singletonMemU16 (effectiveAddr baseAddr off) v,
               hd_src_mem, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         show (s.regs.set dst v).get r = vr
         by_cases hrdst : r = dst
@@ -3034,7 +3224,28 @@ theorem ldxh_spec
         rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact h_R_no_dst
@@ -3059,7 +3270,7 @@ theorem ldxh_spec
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU16_pc
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrdst : r = dst
         · right
           rw [hrdst,
@@ -3187,7 +3398,7 @@ theorem stxh_spec
               PartialState.singletonMemU16 (effectiveAddr baseAddr off) vSrc,
               ?_, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         show s.regs.get r = vr
         by_cases hrbase : r = baseReg
@@ -3303,7 +3514,28 @@ theorem stxh_spec
         rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrbase : r = baseReg
         · rw [hrbase]; right; exact h_R_no_base
@@ -3328,7 +3560,7 @@ theorem stxh_spec
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU16_pc
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrbase : r = baseReg
         · right
           rw [hrbase,
@@ -3338,7 +3570,7 @@ theorem stxh_spec
         · left; exact PartialState.singletonReg_regs_other hrbase
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right; exact PartialState.singletonMemU16_regs r
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
@@ -3480,7 +3712,7 @@ theorem ldxw_spec
               PartialState.singletonMemU32 (effectiveAddr baseAddr off) v,
               hd_src_mem, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         show (s.regs.set dst v).get r = vr
         by_cases hrdst : r = dst
@@ -3617,7 +3849,28 @@ theorem ldxw_spec
         rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_dst_SM,
+                    ← hu_src_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact h_R_no_dst
@@ -3646,7 +3899,7 @@ theorem ldxw_spec
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU32_pc
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrdst : r = dst
         · right
           rw [hrdst,
@@ -3763,7 +4016,7 @@ theorem stxw_spec
               PartialState.singletonMemU32 (effectiveAddr baseAddr off) vSrc,
               ?_, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         show s.regs.get r = vr
         by_cases hrbase : r = baseReg
@@ -3914,7 +4167,28 @@ theorem stxw_spec
         rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrbase : r = baseReg
         · rw [hrbase]; right; exact h_R_no_base
@@ -3947,7 +4221,7 @@ theorem stxw_spec
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU32_pc
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrbase : r = baseReg
         · right
           rw [hrbase,
@@ -3957,7 +4231,7 @@ theorem stxw_spec
         · left; exact PartialState.singletonReg_regs_other hrbase
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right; exact PartialState.singletonMemU32_regs r
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
@@ -4090,7 +4364,7 @@ theorem stxdw_spec
               ?_, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
     -- (a) Compat.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       -- regs: unchanged by stxdw (only mem changes).
       · intro r vr hvr
         show s.regs.get r = vr
@@ -4331,8 +4605,29 @@ theorem stxdw_spec
         rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_VM,
+                    ← hu_val_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
     -- (b) Outer disjointness.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrbase : r = baseReg
         · rw [hrbase]; right; exact h_R_no_base
@@ -4378,7 +4673,7 @@ theorem stxdw_spec
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU64_pc
     -- (c) Inner disjointness: singletonReg baseReg ⊥ (singletonReg valReg ⊎ singletonMemU64).
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrbase : r = baseReg
         · right
           rw [hrbase,
@@ -4389,7 +4684,7 @@ theorem stxdw_spec
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
     -- (d) Innermost disjointness: singletonReg valReg ⊥ singletonMemU64.
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right; exact PartialState.singletonMemU64_regs r
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
@@ -4431,7 +4726,7 @@ theorem ja_spec (target pc : Nat) :
     refine ⟨PartialState.empty.union hR, ?_,
             PartialState.empty, hR,
             PartialState.Disjoint_empty_left, rfl, rfl, hRsat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     · intro r vr hvr
       rw [PartialState.union_regs_of_left_none (by rfl : PartialState.empty.regs r = none)] at hvr
       show s.regs.get r = vr
@@ -4444,6 +4739,23 @@ theorem ja_spec (target pc : Nat) :
       rw [PartialState.union_pc_of_left_none (by rfl : PartialState.empty.pc = none)] at hvp
       rw [hR_no_pc] at hvp
       nomatch hvp
+    · intro rd hva
+      first
+      | exact hcompat.returnData rd hva
+      | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+         exact hcompat.returnData rd
+           (by rw [
+                  ← hu,
+                  PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+               exact hva))
+      | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+         exact hcompat.returnData rd
+           (by rw [
+                  ← hu,
+                  PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+               exact hva))
+      | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+         exact hcompat.returnData rd (by rw [← hu]; exact hva))
 
 /-! ## Indirect call: `callx`
 
@@ -4489,7 +4801,9 @@ theorem cuTripleWithin_syscall_writes_r0_only
     (h_step_mem  : ∀ s : State, (step (.call sc) s).mem = s.mem)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
-        (step (.call sc) s).exitCode = none) :
+        (step (.call sc) s).exitCode = none)
+    (h_step_returnData :
+      ∀ s : State, (step (.call sc) s).returnData = s.returnData) :
     ∀ r0Old, cuTripleWithin 1 pc (pc + 1)
       (CodeReq.singleton pc (.call sc))
       (.r0 ↦ᵣ r0Old)
@@ -4500,6 +4814,7 @@ theorem cuTripleWithin_syscall_writes_r0_only
   clear hreg h1
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
+  have hcm_rd  := hcompat.returnData
   have hd_regs := hd.regs
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
@@ -4515,6 +4830,8 @@ theorem cuTripleWithin_syscall_writes_r0_only
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
+  have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+    rw [hstep_eq]; exact h_step_returnData s
   have hR_no_r0 : hR.regs .r0 = none := by
     rcases hd_regs .r0 with h | h
     · rw [PartialState.singletonReg_regs_self] at h; nomatch h
@@ -4527,12 +4844,16 @@ theorem cuTripleWithin_syscall_writes_r0_only
   have hp_mem : ∀ a, hp.mem a = hR.mem a := by
     intro a; rw [← hu]
     exact PartialState.union_mem_of_left_none (PartialState.singletonReg_mem a)
+  have hp_rd : hp.returnData = hR.returnData := by
+    rw [← hu]
+    exact PartialState.union_returnData_of_left_none
+      PartialState.singletonReg_returnData
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
   · refine ⟨(PartialState.singletonReg .r0 vNew).union hR, ?_,
             PartialState.singletonReg .r0 vNew, hR, ?_, rfl, rfl, hRsat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r v hvr
         by_cases hr : r = .r0
         · rw [hr] at hvr
@@ -4557,13 +4878,19 @@ theorem cuTripleWithin_syscall_writes_r0_only
             PartialState.singletonReg_pc] at hvp
         rw [hR_no_pc] at hvp
         nomatch hvp
-    · refine ⟨?_, ?_, ?_⟩
+      · intro rd hva
+        rw [PartialState.union_returnData_of_left_none
+            PartialState.singletonReg_returnData] at hva
+        rw [hexec_rd]
+        exact hcm_rd rd (hp_rd ▸ hva)
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r
         by_cases hr : r = .r0
         · rw [hr]; right; exact hR_no_r0
         · left; exact PartialState.singletonReg_regs_other hr
       · intro a; left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
+      · left; exact PartialState.singletonReg_returnData
 
 /-! ## Syscall: `sol_log_`
 
@@ -4581,6 +4908,7 @@ theorem call_sol_log_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Logging.execLog])
     (fun s => by simp [step, execSyscall, Logging.execLog])
     (fun s hex => by simp [step, execSyscall, Logging.execLog]; exact hex)
+    (fun s => by simp [step, execSyscall, Logging.execLog])
     r0Old
 
 /-! ## Syscall: `sol_log_pubkey`
@@ -4598,6 +4926,7 @@ theorem call_sol_log_pubkey_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
     (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
     (fun s hex => by simp [step, execSyscall, Logging.execLogPubkey]; exact hex)
+    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
     r0Old
 
 /-! ## Syscall: `sol_get_stack_height`
@@ -4615,6 +4944,7 @@ theorem call_sol_get_stack_height_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
     (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
     (fun s hex => by simp [step, execSyscall, Misc.execGetStackHeight]; exact hex)
+    (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
     r0Old
 
 /-! ## Syscall: `sol_log_64_`
@@ -4632,6 +4962,7 @@ theorem call_sol_log_64_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Logging.execLog64])
     (fun s => by simp [step, execSyscall, Logging.execLog64])
     (fun s hex => by simp [step, execSyscall, Logging.execLog64]; exact hex)
+    (fun s => by simp [step, execSyscall, Logging.execLog64])
     r0Old
 
 /-! ## Syscall: `sol_log_compute_units_`
@@ -4648,6 +4979,7 @@ theorem call_sol_log_compute_units_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
     (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
     (fun s hex => by simp [step, execSyscall, Logging.execLogComputeUnits]; exact hex)
+    (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
     r0Old
 
 /-! ## Syscall: `sol_log_data`
@@ -4666,6 +4998,7 @@ theorem call_sol_log_data_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Logging.execLogData])
     (fun s => by simp [step, execSyscall, Logging.execLogData])
     (fun s hex => by simp [step, execSyscall, Logging.execLogData]; exact hex)
+    (fun s => by simp [step, execSyscall, Logging.execLogData])
     r0Old
 
 /-! ## Syscall: `sol_get_epoch_stake`
@@ -4682,6 +5015,7 @@ theorem call_sol_get_epoch_stake_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
     (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
     (fun s hex => by simp [step, execSyscall, Sysvar.execEpochStake]; exact hex)
+    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
     r0Old
 
 /-! ## Syscall: `sol_get_processed_sibling_instruction`
@@ -4701,6 +5035,7 @@ theorem call_sol_get_processed_sibling_instruction_spec
     (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
     (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
     (fun s hex => by simp [step, execSyscall, Misc.execProcessedSibling]; exact hex)
+    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
     r0Old
 
 /-! ## Syscall: `sol_get_sysvar` (generic accessor)
@@ -4718,6 +5053,7 @@ theorem call_sol_get_sysvar_spec (r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Misc.execGetSysvar])
     (fun s => by simp [step, execSyscall, Misc.execGetSysvar])
     (fun s hex => by simp [step, execSyscall, Misc.execGetSysvar]; exact hex)
+    (fun s => by simp [step, execSyscall, Misc.execGetSysvar])
     r0Old
 
 /-! ## Syscall: `.unknown` (unrecognized hash)
@@ -4735,25 +5071,28 @@ theorem call_sol_unknown_spec (hash r0Old : Nat) (pc : Nat) :
     (fun s => by simp [step, execSyscall, Misc.execUnknown])
     (fun s => by simp [step, execSyscall, Misc.execUnknown])
     (fun s hex => by simp [step, execSyscall, Misc.execUnknown]; exact hex)
+    (fun s => by simp [step, execSyscall, Misc.execUnknown])
     r0Old
 
-/-! ## Syscall: `sol_set_return_data`
-
-`sol_set_return_data(ptr, len)`: replace `State.returnData` with the
-slice `[r1..r1+r2)`, set `r0 := 0`. Memory is read but not written;
-`returnData` is silent in `PartialState`. -/
-
-theorem call_sol_set_return_data_spec (r0Old : Nat) (pc : Nat) :
-    cuTripleWithin 1 pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_set_return_data))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_set_return_data 0 pc
-    (fun s => by simp [step, execSyscall, ReturnData.execSet])
-    (fun s => by simp [step, execSyscall, ReturnData.execSet])
-    (fun s => by simp [step, execSyscall, ReturnData.execSet])
-    (fun s hex => by simp [step, execSyscall, ReturnData.execSet]; exact hex)
-    r0Old
+-- TODO: `call_sol_set_return_data_spec` refined via `returnDataIs`.
+-- The lift #2 infrastructure is in place (PartialState.returnData,
+-- Disjoint/CompatibleWith clauses, singletonReturnData atom,
+-- returnDataIs assertion). The spec form is:
+--
+-- ```
+-- (r0 ↦ᵣ r0Old) ** (r1 ↦ᵣ r1V) ** (r2 ↦ᵣ r2V) **
+--   (r1V ↦Bytes bsIn) ** returnDataIs rdOld
+-- ↓
+-- (r0 ↦ᵣ 0) ** (r1 ↦ᵣ r1V) ** (r2 ↦ᵣ r2V) **
+--   (r1V ↦Bytes bsIn) ** returnDataIs bsIn
+-- ```
+--
+-- Proof outline: destructure the 5-atom precondition, lift atom
+-- projections through hp, derive `readBytes s.mem r1V r2V = bsIn` from
+-- byte-by-byte ownership, build the witness for the post-state. The
+-- bytewise step needs a `ByteArray`-extraction lemma that's deferred.
+-- A `cuTripleWithin_syscall_setsReturnData` helper (parallel to the
+-- existing `writesR1Bytes` helper) would be the right abstraction.
 
 /-! ## Silent-syscall helper: `cuTripleWithin_syscall_silent`
 
@@ -4769,7 +5108,9 @@ theorem cuTripleWithin_syscall_silent
     (h_step_mem  : ∀ s : State, (step (.call sc) s).mem = s.mem)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
-        (step (.call sc) s).exitCode = none) :
+        (step (.call sc) s).exitCode = none)
+    (h_step_returnData :
+      ∀ s : State, (step (.call sc) s).returnData = s.returnData) :
     cuTripleWithin 1 pc (pc + 1)
       (CodeReq.singleton pc (.call sc))
       emp
@@ -4779,6 +5120,7 @@ theorem cuTripleWithin_syscall_silent
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
   have hcm_pc := hcompat.pc
+  have hcm_rd := hcompat.returnData
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
@@ -4793,6 +5135,8 @@ theorem cuTripleWithin_syscall_silent
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
+  have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+    rw [hstep_eq]; exact h_step_returnData s
   -- hp = empty.union h_R = h_R; transport hcompat to (executeFn fetch s 1).
   have hP_empty : hP = PartialState.empty := hPemp
   have hp_eq : hp = hR := by
@@ -4801,7 +5145,7 @@ theorem cuTripleWithin_syscall_silent
   · rw [hexec_pc, hpc]
   · refine ⟨PartialState.empty.union hR, ?_, PartialState.empty, hR,
             ?_, rfl, rfl, hRsat⟩
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       · intro r v hvr
         rw [PartialState.union_regs_of_left_none
             (PartialState.empty_regs r)] at hvr
@@ -4818,10 +5162,16 @@ theorem cuTripleWithin_syscall_silent
         have hR_no_pc : hR.pc = none := hRfree _ hRsat
         rw [hR_no_pc] at hvp
         nomatch hvp
-    · refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      · intro rd hva
+        rw [PartialState.union_returnData_of_left_none
+            PartialState.empty_returnData] at hva
+        rw [hexec_rd]
+        exact hcm_rd rd (hp_eq ▸ hva)
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, ?_⟩
       · left; exact PartialState.empty_regs r
       · left; exact PartialState.empty_mem a
       · left; exact PartialState.empty_pc
+      · left; exact PartialState.empty_returnData
 
 /-! ## Syscall: `sol_remaining_compute_units`
 
@@ -4839,6 +5189,7 @@ theorem call_sol_remaining_compute_units_spec (pc : Nat) :
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s hex => by simp [step, execSyscall, Misc.execRemainingComputeUnits]; exact hex)
+    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
 
 /-! ## Syscall: `sol_create_program_address` (n=0 seed case)
 
@@ -5198,7 +5549,7 @@ theorem call_create_program_address_n0_spec
     -- ===== Inner disjointness of h_P_new (bottom-up by atom layer). =====
     -- (i) bytes atom at r3V is disjoint from bytes atom at r4V — uses h_ranges_disjoint.
     have hd_b3b4_new : h_b3_new.Disjoint h_b4_new := by
-      refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · left; exact PartialState.singletonMem32Bytes_regs r
       · rcases Nat.lt_or_ge a r3V with h1 | h1
         · left
@@ -5215,7 +5566,7 @@ theorem call_create_program_address_n0_spec
     -- (ii) singletonReg .r4 ⊥ T4 (h_b3_new ⊎ h_b4_new): regs differ; bytes have no regs;
     --      singletonReg has no mem; no pc.
     have hd_r4_T4_new : h_r4_new.Disjoint h_T4_new := by
-      refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right
         show h_T4_new.regs r = none
         show ((PartialState.singletonMem32Bytes r3V pidBytes).union _).regs r = none
@@ -5224,7 +5575,7 @@ theorem call_create_program_address_n0_spec
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
     have hd_r3_T3_new : h_r3_new.Disjoint h_T3_new := by
-      refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hreq : r = .r3
         · right
           show h_T3_new.regs r = none
@@ -5239,7 +5590,7 @@ theorem call_create_program_address_n0_spec
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
     have hd_r2_T2_new : h_r2_new.Disjoint h_T2_new := by
-      refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hreq : r = .r2
         · right
           show h_T2_new.regs r = none
@@ -5258,7 +5609,7 @@ theorem call_create_program_address_n0_spec
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
     have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
-      refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hreq : r = .r0
         · right
           show h_T1_new.regs r = none
@@ -5392,7 +5743,7 @@ theorem call_create_program_address_n0_spec
       exact PartialState.singletonMem32Bytes_pc
     -- ===== Outer disjointness: h_P_new ⊥ h_R. =====
     have hd_PnewR : h_P_new.Disjoint h_R := by
-      refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases h0 : r = .r0
         · right; rw [h0]; exact h_R_no_r0
         by_cases h2 : r = .r2
@@ -5433,7 +5784,7 @@ theorem call_create_program_address_n0_spec
     refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ?_, h_R_sat⟩
     -- (a) Compatibility of `h_P_new ⊎ h_R` with the post state.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       -- regs
       · intro r vr hvr
         show (commitOptional s r4V 32 (Pda.createProgramAddress [] pidBytes)).regs.get r = vr
@@ -5521,6 +5872,17 @@ theorem call_create_program_address_n0_spec
         rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        have h_P_new_rd : h_P_new.returnData = none := by rfl
+        rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+        have h_P_rd : h_P.returnData = none := by
+          rw [← hu_r0_T1, ← hu_r2_T2, ← hu_r3_T3, ← hu_r4_T4, ← hu_b3_b4]; rfl
+        have hp_rd : hp.returnData = some rd := by
+          rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+          exact hva
+        -- The post-state's returnData reduces to s.returnData via simp.
+        simp only [hs'_def, commitOptional_preserves_returnData]
+        exact hcompat.returnData rd hp_rd
     -- (b) Q h_P_new — provide the nested witnesses.
     · refine ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
               h_r2_new, h_T2_new, hd_r2_T2_new, rfl, rfl,
@@ -6534,7 +6896,7 @@ theorem call_create_program_address_n1_spec
     have hd_b3b4_new : h_b3_new.Disjoint h_b4_new := by
       refine ⟨fun r => Or.inl (PartialState.singletonMem32Bytes_regs r),
               fun a => ?_,
-              Or.inl PartialState.singletonMem32Bytes_pc⟩
+              Or.inl PartialState.singletonMem32Bytes_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases ha3 : r3V ≤ a ∧ a < r3V + 32
       · right
         exact PartialState.singletonMem32Bytes_mem_outside r4V _ a
@@ -6549,7 +6911,7 @@ theorem call_create_program_address_n1_spec
     have hd_s_T8_new : h_s_new.Disjoint h_T8_new := by
       refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
               fun a => ?_,
-              Or.inl PartialState.singletonMemBytes_pc⟩
+              Or.inl PartialState.singletonMemBytes_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases hs : seedPtr ≤ a ∧ a < seedPtr + seedBytes.size
       · right
         show h_T8_new.mem a = none
@@ -6569,7 +6931,7 @@ theorem call_create_program_address_n1_spec
     have hd_d1_T7_new : h_d1_new.Disjoint h_T7_new := by
       refine ⟨fun r => Or.inl (PartialState.singletonMemU64_regs r),
               fun a => ?_,
-              Or.inl PartialState.singletonMemU64_pc⟩
+              Or.inl PartialState.singletonMemU64_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases hd1 : r1V + 8 ≤ a ∧ a < r1V + 16
       · right
         show h_T7_new.mem a = none
@@ -6596,7 +6958,7 @@ theorem call_create_program_address_n1_spec
     have hd_d0_T6_new : h_d0_new.Disjoint h_T6_new := by
       refine ⟨fun r => Or.inl (PartialState.singletonMemU64_regs r),
               fun a => ?_,
-              Or.inl PartialState.singletonMemU64_pc⟩
+              Or.inl PartialState.singletonMemU64_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases hd0 : r1V ≤ a ∧ a < r1V + 8
       · right
         show h_T6_new.mem a = none
@@ -6626,11 +6988,11 @@ theorem call_create_program_address_n1_spec
     have hd_a4_T5_new : h_a4_new.Disjoint h_T5_new := by
       refine ⟨fun r => Or.inr (h_T5_new_no_regs r),
               fun a => Or.inl (PartialState.singletonReg_mem a),
-              Or.inl PartialState.singletonReg_pc⟩
+              Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     have hd_a3_T4_new : h_a3_new.Disjoint h_T4_new := by
       refine ⟨fun r => ?_,
               fun a => Or.inl (PartialState.singletonReg_mem a),
-              Or.inl PartialState.singletonReg_pc⟩
+              Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases hr : r = .r3
       · right; rw [hr]
         show ((PartialState.singletonReg .r4 r4V).union h_T5_new).regs .r3 = none
@@ -6641,7 +7003,7 @@ theorem call_create_program_address_n1_spec
     have hd_a2_T3_new : h_a2_new.Disjoint h_T3_new := by
       refine ⟨fun r => ?_,
               fun a => Or.inl (PartialState.singletonReg_mem a),
-              Or.inl PartialState.singletonReg_pc⟩
+              Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases hr : r = .r2
       · right; rw [hr]
         show ((PartialState.singletonReg .r3 r3V).union h_T4_new).regs .r2 = none
@@ -6655,7 +7017,7 @@ theorem call_create_program_address_n1_spec
     have hd_a1_T2_new : h_a1_new.Disjoint h_T2_new := by
       refine ⟨fun r => ?_,
               fun a => Or.inl (PartialState.singletonReg_mem a),
-              Or.inl PartialState.singletonReg_pc⟩
+              Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases hr : r = .r1
       · right; rw [hr]
         show ((PartialState.singletonReg .r2 1).union h_T3_new).regs .r1 = none
@@ -6672,7 +7034,7 @@ theorem call_create_program_address_n1_spec
     have hd_a0_T1_new : h_a0_new.Disjoint h_T1_new := by
       refine ⟨fun r => ?_,
               fun a => Or.inl (PartialState.singletonReg_mem a),
-              Or.inl PartialState.singletonReg_pc⟩
+              Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       by_cases hr : r = .r0
       · right; rw [hr]
         show ((PartialState.singletonReg .r1 r1V).union h_T2_new).regs .r0 = none
@@ -6898,7 +7260,7 @@ theorem call_create_program_address_n1_spec
       exact PartialState.singletonMem32Bytes_mem_outside r4V _ a h_b4
     -- ===== Outer disjointness: h_P_new ⊥ h_R. =====
     have hd_PnewR : h_P_new.Disjoint h_R := by
-      refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+      refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases h0 : r = .r0
         · right; rw [h0]; exact h_R_no_r0
         by_cases h1 : r = .r1
@@ -6954,7 +7316,7 @@ theorem call_create_program_address_n1_spec
     -- ===== Provide the (Q ** R).holdsFor witness. =====
     refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl, ?_, h_R_sat⟩
     -- (a) Compat: regs, mem, pc.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       -- regs
       · intro r vr hvr
         show (commitOptional s r4V 32 (Pda.createProgramAddress [seedBytes] pidBytes)).regs.get r = vr
@@ -7171,6 +7533,17 @@ theorem call_create_program_address_n1_spec
         rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
         rw [h_R_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        have h_P_new_rd : h_P_new.returnData = none := by rfl
+        rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+        have h_P_rd : h_P.returnData = none := by
+          rw [← hu_a0_T1, ← hu_a1_T2, ← hu_a2_T3, ← hu_a3_T4, ← hu_a4_T5,
+              ← hu_d0_T6, ← hu_d1_T7, ← hu_s_T8, ← hu_b3_b4]; rfl
+        have hp_rd : hp.returnData = some rd := by
+          rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+          exact hva
+        simp only [hs'_def, commitOptional_preserves_returnData]
+        exact hcompat.returnData rd hp_rd
     -- (b) Q h_P_new — provide the 10-deep nested witnesses.
     · refine ⟨h_a0_new, h_T1_new, hd_a0_T1_new, rfl, rfl,
               h_a1_new, h_T2_new, hd_a1_T2_new, rfl, rfl,
@@ -7266,7 +7639,9 @@ theorem cuTripleWithin_syscall_writesR1Bytes
         (step (.call sc) s).mem a = s.mem a)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
-        (step (.call sc) s).exitCode = none) :
+        (step (.call sc) s).exitCode = none)
+    (h_step_returnData :
+      ∀ s : State, (step (.call sc) s).returnData = s.returnData) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = bsNew.size →
       cuTripleWithin 1 pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
@@ -7363,12 +7738,12 @@ theorem cuTripleWithin_syscall_writesR1Bytes
       (PartialState.singletonMemBytes r1V bsNew).mem a = none :=
     PartialState.singletonMemBytes_mem_outside r1V bsNew a h
   have hd_r1_b_new : h_r1_new.Disjoint h_b_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · right; exact PartialState.singletonMemBytes_regs r
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
   have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr0 : r = .r0
       · right
         show h_T1_new.regs r = none
@@ -7418,7 +7793,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes
     exact PartialState.singletonMemBytes_pc
   -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
       · right; rw [h0]; exact h_R_no_r0
       by_cases h1 : r = .r1
@@ -7446,7 +7821,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_b_new, hd_r1_b_new, rfl, rfl, rfl⟩,
             h_R_sat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     -- regs
     · intro r vr hvr
       by_cases h0 : r = .r0
@@ -7505,7 +7880,18 @@ theorem cuTripleWithin_syscall_writesR1Bytes
       rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
       rw [h_R_no_pc] at hvp
       nomatch hvp
-
+    · intro rd hva
+      have h_P_new_rd : h_P_new.returnData = none := by rfl
+      rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+      have h_P_rd : h_P.returnData = none := by
+        rw [← hu_r0_T1, ← hu_r1_b]; rfl
+      have hp_rd : hp.returnData = some rd := by
+        rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+        exact hva
+      have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+        rw [hstep_eq]; exact h_step_returnData s
+      rw [hexec_rd]
+      exact hcompat.returnData rd hp_rd
 /-! ## 5-atom mem-write helper: `cuTripleWithin_syscall_writesR1Bytes_r2r3`
 
 Generalization of `cuTripleWithin_syscall_writesR1Bytes` for syscalls
@@ -7530,7 +7916,9 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
         (step (.call sc) s).mem a = s.mem a)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
-        (step (.call sc) s).exitCode = none) :
+        (step (.call sc) s).exitCode = none)
+    (h_step_returnData :
+      ∀ s : State, (step (.call sc) s).returnData = s.returnData) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = bsNew.size →
       cuTripleWithin 1 pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
@@ -7692,13 +8080,13 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     PartialState.singletonMemBytes_mem_outside r1V bsNew a h
   -- Inner disjointness: r3 ⊥ b.
   have hd_r3_b_new : h_r3_new.Disjoint h_b_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · right; exact PartialState.singletonMemBytes_regs r
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
   -- r2 ⊥ (r3 ∪ b)
   have hd_r2_T3_new : h_r2_new.Disjoint h_T3_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr2 : r = .r2
       · right
         show h_T3_new.regs r = none
@@ -7712,7 +8100,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     · left; exact PartialState.singletonReg_pc
   -- r1 ⊥ (r2 ∪ r3 ∪ b)
   have hd_r1_T2_new : h_r1_new.Disjoint h_T2_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr1 : r = .r1
       · right
         show h_T2_new.regs r = none
@@ -7730,7 +8118,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     · left; exact PartialState.singletonReg_pc
   -- r0 ⊥ (r1 ∪ r2 ∪ r3 ∪ b)
   have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr0 : r = .r0
       · right
         show h_T1_new.regs r = none
@@ -7826,7 +8214,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     exact PartialState.singletonMemBytes_pc
   -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
       · right; rw [h0]; exact h_R_no_r0
       by_cases h1 : r = .r1
@@ -7860,7 +8248,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
              h_r2_new, h_T3_new, hd_r2_T3_new, rfl, rfl,
              h_r3_new, h_b_new,  hd_r3_b_new,  rfl, rfl, rfl⟩,
             h_R_sat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     -- regs
     · intro r vr hvr
       by_cases h0 : r = .r0
@@ -7933,7 +8321,18 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
       rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
       rw [h_R_no_pc] at hvp
       nomatch hvp
-
+    · intro rd hva
+      have h_P_new_rd : h_P_new.returnData = none := by rfl
+      rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+      have h_P_rd : h_P.returnData = none := by
+        rw [← hu_r0_T1, ← hu_r1_T2, ← hu_r2_T3, ← hu_r3_b]; rfl
+      have hp_rd : hp.returnData = some rd := by
+        rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+        exact hva
+      have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+        rw [hstep_eq]; exact h_step_returnData s
+      rw [hexec_rd]
+      exact hcompat.returnData rd hp_rd
 /-! ## Syscall: `sol_memset_`
 
 `sol_memset_(dst, val, n)`: write the low byte of `r2` (`r2 % 256`)
@@ -7952,7 +8351,7 @@ theorem call_sol_memset_spec
        ** (r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 r3V))) := by
   refine cuTripleWithin_syscall_writesR1Bytes_r2r3
     .sol_memset (replicateByte (r2V % 256).toUInt8 r3V) pc r2V r3V
-    ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, MemOps.execSet]
   · intro s hr2 hr3 i hi
@@ -7982,6 +8381,8 @@ theorem call_sol_memset_spec
   · intro s hex
     simp only [step, execSyscall, MemOps.execSet]
     exact hex
+  · intro s
+    simp only [step, execSyscall, MemOps.execSet]
   · rw [replicateByte_size]; exact hbs
 
 /-! ## 6-atom mem-copy helper: `cuTripleWithin_syscall_copiesR2ToR1`
@@ -8015,7 +8416,9 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
         (step (.call sc) s).mem a = s.mem a)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
-        (step (.call sc) s).exitCode = none) :
+        (step (.call sc) s).exitCode = none)
+    (h_step_returnData :
+      ∀ s : State, (step (.call sc) s).returnData = s.returnData) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = r3V →
       cuTripleWithin 1 pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
@@ -8243,7 +8646,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   have hd_src_b_new : h_src_new.Disjoint h_b_new := by
     refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
             fun a => ?_,
-            Or.inl PartialState.singletonMemBytes_pc⟩
+            Or.inl PartialState.singletonMemBytes_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     have hd_pre_mem := hd_src_b.mem
     rcases hd_pre_mem a with hsrc_none | hb_none
     · left; exact hsrc_none
@@ -8265,7 +8668,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
           · exact absurd ⟨hge, hlt⟩ h
           · exact hge'
   have hd_r3_T4_new : h_r3_new.Disjoint h_T4_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · right
       show h_T4_new.regs r = none
       show ((PartialState.singletonMemBytes r2V srcBytes).union h_b_new).regs r = none
@@ -8274,7 +8677,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
   have hd_r2_T3_new : h_r2_new.Disjoint h_T3_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr2 : r = .r2
       · right
         show h_T3_new.regs r = none
@@ -8289,7 +8692,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
   have hd_r1_T2_new : h_r1_new.Disjoint h_T2_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr1 : r = .r1
       · right
         show h_T2_new.regs r = none
@@ -8308,7 +8711,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
   have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr0 : r = .r0
       · right
         show h_T1_new.regs r = none
@@ -8448,7 +8851,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     exact PartialState.singletonMemBytes_pc
   -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
       · right; rw [h0]; exact h_R_no_r0
       by_cases h1 : r = .r1
@@ -8494,7 +8897,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
              h_r3_new, h_T4_new, hd_r3_T4_new, rfl, rfl,
              h_src_new, h_b_new, hd_src_b_new, rfl, rfl, rfl⟩,
             h_R_sat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     -- regs
     · intro r vr hvr
       by_cases h0 : r = .r0
@@ -8594,7 +8997,18 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
       rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
       rw [h_R_no_pc] at hvp
       nomatch hvp
-
+    · intro rd hva
+      have h_P_new_rd : h_P_new.returnData = none := by rfl
+      rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+      have h_P_rd : h_P.returnData = none := by
+        rw [← hu_r0_T1, ← hu_r1_T2, ← hu_r2_T3, ← hu_r3_T4, ← hu_src_b]; rfl
+      have hp_rd : hp.returnData = some rd := by
+        rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+        exact hva
+      have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+        rw [hstep_eq]; exact h_step_returnData s
+      rw [hexec_rd]
+      exact hcompat.returnData rd hp_rd
 /-! ## Syscall: `sol_memcpy` / `sol_memmove`
 
 `sol_memcpy(dst, src, n)` and `sol_memmove(dst, src, n)` share
@@ -8617,7 +9031,7 @@ theorem call_sol_memcpy_spec
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
   refine cuTripleWithin_syscall_copiesR2ToR1
     .sol_memcpy pc r2V r3V srcBytes hsrc
-    ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld hbs
+    ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld hbs
   · intro s
     simp only [step, execSyscall, MemOps.execCopy]
   · intro s hr2 hr3 i hi
@@ -8641,6 +9055,8 @@ theorem call_sol_memcpy_spec
   · intro s hex
     simp only [step, execSyscall, MemOps.execCopy]
     exact hex
+  · intro s
+    simp only [step, execSyscall, MemOps.execCopy]
 
 theorem call_sol_memmove_spec
     (r0Old r1V r2V r3V pc : Nat) (srcBytes bsOld : ByteArray)
@@ -8653,7 +9069,7 @@ theorem call_sol_memmove_spec
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
   refine cuTripleWithin_syscall_copiesR2ToR1
     .sol_memmove pc r2V r3V srcBytes hsrc
-    ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld hbs
+    ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld hbs
   · intro s
     simp only [step, execSyscall, MemOps.execCopy]
   · intro s hr2 hr3 i hi
@@ -8677,6 +9093,8 @@ theorem call_sol_memmove_spec
   · intro s hex
     simp only [step, execSyscall, MemOps.execCopy]
     exact hex
+  · intro s
+    simp only [step, execSyscall, MemOps.execCopy]
 
 /-! ## Syscall: `sol_memcmp`
 
@@ -9150,7 +9568,7 @@ theorem call_sol_memcmp_spec
   have hd_p2_out_new : h_p2_new.Disjoint h_out_new := by
     refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
             fun a => ?_,
-            Or.inl PartialState.singletonMemBytes_pc⟩
+            Or.inl PartialState.singletonMemBytes_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     -- Pointwise mem disjointness derived from hd_p2_out (pre): same ranges since
     -- p2_new is p2Bytes (same as pre) and out_new is U32 at r4V (same range).
     have hd_pre_mem := hd_p2_out.mem
@@ -9182,7 +9600,7 @@ theorem call_sol_memcmp_spec
   -- p1_new ⊥ T6_new = p2_new ∪ out_new. Same as pre by analogous range argument.
   have hd_p1_T6_new : h_p1_new.Disjoint h_T6_new := by
     refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
-            fun a => ?_, ?_⟩
+            fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · have hd_pre_mem := hd_p1_T6.mem
       rcases hd_pre_mem a with hl | hr
       · left; exact hl
@@ -9227,7 +9645,7 @@ theorem call_sol_memcmp_spec
   -- Disjointness for the inner reg-mem chain: each reg atom is regs-only, no mem.
   have hd_r4_T5_new : h_r4_new.Disjoint h_T5_new := by
     refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
-            Or.inl PartialState.singletonReg_pc⟩
+            Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     by_cases hr4 : r = .r4
     · right
       show h_T5_new.regs r = none
@@ -9239,7 +9657,7 @@ theorem call_sol_memcmp_spec
     · left; exact PartialState.singletonReg_regs_other hr4
   have hd_r3_T4_new : h_r3_new.Disjoint h_T4_new := by
     refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
-            Or.inl PartialState.singletonReg_pc⟩
+            Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     by_cases hr3 : r = .r3
     · right
       show h_T4_new.regs r = none
@@ -9254,7 +9672,7 @@ theorem call_sol_memcmp_spec
     · left; exact PartialState.singletonReg_regs_other hr3
   have hd_r2_T3_new : h_r2_new.Disjoint h_T3_new := by
     refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
-            Or.inl PartialState.singletonReg_pc⟩
+            Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     by_cases hr2 : r = .r2
     · right
       show h_T3_new.regs r = none
@@ -9272,7 +9690,7 @@ theorem call_sol_memcmp_spec
     · left; exact PartialState.singletonReg_regs_other hr2
   have hd_r1_T2_new : h_r1_new.Disjoint h_T2_new := by
     refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
-            Or.inl PartialState.singletonReg_pc⟩
+            Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     by_cases hr1 : r = .r1
     · right
       show h_T2_new.regs r = none
@@ -9293,7 +9711,7 @@ theorem call_sol_memcmp_spec
     · left; exact PartialState.singletonReg_regs_other hr1
   have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
     refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
-            Or.inl PartialState.singletonReg_pc⟩
+            Or.inl PartialState.singletonReg_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     by_cases hr0 : r = .r0
     · right
       show h_T1_new.regs r = none
@@ -9488,7 +9906,7 @@ theorem call_sol_memcmp_spec
     exact PartialState.singletonMemU32_pc
   -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
       · right; rw [h0]; exact h_R_no_r0
       by_cases h1 : r = .r1
@@ -9549,7 +9967,7 @@ theorem call_sol_memcmp_spec
              h_p1_new, h_T6_new, hd_p1_T6_new, rfl, rfl,
              h_p2_new, h_out_new, hd_p2_out_new, rfl, rfl, rfl⟩,
             h_R_sat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     -- regs
     · intro r vr hvr
       by_cases h0 : r = .r0
@@ -9771,7 +10189,18 @@ theorem call_sol_memcmp_spec
       rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
       rw [h_R_no_pc] at hvp
       nomatch hvp
-
+    · intro rd hva
+      have h_P_new_rd : h_P_new.returnData = none := by rfl
+      rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+      have h_P_rd : h_P.returnData = none := by
+        rw [← hu_r0_T1, ← hu_r1_T2, ← hu_r2_T3, ← hu_r3_T4, ← hu_r4_T5, ← hu_p1_T6, ← hu_p2_out]; rfl
+      have hp_rd : hp.returnData = some rd := by
+        rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+        exact hva
+      have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch]
+      rw [hexec_rd]
+      exact hcompat.returnData rd hp_rd
 /-! ## Syscall: `sol_get_clock_sysvar`
 
 Writes 40 bytes of zeros at `*r1`, sets `r0 := 0`. First multi-region
@@ -9788,7 +10217,7 @@ theorem call_sol_get_clock_sysvar_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes (zerosByteArray 40))) := by
   refine cuTripleWithin_syscall_writesR1Bytes
     .sol_get_clock_sysvar (zerosByteArray 40) pc
-    ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execClock, Sysvar.zeroFillR1]
   · intro s i hi
@@ -9813,6 +10242,8 @@ theorem call_sol_get_clock_sysvar_spec
   · intro s hex
     simp only [step, execSyscall, Sysvar.execClock, Sysvar.zeroFillR1]
     exact hex
+  · intro s
+    simp only [step, execSyscall, Sysvar.execClock, Sysvar.zeroFillR1]
   · rw [zerosByteArray_size]; exact hbs
 
 /-! ## Syscall: `sol_get_epoch_rewards_sysvar`
@@ -9828,7 +10259,7 @@ theorem call_sol_get_epoch_rewards_sysvar_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes (zerosByteArray 81))) := by
   refine cuTripleWithin_syscall_writesR1Bytes
     .sol_get_epoch_rewards_sysvar (zerosByteArray 81) pc
-    ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execEpochRewards, Sysvar.zeroFillR1]
   · intro s i hi
@@ -9853,6 +10284,8 @@ theorem call_sol_get_epoch_rewards_sysvar_spec
   · intro s hex
     simp only [step, execSyscall, Sysvar.execEpochRewards, Sysvar.zeroFillR1]
     exact hex
+  · intro s
+    simp only [step, execSyscall, Sysvar.execEpochRewards, Sysvar.zeroFillR1]
   · rw [zerosByteArray_size]; exact hbs
 
 /-! ## Syscall: `sol_get_rent_sysvar`
@@ -9882,7 +10315,7 @@ theorem call_sol_get_rent_sysvar_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes rentBytes)) := by
   refine cuTripleWithin_syscall_writesR1Bytes
     .sol_get_rent_sysvar rentBytes pc
-    ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execRent]
   · intro s i hi
@@ -9919,6 +10352,8 @@ theorem call_sol_get_rent_sysvar_spec
   · intro s hex
     simp only [step, execSyscall, Sysvar.execRent]
     exact hex
+  · intro s
+    simp only [step, execSyscall, Sysvar.execRent]
   · rw [rentBytes_size]; exact hbs
 
 /-! ## Syscall: `sol_get_epoch_schedule_sysvar`
@@ -9955,7 +10390,7 @@ theorem call_sol_get_epoch_schedule_sysvar_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes epochScheduleBytes)) := by
   refine cuTripleWithin_syscall_writesR1Bytes
     .sol_get_epoch_schedule_sysvar epochScheduleBytes pc
-    ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execEpochSchedule]
   · intro s i hi
@@ -10016,6 +10451,8 @@ theorem call_sol_get_epoch_schedule_sysvar_spec
   · intro s hex
     simp only [step, execSyscall, Sysvar.execEpochSchedule]
     exact hex
+  · intro s
+    simp only [step, execSyscall, Sysvar.execEpochSchedule]
   · rw [epochScheduleBytes_size]; exact hbs
 
 /-! ## Syscall: `sol_get_last_restart_slot`
@@ -10149,13 +10586,13 @@ theorem call_sol_get_last_restart_slot_spec
     | 7, _ => simpa using PartialState.singletonMemU64_mem_7 r1V 0
   -- Inner disjointness: r1_new ⊥ b_new.
   have hd_r1_b_new : h_r1_new.Disjoint h_b_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · right; exact PartialState.singletonMemU64_regs r
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
   -- Inner disjointness: r0_new ⊥ (r1_new ⊎ b_new).
   have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr0 : r = .r0
       · right
         show h_T1_new.regs r = none
@@ -10205,7 +10642,7 @@ theorem call_sol_get_last_restart_slot_spec
     exact PartialState.singletonMemU64_pc
   -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
       · right; rw [h0]; exact h_R_no_r0
       by_cases h1 : r = .r1
@@ -10233,7 +10670,7 @@ theorem call_sol_get_last_restart_slot_spec
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_b_new, hd_r1_b_new, rfl, rfl, rfl⟩,
             h_R_sat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     -- regs
     · intro r vr hvr
       by_cases h0 : r = .r0
@@ -10291,7 +10728,20 @@ theorem call_sol_get_last_restart_slot_spec
       rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
       rw [h_R_no_pc] at hvp
       nomatch hvp
-
+    · intro rd hva
+      have h_P_new_rd : h_P_new.returnData = none := by rfl
+      rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+      have h_P_rd : h_P.returnData = none := by
+        rw [← hu_r0_T1, ← hu_r1_b]; rfl
+      have hp_rd : hp.returnData = some rd := by
+        rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+        exact hva
+      have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+        rw [show (1 : Nat) = 0 + 1 from rfl,
+            executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        rfl
+      rw [hexec_rd]
+      exact hcompat.returnData rd hp_rd
 /-! ## Syscall: `sol_get_fees_sysvar`
 
 Deprecated sysvar; identical 8-byte zero-fill body to `sol_get_last_restart_slot`
@@ -10414,12 +10864,12 @@ theorem call_sol_get_fees_sysvar_spec
     | 6, _ => simpa using PartialState.singletonMemU64_mem_6 r1V 0
     | 7, _ => simpa using PartialState.singletonMemU64_mem_7 r1V 0
   have hd_r1_b_new : h_r1_new.Disjoint h_b_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · right; exact PartialState.singletonMemU64_regs r
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
   have hd_r0_T1_new : h_r0_new.Disjoint h_T1_new := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr0 : r = .r0
       · right
         show h_T1_new.regs r = none
@@ -10469,7 +10919,7 @@ theorem call_sol_get_fees_sysvar_spec
     exact PartialState.singletonMemU64_pc
   -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
-    refine ⟨fun r => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
       · right; rw [h0]; exact h_R_no_r0
       by_cases h1 : r = .r1
@@ -10497,7 +10947,7 @@ theorem call_sol_get_fees_sysvar_spec
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_b_new, hd_r1_b_new, rfl, rfl, rfl⟩,
             h_R_sat⟩
-    refine ⟨?_, ?_, ?_⟩
+    refine ⟨?_, ?_, ?_, ?_⟩
     -- regs
     · intro r vr hvr
       by_cases h0 : r = .r0
@@ -10555,6 +11005,20 @@ theorem call_sol_get_fees_sysvar_spec
       rw [PartialState.union_pc_of_left_none h_P_new_pc] at hvp
       rw [h_R_no_pc] at hvp
       nomatch hvp
+    · intro rd hva
+      have h_P_new_rd : h_P_new.returnData = none := by rfl
+      rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+      have h_P_rd : h_P.returnData = none := by
+        rw [← hu_r0_T1, ← hu_r1_b]; rfl
+      have hp_rd : hp.returnData = some rd := by
+        rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+        exact hva
+      have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+        rw [show (1 : Nat) = 0 + 1 from rfl,
+            executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        rfl
+      rw [hexec_rd]
+      exact hcompat.returnData rd hp_rd
 /-! ## Terminating triples — abort / sol_panic_ / exit
 
 These three instructions intentionally halt execution with a non-`none`
@@ -10714,7 +11178,9 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
         (step (.call sc) s).mem = s.mem)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
-        (step (.call sc) s).exitCode = none) :
+        (step (.call sc) s).exitCode = none)
+    (h_step_returnData :
+      ∀ s : State, (step (.call sc) s).returnData = s.returnData) :
     ∀ r0Old, cuTripleWithin 1 pc (pc + 1)
       (CodeReq.singleton pc (.call sc))
       ((.r0 ↦ᵣ r0Old) ** (r ↦ᵣ rV))
@@ -10790,7 +11256,7 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
   let h_P_new : PartialState := h_r0_new.union h_r_new
   -- Disjointness h_r0_new ⊥ h_r_new (r0 ≠ r).
   have hd_r0_r_new : h_r0_new.Disjoint h_r_new := by
-    refine ⟨fun r' => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r' => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr' : r' = .r0
       · right
         show h_r_new.regs r' = none
@@ -10822,7 +11288,7 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     exact PartialState.singletonReg_pc
   -- Outer disjointness h_P_new ⊥ hR.
   have hd_PnewR : h_P_new.Disjoint hR := by
-    refine ⟨fun r' => ?_, fun a => ?_, ?_⟩
+    refine ⟨fun r' => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r' = .r0
       · right; rw [h0]; exact hR_no_r0
       · by_cases h1 : r' = r
@@ -10835,7 +11301,7 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
   · exact hexec_exit
   · refine ⟨h_P_new.union hR, ?_, h_P_new, hR, hd_PnewR, rfl, ?_, hRsat⟩
     -- Compatibility.
-    · refine ⟨?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_⟩
       -- regs
       · intro r' v hvr
         rw [hexec_regs]
@@ -10874,6 +11340,18 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
         rw [PartialState.union_pc_of_left_none h_P_new_pc_none] at hvp
         rw [hR_no_pc] at hvp
         nomatch hvp
+      · intro rd hva
+        have h_P_new_rd : h_P_new.returnData = none := by rfl
+        rw [PartialState.union_returnData_of_left_none h_P_new_rd] at hva
+        have h_P_rd : hP.returnData = none := by
+          rw [← hu_r0_r]; rfl
+        have hp_rd : hp.returnData = some rd := by
+          rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
+          exact hva
+        have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
+          rw [hstep_eq]; exact h_step_returnData s
+        rw [hexec_rd]
+        exact hcompat.returnData rd hp_rd
     -- Witness for Q.
     · refine ⟨h_r0_new, h_r_new, hd_r0_r_new, rfl, rfl, rfl⟩
 
@@ -10912,6 +11390,9 @@ theorem call_sol_curve_validate_point_unsupported_spec
     intro s hex
     simp [step, execSyscall, Curve25519.execValidate]
     exact hex
+  · -- returnData unchanged
+    intro s
+    simp [step, execSyscall, Curve25519.execValidate]
 
 /-! ## Tier-1 triple: `sol_secp256k1_recover` (invalid recovery_id)
 
@@ -10949,6 +11430,9 @@ theorem call_sol_secp256k1_recover_invalid_recid_spec
     simp only [step, execSyscall, Secp256k1.exec]
     show s.exitCode = none
     exact hex
+  · -- returnData unchanged
+    intro s
+    simp [step, execSyscall, Secp256k1.exec]
 
 /-! ## Tier-1 triple: `sol_curve_group_op` (unsupported curve_id)
 
@@ -11013,6 +11497,9 @@ theorem call_sol_curve_group_op_unsupported_spec
             else none
           else none) = res
     cases res <;> (simp [commitOptional]; exact hex)
+  · -- returnData unchanged
+    intro s
+    simp [step, execSyscall, Curve25519.execGroupOp]
 
 /-! ## Tier-1 triple: `sol_curve_multiscalar_mul` (zero-length input)
 
@@ -11058,6 +11545,9 @@ theorem call_sol_curve_multiscalar_mul_zero_n_spec
                                      (readBytes s.mem s.regs.r3 (32 * s.regs.r4))
           else none) = res
     cases res <;> (simp [commitOptional]; exact hex)
+  · -- returnData unchanged
+    intro s
+    simp [step, execSyscall, Curve25519.execMSM]
 
 /-! ## Tier-1 triple: `sol_curve_decompress` (BLS12-381, unsupported curve_id)
 
@@ -11113,6 +11603,9 @@ theorem call_sol_curve_decompress_unsupported_spec
             Bls12_381.g2Decompress (readBytes s.mem s.regs.r2 96) 0
           else none) = res
     cases res <;> (simp only [commitOptional]; exact hex)
+  · -- returnData unchanged
+    intro s
+    simp [step, execSyscall, Bls12_381.execDecompress]
 
 /-! ## Tier-1 triple: `sol_curve_pairing_map` (BLS12-381, unsupported curve_id)
 
@@ -11161,6 +11654,9 @@ theorem call_sol_curve_pairing_map_unsupported_spec
                                   s.regs.r2.toUInt64 0
           else none) = res
     cases res <;> (simp only [commitOptional]; exact hex)
+  · -- returnData unchanged
+    intro s
+    simp [step, execSyscall, Bls12_381.execPairing]
 
 
 end Svm.SBPF

@@ -373,4 +373,12 @@ def commitOptional (s : State) (out outSize : Nat)
     (commitOptional s out outSize result).regions = s.regions := by
   cases result <;> simp [commitOptional]
 
+/-- `commitOptional` preserves the returnData buffer in both arms.
+    Marked `@[simp]` so specs that own `returnDataIs` can frame the
+    buffer through PDA / curve / poseidon / big-mod-exp syscalls. -/
+@[simp] theorem commitOptional_preserves_returnData (s : State) (out outSize : Nat)
+    (result : Option ByteArray) :
+    (commitOptional s out outSize result).returnData = s.returnData := by
+  cases result <;> simp [commitOptional]
+
 end Svm.SBPF
