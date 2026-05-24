@@ -1,6 +1,6 @@
 # qedsvm
 
-A reference interpreter and verification substrate for the Solana Virtual Machine, formalized in Lean 4. Runs real `cargo-build-sbf`-produced Solana programs byte-for-byte against agave (25 diff-mollusk fixtures, full suite in ~3 s), with a per-instruction Hoare-triple spec layer (142 theorems) for proving properties of those programs.
+A reference interpreter and verification substrate for the Solana Virtual Machine, formalized in Lean 4. Runs real `cargo-build-sbf`-produced Solana programs byte-for-byte against agave — including **p-token** (Anza's pinocchio-based SPL Token reimplementation) at **76 CU per Transfer, byte+CU identical to mollusk**. 26 diff-mollusk fixtures total, full suite in ~3 s. Per-instruction Hoare-triple spec layer (142 theorems) for proving properties of those programs.
 
 ## Two production deliverables
 
@@ -25,6 +25,20 @@ The two together: ground-truth execution **and** provable properties on the same
 - **zkSVM target.** Compiling to a zkVM is not pursued. CU bounds remain meaningful in Lean alone.
 - **Writing sBPF directly in Lean as the program-authoring story.** A small in-tree macro library exists as a proof-of-pattern (lamport transfer, PDA derivation, 2-way dispatch, fixed-size memcpy), but a full verified macro library for SPL Token / ATA / Anchor patterns is a longer-horizon track, not gating production.
 - **A new verification tool.** This is the model + the spec layer that tools sit on. QEDGen and other consumers live elsewhere.
+
+## What this proves — and what it doesn't
+
+Three layers, distinct claims. Read this before reading the shipped-work sections below.
+
+**Layer 1 — Execution parity (shipped).** qedsvm runs real compiled Solana programs and matches agave byte-for-byte on `program_result`, `return_data`, `resulting_accounts`, and `compute_units_consumed`. Demonstrated against 26 `cargo-build-sbf` fixtures including **p-token Transfer at 76 CU, byte+CU identical to mollusk**. This is a *conformance* claim — "the Lean 4 model matches the production validator on these programs" — not a *property* claim about what those programs do.
+
+**Layer 2 — Per-instruction Hoare triples (shipped).** Every sBPF instruction, plus call/return and 24+ syscalls, has a bounded separation-logic triple in `InstructionSpecs.lean` (142 theorems). A decoded `List Insn` can be composed via `sl_block_iter` / `sl_branch` to produce a property + verified CU bound for the sequence. This is the *substrate* that program-level specs sit on — the primitives are proved; composing them over a specific program is the next layer.
+
+**Layer 3a — End-to-end program specs over raw sBPF bytes (shipped, hand-encoded programs).** `examples/lean/ByteIncrement.lean` ships the complete bytes-to-witness chain for a 4-instruction byte-increment program: a `ByteArray` constant → `Decode.decodeProgram` via `native_decide` → `CodeReq.SatisfiedBy` per-PC case split → Hoare-triple macro spec (`byte_increment_macro_spec`) → `cuTripleWithinMem.toExec` bridge → a witness theorem stating "for any state satisfying the precondition, there is a k ≤ 3 such that `executeFn` reaches a post-state where `accounts[0].data[0..8]` has been incremented." `examples/lean/AsmTimeout.lean` does the same for a 7-instruction sBPF assembly snippet borrowed from blueshift-gg/sbpf. The end-to-end chain — raw bytes through the spec layer to a concrete `executeFn` witness — is real and shipped today.
+
+**Layer 3b — End-to-end program specs over *compiler-emitted* bytecode (first artifact shipped).** Extending Layer 3a from hand-encoded sBPF to a real `.so` produced by `cargo-build-sbf` — the same execution path Layer 1 runs byte-for-byte against agave. **First Layer 3b proof: `examples/lean/PTokenValidationPrelude.lean`** — a Hoare triple over the 8-instruction validation prelude of the p-token Transfer dispatch (bytes 0xba0-0xbd8 of `qedsvm-rs/tests/fixtures/p_token.so`, the same binary the diff-mollusk test runs at 76 CU). The proof composes through 4 branches (3 `jne` not taken, 1 `jeq` taken) via the magic-match hypothesis collapse — every conditional exit PC of the form `if vDst ≠ toU64 imm then target else pc + 1` reduces to its non-branching form when the precondition asserts the magic value, letting `sl_block_iter` handle multi-branch code without `sl_branch`. See [`docs/p-token-spike.md`](docs/p-token-spike.md) for the methodology spike that preceded this. Remaining: scaling to the full Transfer happy path (~250-400 instructions, ~20-30 branches, chaining through `call_local`/`exit_pops`) — bounded but multi-week work; primitives all in place.
+
+In one sentence: today the Lean 4 model ground-truth executes real compiled programs (Layer 1), carries a verified spec for every sBPF primitive (Layer 2), composes those primitives end-to-end over hand-encoded sBPF bytes (Layer 3a), and now over *compiler-emitted* bytecode from a recognized mainnet-track Solana program (Layer 3b, first artifact).
 
 ## What's shipped — execution
 
@@ -89,12 +103,15 @@ A `native_decide`-verified audit confirms the pure-Lean SHA-256 is byte-equivale
 
 ### Differential testing — `qedsvm-rs/tests/diff_mollusk.rs`
 
-25 real `cargo-build-sbf` fixtures cross-checked against `mollusk_svm::Mollusk`, each asserting byte-for-byte equality on `(program_result, return_data, resulting_accounts, compute_units_consumed)`. Highlights:
+26 real `cargo-build-sbf` fixtures cross-checked against `mollusk_svm::Mollusk`, each asserting byte-for-byte equality on `(program_result, return_data, resulting_accounts, compute_units_consumed)`. Highlights:
 
-- Minimal noop (CU 2), `solana_program::entrypoint!` noop (~1923 instructions, CU 98), `msg!("hi")` logger (CU 202), incrementer with `try_borrow_mut_data()` write-back (CU 321), Doppler-style account-data manipulation.
+- **p-token Transfer** (`p_token@v1.0.0-rc.1`, Anza/Solana Program Library's pinocchio-based SPL Token reimplementation): **76 CU**, byte+CU identical. First mainnet-track program in the harness, exercising pinocchio's zero-copy account access pattern (raw pointer casts into the serialized input buffer, no Borsh).
+- **SPL Token Transfer** (canonical): 4645 CU on the same instruction — the 61× ratio is the pinocchio-optimization story in numbers.
+- **SPL Token InitializeMint2**: 2780 CU, sysvar getter + 82-byte structured write to `accounts[0].data`.
+- Minimal noop (CU 2), `solana_program::entrypoint!` noop (~1923 instructions, CU 98), `msg!("hi")` logger (CU 202), incrementer with `try_borrow_mut_data()` write-back (CU 321).
 - CPI: depth-2 recursion, returnData round-trip, PDA signer promotion.
 - OOR access faults `ERR_ACCESS_VIOLATION` on both engines.
-- SPL Token, ATA, Pinocchio fixtures (validate `.data.rel.ro` relocations).
+- ATA + Pinocchio-escrow fixtures (validate `.data.rel.ro` relocations).
 
 After the 2026-05-20 `Mem` refactor (struct + `Std.HashMap` overlay, see `Memory.lean`), the full diff-mollusk suite finishes in **~3 s** vs. ~50 min previously (~1000× speedup).
 
@@ -342,7 +359,7 @@ See `ROADMAP.md`. Production track:
 - **Phase A — Foundations**: SepLogic, bounded triples, first instruction specs ✅
 - **Phase B — Full ISA coverage**: per-instruction Hoare triples ✅ (142 theorems)
 - **Phase C — Tactic suite**: composition automation (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) ✅
-- **Phase F — Differential testing**: byte-for-byte cross-engine agreement on `cargo-build-sbf` output ✅ (25 fixtures + 5 precompile + 11 svm_api + rent + thread-safety; broader fixture / fuzz harness open)
+- **Phase F — Differential testing**: byte-for-byte cross-engine agreement on `cargo-build-sbf` output ✅ (26 fixtures incl. p-token Transfer + 5 precompile + 11 svm_api + rent + thread-safety; broader fixture / fuzz harness open)
 - **Phase G — ELF loader + execution** ✅
 - **Phase H — Crypto syscalls** ✅
 
