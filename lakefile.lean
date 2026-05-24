@@ -57,5 +57,5 @@ lean_lib Svm where
 -- build with `lake build Examples` to type-check the proofs.
 lean_lib Examples where
   srcDir := "examples/lean"
-  roots := #[`ByteIncrement, `AsmTimeout, `PTokenValidationPrelude, `PTokenTransferArmSetup, `CompilerRtFpCmp, `PTokenTransferArm, `CompilerRtF64ToI64, `PTokenTransferArmTwoCalls]
+  roots := #[`ByteIncrement, `AsmTimeout, `PTokenValidationPrelude, `PTokenTransferArmSetup, `CompilerRtFpCmp, `PTokenTransferArm, `CompilerRtF64ToI64, `PTokenTransferArmTwoCalls, `PTokenTransferArmTwoCallsExt]
   precompileModules := true
