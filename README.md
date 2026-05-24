@@ -1,6 +1,6 @@
 # qedsvm
 
-A reference interpreter and verification substrate for the Solana Virtual Machine, in Lean 4. Hand-written, hand-auditable operational semantics for sBPF that runs real compiled Solana programs byte-for-byte against agave, and a per-instruction Hoare-triple spec layer for proving properties of those programs.
+A reference interpreter and verification substrate for the Solana Virtual Machine, formalized in Lean 4. Runs real `cargo-build-sbf`-produced Solana programs byte-for-byte against agave (25 diff-mollusk fixtures, full suite in ~3 s), with a per-instruction Hoare-triple spec layer (142 theorems) for proving properties of those programs.
 
 ## Two production deliverables
 
@@ -14,7 +14,7 @@ The two together: ground-truth execution **and** provable properties on the same
 
 **In scope** (production goals):
 
-- **Correctness** — a hand-written, auditable operational semantics for sBPF.
+- **Correctness** — an auditable Lean 4 operational semantics for sBPF.
 - **Semantic baseline** — byte-for-byte conformance with agave on real `cargo-build-sbf` output, enforced by differential testing against mollusk.
 - **Execution** — load and run arbitrary compiled Solana programs (ELF .so → decoded → executed), including crypto syscalls and CPI.
 - **Spec layer** — per-instruction Hoare triples covering the full user-facing ISA, with composition tactics so a decompiled program can be proved against a separation-logic spec, carrying a verified CU bound.
@@ -104,29 +104,37 @@ The spec layer turns a decoded `List Insn` into something you can prove against 
 
 ### Foundations — `Svm/SBPF/{SepLogic,CPSSpec}.lean`
 
-- **`PartialState`** — partial heap over registers, memory bytes, PC.
-- **`Assertion := PartialState → Prop`** with separating conjunction `**`, `emp`, points-to `r ↦ᵣ v`, `addr ↦ₘ b`, `pcIs v`.
+- **`PartialState`** — partial heap over registers, memory bytes, PC, returnData, callStack.
+- **`Assertion := PartialState → Prop`** with separating conjunction `**`, `emp`, points-to `r ↦ᵣ v`, `addr ↦ₘ b`, `pcIs v`, `returnDataIs rd`, `callStackIs cs`.
 - **`holdsFor : Assertion → State → Prop`** bridge to the executable `State`.
 - **`cuTripleWithin (N : Nat) (entry exit_ : Nat) (cr : CodeReq) (P Q : Assertion) : Prop`** — bounded Hoare triple. `N` is the verified step count / CU bound.
 - **`cuBranchWithin`** — two-exit variant for conditional jumps.
+- **`cuTripleAbortsWithin`** — terminating-instruction variant for `exit` / `abort` / `sol_panic_`.
 - **Structural rules**: `weaken`, `seq`, `frame` (baked into the definition), `mono_nSteps`, `refl`, `branch_merge`.
 
 ### Per-instruction triples — `Svm/SBPF/InstructionSpecs.lean`
 
-**110 theorems covering essentially the entire user-facing ISA**:
+**142 theorems covering the user-facing ISA + call/return + the mem-op and sysvar-getter syscall families**:
 
 - **ALU 64-bit** (13 ops × {imm, reg}) — `mov`, `add`, `sub`, `mul`, `div`, `mod`, `or`, `and`, `xor`, `lsh`, `rsh`, `arsh`, `neg`.
 - **ALU 32-bit** (13 ops × {imm, reg}) — same op set, result zero-extended.
 - **Conditional jumps** (11 ops × {imm, reg}) — `jeq`, `jne`, `jgt`, `jge`, `jlt`, `jle`, `jsgt`, `jsge`, `jslt`, `jsle`, `jset`.
 - **Unconditional**: `ja`, `lddw`, `callx` (value-dependent exit PC).
 - **Memory** (byte-level `↦ₘ` predicate): `ldxb/h/w/dw`, `stxb/h/w/dw`, `stb`.
-- **Syscall specs (11)**: `sol_create_program_address` (n=0, n=1) plus 9 r0-only-write syscalls — all 5 `sol_log_*` variants, `sol_get_stack_height`, `sol_set_return_data`, `sol_get_epoch_stake`, `sol_get_processed_sibling_instruction`, `sol_get_sysvar` (generic), `.unknown` (parametric over hash). The recurring "writes r0 only, leaves regs/mem/pc otherwise alone" pattern is factored into `cuTripleWithin_syscall_writes_r0_only` — each concrete syscall spec reduces to ~12 lines (four `simp` projection lemmas + the helper call).
+- **Call / return**: `call_local_spec` (push frame, bump `r10 += 0x1000`, jump to target) and `exit_pops_spec` (pop frame, restore `r6..r10`, jump to saved retPc), both over the `callStackIs` atom.
+- **Terminating instructions**: `exit`, `abort`, `sol_panic_` via `cuTripleAbortsWithin`.
+- **Syscall specs (24+)**:
+  - **Round-trip via `returnDataIs`**: `sol_set_return_data` (post owns `returnDataIs bsIn`) and `sol_get_return_data` (exact-fit case).
+  - **PDA** (both variants): `sol_create_program_address` n=0 and n=1.
+  - **Mem-op family**: `sol_memset`, `sol_memcpy`, `sol_memmove`, `sol_memcmp`.
+  - **Sysvar-getter family**: `sol_get_clock_sysvar`, `sol_get_epoch_rewards_sysvar`, `sol_get_rent_sysvar`, `sol_get_epoch_schedule_sysvar`, `sol_get_fees_sysvar`, `sol_get_last_restart_slot`.
+  - **r0-only writes** (factored into `cuTripleWithin_syscall_writes_r0_only`): the 5 `sol_log_*` variants, `sol_get_stack_height`, `sol_get_epoch_stake`, `sol_get_processed_sibling_instruction`, `sol_get_sysvar` (generic), `.unknown` (parametric over hash). Each concrete spec reduces to ~12 lines.
+  - **Other**: `sol_remaining_compute_units`, 6 crypto error-path triples.
 
 Open per-instruction gaps:
-- `exit`, `abort`, `sol_panic_` — terminating instructions (set `exitCode := some`); need a separate "terminating triple" type since `cuTripleWithin` requires `exitCode = none` post.
-- `call` / `call_local` — call-stack frames need a `PartialState` extension to track `callStack`.
-- Memory-writing syscalls — sysvar zero-fills (`sol_get_clock_sysvar` etc.), `sol_get_return_data`, `sol_memcpy` / `memset` / `memcmp`, crypto syscalls (sha256, secp256k1, …). Each needs memory atoms in pre/post; closer to the ~400-line `sol_create_program_address` template.
-- Store-immediate at non-byte widths (`sth` / `stw` / `stdw`) — need new ~150-line helper lemmas per width.
+- **Crypto syscall success-path triples** — each ~400-line `sol_create_program_address`-style proof. Error-path triples and 21 trust statements landed at commit `9948b3a`; success-path is the remaining slice.
+- **Store-immediate at non-byte widths** (`sth` / `stw` / `stdw`) — need ~150-line helper lemmas per width.
+- **Truncated-copy variant of `sol_get_return_data`** — exact-fit case shipped; truncated case is a small follow-up.
 
 ### Composition tactics — `Svm/SBPF/{SLTactic,SpecGen,Patterns}.lean`
 
@@ -138,11 +146,10 @@ Open per-instruction gaps:
 
 ### Trust base
 
-- **Hand-written ISA semantics** in `Svm/SBPF/{Execute,Decode,Memory}.lean`.
-- **Crypto primitives** through `rust-bridge/` to agave-pinned crates (explicit per-syscall trust statement).
-- **17 read/write-coherence axioms in `Memory.lean`** for byte-level memory operations. Documented; targeted for elimination by a byte-level memory model refactor.
+- **Lean 4 ISA semantics** in `Svm/SBPF/{Execute,Decode,Memory}.lean` — every instruction modeled explicitly; nothing imported from an external sBPF spec.
+- **Crypto primitives** through `rust-bridge/` to agave-pinned crates (explicit per-syscall trust statement; 21 `axiom` declarations in `Svm/SBPF/CryptoTrust.lean`).
 
-Everything else is proved.
+Everything else is proved. The 13 memory-coherence axioms previously in `Memory.lean` were eliminated at commit `2b86be5` (now theorems).
 
 ## What's shipped — verified macro library (in-tree, off the production critical path)
 
@@ -164,10 +171,8 @@ Authoring new macros to cover SPL Token / ATA / full Anchor patterns is a longer
 
 ## What's not done yet
 
-- **Call-frame Hoare triples for `call_local` / `.exit`.** The runner's push-PC/pop-PC plumbing works at the execution level (V0 stack frames), but `PartialState` doesn't yet track `callStack`. Adding it is a multi-session design problem (new points-to predicate, frame property, threading through composition). `callx` is shipped (tail-call style, no callStack push).
-- **Memory-writing syscall triples.** The 7 "writes r0 only" syscalls ship via the helper; the remaining (sysvar zero-fill, `sol_get_return_data`, `sol_memcpy`/`memset`/`memcmp`, crypto) need memory atoms in pre/post and don't fit the helper. Each is closer to the ~400-line `sol_create_program_address` template.
+- **Crypto syscall success-path triples.** The 21 trust statements + 6 error-path triples ship at commit `9948b3a`. Success-path triples for the 13 crypto syscalls (sha256, sha512, keccak256, blake3, secp256k1, curve25519, BLS12-381, alt_bn128, big_mod_exp, poseidon, PDA) remain open. Next step: a `cuTripleWithin_syscall_writesR3Bytes_r1r2` helper to cover the hash family; 5 instantiations × ~30 lines.
 - **Store-immediate triples for non-byte widths.** `stb_spec` ships via a 165-line helper; `sth` / `stw` / `stdw` need parallel helpers at the same scale.
-- **17 axioms in `Memory.lean`** for byte-level read/write coherence. Removing them is a byte-level memory model refactor with the same surface but proved coherence lemmas.
 - **Phase F broader fixture coverage** — more SPL Token / ATA / Pinocchio escrow positive paths, plus a fuzz/sweep harness over generated `Vec<Insn>`. Cheap surface, high regression-catch rate.
 - **`sol_get_processed_sibling_instruction`** — needs an instruction-trace state we don't model.
 - **`sol_get_sysvar` (generic accessor)** — needs a sysvar registry keyed by sysvar-id.
@@ -212,7 +217,7 @@ Svm/SBPF/                      — interpreter + spec layer
 │   ─ Spec layer ─
 ├── SepLogic.lean              — PartialState, separation logic, points-to
 ├── CPSSpec.lean               — cuTripleWithin, frame, seq, weaken, branch_merge
-├── InstructionSpecs.lean      — 98 per-instruction Hoare triples
+├── InstructionSpecs.lean      — 142 per-instruction Hoare triples
 ├── SpecGen.lean               — sl_block_auto: hand-dispatched per-Insn lookup
 ├── Patterns.lean              — concrete-fetch composition lemmas
 ├── SLTactic.lean              — sl_block_iter / sl_branch / sl_rw_abs tactics
@@ -335,7 +340,7 @@ cd qedsvm-rs && cargo test --features diff-mollusk
 See `ROADMAP.md`. Production track:
 
 - **Phase A — Foundations**: SepLogic, bounded triples, first instruction specs ✅
-- **Phase B — Full ISA coverage**: per-instruction Hoare triples ✅ (98 theorems)
+- **Phase B — Full ISA coverage**: per-instruction Hoare triples ✅ (142 theorems)
 - **Phase C — Tactic suite**: composition automation (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) ✅
 - **Phase F — Differential testing**: byte-for-byte cross-engine agreement on `cargo-build-sbf` output ✅ (25 fixtures + 5 precompile + 11 svm_api + rent + thread-safety; broader fixture / fuzz harness open)
 - **Phase G — ELF loader + execution** ✅
