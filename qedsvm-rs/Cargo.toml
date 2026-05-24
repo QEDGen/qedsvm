@@ -12,6 +12,12 @@ name = "qedsvm"
 name = "qedsvm-cli"
 path = "src/bin/cli.rs"
 
+# Transcription helper for lifting `llvm-objdump -d` output into Lean
+# `Insn` syntax for the spec layer. Pure stdlib; no Solana deps used.
+[[bin]]
+name = "disasm-to-lean"
+path = "src/bin/disasm_to_lean.rs"
+
 [dependencies]
 # Pinned to agave master's published versions (see anza-xyz/agave Cargo.toml).
 # The whole point of these crates is to be Mollusk-shape-compatible:
