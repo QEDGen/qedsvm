@@ -2,3 +2,5 @@
 build/
 docs/
 rust-bridge/target/
+.agents/
+.claude/
