@@ -4,6 +4,7 @@ import Svm.SBPF.Execute
 import Svm.SBPF.Tactic
 import Svm.SBPF.WPTactic
 import Svm.SBPF.Pubkey
+import Svm.SBPF.PubkeySL
 import Svm.SBPF.Patterns
 import Svm.SBPF.Region
 import Svm.SBPF.SepLogic
