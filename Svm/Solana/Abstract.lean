@@ -1,0 +1,10 @@
+-- Abstract Solana state + separation logic + refinement bridge.
+--
+-- Layered above the sBPF byte-level model: reasoning here is over
+-- decoded records (TokenAccount, ...) rather than byte ranges. See
+-- `Abstract/State.lean` for the layering rationale and the extension
+-- protocol for new fields.
+
+import Svm.Solana.Abstract.State
+import Svm.Solana.Abstract.SepLogic
+import Svm.Solana.Abstract.Triples

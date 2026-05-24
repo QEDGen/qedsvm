@@ -1,29 +1,44 @@
 /-
-  High-level Transfer refinement target — *statement only*.
+  High-level Transfer refinement target — two theorems.
 
-  This is the qedsvm-side artifact for the conversation question
-  "can we describe the spec of a Transfer at a higher level?": a
-  `tokenAcctBalance`-shifting Hoare triple over the full p-token
-  Transfer happy path.
+  ## `p_token_transfer_balance_spec` — REAL pinocchio Transfer (sorry'd)
 
-  The theorem body is `sorry`. The Layer 3b grind (currently 52/76 CU
-  in `PTokenTransferArmTwoCallsExt`) will close out the full
-  bytecode-level triple `p_token_transfer_arm_full_spec`; once that
-  lands, the body here is a thin refinement — unfold `tokenAcctBalance`
-  on both sides, apply the full Layer 3b triple, discharge the
-  arithmetic shift via `omega`, frame the unchanged `mint` / `owner` /
-  `rest` atoms.
+  A `tokenAcctBalance`-shifting Hoare triple over the full p-token
+  Transfer happy path. Body is `sorry` and remains so pending two
+  prerequisites:
+
+  1. Layer 3b closes the remaining 24 CU of the p-token Transfer
+     happy path (the balance-mutation slice — the existing
+     PTokenTransferArm* artifacts cover 52/76 CU of FP-softfloat
+     plumbing but don't touch TokenAccount fields).
+  2. A follow-up lemma shows pinocchio's emitted asm matches the
+     `MinimalTransferAsm` codegen pattern (or is a documented
+     variant) — at which point this theorem follows by reusing the
+     refinement bridge below.
+
+  ## `p_token_transfer_balance_spec_minimal` — synthetic anchor (PROVEN)
+
+  Same theorem shape, but for the synthetic `MinimalTransferAsm`
+  fixture (the refinement-pilot's asm anchor). Cites
+  `Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal_flat`.
+  Stated in the **flat** byte-level form (4 atoms per account
+  spelled out) — consistent with the Layer-3b artifact style and
+  avoids the SL bracketing mismatch that a `tokenAcctBalance`-wrapped
+  form would introduce. The wrapped form is the eventual user-facing
+  shape; it's deferred until a downstream theorem actually consumes
+  it (at which point the wrapper lift is worth writing).
 
   Per the Direction-A MIR design (qedgen issue #66), this theorem is
   the canonical lowering target for a `Stmt::TokenTransfer { from, to,
   amount }` MIR node — `runMir`-of-`TokenTransfer` IS exactly this
-  predicate shift. Per-program qedgen-generated proofs will eventually
-  cite this lemma directly.
+  predicate shift. The synthetic-anchor version is the first proven
+  instance of that lowering.
 -/
 
 import Svm.Solana.TokenAccount
 import Svm.SBPF.InstructionSpecs
 import Svm.SBPF.SLTactic
+import «RefinesTokenTransfer»
 
 namespace Examples.PTokenTransferBalanceSpec
 
@@ -101,5 +116,62 @@ theorem p_token_transfer_preserves_supply
     (_h_noOverflow : preB + x < 2 ^ 64) :
     (preA - x) + (preB + x) = preA + preB := by
   omega
+
+/-! ## Synthetic-anchor version — proven via the refinement bridge.
+
+This is the first proven instance of the `tokenAcctBalance`-shifting
+shape that `p_token_transfer_balance_spec` aspires to. Anchored to
+the synthetic `MinimalTransferAsm` codegen pattern (Tasks 8-10 of the
+refinement pilot) rather than real pinocchio bytecode.
+
+Stated in the flat byte-level form (one big `**` chain per account,
+not wrapped in `tokenAcctBalance`) to match the shape
+`Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal_flat`
+ships in — see that file's docstring for the bracketing-mismatch
+rationale. The `tokenAcctBalance`-wrapped variant is the eventual
+user-facing form; it follows by a sepConj-assoc reshape on top of
+this theorem when downstream demand justifies the wrapper. -/
+
+theorem p_token_transfer_balance_spec_minimal
+    -- Token / account parameters:
+    (srcAddr dstAddr amount preA preB vR3Old : Nat)
+    (mintSrc mintDst ownerSrc ownerDst : Pubkey)
+    (restSrc restDst : ByteArray)
+    -- Preconditions matching the abstract `tokenTransfer_spec`:
+    (h_funds      : amount ≤ preA)
+    (h_noOverflow : preB + amount < 2 ^ 64)
+    (h_srcBal     : preA < 2 ^ 64)
+    (h_dstBal     : preB < 2 ^ 64) :
+    cuTripleWithinMem 6 0 6 Examples.MinimalTransferAsm.minimalTransferCr
+      ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
+       (.r3 ↦ᵣ vR3Old) ** (.r4 ↦ᵣ amount) **
+       (srcAddr + MINT_OFF ↦Pubkey mintSrc) **
+       (srcAddr + OWNER_OFF ↦Pubkey ownerSrc) **
+       (srcAddr + AMOUNT_OFF ↦U64 preA) **
+       (srcAddr + REST_OFF ↦Bytes restSrc) **
+       (dstAddr + MINT_OFF ↦Pubkey mintDst) **
+       (dstAddr + OWNER_OFF ↦Pubkey ownerDst) **
+       (dstAddr + AMOUNT_OFF ↦U64 preB) **
+       (dstAddr + REST_OFF ↦Bytes restDst))
+      ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
+       (.r3 ↦ᵣ preB + amount) ** (.r4 ↦ᵣ amount) **
+       (srcAddr + MINT_OFF ↦Pubkey mintSrc) **
+       (srcAddr + OWNER_OFF ↦Pubkey ownerSrc) **
+       (srcAddr + AMOUNT_OFF ↦U64 preA - amount) **
+       (srcAddr + REST_OFF ↦Bytes restSrc) **
+       (dstAddr + MINT_OFF ↦Pubkey mintDst) **
+       (dstAddr + OWNER_OFF ↦Pubkey ownerDst) **
+       (dstAddr + AMOUNT_OFF ↦U64 preB + amount) **
+       (dstAddr + REST_OFF ↦Bytes restDst))
+      (fun rt =>
+        ((rt.containsRange (srcAddr + AMOUNT_OFF) 8 = true ∧
+            rt.containsWritable (srcAddr + AMOUNT_OFF) 8 = true) ∧
+          rt.containsRange (dstAddr + AMOUNT_OFF) 8 = true) ∧
+        rt.containsWritable (dstAddr + AMOUNT_OFF) 8 = true) :=
+  Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal_flat
+    srcAddr dstAddr amount vR3Old
+    { mint := mintSrc, owner := ownerSrc, amount := preA, rest := restSrc }
+    { mint := mintDst, owner := ownerDst, amount := preB, rest := restDst }
+    h_funds h_noOverflow h_srcBal h_dstBal
 
 end Examples.PTokenTransferBalanceSpec
