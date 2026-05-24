@@ -70,7 +70,7 @@ macro_rules
   | `(tactic| sl_disjoint_codereq) => `(tactic|
       first
       | (refine CodeReq.singleton_disjoint_singleton _ _ ?_
-         decide)
+         first | decide | omega)
       | (apply CodeReq.Disjoint_union_left
          · sl_disjoint_codereq
          · sl_disjoint_codereq)
@@ -103,7 +103,9 @@ macro_rules
       | exact pcFree_memU32Is _ _
       | exact pcFree_memU64Is _ _
       | exact pcFree_memBytes32Is _ _
-      | exact pcFree_memBytesIs _ _)
+      | exact pcFree_memBytesIs _ _
+      | exact pcFree_callStackIs _
+      | exact pcFree_returnDataIs _)
 
 syntax "sl_pcfree" : tactic
 

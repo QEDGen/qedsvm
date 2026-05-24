@@ -1332,6 +1332,12 @@ theorem pcFree_memBytes32Is (a : Nat) (bs : ByteArray) : (memBytes32Is a bs).pcF
 theorem pcFree_memBytesIs (a : Nat) (bs : ByteArray) : (memBytesIs a bs).pcFree := by
   intro h heq; rw [heq]; rfl
 
+theorem pcFree_callStackIs (cs : List CallFrame) : (callStackIs cs).pcFree := by
+  intro h heq; rw [heq]; rfl
+
+theorem pcFree_returnDataIs (rd : ByteArray) : (returnDataIs rd).pcFree := by
+  intro h heq; rw [heq]; rfl
+
 theorem pcFree_sepConj {P Q : Assertion} (hP : P.pcFree) (hQ : Q.pcFree) :
     (P ** Q).pcFree := by
   rintro h ⟨h1, h2, _, hu, hP1, hQ2⟩
