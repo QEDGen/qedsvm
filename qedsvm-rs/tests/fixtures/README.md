@@ -67,3 +67,23 @@ These three `.so` files were vendored verbatim from
 All three are V0 (`e_flags = 0`), so the V0 stack-frame model
 applies. We use them as cross-engine diff inputs only; we don't
 build or modify them in this repo.
+
+## `p_token.so` (106 KB)
+
+p-token (the pinocchio-based SPL Token reimplementation by Anza /
+Solana Program Library team), release `p-token@v1.0.0-rc.1`
+(April 2025). Drop-in for `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`,
+byte-for-byte compatible account layouts with the canonical SPL
+Token (`Mint` = 82 bytes, `TokenAccount` = 165 bytes), so our existing
+`build_token_account` helper applies unchanged.
+
+Source: <https://github.com/solana-program/token/releases/tag/p-token%40v1.0.0-rc.1>
+(asset `spl_p_token.so`).
+
+SHA-256: `8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697`
+
+V0 (`e_flags = 0`). First major recognizable mainnet-track program
+in the harness — exercises pinocchio's zero-copy account access
+pattern (raw pointer casts into the serialized input buffer, no
+Borsh) against our memory model. Used as a cross-engine diff input;
+not built in this repo.

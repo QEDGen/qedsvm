@@ -45,6 +45,15 @@ const INCREMENTER_SO: &[u8] = include_bytes!("fixtures/incrementer.so");
 /// Exercises sysvar getters, deeper syscall surface, and the full
 /// `entrypoint!`+`process_instruction` shape of a published program.
 const TOKEN_SO: &[u8] = include_bytes!("fixtures/token.so");
+/// p-token (pinocchio-based SPL Token reimplementation), release
+/// `p-token@v1.0.0-rc.1` from solana-program/token (Apr 2025).
+/// Drop-in for `TokenkegQfeZyiN…`, byte-for-byte compatible account
+/// layouts with canonical SPL Token. First major mainnet-track
+/// program in the harness exercising pinocchio's zero-copy account
+/// access pattern (raw pointer casts into the serialized input
+/// buffer, no Borsh deserialization). See `fixtures/README.md` for
+/// SHA-256 + provenance.
+const P_TOKEN_SO: &[u8] = include_bytes!("fixtures/p_token.so");
 /// SPL Associated Token Account program (105 KB). Most paths CPI
 /// into Token/System; we don't model CPI yet, so we restrict the
 /// diff to error paths that fail before CPI.
@@ -677,6 +686,142 @@ fn token_transfer_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// p-token `Transfer` (discriminant 3) — the same instruction shape
+/// as `token_transfer_matches_mollusk`, but invoking the pinocchio
+/// reimplementation (`p_token.so`) instead of the canonical
+/// `token.so`. Since p-token is byte-for-byte compatible with SPL
+/// Token at the account layout, `build_token_account` works as-is
+/// and only the program ID + binary swap.
+///
+/// What this validates beyond the SPL Token Transfer test:
+/// - **Pinocchio entrypoint**: zero-copy account access via raw
+///   pointer casts into the serialized input buffer (no Borsh
+///   deserialization, no AccountInfo reconstruction). Different
+///   `.text` and different relocation pattern than canonical Token.
+/// - **CU parity on a CU-optimized program**: pinocchio's whole
+///   pitch is dramatic CU reduction (transfers in ~3-5k CU vs
+///   ~15k for the canonical Token program). If our model is off
+///   by one anywhere in the inner loops, it will surface here
+///   loud and obvious.
+/// - **First major mainnet-track program in the harness** — gives
+///   the README a recognizable artifact to point at.
+#[test]
+fn p_token_transfer_matches_mollusk() {
+    let program_id = pid(40);
+    let mint = pid(41);
+    let authority = pid(42);
+    let source_key = pid(43);
+    let dest_key = pid(44);
+
+    const TRANSFER_AMOUNT: u64 = 250;
+    const SOURCE_INITIAL: u64 = 1_000;
+    const DEST_INITIAL: u64 = 0;
+    const LAMPORTS: u64 = 2_039_280; // standard rent-exempt for 165 bytes
+
+    let source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
+    let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
+
+    let pre_src_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_dst_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+
+    let pre_src_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_dst_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    // Transfer instruction data: [3, amount_le_u64...] = 9 bytes.
+    let mut ix_data = Vec::with_capacity(9);
+    ix_data.push(3);
+    ix_data.extend_from_slice(&TRANSFER_AMOUNT.to_le_bytes());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, pre_src_shared),
+            (dest_key, pre_dst_shared),
+            (authority, pre_auth_shared),
+        ])
+        .expect("qedsvm runs p-token Transfer");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, pre_src_mollusk),
+        (dest_key, pre_dst_mollusk),
+        (authority, pre_auth_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+    if !fs_r.logs.is_empty() {
+        eprintln!("fs.logs ({}):", fs_r.logs.len());
+        for (i, l) in fs_r.logs.iter().enumerate() {
+            eprintln!("  [{i}] {}", String::from_utf8_lossy(l));
+        }
+    }
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on p-token Transfer, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on p-token Transfer, got {:?}", m_r.program_result);
+
+    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
+    assert_eq!(fs_r.resulting_accounts.len(), 3);
+    assert_eq!(m_r.resulting_accounts.len(), 3);
+
+    for i in 0..3 {
+        let (_, fa) = &fs_r.resulting_accounts[i];
+        let (_, ma) = &m_r.resulting_accounts[i];
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "p-token account[{i}] data diverged after Transfer");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "p-token account[{i}] lamports diverged after Transfer");
+        assert_eq!(fa.owner(), &ma.owner,
+            "p-token account[{i}] owner diverged after Transfer");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for p-token Transfer: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }
