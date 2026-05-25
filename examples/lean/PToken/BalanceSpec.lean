@@ -48,12 +48,14 @@ import SVM.Solana.TokenAccount
 import SVM.SBPF.InstructionSpecs
 import SVM.SBPF.Tactic.SL
 import PToken.RefinesTransfer
+import PToken.TransferArm.FullHappyPath
 
 namespace Examples.PTokenTransferBalanceSpec
 
 open SVM.SBPF
 open SVM.Solana
 open SVM.Pubkey
+open Memory
 
 /-- High-level Transfer refinement target. Captures the balance shift
     induced by an SPL Token v3 Transfer of `x` units from `ataA` to
@@ -206,5 +208,252 @@ theorem p_token_transfer_balance_spec_minimal
     { mint := mintSrc, owner := ownerSrc, amount := preA, rest := restSrc }
     { mint := mintDst, owner := ownerDst, amount := preB, rest := restDst }
     h_funds h_noOverflow h_srcBal h_dstBal
+
+/-! ## Real-pinocchio version — proven via the FullHappyPath chain.
+
+This is the second proven instance of the balance-shifting shape, this time
+anchored to the **real pinocchio p-token Transfer happy path** (75 CU, 10
+sub-arm chain) rather than the synthetic `MinimalTransferAsm`. Cites
+`Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec`.
+
+The statement is in the **same flat byte-level form** as the FullHappyPath
+artifact: 38 atoms (8 registers + 30 memory cells) in the right-folded
+chain. The only change from FullHappyPath's post is that the two balance
+atoms
+
+    [r1 + 0xa0]   ↦U64 wrapSub srcBalance txAmount
+    [r1 + 0x29a8] ↦U64 wrapAdd dstBalance txAmount
+
+are exposed in their unsigned-clean form
+
+    [r1 + 0xa0]   ↦U64 (srcBalance - txAmount)
+    [r1 + 0x29a8] ↦U64 (dstBalance + txAmount)
+
+under the additional preconditions `h_funds : txAmount ≤ srcBalance` (so
+`wrapSub` doesn't underflow) and `h_noOverflow : dstBalance + txAmount <
+2^64` (so `wrapAdd` doesn't wrap). The unsigned form is what downstream
+consumers (e.g. the MIR `TokenTransfer` lowering, Direction A) want; the
+wrap form is what the bytecode literally produces.
+
+The `tokenAcctBalance`-wrapped form (mirroring `p_token_transfer_balance_spec`'s
+signature with `ataA := initR1 + 0x60`, `ataB := initR1 + 0x2968`) is **not**
+established here. Getting there requires framing in two missing atoms
+(`ataB + OWNER_OFF = initR1 + 0x2988` and `ataB + REST_OFF = initR1 +
+0x29b0`) plus reshaping the 1-byte `signerByte` (currently at
+`initR1 + 0xa8`) into a 93-byte `↦Bytes` claim. Both gaps need
+non-trivial frame and SL reshape work; deferred until a downstream
+consumer demands the wrap. -/
+
+set_option maxHeartbeats 4000000 in
+set_option linter.unusedVariables false in
+theorem p_token_transfer_balance_spec_pinocchio
+    (initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7 : Nat)
+    (disc : Nat)
+    (m1 m3 : Nat) (m2 m4 : Nat)
+    (amount : Nat)
+    (layoutBound layoutTag : Nat)
+    (srcState dstState : Nat)
+    (txAmount srcBalance dstBalance : Nat)
+    (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
+    (src1 src2 src3 src4 : Nat)
+    (dst1 dst2 dst3 dst4 : Nat)
+    (dstMint2 dstMint3 dstMint4 : Nat)
+    (authWord signerByte authByte closeFlag : Nat)
+    -- Size hypotheses (same as FullHappyPath)
+    (h_m1_lt : m1 < 2 ^ 64)
+    (h_m3_lt : m3 < 2 ^ 64)
+    (h_amt_in : amount < 2 ^ 64)
+    (h_bound_lt : layoutBound < 2 ^ 64)
+    (h_tx_lt : txAmount < 2 ^ 64)
+    (h_bal_lt : srcBalance < 2 ^ 64)
+    (h_dst_bal_lt : dstBalance < 2 ^ 64)
+    (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
+    (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
+    (h_s1_lt : src1 < 2 ^ 64) (h_s2_lt : src2 < 2 ^ 64)
+    (h_s3_lt : src3 < 2 ^ 64) (h_s4_lt : src4 < 2 ^ 64)
+    (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
+    (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
+    (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
+    (h_dm4_lt : dstMint4 < 2 ^ 64)
+    (h_auth_lt : authWord < 2 ^ 64)
+    -- Sub-arm structural hypotheses (same as FullHappyPath)
+    (h_disc : disc % 256 = toU64 3)
+    (hm1 : m1 = toU64 0xa5)
+    (hm2 : m2 % 256 = toU64 0xff)
+    (hm3 : m3 = toU64 0xa5)
+    (hm4 : m4 % 256 = toU64 0xff)
+    (h_bound_ge : layoutBound ≥ 9)
+    (h_tag : layoutTag % 256 = toU64 3)
+    (h_src_le : srcState % 256 ≤ 2) (h_src_ne : srcState % 256 ≠ 0)
+    (h_dst_le : dstState % 256 ≤ 2) (h_dst_ne : dstState % 256 ≠ 0)
+    (h_src_ne2 : srcState % 256 ≠ 2) (h_dst_ne2 : dstState % 256 ≠ 2)
+    (h_bal_ge : srcBalance ≥ txAmount)
+    (h_eq_s1 : src1 = canonMint1) (h_eq_s2 : src2 = canonMint2)
+    (h_eq_s3 : src3 = canonMint3) (h_eq_s4 : src4 = canonMint4)
+    (h_signer_ne : signerByte % 256 ≠ toU64 1)
+    (h_r0_eq_r5_at_h4a : signerByte % 256 = authWord)
+    (h_eq_d1 : dst1 = authWord) (h_eq_d2 : dst2 = dstMint2)
+    (h_eq_d3 : dst3 = dstMint3) (h_eq_d4 : dst4 = dstMint4)
+    (h_r4_ne : amount ≠ toU64 0x163)
+    (h_amt_ne_0 : txAmount ≠ toU64 0)
+    (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
+    (h_close_ne_1 : closeFlag % 256 ≠ toU64 1)
+    -- High-level Transfer preconditions enabling the unsigned-clean rewrite:
+    -- `h_funds` is picked up by `omega` inside `h_wsub` to prove the wrap
+    -- collapse; the Lean linter doesn't see omega's auto-pickup, hence the
+    -- linter-disable below.
+    (h_funds      : txAmount ≤ srcBalance)
+    (h_noOverflow : dstBalance + txAmount < 2 ^ 64) :
+    cuTripleWithinMem 75 0 0 75
+      Examples.PTokenTransferFullHappyPath.fullHappyPathCr
+      -- PRECONDITION — identical to FullHappyPath
+      ((.r0 ↦ᵣ initR0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
+        (.r3 ↦ᵣ initR3) ** (.r4 ↦ᵣ initR4) ** (.r5 ↦ᵣ initR5) **
+        (.r6 ↦ᵣ initR6) ** (.r7 ↦ᵣ initR7) **
+        (effectiveAddr initR1 0 ↦ₘ disc) **
+        (effectiveAddr initR1 0x58   ↦U64 m1) **
+        (effectiveAddr initR1 0x2910 ↦ₘ m2) **
+        (effectiveAddr initR1 0x2960 ↦U64 m3) **
+        (effectiveAddr initR1 0x5218 ↦ₘ m4) **
+        (effectiveAddr initR1 0x5268 ↦U64 amount) **
+        (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 0x7a78 ↦U64 layoutBound) **
+        (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 0x7a80 ↦ₘ layoutTag) **
+        (effectiveAddr initR1 0xcc   ↦ₘ srcState) **
+        (effectiveAddr initR1 0x29d4 ↦ₘ dstState) **
+        (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 0x7a81 ↦U64 txAmount) **
+        (effectiveAddr initR1 0xa0   ↦U64 srcBalance) **
+        (effectiveAddr initR1 0x2968 ↦U64 canonMint1) **
+        (effectiveAddr initR1 0x60   ↦U64 src1) **
+        (effectiveAddr initR1 0x2970 ↦U64 canonMint2) **
+        (effectiveAddr initR1 0x68   ↦U64 src2) **
+        (effectiveAddr initR1 0x2978 ↦U64 canonMint3) **
+        (effectiveAddr initR1 0x70   ↦U64 src3) **
+        (effectiveAddr initR1 0x2980 ↦U64 canonMint4) **
+        (effectiveAddr initR1 0x78   ↦U64 src4) **
+        (effectiveAddr initR1 0x5220 ↦U64 authWord) **
+        (effectiveAddr initR1 0xa8   ↦ₘ signerByte) **
+        (effectiveAddr initR1 0x80   ↦U64 dst1) **
+        (effectiveAddr initR1 0x5228 ↦U64 dstMint2) **
+        (effectiveAddr initR1 0x88   ↦U64 dst2) **
+        (effectiveAddr initR1 0x5230 ↦U64 dstMint3) **
+        (effectiveAddr initR1 0x90   ↦U64 dst3) **
+        (effectiveAddr initR1 0x5238 ↦U64 dstMint4) **
+        (effectiveAddr initR1 0x98   ↦U64 dst4) **
+        (effectiveAddr initR1 0x5219 ↦ₘ authByte) **
+        (effectiveAddr initR1 0x29a8 ↦U64 dstBalance) **
+        (effectiveAddr initR1 0xcd   ↦ₘ closeFlag))
+      -- POSTCONDITION — identical to FullHappyPath EXCEPT the two
+      -- balance atoms are stated in unsigned-clean form.
+      ((.r0 ↦ᵣ toU64 0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ txAmount) **
+        (.r3 ↦ᵣ closeFlag % 256) ** (.r4 ↦ᵣ authByte % 256) **
+        (.r5 ↦ᵣ dstMint4) ** (.r6 ↦ᵣ toU64 0) ** (.r7 ↦ᵣ toU64 4) **
+        (effectiveAddr initR1 0 ↦ₘ disc) **
+        (effectiveAddr initR1 0x58   ↦U64 m1) **
+        (effectiveAddr initR1 0x2910 ↦ₘ m2) **
+        (effectiveAddr initR1 0x2960 ↦U64 m3) **
+        (effectiveAddr initR1 0x5218 ↦ₘ m4) **
+        (effectiveAddr initR1 0x5268 ↦U64 amount) **
+        (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 0x7a78 ↦U64 layoutBound) **
+        (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 0x7a80 ↦ₘ layoutTag) **
+        (effectiveAddr initR1 0xcc   ↦ₘ srcState) **
+        (effectiveAddr initR1 0x29d4 ↦ₘ dstState) **
+        (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 0x7a81 ↦U64 txAmount) **
+        -- Balance shift — unsigned-clean form (the HEADLINE claim):
+        (effectiveAddr initR1 0xa0   ↦U64 (srcBalance - txAmount)) **
+        (effectiveAddr initR1 0x2968 ↦U64 canonMint1) **
+        (effectiveAddr initR1 0x60   ↦U64 src1) **
+        (effectiveAddr initR1 0x2970 ↦U64 canonMint2) **
+        (effectiveAddr initR1 0x68   ↦U64 src2) **
+        (effectiveAddr initR1 0x2978 ↦U64 canonMint3) **
+        (effectiveAddr initR1 0x70   ↦U64 src3) **
+        (effectiveAddr initR1 0x2980 ↦U64 canonMint4) **
+        (effectiveAddr initR1 0x78   ↦U64 src4) **
+        (effectiveAddr initR1 0x5220 ↦U64 authWord) **
+        (effectiveAddr initR1 0xa8   ↦ₘ signerByte) **
+        (effectiveAddr initR1 0x80   ↦U64 dst1) **
+        (effectiveAddr initR1 0x5228 ↦U64 dstMint2) **
+        (effectiveAddr initR1 0x88   ↦U64 dst2) **
+        (effectiveAddr initR1 0x5230 ↦U64 dstMint3) **
+        (effectiveAddr initR1 0x90   ↦U64 dst3) **
+        (effectiveAddr initR1 0x5238 ↦U64 dstMint4) **
+        (effectiveAddr initR1 0x98   ↦U64 dst4) **
+        (effectiveAddr initR1 0x5219 ↦ₘ authByte) **
+        (effectiveAddr initR1 0x29a8 ↦U64 (dstBalance + txAmount)) **
+        (effectiveAddr initR1 0xcd   ↦ₘ closeFlag))
+      (fun rt =>
+        ((((((((rt.containsRange (effectiveAddr initR1 0) 1 = true ∧
+                    ((rt.containsRange (effectiveAddr initR1 88) 8 = true ∧
+                          rt.containsRange (effectiveAddr initR1 10512) 1 = true) ∧
+                        rt.containsRange (effectiveAddr initR1 10592) 8 = true) ∧
+                      rt.containsRange (effectiveAddr initR1 21016) 1 = true) ∧
+                  rt.containsRange (effectiveAddr initR1 21096) 8 = true) ∧
+                rt.containsRange (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 31352) 8 = true ∧
+                  rt.containsRange (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 31360) 1 = true) ∧
+              rt.containsRange (effectiveAddr initR1 204) 1 = true ∧
+                rt.containsRange (effectiveAddr initR1 10708) 1 = true) ∧
+            rt.containsRange (effectiveAddr (wrapAdd initR1 (Examples.PTokenTransferArmH3aAmountAlign.alignedAmount amount)) 31361) 8 = true ∧
+              rt.containsRange (effectiveAddr initR1 160) 8 = true) ∧
+          ((((((rt.containsRange (effectiveAddr initR1 10600) 8 = true ∧
+                        rt.containsRange (effectiveAddr initR1 96) 8 = true) ∧
+                      rt.containsRange (effectiveAddr initR1 10608) 8 = true) ∧
+                    rt.containsRange (effectiveAddr initR1 104) 8 = true) ∧
+                  rt.containsRange (effectiveAddr initR1 10616) 8 = true) ∧
+                rt.containsRange (effectiveAddr initR1 112) 8 = true) ∧
+              rt.containsRange (effectiveAddr initR1 10624) 8 = true) ∧
+            rt.containsRange (effectiveAddr initR1 120) 8 = true) ∧
+        rt.containsRange (effectiveAddr initR1 21024) 8 = true ∧
+          rt.containsRange (effectiveAddr initR1 168) 1 = true) ∧
+      (((((rt.containsRange (effectiveAddr initR1 128) 8 = true ∧
+                  rt.containsRange (effectiveAddr initR1 21032) 8 = true) ∧
+                rt.containsRange (effectiveAddr initR1 136) 8 = true) ∧
+              rt.containsRange (effectiveAddr initR1 21040) 8 = true) ∧
+            rt.containsRange (effectiveAddr initR1 144) 8 = true) ∧
+          rt.containsRange (effectiveAddr initR1 21048) 8 = true) ∧
+        rt.containsRange (effectiveAddr initR1 152) 8 = true) ∧
+    (((rt.containsRange (effectiveAddr initR1 21017) 1 = true ∧
+            rt.containsWritable (effectiveAddr initR1 160) 8 = true) ∧
+          rt.containsRange (effectiveAddr initR1 10664) 8 = true) ∧
+        rt.containsWritable (effectiveAddr initR1 10664) 8 = true) ∧
+      rt.containsRange (effectiveAddr initR1 205) 1 = true) := by
+  -- Cite the proven FullHappyPath triple.
+  have h_full :=
+    Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec
+      initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7
+      disc m1 m3 m2 m4 amount layoutBound layoutTag srcState dstState
+      txAmount srcBalance dstBalance
+      canonMint1 canonMint2 canonMint3 canonMint4
+      src1 src2 src3 src4
+      dst1 dst2 dst3 dst4
+      dstMint2 dstMint3 dstMint4
+      authWord signerByte authByte closeFlag
+      h_m1_lt h_m3_lt h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
+      h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
+      h_s1_lt h_s2_lt h_s3_lt h_s4_lt
+      h_d1_lt h_d2_lt h_d3_lt h_d4_lt
+      h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
+      h_disc hm1 hm2 hm3 hm4 h_bound_ge h_tag
+      h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
+      h_eq_s1 h_eq_s2 h_eq_s3 h_eq_s4 h_signer_ne h_r0_eq_r5_at_h4a
+      h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne
+      h_amt_ne_0 h_auth_ne_0 h_close_ne_1
+  -- Wrap-arithmetic collapse to unsigned form. Mirrors the
+  -- `h_wsub`/`h_wadd` pattern from RefinesTransfer.lean L86-100.
+  have h_tx_lt' : txAmount < U64_MODULUS := by unfold U64_MODULUS; exact h_tx_lt
+  have h_bal_lt' : srcBalance < U64_MODULUS := by unfold U64_MODULUS; exact h_bal_lt
+  have h_noOverflow' : dstBalance + txAmount < U64_MODULUS := by
+    unfold U64_MODULUS; exact h_noOverflow
+  have h_wsub : wrapSub srcBalance txAmount = srcBalance - txAmount := by
+    show (srcBalance + U64_MODULUS - txAmount % U64_MODULUS) % U64_MODULUS =
+         srcBalance - txAmount
+    rw [Nat.mod_eq_of_lt h_tx_lt']
+    have h_rewrite : srcBalance + U64_MODULUS - txAmount =
+                     (srcBalance - txAmount) + U64_MODULUS := by omega
+    rw [h_rewrite, Nat.add_mod_right,
+        Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt (Nat.sub_le _ _) h_bal_lt')]
+  have h_wadd : wrapAdd dstBalance txAmount = dstBalance + txAmount := by
+    show (dstBalance + txAmount) % U64_MODULUS = dstBalance + txAmount
+    exact Nat.mod_eq_of_lt h_noOverflow'
+  rw [h_wsub, h_wadd] at h_full
+  exact h_full
 
 end Examples.PTokenTransferBalanceSpec
