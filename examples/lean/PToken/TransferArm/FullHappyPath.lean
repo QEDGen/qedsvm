@@ -357,4 +357,282 @@ theorem p_token_transfer_full_happy_path_spec
   sl_block_iter [h_h1, h_h2, h_h3a, h_h3b, h_h3c, h_h3d,
                  h_h3e, h_h3f, h_h4a, h_h4b]
 
+/-! ## 76-CU terminating triple — happy path + success-exit
+
+Extends `p_token_transfer_full_happy_path_spec` (75 CU, ends in
+running state at PC 75) with the program's final `.exit` instruction
+at PC 75 (1 step, 0 CU surcharge — `.exit` is not a syscall). Composes
+to a `cuTripleAbortsWithinMem 76` claim: the program reaches
+`exitCode = some (toU64 0)` (success exit) within 76 steps from PC 0.
+
+The precondition adds `callStackIs []` to the FullHappyPath pre,
+expressing that the program is at top-level entry (no caller frame).
+This is required because `.exit`'s success branch only fires when the
+call stack is empty; with a non-empty stack, `.exit` instead pops a
+frame and returns. The `callStackIs []` atom flows through all 10
+sub-arm Hoare triples in the universal `R` (the chain never touches
+the call stack).
+
+The result is a `cuTripleAbortsWithinMem` (memory-aware aborting
+triple) because the chain has memory ops and a region requirement. -/
+
+set_option maxHeartbeats 8000000 in
+theorem p_token_transfer_full_happy_path_terminates
+    (initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7 : Nat)
+    (disc : Nat)
+    (m1 m3 : Nat) (m2 m4 : Nat)
+    (amount : Nat)
+    (layoutBound layoutTag : Nat)
+    (srcState dstState : Nat)
+    (txAmount srcBalance dstBalance : Nat)
+    (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
+    (src1 src2 src3 src4 : Nat)
+    (dst1 dst2 dst3 dst4 : Nat)
+    (dstMint2 dstMint3 dstMint4 : Nat)
+    (authWord signerByte authByte closeFlag : Nat)
+    (h_m1_lt : m1 < 2 ^ 64)
+    (h_m3_lt : m3 < 2 ^ 64)
+    (h_amt_in : amount < 2 ^ 64)
+    (h_bound_lt : layoutBound < 2 ^ 64)
+    (h_tx_lt : txAmount < 2 ^ 64)
+    (h_bal_lt : srcBalance < 2 ^ 64)
+    (h_dst_bal_lt : dstBalance < 2 ^ 64)
+    (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
+    (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
+    (h_s1_lt : src1 < 2 ^ 64) (h_s2_lt : src2 < 2 ^ 64)
+    (h_s3_lt : src3 < 2 ^ 64) (h_s4_lt : src4 < 2 ^ 64)
+    (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
+    (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
+    (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
+    (h_dm4_lt : dstMint4 < 2 ^ 64)
+    (h_auth_lt : authWord < 2 ^ 64)
+    (h_disc : disc % 256 = toU64 3)
+    (hm1 : m1 = toU64 0xa5)
+    (hm2 : m2 % 256 = toU64 0xff)
+    (hm3 : m3 = toU64 0xa5)
+    (hm4 : m4 % 256 = toU64 0xff)
+    (h_bound_ge : layoutBound ≥ 9)
+    (h_tag : layoutTag % 256 = toU64 3)
+    (h_src_le : srcState % 256 ≤ 2) (h_src_ne : srcState % 256 ≠ 0)
+    (h_dst_le : dstState % 256 ≤ 2) (h_dst_ne : dstState % 256 ≠ 0)
+    (h_src_ne2 : srcState % 256 ≠ 2) (h_dst_ne2 : dstState % 256 ≠ 2)
+    (h_bal_ge : srcBalance ≥ txAmount)
+    (h_eq_s1 : src1 = canonMint1) (h_eq_s2 : src2 = canonMint2)
+    (h_eq_s3 : src3 = canonMint3) (h_eq_s4 : src4 = canonMint4)
+    (h_signer_ne : signerByte % 256 ≠ toU64 1)
+    (h_r0_eq_r5_at_h4a : signerByte % 256 = authWord)
+    (h_eq_d1 : dst1 = authWord) (h_eq_d2 : dst2 = dstMint2)
+    (h_eq_d3 : dst3 = dstMint3) (h_eq_d4 : dst4 = dstMint4)
+    (h_r4_ne : amount ≠ toU64 0x163)
+    (h_amt_ne_0 : txAmount ≠ toU64 0)
+    (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
+    (h_close_ne_1 : closeFlag % 256 ≠ toU64 1) :
+    cuTripleAbortsWithinMem 76 0 0
+      (fullHappyPathCr.union (CodeReq.singleton 75 .exit))
+      -- PRECONDITION: FullHappyPath's pre (in explicit left-grouped
+      -- form via outer parens) framed with callStackIs []. The
+      -- left-grouping matches the shape produced by
+      -- `cuTripleWithinMem_frame_right`, so no extra reshape is needed
+      -- inside the proof.
+      (((.r0 ↦ᵣ initR0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
+        (.r3 ↦ᵣ initR3) ** (.r4 ↦ᵣ initR4) ** (.r5 ↦ᵣ initR5) **
+        (.r6 ↦ᵣ initR6) ** (.r7 ↦ᵣ initR7) **
+        (effectiveAddr initR1 0 ↦ₘ disc) **
+        (effectiveAddr initR1 0x58   ↦U64 m1) **
+        (effectiveAddr initR1 0x2910 ↦ₘ m2) **
+        (effectiveAddr initR1 0x2960 ↦U64 m3) **
+        (effectiveAddr initR1 0x5218 ↦ₘ m4) **
+        (effectiveAddr initR1 0x5268 ↦U64 amount) **
+        (effectiveAddr (wrapAdd initR1 (alignedAmount amount)) 0x7a78 ↦U64 layoutBound) **
+        (effectiveAddr (wrapAdd initR1 (alignedAmount amount)) 0x7a80 ↦ₘ layoutTag) **
+        (effectiveAddr initR1 0xcc   ↦ₘ srcState) **
+        (effectiveAddr initR1 0x29d4 ↦ₘ dstState) **
+        (effectiveAddr (wrapAdd initR1 (alignedAmount amount)) 0x7a81 ↦U64 txAmount) **
+        (effectiveAddr initR1 0xa0   ↦U64 srcBalance) **
+        (effectiveAddr initR1 0x2968 ↦U64 canonMint1) **
+        (effectiveAddr initR1 0x60   ↦U64 src1) **
+        (effectiveAddr initR1 0x2970 ↦U64 canonMint2) **
+        (effectiveAddr initR1 0x68   ↦U64 src2) **
+        (effectiveAddr initR1 0x2978 ↦U64 canonMint3) **
+        (effectiveAddr initR1 0x70   ↦U64 src3) **
+        (effectiveAddr initR1 0x2980 ↦U64 canonMint4) **
+        (effectiveAddr initR1 0x78   ↦U64 src4) **
+        (effectiveAddr initR1 0x5220 ↦U64 authWord) **
+        (effectiveAddr initR1 0xa8   ↦ₘ signerByte) **
+        (effectiveAddr initR1 0x80   ↦U64 dst1) **
+        (effectiveAddr initR1 0x5228 ↦U64 dstMint2) **
+        (effectiveAddr initR1 0x88   ↦U64 dst2) **
+        (effectiveAddr initR1 0x5230 ↦U64 dstMint3) **
+        (effectiveAddr initR1 0x90   ↦U64 dst3) **
+        (effectiveAddr initR1 0x5238 ↦U64 dstMint4) **
+        (effectiveAddr initR1 0x98   ↦U64 dst4) **
+        (effectiveAddr initR1 0x5219 ↦ₘ authByte) **
+        (effectiveAddr initR1 0x29a8 ↦U64 dstBalance) **
+        (effectiveAddr initR1 0xcd   ↦ₘ closeFlag)) **
+        callStackIs [])
+      (fun rt =>
+        ((((((((rt.containsRange (effectiveAddr initR1 0) 1 = true ∧
+                    ((rt.containsRange (effectiveAddr initR1 88) 8 = true ∧
+                          rt.containsRange (effectiveAddr initR1 10512) 1 = true) ∧
+                        rt.containsRange (effectiveAddr initR1 10592) 8 = true) ∧
+                      rt.containsRange (effectiveAddr initR1 21016) 1 = true) ∧
+                  rt.containsRange (effectiveAddr initR1 21096) 8 = true) ∧
+                rt.containsRange (effectiveAddr (wrapAdd initR1 (alignedAmount amount)) 31352) 8 = true ∧
+                  rt.containsRange (effectiveAddr (wrapAdd initR1 (alignedAmount amount)) 31360) 1 = true) ∧
+              rt.containsRange (effectiveAddr initR1 204) 1 = true ∧
+                rt.containsRange (effectiveAddr initR1 10708) 1 = true) ∧
+            rt.containsRange (effectiveAddr (wrapAdd initR1 (alignedAmount amount)) 31361) 8 = true ∧
+              rt.containsRange (effectiveAddr initR1 160) 8 = true) ∧
+          ((((((rt.containsRange (effectiveAddr initR1 10600) 8 = true ∧
+                        rt.containsRange (effectiveAddr initR1 96) 8 = true) ∧
+                      rt.containsRange (effectiveAddr initR1 10608) 8 = true) ∧
+                    rt.containsRange (effectiveAddr initR1 104) 8 = true) ∧
+                  rt.containsRange (effectiveAddr initR1 10616) 8 = true) ∧
+                rt.containsRange (effectiveAddr initR1 112) 8 = true) ∧
+              rt.containsRange (effectiveAddr initR1 10624) 8 = true) ∧
+            rt.containsRange (effectiveAddr initR1 120) 8 = true) ∧
+        rt.containsRange (effectiveAddr initR1 21024) 8 = true ∧
+          rt.containsRange (effectiveAddr initR1 168) 1 = true) ∧
+      (((((rt.containsRange (effectiveAddr initR1 128) 8 = true ∧
+                  rt.containsRange (effectiveAddr initR1 21032) 8 = true) ∧
+                rt.containsRange (effectiveAddr initR1 136) 8 = true) ∧
+              rt.containsRange (effectiveAddr initR1 21040) 8 = true) ∧
+            rt.containsRange (effectiveAddr initR1 144) 8 = true) ∧
+          rt.containsRange (effectiveAddr initR1 21048) 8 = true) ∧
+        rt.containsRange (effectiveAddr initR1 152) 8 = true) ∧
+    (((rt.containsRange (effectiveAddr initR1 21017) 1 = true ∧
+            rt.containsWritable (effectiveAddr initR1 160) 8 = true) ∧
+          rt.containsRange (effectiveAddr initR1 10664) 8 = true) ∧
+        rt.containsWritable (effectiveAddr initR1 10664) 8 = true) ∧
+      rt.containsRange (effectiveAddr initR1 205) 1 = true)
+      (toU64 0) := by
+  -- The composition: FullHappyPath (75 CU, PC 0→75) seq'd with .exit
+  -- at PC 75 (1 CU, success exit). We compose at the
+  -- cuTripleAbortsWithinMem level by:
+  --   1. Lift FullHappyPath via cuTripleWithinMem_frame_right to add
+  --      callStackIs [] to both pre and post.
+  --   2. Compose with exit_aborts_spec_cuTriple via the new
+  --      cuTripleWithinMem_seq_abort_pure lemma.
+  --   3. Reshape pre and post atoms via cuTripleAbortsWithinMem_weaken.
+  have h_full :=
+    p_token_transfer_full_happy_path_spec
+      initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7
+      disc m1 m3 m2 m4 amount layoutBound layoutTag srcState dstState
+      txAmount srcBalance dstBalance
+      canonMint1 canonMint2 canonMint3 canonMint4
+      src1 src2 src3 src4 dst1 dst2 dst3 dst4
+      dstMint2 dstMint3 dstMint4
+      authWord signerByte authByte closeFlag
+      h_m1_lt h_m3_lt h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
+      h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
+      h_s1_lt h_s2_lt h_s3_lt h_s4_lt
+      h_d1_lt h_d2_lt h_d3_lt h_d4_lt
+      h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
+      h_disc hm1 hm2 hm3 hm4 h_bound_ge h_tag
+      h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
+      h_eq_s1 h_eq_s2 h_eq_s3 h_eq_s4 h_signer_ne h_r0_eq_r5_at_h4a
+      h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne
+      h_amt_ne_0 h_auth_ne_0 h_close_ne_1
+  -- h_full : cuTripleWithinMem 75 0 0 75 fullHappyPathCr <pre> <post> <rr>
+  -- Drop into the unfolded `cuTripleAbortsWithinMem` definition.
+  intro F hF fetch hcr s hPF hpc hex h_reg
+  -- Split the CodeReq: the union is fullHappyPathCr (PCs 0..74) plus
+  -- the singleton exit at PC 75. These are disjoint by PC range.
+  have hd_cr : fullHappyPathCr.Disjoint (CodeReq.singleton 75 .exit) := by
+    -- fullHappyPathCr covers PCs 0..74; the singleton is at PC 75.
+    -- The strict disjointness check would walk the CR tree, but for
+    -- our purposes any address either lies in fullHappyPathCr's range
+    -- or equals 75 (not both). The sl_disjoint_codereq tactic
+    -- mechanises this, but here we go through unfold and decide:
+    unfold fullHappyPathCr
+    sl_disjoint_codereq
+  have hcr_full := CodeReq.SatisfiedBy_of_union_left hcr
+  have hcr_exit := CodeReq.SatisfiedBy_of_union_right hd_cr hcr
+  -- Lift FullHappyPath to a triple with callStackIs [] framed into
+  -- pre/post via cuTripleWithinMem_frame_right. Now
+  -- pre = FullHappyPath.pre ** callStackIs []  (matching our 76-CU pre).
+  -- post = FullHappyPath.post ** callStackIs [].
+  have h_full_framed :=
+    cuTripleWithinMem_frame_right (callStackIs []) (pcFree_callStackIs _) h_full
+  -- Apply h_full_framed at s with universal R = F.
+  obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
+    h_full_framed F hF fetch hcr_full s hPF hpc hex h_reg
+  -- hQF : ((FullHappyPath.post ** callStackIs []) ** F).holdsFor mid.
+  -- Reshape via two assoc.mp's to peel off (.r0 ↦ᵣ toU64 0):
+  --   (FullHappyPath.post ** callStackIs []) ** F
+  --   ⇒ (((.r0 ↦ᵣ toU64 0) ** PostRest) ** callStackIs []) ** F
+  --   assoc.mp: ((.r0 ↦ᵣ toU64 0) ** PostRest) ** (callStackIs [] ** F)
+  --   assoc.mp: (.r0 ↦ᵣ toU64 0) ** (PostRest ** (callStackIs [] ** F))
+  have hQF_outer := holdsFor_sepConj_assoc.mp hQF
+  have hQF' := holdsFor_sepConj_assoc.mp hQF_outer
+  -- Extract (executeFn fetch s k1).callStack = [] from hQF_outer's
+  -- frame: ((.r0 ↦ᵣ toU64 0) ** PostRest) ** (callStackIs [] ** F).
+  have hmid_cs : (executeFn fetch s k1).callStack = [] := by
+    obtain ⟨hp_mid, hcompat_mid, h_post_full, h_csF, hd_post_csF, hu_post_csF,
+            h_post_sat, h_csF_sat⟩ := hQF_outer
+    obtain ⟨h_cs, h_F, hd_cs_F, hu_cs_F, h_cs_pred, h_F_sat⟩ := h_csF_sat
+    have h_cs_cs : h_cs.callStack = some [] := by
+      rw [show h_cs = PartialState.singletonCallStack [] from h_cs_pred]
+      exact PartialState.singletonCallStack_callStack_self
+    have h_csF_cs : h_csF.callStack = some [] :=
+      hu_cs_F ▸ PartialState.union_callStack_of_left_some h_cs_cs
+    -- h_post_full = (.r0 ↦ᵣ toU64 0) ** PostRest holds at it; no callStack atom.
+    have h_post_full_cs : h_post_full.callStack = none := by
+      rcases hd_post_csF.callStack with h | h
+      · exact h
+      · rw [h_csF_cs] at h; exact absurd h (by simp)
+    have hp_mid_cs : hp_mid.callStack = some [] := by
+      rw [← hu_post_csF, PartialState.union_callStack_of_left_none h_post_full_cs]
+      exact h_csF_cs
+    exact hcompat_mid.callStack [] hp_mid_cs
+  -- Invoke exit_aborts_spec with R = PostRest ** (callStackIs [] ** F).
+  -- The R is determined by unification with hQF'; the pcFree side
+  -- condition is discharged by recursively applying pcFree_sepConj
+  -- across all atoms (registers, memory cells, callStackIs, and finally
+  -- F whose pc-freeness comes from the universal-R hypothesis hF).
+  have exit_result : ∃ k, k ≤ 1 ∧
+      (executeFn fetch (executeFn fetch s k1) k).exitCode = some (toU64 0) := by
+    refine exit_aborts_spec (toU64 0) 75 _ ?_ fetch hcr_exit
+      (executeFn fetch s k1) hQF' hpc_mid hex_mid hmid_cs
+    -- pcFree of R: walk pcFree_sepConj across the nested ** structure,
+    -- discharging each atom by its pcFree lemma, and the trailing F via hF.
+    repeat (first
+      | exact hF
+      | exact pcFree_callStackIs _
+      | exact pcFree_regIs _ _
+      | exact pcFree_memByteIs _ _
+      | exact pcFree_memU64Is _ _
+      | apply pcFree_sepConj)
+  obtain ⟨k2, hk2, hex_end⟩ := exit_result
+  refine ⟨k1 + k2, ?_, ?_, ?_⟩
+  · -- k1 + k2 ≤ 75 + 1 = 76
+    have : k1 + k2 ≤ 75 + 1 := Nat.add_le_add hk1 hk2
+    omega
+  · rw [executeFn_compose]; exact hex_end
+  · -- cuConsumed: k1 segment consumes ≤ 0, k2 segment (which is .exit)
+    -- consumes ≤ 0 since .exit doesn't bump cuConsumed.
+    rw [executeFn_compose]
+    rcases Nat.eq_or_lt_of_le hk2 with hk2_eq | hk2_lt
+    · subst hk2_eq
+      have hfetch_exit : fetch (executeFn fetch s k1).pc = some .exit := by
+        rw [hpc_mid]
+        exact hcr_exit 75 _ CodeReq.singleton_self
+      have hexec1 : executeFn fetch (executeFn fetch s k1) 1
+          = step .exit (executeFn fetch s k1) := by
+        rw [show (1 : Nat) = 0 + 1 from rfl,
+            executeFn_step fetch (executeFn fetch s k1) 0 _ hex_mid hfetch_exit,
+            executeFn_zero]
+      have hstep_exit : step .exit (executeFn fetch s k1) =
+          { (executeFn fetch s k1) with
+              exitCode := some ((executeFn fetch s k1).regs.get .r0) } := by
+        simp only [step, hmid_cs]
+      rw [hexec1, hstep_exit]
+      show (executeFn fetch s k1).cuConsumed ≤ s.cuConsumed + 0
+      exact hcu1
+    · have hk2_0 : k2 = 0 := by omega
+      subst hk2_0
+      rw [executeFn_zero]
+      show (executeFn fetch s k1).cuConsumed ≤ s.cuConsumed + 0
+      exact hcu1
+
 end Examples.PTokenTransferFullHappyPath
