@@ -74,7 +74,7 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
         s.mem (effectiveAddr baseAddr off) = byteVal →
         s.regions.containsRange (effectiveAddr baseAddr off) 1 = true →
         step insn s = { s with regs := s.regs.set dst vNew, pc := s.pc + 1 }) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc insn)
       ((dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦ₘ byteVal))
@@ -157,9 +157,10 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
     · rw [h_P_mem_addr] at hl; nomatch hl
     · exact hr
   have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg dst vNew).union
@@ -355,7 +356,7 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
 theorem ldxb_spec
     (dst src : Reg) (off : Int) (vOldDst baseAddr byteVal : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.ldx .byte dst src off))
       ((dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦ₘ byteVal))
@@ -391,7 +392,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
         step insn s =
           { s with mem := Memory.writeU8 s.mem (effectiveAddr baseAddr off) newByteVal,
                    pc := s.pc + 1 }) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc insn)
       ((baseReg ↦ᵣ baseAddr) ** (valReg ↦ᵣ vSrc) **
         (effectiveAddr baseAddr off ↦ₘ oldByteVal))
@@ -474,9 +475,10 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
     · rw [h_P_mem_addr] at hl; nomatch hl
     · exact hr
   have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg baseReg baseAddr).union
@@ -687,7 +689,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
 theorem stxb_spec
     (baseReg valReg : Reg) (off : Int)
     (baseAddr vSrc oldByteVal : Nat) (pc : Nat) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.stx .byte baseReg off valReg))
       ((baseReg ↦ᵣ baseAddr) ** (valReg ↦ᵣ vSrc) **
         (effectiveAddr baseAddr off ↦ₘ oldByteVal))
@@ -720,7 +722,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
         step insn s =
           { s with mem := Memory.writeU8 s.mem (effectiveAddr baseAddr off) newByteVal,
                    pc := s.pc + 1 }) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc insn)
       ((baseReg ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦ₘ oldByteVal))
@@ -769,9 +771,10 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
     · rw [h_P_mem_addr] at hl; nomatch hl
     · exact hr
   have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg baseReg baseAddr).union
@@ -922,7 +925,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
 theorem stb_spec
     (baseReg : Reg) (off : Int) (imm : Int)
     (baseAddr oldByteVal : Nat) (pc : Nat) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.st .byte baseReg off imm))
       ((baseReg ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦ₘ oldByteVal))

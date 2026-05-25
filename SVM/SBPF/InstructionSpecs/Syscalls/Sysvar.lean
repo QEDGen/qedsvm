@@ -13,14 +13,16 @@ shape as `sol_get_last_restart_slot` but at 40 bytes without a
 per-byte case ladder. -/
 
 theorem call_sol_get_clock_sysvar_spec
-    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 40) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 40) (nCu : Nat)
+      (h_step_cu : ∀ s : State,
+          (step (.call .sol_get_clock_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_clock_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes (zerosByteArray 40))) := by
   refine cuTripleWithin_syscall_writesR1Bytes
-    .sol_get_clock_sysvar (zerosByteArray 40) pc
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    .sol_get_clock_sysvar (zerosByteArray 40) pc nCu
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ h_step_cu r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execClock, Sysvar.zeroFillR1]
   · intro s i hi
@@ -57,14 +59,16 @@ Writes 81 bytes of zeros at `*r1`, sets `r0 := 0`. Mainnet default
 EpochRewards struct under `active = false`. -/
 
 theorem call_sol_get_epoch_rewards_sysvar_spec
-    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 81) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 81) (nCu : Nat)
+      (h_step_cu : ∀ s : State,
+          (step (.call .sol_get_epoch_rewards_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_epoch_rewards_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes (zerosByteArray 81))) := by
   refine cuTripleWithin_syscall_writesR1Bytes
-    .sol_get_epoch_rewards_sysvar (zerosByteArray 81) pc
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    .sol_get_epoch_rewards_sysvar (zerosByteArray 81) pc nCu
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ h_step_cu r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execEpochRewards, Sysvar.zeroFillR1]
   · intro s i hi
@@ -115,14 +119,16 @@ def rentBytes : ByteArray :=
 @[simp] theorem rentBytes_size : rentBytes.size = 17 := by decide
 
 theorem call_sol_get_rent_sysvar_spec
-    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 17) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 17) (nCu : Nat)
+      (h_step_cu : ∀ s : State,
+          (step (.call .sol_get_rent_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_rent_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes rentBytes)) := by
   refine cuTripleWithin_syscall_writesR1Bytes
-    .sol_get_rent_sysvar rentBytes pc
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    .sol_get_rent_sysvar rentBytes pc nCu
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ h_step_cu r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execRent]
   · intro s i hi
@@ -192,14 +198,16 @@ def epochScheduleBytes : ByteArray :=
 @[simp] theorem epochScheduleBytes_size : epochScheduleBytes.size = 40 := by decide
 
 theorem call_sol_get_epoch_schedule_sysvar_spec
-    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 40) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = 40) (nCu : Nat)
+      (h_step_cu : ∀ s : State,
+          (step (.call .sol_get_epoch_schedule_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_epoch_schedule_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes epochScheduleBytes)) := by
   refine cuTripleWithin_syscall_writesR1Bytes
-    .sol_get_epoch_schedule_sysvar epochScheduleBytes pc
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    .sol_get_epoch_schedule_sysvar epochScheduleBytes pc nCu
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ h_step_cu r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, Sysvar.execEpochSchedule]
   · intro s i hi
@@ -274,8 +282,10 @@ shape that the U64-sized sysvar zero-fills (this and `sol_get_fees_sysvar`)
 share. Memory is owned only at `[r1V, r1V+8)` by the precondition. -/
 
 theorem call_sol_get_last_restart_slot_spec
-    (r0Old r1V vOld pc : Nat) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V vOld pc : Nat) (nCu : Nat)
+      (h_step_cu : ∀ s : State,
+          (step (.call .sol_get_last_restart_slot) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_last_restart_slot))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 vOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 0)) := by
@@ -575,8 +585,10 @@ same postcondition, same proof up to the syscall-variant name and the
 unfold target. -/
 
 theorem call_sol_get_fees_sysvar_spec
-    (r0Old r1V vOld pc : Nat) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V vOld pc : Nat) (nCu : Nat)
+      (h_step_cu : ∀ s : State,
+          (step (.call .sol_get_fees_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_fees_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 vOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 0)) := by

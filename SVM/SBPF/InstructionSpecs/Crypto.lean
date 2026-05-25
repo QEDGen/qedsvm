@@ -29,7 +29,7 @@ updates `r0 := vNew`. Used by syscalls whose r0 output depends on
 one fixed input register's value (e.g. `sol_curve_validate_point`'s
 errCode dispatch on the curve_id in r1). -/
 theorem cuTripleWithin_syscall_writes_r0_only_pinned
-    (sc : Syscall) (r : Reg) (rV vNew : Nat) (pc : Nat)
+    (sc : Syscall) (r : Reg) (rV vNew : Nat) (pc : Nat) (nCu : Nat)
     (hr_ne : r ≠ .r0)
     (h_step_regs : ∀ s : State, s.regs.get r = rV →
         (step (.call sc) s).regs = s.regs.set .r0 vNew)
@@ -41,8 +41,10 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
     (h_step_callStack :
-      ∀ s : State, (step (.call sc) s).callStack = s.callStack) :
-    ∀ r0Old, cuTripleWithin 1 pc (pc + 1)
+      ∀ s : State, (step (.call sc) s).callStack = s.callStack)
+    (h_step_cu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    ∀ r0Old, cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call sc))
       ((.r0 ↦ᵣ r0Old) ** (r ↦ᵣ rV))
       ((.r0 ↦ᵣ vNew) ** (r ↦ᵣ rV)) := by
@@ -111,6 +113,8 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [hstep_eq]; exact h_step_cu s
   -- Assemble Q ** R.
   let h_r0_new : PartialState := PartialState.singletonReg .r0 vNew
   let h_r_new : PartialState := PartialState.singletonReg r rV
@@ -157,9 +161,10 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
         · left; exact h_P_new_regs_other r' h0 h1
     · left; exact h_P_new_mem_none a
     · left; exact h_P_new_pc_none
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨h_P_new.union hR, ?_, h_P_new, hR, hd_PnewR, rfl, ?_, hRsat⟩
     -- Compatibility.
     · refine ⟨?_, ?_, ?_, ?_, ?_⟩
@@ -240,13 +245,15 @@ shortcircuits before reaching any FFI call. (The opaque
 on this path.) -/
 
 theorem call_sol_curve_validate_point_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat) (h_unsup : r1V ≠ 0 ∧ r1V ≠ 1) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat) (h_unsup : r1V ≠ 0 ∧ r1V ≠ 1)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_curve_validate_point) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_curve_validate_point))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
       ((.r0 ↦ᵣ 2) ** (.r1 ↦ᵣ r1V)) := by
   apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_validate_point .r1 r1V 2 pc (by decide : (.r1 : Reg) ≠ .r0)
+    .sol_curve_validate_point .r1 r1V 2 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
   · -- regs
     intro s hr1
     have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
@@ -269,6 +276,8 @@ theorem call_sol_curve_validate_point_unsupported_spec
   · -- callStack unchanged
     intro s
     simp [step, execSyscall, Curve25519.execValidate]
+  · -- cuConsumed bound
+    exact h_step_cu
 
 /-! ## Tier-1 triple: `sol_secp256k1_recover` (invalid recovery_id)
 
@@ -281,13 +290,15 @@ consumed.
 Trust statement: none required for this branch. -/
 
 theorem call_sol_secp256k1_recover_invalid_recid_spec
-    (r0Old r2V : Nat) (pc : Nat) (h_bad : r2V > 3) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r2V : Nat) (pc : Nat) (nCu : Nat) (h_bad : r2V > 3)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_secp256k1_recover) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_secp256k1_recover))
       ((.r0 ↦ᵣ r0Old) ** (.r2 ↦ᵣ r2V))
       ((.r0 ↦ᵣ 2) ** (.r2 ↦ᵣ r2V)) := by
   apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_secp256k1_recover .r2 r2V 2 pc (by decide : (.r2 : Reg) ≠ .r0)
+    .sol_secp256k1_recover .r2 r2V 2 pc nCu (by decide : (.r2 : Reg) ≠ .r0)
   · -- regs
     intro s hr2
     have hr2' : s.regs.r2 = r2V := by show s.regs.get .r2 = r2V; exact hr2
@@ -312,6 +323,8 @@ theorem call_sol_secp256k1_recover_invalid_recid_spec
   · -- callStack unchanged
     intro s
     simp [step, execSyscall, Secp256k1.exec]
+  · -- cuConsumed bound
+    exact h_step_cu
 
 /-! ## Tier-1 triple: `sol_curve_group_op` (unsupported curve_id)
 
@@ -322,13 +335,15 @@ No FFI call happens on this path.
 Trust statement: none required for this branch. -/
 
 theorem call_sol_curve_group_op_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat) (h_unsup : r1V ≠ 0 ∧ r1V ≠ 1) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat) (h_unsup : r1V ≠ 0 ∧ r1V ≠ 1)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_curve_group_op) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_curve_group_op))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
       ((.r0 ↦ᵣ 1) ** (.r1 ↦ᵣ r1V)) := by
   apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_group_op .r1 r1V 1 pc (by decide : (.r1 : Reg) ≠ .r0)
+    .sol_curve_group_op .r1 r1V 1 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
   · -- regs
     intro s hr1
     have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
@@ -382,6 +397,8 @@ theorem call_sol_curve_group_op_unsupported_spec
   · -- callStack unchanged
     intro s
     simp [step, execSyscall, Curve25519.execGroupOp]
+  · -- cuConsumed bound
+    exact h_step_cu
 
 /-! ## Tier-1 triple: `sol_curve_multiscalar_mul` (zero-length input)
 
@@ -392,13 +409,15 @@ function is *not called* on this path.
 Trust statement: none required for this branch. -/
 
 theorem call_sol_curve_multiscalar_mul_zero_n_spec
-    (r0Old : Nat) (pc : Nat) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old : Nat) (pc : Nat) (nCu : Nat)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_curve_multiscalar_mul) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_curve_multiscalar_mul))
       ((.r0 ↦ᵣ r0Old) ** (.r4 ↦ᵣ 0))
       ((.r0 ↦ᵣ 1) ** (.r4 ↦ᵣ 0)) := by
   apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_multiscalar_mul .r4 0 1 pc (by decide : (.r4 : Reg) ≠ .r0)
+    .sol_curve_multiscalar_mul .r4 0 1 pc nCu (by decide : (.r4 : Reg) ≠ .r0)
   · -- regs
     intro s hr4
     have hr4' : s.regs.r4 = 0 := by show s.regs.get .r4 = 0; exact hr4
@@ -433,6 +452,8 @@ theorem call_sol_curve_multiscalar_mul_zero_n_spec
   · -- callStack unchanged
     intro s
     simp [step, execSyscall, Curve25519.execMSM]
+  · -- cuConsumed bound
+    exact h_step_cu
 
 /-! ## Tier-1 triple: `sol_curve_decompress` (BLS12-381, unsupported curve_id)
 
@@ -441,14 +462,16 @@ Pinning `r1 = curveId` with curveId ∉ {5, 6, 0x85, 0x86} forces
 No FFI call to `g1Decompress` / `g2Decompress` happens. -/
 
 theorem call_sol_curve_decompress_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat)
-    (h_unsup : r1V ≠ 5 ∧ r1V ≠ 6 ∧ r1V ≠ 133 ∧ r1V ≠ 134) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat)
+    (h_unsup : r1V ≠ 5 ∧ r1V ≠ 6 ∧ r1V ≠ 133 ∧ r1V ≠ 134)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_curve_decompress) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_curve_decompress))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
       ((.r0 ↦ᵣ 1) ** (.r1 ↦ᵣ r1V)) := by
   apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_decompress .r1 r1V 1 pc (by decide : (.r1 : Reg) ≠ .r0)
+    .sol_curve_decompress .r1 r1V 1 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
   · -- regs
     intro s hr1
     have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
@@ -494,6 +517,8 @@ theorem call_sol_curve_decompress_unsupported_spec
   · -- callStack unchanged
     intro s
     simp [step, execSyscall, Bls12_381.execDecompress]
+  · -- cuConsumed bound
+    exact h_step_cu
 
 /-! ## Tier-1 triple: `sol_curve_pairing_map` (BLS12-381, unsupported curve_id)
 
@@ -502,13 +527,15 @@ Pinning `r1 = curveId` with curveId ∉ {4, 0x84} forces
 No FFI call to `pairingMap` happens. -/
 
 theorem call_sol_curve_pairing_map_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat) (h_unsup : r1V ≠ 4 ∧ r1V ≠ 132) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat) (h_unsup : r1V ≠ 4 ∧ r1V ≠ 132)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_curve_pairing_map) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_curve_pairing_map))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
       ((.r0 ↦ᵣ 1) ** (.r1 ↦ᵣ r1V)) := by
   apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_pairing_map .r1 r1V 1 pc (by decide : (.r1 : Reg) ≠ .r0)
+    .sol_curve_pairing_map .r1 r1V 1 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
   · -- regs
     intro s hr1
     have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
@@ -548,6 +575,8 @@ theorem call_sol_curve_pairing_map_unsupported_spec
   · -- callStack unchanged
     intro s
     simp [step, execSyscall, Bls12_381.execPairing]
+  · -- cuConsumed bound
+    exact h_step_cu
 
 
 

@@ -22,7 +22,7 @@ theorem cuTripleWithin_1reg_cjump
     (cond : Prop) [Decidable cond]
     (h_step : ∀ s : State, s.regs.get dst = vDst →
         step insn s = { s with pc := if cond then target else s.pc + 1 }) :
-    cuTripleWithin 1 pc (if cond then target else pc + 1)
+    cuTripleWithin 1 0 pc (if cond then target else pc + 1)
       (CodeReq.singleton pc insn) (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
   intro R hRfree fetch hcr s hPR hpc hex
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
@@ -42,11 +42,12 @@ theorem cuTripleWithin_1reg_cjump
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch,
         executeFn_zero, h_step s hs_regs_dst]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
     show (if cond then target else s.pc + 1) = if cond then target else pc + 1
     rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨(PartialState.singletonReg dst vDst).union hR, ?_,
             PartialState.singletonReg dst vDst, hR, hd, rfl, rfl, hRsat⟩
@@ -108,7 +109,7 @@ theorem cuTripleWithin_2reg_cjump
     (cond : Prop) [Decidable cond]
     (h_step : ∀ s : State, s.regs.get dst = vDst → s.regs.get src = vSrc →
         step insn s = { s with pc := if cond then target else s.pc + 1 }) :
-    cuTripleWithin 1 pc (if cond then target else pc + 1)
+    cuTripleWithin 1 0 pc (if cond then target else pc + 1)
       (CodeReq.singleton pc insn)
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
@@ -149,11 +150,12 @@ theorem cuTripleWithin_2reg_cjump
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch,
         executeFn_zero, h_step s hs_regs_dst hs_regs_src]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
     show (if cond then target else s.pc + 1) = if cond then target else pc + 1
     rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨hp, ?_,
             (PartialState.singletonReg dst vDst).union
@@ -234,7 +236,7 @@ contents as two's complement. -/
 
 /-- `jeq dst, imm, target`: jump if `dst = toU64 imm`. -/
 theorem jeq_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst = toU64 imm then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst = toU64 imm then target else pc + 1)
       (CodeReq.singleton pc (.jeq dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
   cuTripleWithin_1reg_cjump dst vDst pc target (.jeq dst (.imm imm) target)
@@ -243,7 +245,7 @@ theorem jeq_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jne dst, imm, target`: jump if `dst ≠ toU64 imm`. -/
 theorem jne_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst ≠ toU64 imm then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst ≠ toU64 imm then target else pc + 1)
       (CodeReq.singleton pc (.jne dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
   cuTripleWithin_1reg_cjump dst vDst pc target (.jne dst (.imm imm) target)
@@ -252,7 +254,7 @@ theorem jne_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jgt dst, imm, target`: unsigned jump-greater-than. -/
 theorem jgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst > toU64 imm then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst > toU64 imm then target else pc + 1)
       (CodeReq.singleton pc (.jgt dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
   cuTripleWithin_1reg_cjump dst vDst pc target (.jgt dst (.imm imm) target)
@@ -261,7 +263,7 @@ theorem jgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jge dst, imm, target`: unsigned jump-greater-or-equal. -/
 theorem jge_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst ≥ toU64 imm then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst ≥ toU64 imm then target else pc + 1)
       (CodeReq.singleton pc (.jge dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
   cuTripleWithin_1reg_cjump dst vDst pc target (.jge dst (.imm imm) target)
@@ -270,7 +272,7 @@ theorem jge_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jlt dst, imm, target`: unsigned jump-less-than. -/
 theorem jlt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst < toU64 imm then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst < toU64 imm then target else pc + 1)
       (CodeReq.singleton pc (.jlt dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
   cuTripleWithin_1reg_cjump dst vDst pc target (.jlt dst (.imm imm) target)
@@ -279,7 +281,7 @@ theorem jlt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jle dst, imm, target`: unsigned jump-less-or-equal. -/
 theorem jle_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst ≤ toU64 imm then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst ≤ toU64 imm then target else pc + 1)
       (CodeReq.singleton pc (.jle dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
   cuTripleWithin_1reg_cjump dst vDst pc target (.jle dst (.imm imm) target)
@@ -288,7 +290,7 @@ theorem jle_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jsgt dst, imm, target`: signed jump-greater-than. -/
 theorem jsgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst > toSigned64 (toU64 imm) then target else pc + 1)
       (CodeReq.singleton pc (.jsgt dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
@@ -298,7 +300,7 @@ theorem jsgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jsge dst, imm, target`: signed jump-greater-or-equal. -/
 theorem jsge_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst ≥ toSigned64 (toU64 imm) then target else pc + 1)
       (CodeReq.singleton pc (.jsge dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
@@ -308,7 +310,7 @@ theorem jsge_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jslt dst, imm, target`: signed jump-less-than. -/
 theorem jslt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst < toSigned64 (toU64 imm) then target else pc + 1)
       (CodeReq.singleton pc (.jslt dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
@@ -318,7 +320,7 @@ theorem jslt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jsle dst, imm, target`: signed jump-less-or-equal. -/
 theorem jsle_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst ≤ toSigned64 (toU64 imm) then target else pc + 1)
       (CodeReq.singleton pc (.jsle dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
@@ -328,7 +330,7 @@ theorem jsle_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-- `jset dst, imm, target`: jump if any bit-mask bit is set. -/
 theorem jset_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if vDst &&& toU64 imm ≠ 0 then target else pc + 1)
       (CodeReq.singleton pc (.jset dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
@@ -339,7 +341,7 @@ theorem jset_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 /-! ## Conditional-jump branch-shape specs
 
 The base `jXX_imm_spec` / `jXX_reg_spec` theorems above use the form
-`cuTripleWithin 1 pc (if cond then target else pc + 1) ...`. The
+`cuTripleWithin 1 0 pc (if cond then target else pc + 1) ...`. The
 `_branch` flavours below lift that into `cuTripleWithinBranch`, which
 exposes the two exit PCs separately (suitable for plugging into
 `cuTripleWithinBranch_join`). Each is a one-line wrapper applying
@@ -348,7 +350,7 @@ exposes the two exit PCs separately (suitable for plugging into
 /-- Branch shape of `jeq dst, imm`: exitT = target (taken when
     `vDst = toU64 imm`), exitF = pc + 1 (otherwise). -/
 theorem jeq_imm_branch_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithinBranch 1 pc target (pc + 1)
+    cuTripleWithinBranch 1 0 pc target (pc + 1)
       (vDst = toU64 imm)
       (CodeReq.singleton pc (.jeq dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
@@ -357,7 +359,7 @@ theorem jeq_imm_branch_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Na
 /-- Branch shape of `jne dst, imm`: exitT = target (taken when
     `vDst ≠ toU64 imm`), exitF = pc + 1 (otherwise). -/
 theorem jne_imm_branch_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
-    cuTripleWithinBranch 1 pc target (pc + 1)
+    cuTripleWithinBranch 1 0 pc target (pc + 1)
       (vDst ≠ toU64 imm)
       (CodeReq.singleton pc (.jne dst (.imm imm) target))
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
@@ -367,7 +369,7 @@ theorem jne_imm_branch_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Na
 
 /-- `jeq dst, src, target`: jump if `dst = src`. -/
 theorem jeq_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst = vSrc then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst = vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jeq dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) :=
@@ -377,7 +379,7 @@ theorem jeq_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jne dst, src, target`: jump if `dst ≠ src`. -/
 theorem jne_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst ≠ vSrc then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst ≠ vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jne dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) :=
@@ -387,7 +389,7 @@ theorem jne_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jgt dst, src, target`: unsigned jump-greater-than. -/
 theorem jgt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst > vSrc then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst > vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jgt dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) :=
@@ -397,7 +399,7 @@ theorem jgt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jge dst, src, target`: unsigned jump-greater-or-equal. -/
 theorem jge_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst ≥ vSrc then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst ≥ vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jge dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) :=
@@ -407,7 +409,7 @@ theorem jge_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jlt dst, src, target`: unsigned jump-less-than. -/
 theorem jlt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst < vSrc then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst < vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jlt dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) :=
@@ -417,7 +419,7 @@ theorem jlt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jle dst, src, target`: unsigned jump-less-or-equal. -/
 theorem jle_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc (if vDst ≤ vSrc then target else pc + 1)
+    cuTripleWithin 1 0 pc (if vDst ≤ vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jle dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) :=
@@ -427,7 +429,7 @@ theorem jle_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jsgt dst, src, target`: signed jump-greater-than. -/
 theorem jsgt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst > toSigned64 vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jsgt dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
@@ -438,7 +440,7 @@ theorem jsgt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jsge dst, src, target`: signed jump-greater-or-equal. -/
 theorem jsge_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst ≥ toSigned64 vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jsge dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
@@ -449,7 +451,7 @@ theorem jsge_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jslt dst, src, target`: signed jump-less-than. -/
 theorem jslt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst < toSigned64 vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jslt dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
@@ -460,7 +462,7 @@ theorem jslt_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-- `jsle dst, src, target`: signed jump-less-or-equal. -/
 theorem jsle_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if toSigned64 vDst ≤ toSigned64 vSrc then target else pc + 1)
       (CodeReq.singleton pc (.jsle dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
@@ -473,7 +475,7 @@ theorem jsle_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
     `simp only [..., hdst, hsrc]` instead of `rw`: the `Decidable (_ ≠ 0)`
     instance under `&&&` doesn't synthesize through a `rw` motive. -/
 theorem jset_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
-    cuTripleWithin 1 pc
+    cuTripleWithin 1 0 pc
       (if vDst &&& vSrc ≠ 0 then target else pc + 1)
       (CodeReq.singleton pc (.jset dst (.reg src) target))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))

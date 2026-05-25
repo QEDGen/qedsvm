@@ -14,7 +14,7 @@ vs dword's 9-way. -/
 theorem ldxh_spec
     (dst src : Reg) (off : Int) (vOldDst baseAddr v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hv : v < 2 ^ 16) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.ldx .half dst src off))
       ((dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦U16 v))
@@ -116,9 +116,10 @@ theorem ldxh_spec
     · rw [h_P_mem_1] at hl; nomatch hl
     · exact hr
   have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg dst v).union
@@ -326,7 +327,7 @@ theorem ldxh_spec
 theorem stxh_spec
     (baseReg valReg : Reg) (off : Int)
     (baseAddr vSrc oldV : Nat) (pc : Nat) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.stx .half baseReg off valReg))
       ((baseReg ↦ᵣ baseAddr) ** (valReg ↦ᵣ vSrc) **
         (effectiveAddr baseAddr off ↦U16 oldV))
@@ -422,9 +423,10 @@ theorem stxh_spec
     · rw [h_P_mem_1] at hl; nomatch hl
     · exact hr
   have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg baseReg baseAddr).union
@@ -520,7 +522,7 @@ theorem stxh_spec
             have : vm = vSrc / 0x100 % 256 := (Option.some.inj hvm).symm
             rw [this]
             unfold Memory.writeU16
-            simp [show effectiveAddr baseAddr off + 1 ≠ effectiveAddr baseAddr off from by omega]
+            simp
             omega
           · have h_outer_none :
                 ((PartialState.singletonReg baseReg baseAddr).union

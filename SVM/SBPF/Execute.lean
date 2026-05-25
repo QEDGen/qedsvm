@@ -713,7 +713,7 @@ theorem executeFn_eq_execSegment (fetch : Nat → Option Insn) (s : State) (fuel
       cases h_fetch : fetch s.pc with
       | none => rfl
       | some insn =>
-        simp (config := { failIfUnchanged := false }) only [h_exit]
+        simp (config := { failIfUnchanged := false }) only []
         have heq : step insn s = (execInsn insn s).2 := step_eq_execInsn insn s
         rw [heq]
         exact ih (execInsn insn s).2

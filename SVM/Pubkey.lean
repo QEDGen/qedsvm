@@ -109,14 +109,12 @@ theorem find_map_update_other
         rw [p_h_preserves_auth head]; exact h_head_not_target
       rw [if_pos h_head_update]
       rw [decide_eq_false h_fhead_not_target, decide_eq_false h_head_not_target]
-      simp only [Bool.false_eq_true, if_false]
       exact ih
     · -- head unchanged by the conditional update.
       rw [if_neg h_head_update]
       by_cases h_head_target : head.authority = p_target_authority
       · rw [decide_eq_true h_head_target]
       · rw [decide_eq_false h_head_target]
-        simp only [Bool.false_eq_true, if_false]
         exact ih
 
 -- Find after updating the target account returns the updated account.
@@ -140,7 +138,6 @@ theorem find_map_update_same
     by_cases h : head.authority = p_authority
     · -- head IS the target; find short-circuited at head in original.
       rw [decide_eq_true h] at p_h_found
-      simp only [if_true] at p_h_found
       have h_original : head = p_original := Option.some.inj p_h_found
       subst h_original
       rw [if_pos h]
@@ -149,10 +146,8 @@ theorem find_map_update_same
       rw [decide_eq_true h_fhead_auth]
     · -- head isn't the target; both find?s recurse into tail.
       rw [decide_eq_false h] at p_h_found
-      simp only [Bool.false_eq_true, if_false] at p_h_found
       rw [if_neg h]
       rw [decide_eq_false h]
-      simp only [Bool.false_eq_true, if_false]
       exact ih p_h_found
 
 -- Key-based version of find_map_update_other.
@@ -179,13 +174,11 @@ theorem find_by_key_map_update_other
         rw [p_h_preserves_key head]; exact h_head_not_target
       rw [if_pos h_head_update]
       rw [decide_eq_false h_fhead_not_target, decide_eq_false h_head_not_target]
-      simp only [Bool.false_eq_true, if_false]
       exact ih
     · rw [if_neg h_head_update]
       by_cases h_head_target : head.key = p_target_key
       · rw [decide_eq_true h_head_target]
       · rw [decide_eq_false h_head_target]
-        simp only [Bool.false_eq_true, if_false]
         exact ih
 
 -- Key-based version of find_map_update_same.
@@ -208,7 +201,6 @@ theorem find_by_key_map_update_same
     simp only [List.map_cons, List.find?_cons] at p_h_found ⊢
     by_cases h : head.key = p_key
     · rw [decide_eq_true h] at p_h_found
-      simp only [if_true] at p_h_found
       have h_original : head = p_original := Option.some.inj p_h_found
       subst h_original
       rw [if_pos h]
@@ -216,10 +208,8 @@ theorem find_by_key_map_update_same
         rw [p_h_preserves_key head]; exact h
       rw [decide_eq_true h_fhead_key]
     · rw [decide_eq_false h] at p_h_found
-      simp only [Bool.false_eq_true, if_false] at p_h_found
       rw [if_neg h]
       rw [decide_eq_false h]
-      simp only [Bool.false_eq_true, if_false]
       exact ih p_h_found
 
 end SVM.Pubkey

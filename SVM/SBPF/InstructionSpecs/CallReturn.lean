@@ -15,7 +15,7 @@ pushed onto the call stack. PC moves to `target`. -/
 theorem call_local_spec
     (target : Nat) (cs : List CallFrame)
     (r6V r7V r8V r9V r10V : Nat) (pc : Nat) :
-    cuTripleWithin 1 pc target
+    cuTripleWithin 1 0 pc target
       (CodeReq.singleton pc (.call_local target))
       ((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
         (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ r10V) ** callStackIs cs)
@@ -377,9 +377,10 @@ theorem call_local_spec
         exact PartialState.singletonCallStack_returnData)
       callStack := Or.inr h_R_no_cs }
   -- Phase 9: assemble.
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r6_new, h_T1_new, hd_r6_T1_new, rfl, rfl,
              h_r7_new, h_T2_new, hd_r7_T2_new, rfl, rfl,
@@ -510,7 +511,7 @@ case (program termination) is covered by `exit_aborts_spec` above. -/
 
 theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
     (r6Old r7Old r8Old r9Old r10Old : Nat) (pc : Nat) :
-    cuTripleWithin 1 pc frame.retPc
+    cuTripleWithin 1 0 pc frame.retPc
       (CodeReq.singleton pc .exit)
       ((.r6 ↦ᵣ r6Old) ** (.r7 ↦ᵣ r7Old) ** (.r8 ↦ᵣ r8Old) **
         (.r9 ↦ᵣ r9Old) ** (.r10 ↦ᵣ r10Old) ** callStackIs (frame :: cs))
@@ -869,9 +870,10 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
         exact PartialState.singletonCallStack_returnData)
       callStack := Or.inr h_R_no_cs }
   -- Phase 9: assemble.
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r6_new, h_T1_new, hd_r6_T1_new, rfl, rfl,
              h_r7_new, h_T2_new, hd_r7_T2_new, rfl, rfl,

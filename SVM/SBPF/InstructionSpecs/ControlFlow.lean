@@ -14,7 +14,7 @@ unchanged. Entry is `pc`; exit is `target`. -/
 /-- `ja target`: unconditional jump. PC moves from `pc` to `target`
     in one step, charging 1 CU. -/
 theorem ja_spec (target pc : Nat) :
-    cuTripleWithin 1 pc target (CodeReq.singleton pc (.ja target))
+    cuTripleWithin 1 0 pc target (CodeReq.singleton pc (.ja target))
       emp emp := by
   intro R hRfree fetch hcr s hPR hpc hex
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
@@ -34,9 +34,10 @@ theorem ja_spec (target pc : Nat) :
         executeFn_zero]
     simp only [step]
   have hR_no_pc : hR.pc = none := hRfree _ hRsat
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨PartialState.empty.union hR, ?_,
             PartialState.empty, hR,
@@ -109,7 +110,7 @@ and `target := vReg` — the `if True then vReg else pc + 1` reduces to
     one step. The pre/post both retain `reg ↦ᵣ vReg` since `reg` is
     only read. -/
 theorem callx_spec (reg : Reg) (vReg pc : Nat) :
-    cuTripleWithin 1 pc vReg
+    cuTripleWithin 1 0 pc vReg
       (CodeReq.singleton pc (.callx reg))
       (reg ↦ᵣ vReg) (reg ↦ᵣ vReg) := by
   have h := cuTripleWithin_1reg_cjump reg vReg pc vReg (.callx reg) True

@@ -22,7 +22,7 @@ key new piece is `readU64_eq_of_bytes_match` for step discharge. -/
 theorem ldxdw_spec
     (dst src : Reg) (off : Int) (vOldDst baseAddr v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hv : v < 2 ^ 64) :
-    cuTripleWithinMem 1 pc (pc + 1)
+    cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.ldx .dword dst src off))
       ((dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦U64 v))
@@ -190,9 +190,10 @@ theorem ldxdw_spec
     · exact hr
   have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
   -- ===== Build the post =====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg dst v).union

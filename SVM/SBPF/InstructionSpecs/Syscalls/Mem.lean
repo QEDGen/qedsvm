@@ -55,7 +55,7 @@ theorem replicateByte_get! (b : UInt8) (n i : Nat) (hi : i < n) :
     `simp [step, execSyscall, Sysvar.execX]`. The zero-fill case
     is just `bsNew := zerosByteArray N`. -/
 theorem cuTripleWithin_syscall_writesR1Bytes
-    (sc : Syscall) (bsNew : ByteArray) (pc : Nat)
+    (sc : Syscall) (bsNew : ByteArray) (pc : Nat) (nCu : Nat)
     (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs.set .r0 0)
     (h_step_mem_in  : ∀ s : State, ∀ i, i < bsNew.size →
         (step (.call sc) s).mem (s.regs.r1 + i) = (bsNew.get! i).toNat)
@@ -68,9 +68,11 @@ theorem cuTripleWithin_syscall_writesR1Bytes
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
     (h_step_callStack :
-      ∀ s : State, (step (.call sc) s).callStack = s.callStack) :
+      ∀ s : State, (step (.call sc) s).callStack = s.callStack)
+    (h_step_cu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = bsNew.size →
-      cuTripleWithin 1 pc (pc + 1)
+      cuTripleWithin 1 nCu pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
         ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsOld))
         ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsNew)) := by
@@ -121,6 +123,8 @@ theorem cuTripleWithin_syscall_writesR1Bytes
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [hstep_eq]; exact h_step_cu s
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]; exact h_step_regs s
   have hexec_mem_in (i : Nat) (hi : i < N) :
@@ -241,9 +245,10 @@ theorem cuTripleWithin_syscall_writesR1Bytes
           · right; exact h'
     · left; exact h_P_new_pc
   -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_b_new, hd_r1_b_new, rfl, rfl, rfl⟩,
@@ -345,7 +350,7 @@ at theorem-instantiation time, e.g. `replicateByte (r2V % 256) r3V`
 for memset). -/
 
 theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
-    (sc : Syscall) (bsNew : ByteArray) (pc : Nat) (r2V r3V : Nat)
+    (sc : Syscall) (bsNew : ByteArray) (pc : Nat) (nCu : Nat) (r2V r3V : Nat)
     (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs.set .r0 0)
     (h_step_mem_in  : ∀ s : State, s.regs.r2 = r2V → s.regs.r3 = r3V →
         ∀ i, i < bsNew.size →
@@ -359,9 +364,11 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
     (h_step_callStack :
-      ∀ s : State, (step (.call sc) s).callStack = s.callStack) :
+      ∀ s : State, (step (.call sc) s).callStack = s.callStack)
+    (h_step_cu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = bsNew.size →
-      cuTripleWithin 1 pc (pc + 1)
+      cuTripleWithin 1 nCu pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
         ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
          ** (r1V ↦Bytes bsOld))
@@ -462,6 +469,8 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [hstep_eq]; exact h_step_cu s
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]; exact h_step_regs s
   have hexec_mem_in (i : Nat) (hi : i < N) :
@@ -680,9 +689,10 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
           · right; exact h'
     · left; exact h_P_new_pc
   -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
@@ -860,7 +870,7 @@ disjoint — this matches the C-level "memcpy with overlap is UB"
 assumption. Overlapping memmove would need a different spec. -/
 
 theorem cuTripleWithin_syscall_copiesR2ToR1
-    (sc : Syscall) (pc : Nat) (r2V r3V : Nat) (srcBytes : ByteArray)
+    (sc : Syscall) (pc : Nat) (nCu : Nat) (r2V r3V : Nat) (srcBytes : ByteArray)
     (hsrcSize : srcBytes.size = r3V)
     (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs.set .r0 0)
     (h_step_mem_in  : ∀ s : State, s.regs.r2 = r2V → s.regs.r3 = r3V →
@@ -875,9 +885,11 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
     (h_step_callStack :
-      ∀ s : State, (step (.call sc) s).callStack = s.callStack) :
+      ∀ s : State, (step (.call sc) s).callStack = s.callStack)
+    (h_step_cu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = r3V →
-      cuTripleWithin 1 pc (pc + 1)
+      cuTripleWithin 1 nCu pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
         ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
          ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld))
@@ -1035,6 +1047,8 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [hstep_eq]; exact h_step_cu s
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]; exact h_step_regs s
   -- Compose the in-range mem fact with the source-bytes value.
@@ -1344,9 +1358,10 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
             · right; exact h'
     · left; exact h_P_new_pc
   -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
@@ -1897,18 +1912,17 @@ theorem call_sol_memcmp_spec
       (executeFn fetch s 1).mem (r4V + 1) = cmpResult / 0x100 % 256 := by
     rw [hexec_mem_eq]
     unfold Memory.writeU32
-    simp [show r4V + 1 ≠ r4V from by omega]
+    simp
   have hexec_mem_u32_2 :
       (executeFn fetch s 1).mem (r4V + 2) = cmpResult / 0x10000 % 256 := by
     rw [hexec_mem_eq]
     unfold Memory.writeU32
-    simp [show r4V + 2 ≠ r4V from by omega, show r4V + 2 ≠ r4V + 1 from by omega]
+    simp
   have hexec_mem_u32_3 :
       (executeFn fetch s 1).mem (r4V + 3) = cmpResult / 0x1000000 % 256 := by
     rw [hexec_mem_eq]
     unfold Memory.writeU32
-    simp [show r4V + 3 ≠ r4V from by omega, show r4V + 3 ≠ r4V + 1 from by omega,
-          show r4V + 3 ≠ r4V + 2 from by omega]
+    simp
   -- Outside writeU32 range, mem is unchanged.
   have hexec_mem_outside_u32 (a : Nat) (h : a < r4V ∨ a ≥ r4V + 4) :
       (executeFn fetch s 1).mem a = s.mem a := by
@@ -2430,9 +2444,10 @@ theorem call_sol_memcmp_spec
             · right; exact h'
     · left; exact h_P_new_pc
   -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,

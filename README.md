@@ -28,11 +28,11 @@ Two artifacts make the headline claims visible in seconds.
 cargo run --release --features diff-mollusk \
   --manifest-path qedsvm-rs/Cargo.toml --example conformance_demo
 
-# Prove what a 4-instruction sBPF program does, then print the trust base.
+# Type-check the end-to-end witness theorem for a 4-instruction sBPF program.
 lake build ProofDemo
 ```
 
-[`examples/lean/ProofDemo.lean`](examples/lean/ProofDemo.lean) prints the axioms reachable from the witness theorem: three Lean kernel axioms plus one `native_decide` for the bytecode equality. No rustc, no external sBPF semantics.
+[`examples/lean/ProofDemo.lean`](examples/lean/ProofDemo.lean) is the entry point; the theorem itself lives in [`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncrement.lean), which chains raw bytes to a discharged separation-logic spec with no `sorry`. No rustc, no external sBPF semantics.
 
 ## Use
 

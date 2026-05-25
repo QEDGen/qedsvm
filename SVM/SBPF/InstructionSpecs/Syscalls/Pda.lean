@@ -1466,7 +1466,7 @@ theorem call_create_program_address_n1_spec
   -- readSeeds with n = 1 produces a one-element list.
   have h_readSeeds : Pda.readSeeds s.mem r1V 1 = [seedBytes] := by
     show (List.range 1).map _ = [seedBytes]
-    simp only [List.range_succ, List.range_zero, List.map_append, List.map_cons,
+    simp only [List.range_succ, List.range_zero, List.map_cons,
                List.map_nil, List.nil_append]
     show [readBytes s.mem (Memory.readU64 s.mem (r1V + 0 * 16))
                           (Memory.readU64 s.mem (r1V + 0 * 16 + 8))] = [seedBytes]

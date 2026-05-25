@@ -501,7 +501,7 @@ theorem call_sol_get_return_data_spec
     (rd bsOut pkOld : ByteArray) (pc : Nat)
     (hRdSize : rd.size = maxLen)
     (hOutSize : bsOut.size = maxLen)
-    (hPkSize : pkOld.size = 32)
+    (_hPkSize : pkOld.size = 32)
     (h_disj : outA + maxLen ≤ pkA ∨ pkA + 32 ≤ outA) :
     cuTripleWithin 1 pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_return_data))
@@ -1207,7 +1207,7 @@ any SL-tracked resource. Composed with the frame rule, it transports
 any pc-free assertion through the call. -/
 
 theorem cuTripleWithin_syscall_silent
-    (sc : Syscall) (pc : Nat)
+    (sc : Syscall) (pc : Nat) (nCu : Nat)
     (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs)
     (h_step_mem  : ∀ s : State, (step (.call sc) s).mem = s.mem)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
@@ -1216,8 +1216,10 @@ theorem cuTripleWithin_syscall_silent
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
     (h_step_callStack :
-      ∀ s : State, (step (.call sc) s).callStack = s.callStack) :
-    cuTripleWithin 1 pc (pc + 1)
+      ∀ s : State, (step (.call sc) s).callStack = s.callStack)
+    (h_step_cu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call sc))
       emp
       emp := by
@@ -1246,11 +1248,13 @@ theorem cuTripleWithin_syscall_silent
     rw [hstep_eq]; exact h_step_returnData s
   have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
     rw [hstep_eq]; exact h_step_callStack s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [hstep_eq]; exact h_step_cu s
   -- hp = empty.union h_R = h_R; transport hcompat to (executeFn fetch s 1).
   have hP_empty : hP = PartialState.empty := hPemp
   have hp_eq : hp = hR := by
     rw [← hu, hP_empty, PartialState.union_empty_left]
-  refine ⟨1, Nat.le_refl 1, ?_, hexec_exit, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, hexec_exit, hexec_cu, ?_⟩
   · rw [hexec_pc, hpc]
   · refine ⟨PartialState.empty.union hR, ?_, PartialState.empty, hR,
             ?_, rfl, rfl, hRsat⟩

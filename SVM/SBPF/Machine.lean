@@ -63,9 +63,9 @@ theorem RegFile.get_set_self (rf : RegFile) (r : Reg) (v : Nat) (h : r ≠ .r10)
   cases r <;> simp_all [RegFile.get, RegFile.set]
 
 /-- Reading a different register from the one written returns the original value. -/
-theorem RegFile.get_set_diff (rf : RegFile) (r1 r2 : Reg) (v : Nat) (h : r1 ≠ r2) :
-    (rf.set r2 v).get r1 = rf.get r1 := by
-  cases r1 <;> cases r2 <;> simp_all [RegFile.get, RegFile.set]
+theorem RegFile.get_set_diff (rf : RegFile) (rA rB : Reg) (v : Nat) (h : rA ≠ rB) :
+    (rf.set rB v).get rA = rf.get rA := by
+  cases rA <;> cases rB <;> simp_all [RegFile.get, RegFile.set]
 
 /-! ## Machine state -/
 

@@ -17,7 +17,7 @@ four projection lemmas (`regs`, `mem`, `pc`, `exitCode`) on the step
 result, plus the new `r0` value. -/
 
 theorem cuTripleWithin_syscall_writes_r0_only
-    (sc : Syscall) (vNew : Nat) (pc : Nat)
+    (sc : Syscall) (vNew : Nat) (pc : Nat) (nCu : Nat)
     (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs.set .r0 vNew)
     (h_step_mem  : ∀ s : State, (step (.call sc) s).mem = s.mem)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
@@ -26,8 +26,10 @@ theorem cuTripleWithin_syscall_writes_r0_only
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
     (h_step_callStack :
-      ∀ s : State, (step (.call sc) s).callStack = s.callStack) :
-    ∀ r0Old, cuTripleWithin 1 pc (pc + 1)
+      ∀ s : State, (step (.call sc) s).callStack = s.callStack)
+    (h_step_cu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    ∀ r0Old, cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call sc))
       (.r0 ↦ᵣ r0Old)
       (.r0 ↦ᵣ vNew) := by
@@ -58,6 +60,8 @@ theorem cuTripleWithin_syscall_writes_r0_only
     rw [hstep_eq]; exact h_step_returnData s
   have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
     rw [hstep_eq]; exact h_step_callStack s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [hstep_eq]; exact h_step_cu s
   have hR_no_r0 : hR.regs .r0 = none := by
     rcases hd_regs .r0 with h | h
     · rw [PartialState.singletonReg_regs_self] at h; nomatch h
@@ -78,9 +82,10 @@ theorem cuTripleWithin_syscall_writes_r0_only
     rw [← hu]
     exact PartialState.union_callStack_of_left_none
       PartialState.singletonReg_callStack
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨(PartialState.singletonReg .r0 vNew).union hR, ?_,
             PartialState.singletonReg .r0 vNew, hR, ?_, rfl, rfl, hRsat⟩
     · refine ⟨?_, ?_, ?_, ?_, ?_⟩

@@ -19,7 +19,7 @@ theorem cuTripleWithin_1reg_write
     (hne : dst ≠ .r10)
     (h_step : ∀ s : State, s.regs.get dst = vOld →
         step insn s = { s with regs := s.regs.set dst vNew, pc := s.pc + 1 }) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc insn)
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn)
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ vNew) := by
   intro R hRfree fetch hcr s hPR hpc hex
@@ -53,9 +53,10 @@ theorem cuTripleWithin_1reg_write
   have hp_mem : ∀ a, hp.mem a = hR.mem a := by
     intro a; rw [← hu]
     exact PartialState.union_mem_of_left_none (PartialState.singletonReg_mem a)
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨(PartialState.singletonReg dst vNew).union hR, ?_,
             PartialState.singletonReg dst vNew, hR, ?_, rfl, rfl, hRsat⟩
@@ -134,7 +135,7 @@ overwriting whatever was there. Excludes the read-only frame pointer
 
 theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ toU64 imm) := by
   intro R hRfree fetch hcr s hPR hpc hex
@@ -175,13 +176,15 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     rw [← hu]
     exact PartialState.union_mem_of_left_none (PartialState.singletonReg_mem a)
   -- 7. Build the witness for the post.
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · -- s'.pc = pc + 1
     rw [hexec]
     show s.pc + 1 = pc + 1
     rw [hpc]
   · -- s'.exitCode = none
     rw [hexec]; exact hex
+  · -- (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 0
+    rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · -- ((dst ↦ᵣ toU64 imm) ** R).holdsFor s'
     rw [hexec]
     refine ⟨(PartialState.singletonReg dst (toU64 imm)).union hR, ?_,
@@ -271,7 +274,7 @@ expands to. The concise derived form lives below as
 
 theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ v) ** (src ↦ᵣ v)) := by
   intro R hRfree fetch hcr s hPR hpc hex
@@ -339,9 +342,10 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
     rw [PartialState.union_mem_of_left_none
         (PartialState.union_mem_of_left_none (PartialState.singletonReg_mem a))]
   -- 8. Build the post.
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨((PartialState.singletonReg dst v).union
               (PartialState.singletonReg src v)).union hR, ?_,
@@ -486,7 +490,7 @@ proof that `step` produces the expected state given the precondition. -/
 /-- `add64 dst, imm`: wrapping 64-bit add with immediate. -/
 theorem add64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.add64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.add64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapAdd vOld (toU64 imm)) :=
   cuTripleWithin_1reg_write dst vOld (wrapAdd vOld (toU64 imm)) pc
@@ -496,7 +500,7 @@ theorem add64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `sub64 dst, imm`: wrapping 64-bit subtract with immediate. -/
 theorem sub64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.sub64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.sub64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapSub vOld (toU64 imm)) :=
   cuTripleWithin_1reg_write dst vOld (wrapSub vOld (toU64 imm)) pc
@@ -506,7 +510,7 @@ theorem sub64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `mul64 dst, imm`: wrapping 64-bit multiply with immediate. -/
 theorem mul64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mul64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mul64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapMul vOld (toU64 imm)) :=
   cuTripleWithin_1reg_write dst vOld (wrapMul vOld (toU64 imm)) pc
@@ -516,16 +520,16 @@ theorem mul64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `neg64 dst`: wrapping 64-bit negation. -/
 theorem neg64_spec (dst : Reg) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.neg64 dst))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.neg64 dst))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapNeg vOld) :=
   cuTripleWithin_1reg_write dst vOld (wrapNeg vOld) pc (.neg64 dst) hne
-    (fun _ hdst => by simp only [step, resolveSrc, hdst])
+    (fun _ hdst => by simp only [step, hdst])
 
 /-- `and64 dst, imm`: bitwise AND with immediate (truncated to 64 bits). -/
 theorem and64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.and64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.and64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld &&& toU64 imm) % U64_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld &&& toU64 imm) % U64_MODULUS) pc
@@ -535,7 +539,7 @@ theorem and64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `or64 dst, imm`: bitwise OR with immediate (truncated to 64 bits). -/
 theorem or64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.or64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.or64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld ||| toU64 imm) % U64_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld ||| toU64 imm) % U64_MODULUS) pc
@@ -545,7 +549,7 @@ theorem or64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `xor64 dst, imm`: bitwise XOR with immediate (truncated to 64 bits). -/
 theorem xor64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.xor64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.xor64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld ^^^ toU64 imm) % U64_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld ^^^ toU64 imm) % U64_MODULUS) pc
@@ -555,7 +559,7 @@ theorem xor64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `lsh64 dst, imm`: logical left shift by immediate (modulo 64), 64-bit truncated. -/
 theorem lsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.lsh64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.lsh64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld <<< (toU64 imm % 64)) % U64_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld <<< (toU64 imm % 64)) % U64_MODULUS) pc
@@ -565,7 +569,7 @@ theorem lsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `rsh64 dst, imm`: logical right shift by immediate (modulo 64). -/
 theorem rsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.rsh64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.rsh64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ (vOld >>> (toU64 imm % 64))) :=
   cuTripleWithin_1reg_write dst vOld (vOld >>> (toU64 imm % 64)) pc
@@ -577,7 +581,7 @@ theorem rsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     instruction slots; we abstract that away). -/
 theorem lddw_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.lddw dst imm))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.lddw dst imm))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ toU64 imm) :=
   cuTripleWithin_1reg_write dst vOld (toU64 imm) pc (.lddw dst imm) hne
@@ -598,7 +602,7 @@ theorem cuTripleWithin_2reg_write
     (hne : dst ≠ .r10)
     (h_step : ∀ s : State, s.regs.get dst = vOld → s.regs.get src = v →
         step insn s = { s with regs := s.regs.set dst vNew, pc := s.pc + 1 }) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc insn)
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn)
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ vNew) ** (src ↦ᵣ v)) := by
   intro R hRfree fetch hcr s hPR hpc hex
@@ -658,9 +662,10 @@ theorem cuTripleWithin_2reg_write
     rw [← hp_eq]
     rw [PartialState.union_mem_of_left_none
         (PartialState.union_mem_of_left_none (PartialState.singletonReg_mem a))]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
   · rw [hexec]
     refine ⟨((PartialState.singletonReg dst vNew).union
               (PartialState.singletonReg src v)).union hR, ?_,
@@ -804,7 +809,7 @@ spec — it ignores `vOld` entirely and just copies `v` into `dst`. -/
     `mov64_reg_spec_manual`. -/
 theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ v) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v v pc (.mov64 dst (.reg src)) hne
@@ -813,7 +818,7 @@ theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `add64 dst, src`: wrapping 64-bit add of two registers. -/
 theorem add64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.add64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.add64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ wrapAdd vOld v) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (wrapAdd vOld v) pc
@@ -823,7 +828,7 @@ theorem add64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `sub64 dst, src`: wrapping 64-bit subtract of two registers. -/
 theorem sub64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.sub64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.sub64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ wrapSub vOld v) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (wrapSub vOld v) pc
@@ -833,7 +838,7 @@ theorem sub64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `mul64 dst, src`: wrapping 64-bit multiply of two registers. -/
 theorem mul64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mul64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mul64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ wrapMul vOld v) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (wrapMul vOld v) pc
@@ -843,7 +848,7 @@ theorem mul64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `and64 dst, src`: bitwise AND of two registers (mod U64_MODULUS). -/
 theorem and64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.and64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.and64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld &&& v) % U64_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld &&& v) % U64_MODULUS) pc
@@ -853,7 +858,7 @@ theorem and64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `or64 dst, src`: bitwise OR of two registers (mod U64_MODULUS). -/
 theorem or64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.or64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.or64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld ||| v) % U64_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld ||| v) % U64_MODULUS) pc
@@ -863,7 +868,7 @@ theorem or64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `xor64 dst, src`: bitwise XOR of two registers (mod U64_MODULUS). -/
 theorem xor64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.xor64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.xor64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld ^^^ v) % U64_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld ^^^ v) % U64_MODULUS) pc
@@ -873,7 +878,7 @@ theorem xor64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `lsh64 dst, src`: left shift by (src mod 64), truncated to 64 bits. -/
 theorem lsh64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.lsh64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.lsh64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld <<< (v % 64)) % U64_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld <<< (v % 64)) % U64_MODULUS) pc
@@ -883,7 +888,7 @@ theorem lsh64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `rsh64 dst, src`: logical right shift by (src mod 64). -/
 theorem rsh64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.rsh64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.rsh64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ (vOld >>> (v % 64))) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (vOld >>> (v % 64)) pc
@@ -901,7 +906,7 @@ expression close to the definition site. -/
 /-- `arsh64 dst, imm`: arithmetic right shift by (imm mod 64). -/
 theorem arsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.arsh64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.arsh64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ
         (let shift := toU64 imm % 64
@@ -915,7 +920,7 @@ theorem arsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `arsh64 dst, src`: arithmetic right shift by (src mod 64). -/
 theorem arsh64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.arsh64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.arsh64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ
         (let shift := v % 64
@@ -934,7 +939,7 @@ result is zero-extended to 64 bits). -/
 /-- `mov32 dst, imm`: load 32-bit immediate (zero-extended to 64 bits). -/
 theorem mov32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mov32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ (toU64 imm % U32_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld (toU64 imm % U32_MODULUS) pc
@@ -944,7 +949,7 @@ theorem mov32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `add32 dst, imm`: wrapping 32-bit add with immediate. -/
 theorem add32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.add32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.add32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapAdd32 vOld (toU64 imm)) :=
   cuTripleWithin_1reg_write dst vOld (wrapAdd32 vOld (toU64 imm)) pc
@@ -954,7 +959,7 @@ theorem add32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `sub32 dst, imm`: wrapping 32-bit subtract with immediate. -/
 theorem sub32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.sub32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.sub32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapSub32 vOld (toU64 imm)) :=
   cuTripleWithin_1reg_write dst vOld (wrapSub32 vOld (toU64 imm)) pc
@@ -964,7 +969,7 @@ theorem sub32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `mul32 dst, imm`: wrapping 32-bit multiply with immediate. -/
 theorem mul32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mul32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mul32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapMul32 vOld (toU64 imm)) :=
   cuTripleWithin_1reg_write dst vOld (wrapMul32 vOld (toU64 imm)) pc
@@ -974,7 +979,7 @@ theorem mul32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `neg32 dst`: wrapping 32-bit negation. -/
 theorem neg32_spec (dst : Reg) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.neg32 dst))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.neg32 dst))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ wrapNeg32 vOld) :=
   cuTripleWithin_1reg_write dst vOld (wrapNeg32 vOld) pc (.neg32 dst) hne
@@ -983,7 +988,7 @@ theorem neg32_spec (dst : Reg) (vOld : Nat) (pc : Nat)
 /-- `and32 dst, imm`: bitwise AND with immediate (mod U32_MODULUS). -/
 theorem and32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.and32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.and32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld &&& toU64 imm) % U32_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld &&& toU64 imm) % U32_MODULUS) pc
@@ -993,7 +998,7 @@ theorem and32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `or32 dst, imm`: bitwise OR with immediate (mod U32_MODULUS). -/
 theorem or32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.or32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.or32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld ||| toU64 imm) % U32_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld ||| toU64 imm) % U32_MODULUS) pc
@@ -1003,7 +1008,7 @@ theorem or32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `xor32 dst, imm`: bitwise XOR with immediate (mod U32_MODULUS). -/
 theorem xor32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.xor32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.xor32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld ^^^ toU64 imm) % U32_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld ^^^ toU64 imm) % U32_MODULUS) pc
@@ -1019,7 +1024,7 @@ low 32 bits before shifting (matching `step`). -/
 /-- `lsh32 dst, imm`: 32-bit left shift by (imm mod 32). -/
 theorem lsh32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.lsh32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.lsh32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld <<< (toU64 imm % 32)) % U32_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld <<< (toU64 imm % 32)) % U32_MODULUS) pc
@@ -1030,7 +1035,7 @@ theorem lsh32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     Source is masked to its low 32 bits before shifting. -/
 theorem rsh32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.rsh32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.rsh32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld % U32_MODULUS) >>> (toU64 imm % 32))) :=
   cuTripleWithin_1reg_write dst vOld ((vOld % U32_MODULUS) >>> (toU64 imm % 32)) pc
@@ -1040,7 +1045,7 @@ theorem rsh32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `arsh32 dst, imm`: 32-bit arithmetic right shift by (imm mod 32). -/
 theorem arsh32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.arsh32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.arsh32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ
         (let shift := toU64 imm % 32
@@ -1057,7 +1062,7 @@ theorem arsh32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `mov32 dst, src`: zero-extended 32-bit register copy. -/
 theorem mov32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mov32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ (v % U32_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (v % U32_MODULUS) pc
@@ -1067,7 +1072,7 @@ theorem mov32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `add32 dst, src`: wrapping 32-bit add of two registers. -/
 theorem add32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.add32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.add32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ wrapAdd32 vOld v) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (wrapAdd32 vOld v) pc
@@ -1077,7 +1082,7 @@ theorem add32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `sub32 dst, src`: wrapping 32-bit subtract of two registers. -/
 theorem sub32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.sub32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.sub32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ wrapSub32 vOld v) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (wrapSub32 vOld v) pc
@@ -1087,7 +1092,7 @@ theorem sub32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `mul32 dst, src`: wrapping 32-bit multiply of two registers. -/
 theorem mul32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mul32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mul32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ wrapMul32 vOld v) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (wrapMul32 vOld v) pc
@@ -1097,7 +1102,7 @@ theorem mul32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `and32 dst, src`: bitwise AND of two registers (mod U32_MODULUS). -/
 theorem and32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.and32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.and32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld &&& v) % U32_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld &&& v) % U32_MODULUS) pc
@@ -1107,7 +1112,7 @@ theorem and32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `or32 dst, src`: bitwise OR of two registers (mod U32_MODULUS). -/
 theorem or32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.or32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.or32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld ||| v) % U32_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld ||| v) % U32_MODULUS) pc
@@ -1117,7 +1122,7 @@ theorem or32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `xor32 dst, src`: bitwise XOR of two registers (mod U32_MODULUS). -/
 theorem xor32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.xor32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.xor32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld ^^^ v) % U32_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld ^^^ v) % U32_MODULUS) pc
@@ -1127,7 +1132,7 @@ theorem xor32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `lsh32 dst, src`: 32-bit left shift by (src mod 32). -/
 theorem lsh32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.lsh32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.lsh32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld <<< (v % 32)) % U32_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld <<< (v % 32)) % U32_MODULUS) pc
@@ -1137,7 +1142,7 @@ theorem lsh32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `rsh32 dst, src`: 32-bit logical right shift by (src mod 32). -/
 theorem rsh32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.rsh32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.rsh32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld % U32_MODULUS) >>> (v % 32))) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld % U32_MODULUS) >>> (v % 32)) pc
@@ -1147,7 +1152,7 @@ theorem rsh32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `arsh32 dst, src`: 32-bit arithmetic right shift by (src mod 32). -/
 theorem arsh32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.arsh32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.arsh32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ
         (let shift := v % 32
@@ -1171,7 +1176,7 @@ so the non-zero hypothesis is on `... % U32_MODULUS`. -/
 /-- `div64 dst, imm`: 64-bit unsigned division (success path). -/
 theorem div64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : toU64 imm ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.div64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.div64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld / toU64 imm) % U64_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld ((vOld / toU64 imm) % U64_MODULUS) pc
@@ -1181,7 +1186,7 @@ theorem div64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `div64 dst, src`: 64-bit unsigned division of two registers (success path). -/
 theorem div64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : v ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.div64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.div64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld / v) % U64_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v ((vOld / v) % U64_MODULUS) pc
@@ -1193,7 +1198,7 @@ theorem div64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `mod64 dst, imm`: 64-bit modulo with immediate (success path). -/
 theorem mod64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : toU64 imm ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mod64 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mod64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ (vOld % toU64 imm)) :=
   cuTripleWithin_1reg_write dst vOld (vOld % toU64 imm) pc
@@ -1203,7 +1208,7 @@ theorem mod64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `mod64 dst, src`: 64-bit modulo of two registers (success path). -/
 theorem mod64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : v ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mod64 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mod64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ (vOld % v)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v (vOld % v) pc
@@ -1216,7 +1221,7 @@ theorem mod64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     Both operand and divisor are masked to their low 32 bits. -/
 theorem div32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : toU64 imm % U32_MODULUS ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.div32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.div32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ ((vOld % U32_MODULUS / (toU64 imm % U32_MODULUS)) % U32_MODULUS)) :=
   cuTripleWithin_1reg_write dst vOld
@@ -1227,7 +1232,7 @@ theorem div32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `div32 dst, src`: 32-bit unsigned division of two registers (success path). -/
 theorem div32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : v % U32_MODULUS ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.div32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.div32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ ((vOld % U32_MODULUS / (v % U32_MODULUS)) % U32_MODULUS)) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v
@@ -1240,7 +1245,7 @@ theorem div32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 /-- `mod32 dst, imm`: 32-bit modulo with immediate (success path). -/
 theorem mod32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : toU64 imm % U32_MODULUS ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mod32 dst (.imm imm)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mod32 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ (vOld % U32_MODULUS % (toU64 imm % U32_MODULUS))) :=
   cuTripleWithin_1reg_write dst vOld
@@ -1251,7 +1256,7 @@ theorem mod32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 /-- `mod32 dst, src`: 32-bit modulo of two registers (success path). -/
 theorem mod32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) (hnz : v % U32_MODULUS ≠ 0) :
-    cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc (.mod32 dst (.reg src)))
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mod32 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ (vOld % U32_MODULUS % (v % U32_MODULUS))) ** (src ↦ᵣ v)) :=
   cuTripleWithin_2reg_write dst src vOld v

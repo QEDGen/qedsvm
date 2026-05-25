@@ -1,7 +1,7 @@
 /-
   Per-instruction separation-logic Hoare triples for sBPF.
 
-  Each spec is `cuTripleWithin 1 pc (pc + 1) (CodeReq.singleton pc insn) P Q`:
+  Each spec is `cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn) P Q`:
   one compute unit per instruction (in this layer — true CU pricing will
   scale this in a later phase), code requirement pinning the instruction at
   `pc`, and a separation-logic pre/post over the resources the instruction
