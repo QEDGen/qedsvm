@@ -76,7 +76,7 @@ cargo test --manifest-path qedsvm-rs/Cargo.toml --features diff-mollusk
 | CPI (Rust + C ABI, depth-2+, PDA signer promotion) | ✅ |
 | 142 per-instruction Hoare triples | ✅ |
 | Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) | ✅ |
-| End-to-end proofs over compiler-emitted bytecode | 75 / 76 CU on p-token Transfer |
+| End-to-end proofs over compiler-emitted bytecode | ✅ 76 / 76 CU on p-token Transfer, exitCode = 0 |
 
 See [`ROADMAP.md`](ROADMAP.md) for the phase-by-phase breakdown and current work.
 
