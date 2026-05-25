@@ -75,6 +75,7 @@ lean_lib Examples where
     `PToken.TransferArm.L3TwoCalls,
     `PToken.TransferArm.L4TwoCallsExt,
     `PToken.TransferArm.L5ThirdCall,
-    `PToken.TransferArm.L6FarJump
+    `PToken.TransferArm.L6FarJump,
+    `PToken.TransferArm.H1Dispatch
   ]
   precompileModules := true
