@@ -891,4 +891,104 @@ theorem cuTripleAbortsWithin_frame_left (F : Assertion) (hF : F.pcFree)
     (fun hp hFP => (sepConj_comm hp).mp hFP)
     (cuTripleAbortsWithin_frame_right F hF h)
 
+/-! ## Memory-aware aborting triple
+
+`cuTripleAbortsWithinMem` extends `cuTripleAbortsWithin` with a
+persistent `rr` precondition on `s.regions`, mirroring how
+`cuTripleWithinMem` extends `cuTripleWithin`. It's the shape produced
+when sequencing a memory-laden running prefix into a terminating tail
+(`.exit`, `.call .abort`, `.call .sol_panic_`).
+
+`s.regions` is never mutated by `step`, so the `rr` discharge is
+single-point at entry; nothing additional needs to be re-established
+after the abort. -/
+
+def cuTripleAbortsWithinMem (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
+    (P : Assertion) (rr : Memory.RegionTable → Prop) (errCode : Nat) : Prop :=
+  ∀ (R : Assertion), R.pcFree →
+  ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
+  ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    rr s.regions →
+    ∃ k, k ≤ nSteps ∧
+      (executeFn fetch s k).exitCode = some errCode ∧
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nCu
+
+/-- Every non-memory aborting triple is also a memory aborting triple
+    with no region requirement. Lets pure abort specs (e.g.
+    `exit_aborts_spec_cuTriple`) compose with memory-laden prefixes. -/
+theorem cuTripleAbortsWithin.toMem {nSteps nCu entry : Nat} {cr : CodeReq}
+    {P : Assertion} {errCode : Nat}
+    (h : cuTripleAbortsWithin nSteps nCu entry cr P errCode) :
+    cuTripleAbortsWithinMem nSteps nCu entry cr P (fun _ => True) errCode := by
+  intro R hR fetch hcr s hPR hpc hex _
+  exact h R hR fetch hcr s hPR hpc hex
+
+/-- Memory-aware sequencing into abort: a memory triple `P { c₁ } Q`
+    chained with a memory-aware aborting triple `Q { c₂ } aborts`
+    yields a memory-aware aborting triple `P { c₁; c₂ } aborts`. Bounds
+    sum, code reqs union, region conditions conjunct (mirroring
+    `cuTripleWithinMem_seq`).
+
+    The most common use: a long memory-laden running prefix terminated
+    by `.exit` / `.call .abort` / `.call .sol_panic_`, lifted from
+    `cuTripleAbortsWithin` via `.toMem`. -/
+theorem cuTripleWithinMem_seq_abort {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
+    {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
+    {P Q : Assertion} {rr1 rr2 : Memory.RegionTable → Prop}
+    {errCode : Nat}
+    (h1 : cuTripleWithinMem N1 M1 pc1 pc2 cr1 P Q rr1)
+    (h2 : cuTripleAbortsWithinMem N2 M2 pc2 cr2 Q rr2 errCode) :
+    cuTripleAbortsWithinMem (N1 + N2) (M1 + M2) pc1 (cr1.union cr2) P
+      (fun rt => rr1 rt ∧ rr2 rt) errCode := by
+  intro F hF fetch hcr s hPF hpc hex h_reg
+  obtain ⟨hreg1, hreg2⟩ := h_reg
+  have hcr1 := CodeReq.SatisfiedBy_of_union_left hcr
+  have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
+  obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
+    h1 F hF fetch hcr1 s hPF hpc hex hreg1
+  have h_reg_mid : rr2 (executeFn fetch s k1).regions := by
+    rw [executeFn_preserves_regions]; exact hreg2
+  obtain ⟨k2, hk2, hex_end, hcu2⟩ :=
+    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid h_reg_mid
+  refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_, ?_⟩
+  · rw [executeFn_compose]; exact hex_end
+  · rw [executeFn_compose]
+    calc (executeFn fetch (executeFn fetch s k1) k2).cuConsumed
+        ≤ (executeFn fetch s k1).cuConsumed + M2 := hcu2
+      _ ≤ (s.cuConsumed + M1) + M2 := Nat.add_le_add_right hcu1 M2
+      _ = s.cuConsumed + (M1 + M2) := by omega
+
+/-- Rule of consequence for memory-aware aborting triples: strengthen
+    the pre, and strengthen `rr` (caller's stronger region claim implies
+    the spec's weaker one). No post to weaken. -/
+theorem cuTripleAbortsWithinMem_weaken {nSteps nCu : Nat} {entry : Nat}
+    {cr : CodeReq}
+    {P P' : Assertion} {rr rr' : Memory.RegionTable → Prop} {errCode : Nat}
+    (hpre : ∀ h, P' h → P h)
+    (h_rr  : ∀ rt, rr' rt → rr rt)
+    (h : cuTripleAbortsWithinMem nSteps nCu entry cr P rr errCode) :
+    cuTripleAbortsWithinMem nSteps nCu entry cr P' rr' errCode := by
+  intro R hR fetch hcr s hP'R hpc hex h_reg'
+  have hPR : (P ** R).holdsFor s := by
+    obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
+    exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
+  exact h R hR fetch hcr s hPR hpc hex (h_rr _ h_reg')
+
+/-- Variant where the abort tail is a non-Mem triple (most common: the
+    abort tail is `.exit`, which has no memory ops). Discharges by
+    lifting the abort tail via `.toMem`, then routing through the
+    Mem-aware seq. The result keeps only the prefix's region
+    requirement (the abort tail's lifted `True` is collapsed). -/
+theorem cuTripleWithinMem_seq_abort_pure {N1 N2 M1 M2 : Nat}
+    {pc1 pc2 : Nat}
+    {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
+    {P Q : Assertion} {rr1 : Memory.RegionTable → Prop} {errCode : Nat}
+    (h1 : cuTripleWithinMem N1 M1 pc1 pc2 cr1 P Q rr1)
+    (h2 : cuTripleAbortsWithin N2 M2 pc2 cr2 Q errCode) :
+    cuTripleAbortsWithinMem (N1 + N2) (M1 + M2) pc1 (cr1.union cr2) P
+      rr1 errCode := by
+  have h := cuTripleWithinMem_seq_abort hd h1 h2.toMem
+  intro F hF fetch hcr s hPF hpc hex h_reg
+  exact h F hF fetch hcr s hPF hpc hex ⟨h_reg, trivial⟩
+
 end SVM.SBPF

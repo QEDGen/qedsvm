@@ -142,5 +142,72 @@ theorem exit_aborts_spec (vR0 pc : Nat) :
   show some (s.regs.get .r0) = some vR0
   rw [hs_regs_r0]
 
+/-- SL-form wrapper around `exit_aborts_spec`: packages the empty
+    callStack hypothesis into the assertion `callStackIs []` so that the
+    spec becomes a standard `cuTripleAbortsWithin`.
+
+    Step cost is 1; `cuConsumed` does not bump for `.exit` (see
+    `Execute.lean` `step .exit` arm — no syscall, no surcharge), so
+    `nCu = 0`. -/
+theorem exit_aborts_spec_cuTriple (vR0 pc : Nat) :
+    cuTripleAbortsWithin 1 0 pc (CodeReq.singleton pc .exit)
+      ((.r0 ↦ᵣ vR0) ** callStackIs []) vR0 := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  -- Destructure ((.r0 ↦ᵣ vR0) ** callStackIs []) ** R.
+  obtain ⟨hp, hcompat, h_PQ, h_R, hd_PQR, hu_PQR, h_PQ_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_r0, h_cs, hd_r0_cs, hu_r0_cs, h_r0_pred, h_cs_pred⟩ := h_PQ_sat
+  -- Chase callStack: callStackIs [] atom owns h_cs.callStack = some [].
+  have h_cs_cs : h_cs.callStack = some [] := by
+    show h_cs.callStack = some []
+    rw [show h_cs = PartialState.singletonCallStack [] from h_cs_pred]
+    exact PartialState.singletonCallStack_callStack_self
+  have h_r0_cs : h_r0.callStack = none := by
+    rw [show h_r0 = PartialState.singletonReg .r0 vR0 from h_r0_pred]
+    exact PartialState.singletonReg_callStack
+  -- Push h_cs_cs up through hu_r0_cs to get h_PQ.callStack = some [].
+  have h_PQ_cs : h_PQ.callStack = some [] := by
+    rw [← hu_r0_cs, PartialState.union_callStack_of_left_none h_r0_cs]
+    exact h_cs_cs
+  -- Push up through hu_PQR to hp.callStack = some [], then to s.
+  have hp_cs : hp.callStack = some [] :=
+    hu_PQR ▸ PartialState.union_callStack_of_left_some h_PQ_cs
+  have hcs : s.callStack = [] := hcompat.callStack [] hp_cs
+  -- Reshape pre as (.r0 ↦ᵣ vR0) ** (callStackIs [] ** R) so the inner
+  -- sepConj matches exit_aborts_spec's expected frame shape.
+  have hRfree' : (callStackIs [] ** R).pcFree :=
+    pcFree_sepConj (pcFree_callStackIs _) hRfree
+  have hPR' : ((.r0 ↦ᵣ vR0) ** (callStackIs [] ** R)).holdsFor s :=
+    holdsFor_sepConj_assoc.mp ⟨hp, hcompat, h_PQ, h_R, hd_PQR, hu_PQR,
+      ⟨h_r0, h_cs, hd_r0_cs, hu_r0_cs, h_r0_pred, h_cs_pred⟩, h_R_sat⟩
+  obtain ⟨k, hk, hexc⟩ :=
+    exit_aborts_spec vR0 pc (callStackIs [] ** R) hRfree' fetch hcr s hPR'
+      hpc hex hcs
+  -- exit_aborts_spec gives k ≤ 1 and exitCode = some vR0. We need to
+  -- bound cuConsumed delta ≤ 0. `.exit` does not bump cuConsumed
+  -- (only the `.call` syscall arm does — see Execute.lean), so for
+  -- k = 0 it's trivial and for k = 1 we unfold step .exit to confirm.
+  refine ⟨k, hk, hexc, ?_⟩
+  -- k ≤ 1, so k = 0 or k = 1.
+  rcases Nat.eq_or_lt_of_le hk with hk_eq | hk_lt
+  · -- k = 1
+    subst hk_eq
+    show (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 0
+    have hfetch : fetch s.pc = some .exit := by
+      rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+    have hexec1 : executeFn fetch s 1 = step .exit s := by
+      rw [show (1 : Nat) = 0 + 1 from rfl,
+          executeFn_step fetch s 0 _ hex hfetch,
+          executeFn_zero]
+    have hstep : step .exit s = { s with exitCode := some (s.regs.get .r0) } := by
+      simp only [step, hcs]
+    rw [hexec1, hstep]
+    show s.cuConsumed ≤ s.cuConsumed + 0
+    omega
+  · -- k < 1, so k = 0
+    have hk0 : k = 0 := by omega
+    subst hk0
+    show (executeFn fetch s 0).cuConsumed ≤ s.cuConsumed + 0
+    rw [executeFn_zero]; omega
+
 
 end SVM.SBPF
