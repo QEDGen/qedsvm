@@ -18,6 +18,22 @@ require qedsvm from git
 
 Prerequisites: Lean (via `elan`) and `cargo` / `rustc`. Lake builds `qedsvm-rs/lean-bridge/` automatically.
 
+## Demo
+
+Two artifacts make the headline claims visible in seconds.
+
+```bash
+# Run incrementer + p-token Transfer through qedsvm and mollusk side by side.
+# Prints CU, return data, account-data digest, and a byte+CU verdict.
+cargo run --release --features diff-mollusk \
+  --manifest-path qedsvm-rs/Cargo.toml --example conformance_demo
+
+# Prove what a 4-instruction sBPF program does, then print the trust base.
+lake build ProofDemo
+```
+
+[`examples/lean/ProofDemo.lean`](examples/lean/ProofDemo.lean) prints the axioms reachable from the witness theorem: three Lean kernel axioms plus one `native_decide` for the bytecode equality. No rustc, no external sBPF semantics.
+
 ## Use
 
 ### From Lean

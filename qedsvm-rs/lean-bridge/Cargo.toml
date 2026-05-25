@@ -39,13 +39,3 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 [build-dependencies]
 cc = "1"
 
-[profile.release]
-# Reproducibility + minimal binary footprint.
-codegen-units = 1
-lto = "thin"
-strip = "symbols"
-panic = "abort"
-opt-level = 3
-
-[profile.dev]
-panic = "abort"

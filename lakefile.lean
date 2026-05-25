@@ -62,6 +62,7 @@ lean_lib Examples where
   srcDir := "examples/lean"
   roots := #[
     `ByteIncrement,
+    `ProofDemo,
     `AsmTimeout,
     `MinimalTransferAsm,
     `CompilerRtFpCmp,
