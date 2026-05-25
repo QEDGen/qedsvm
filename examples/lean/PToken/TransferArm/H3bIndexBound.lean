@@ -48,15 +48,16 @@ open Examples.PTokenTransferArmH3aAmountAlign (alignedAmount)
     proof level. -/
 def h3bErrPc : Nat := 100
 
-def h3bCr : CodeReq :=
-  (((((CodeReq.singleton 0 (.mov64 .r2 (.reg .r1))).union
-      (CodeReq.singleton 1 (.add64 .r2 (.reg .r3)))).union
-      (CodeReq.singleton 2 (.ldx .dword .r3 .r2 0x7a78))).union
-      (CodeReq.singleton 3 (.jlt .r3 (.imm 9) h3bErrPc))).union
-      (CodeReq.singleton 4 (.ldx .byte .r3 .r2 0x7a80))).union
-      (CodeReq.singleton 5 (.jne .r3 (.imm 3) h3bErrPc))
+def h3bCr (base : Nat) : CodeReq :=
+  (((((CodeReq.singleton (base + 0) (.mov64 .r2 (.reg .r1))).union
+      (CodeReq.singleton (base + 1) (.add64 .r2 (.reg .r3)))).union
+      (CodeReq.singleton (base + 2) (.ldx .dword .r3 .r2 0x7a78))).union
+      (CodeReq.singleton (base + 3) (.jlt .r3 (.imm 9) h3bErrPc))).union
+      (CodeReq.singleton (base + 4) (.ldx .byte .r3 .r2 0x7a80))).union
+      (CodeReq.singleton (base + 5) (.jne .r3 (.imm 3) h3bErrPc))
 
 theorem p_token_transfer_arm_h3b_spec
+    (base : Nat)
     (initR1 initR2 amount : Nat)
     (layoutBound : Nat)  -- cell at [r2+0x7a78], must be ≥ 9
     (layoutTag : Nat)    -- byte at [r2+0x7a80], must be 3 mod 256
@@ -64,7 +65,7 @@ theorem p_token_transfer_arm_h3b_spec
     (h_bound_ge : layoutBound ≥ 9)
     (h_tag : layoutTag % 256 = toU64 3) :
     let baseAddr := wrapAdd initR1 (alignedAmount amount)
-    cuTripleWithinMem 6 0 0 6 h3bCr
+    cuTripleWithinMem 6 0 base (base + 6) (h3bCr base)
       ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
         (.r3 ↦ᵣ alignedAmount amount) **
         (effectiveAddr baseAddr 0x7a78 ↦U64 layoutBound) **
@@ -78,26 +79,27 @@ theorem p_token_transfer_arm_h3b_spec
         rt.containsRange (effectiveAddr baseAddr 0x7a80) 1 = true) := by
   intro baseAddr
   -- h0: mov64 r2, r1 → r2 := initR1.
-  have h0 := mov64_reg_spec .r2 .r1 initR2 initR1 0 (by decide)
+  have h0 := mov64_reg_spec .r2 .r1 initR2 initR1 (base + 0) (by decide)
   -- h1: add64 r2, r3 → r2 := wrapAdd initR1 (alignedAmount amount) = baseAddr.
-  have h1 := add64_reg_spec .r2 .r3 initR1 (alignedAmount amount) 1 (by decide)
+  have h1 := add64_reg_spec .r2 .r3 initR1 (alignedAmount amount) (base + 1) (by decide)
   -- h2: ldxdw r3, [r2 + 0x7a78] → r3 := layoutBound.
   have h2 := ldxdw_spec .r3 .r2 0x7a78 (alignedAmount amount) baseAddr
-                        layoutBound 2 (by decide) h_bound_lt
+                        layoutBound (base + 2) (by decide) h_bound_lt
   -- h3: jlt r3, 9 → NOT taken under layoutBound ≥ 9.
-  have h3 := jlt_imm_spec .r3 9 layoutBound 3 h3bErrPc
+  have h3 := jlt_imm_spec .r3 9 layoutBound (base + 3) h3bErrPc
   -- h4: ldxb r3, [r2 + 0x7a80] → r3 := layoutTag % 256.
-  have h4 := ldxb_spec .r3 .r2 0x7a80 layoutBound baseAddr layoutTag 4 (by decide)
+  have h4 := ldxb_spec .r3 .r2 0x7a80 layoutBound baseAddr layoutTag (base + 4) (by decide)
   -- h5: jne r3, 3 → NOT taken under layoutTag % 256 = 3.
-  have h5 := jne_imm_spec .r3 3 (layoutTag % 256) 5 h3bErrPc
+  have h5 := jne_imm_spec .r3 3 (layoutTag % 256) (base + 5) h3bErrPc
   -- Collapse the jlt: layoutBound ≥ 9 ⟹ ¬ (layoutBound < 9).
-  rw [show (if layoutBound < toU64 9 then h3bErrPc else 3 + 1) = 4 from by
+  rw [show (if layoutBound < toU64 9 then h3bErrPc else (base + 3) + 1) = base + 4 from by
         have hno : ¬ (layoutBound < toU64 9) := by
           show ¬ (layoutBound < 9); omega
         rw [if_neg hno]] at h3
   -- Collapse the jne: layoutTag % 256 = toU64 3 ⟹ ¬ (≠).
-  rw [show (if (layoutTag % 256) ≠ toU64 3 then h3bErrPc else 5 + 1) = 6 from by
+  rw [show (if (layoutTag % 256) ≠ toU64 3 then h3bErrPc else (base + 5) + 1) = base + 6 from by
         rw [h_tag]; simp] at h5
+  unfold h3bCr
   sl_block_iter [h0, h1, h2, h3, h4, h5]
 
 end Examples.PTokenTransferArmH3bIndexBound

@@ -46,16 +46,17 @@ open Memory
     re-instantiate at the actual absolute target (~PC 4457 = byte 0x96A0). -/
 def h3fTarget : Nat := 0x1d1
 
-def h3fCr : CodeReq :=
-  ((CodeReq.singleton 0 (.ldx .dword .r5 .r1 0x5220)).union
-    (CodeReq.singleton 1 (.ldx .byte .r0 .r1 0xa8))).union
-    (CodeReq.singleton 2 (.jne .r0 (.imm 1) h3fTarget))
+def h3fCr (base : Nat) (target : Nat) : CodeReq :=
+  ((CodeReq.singleton (base + 0) (.ldx .dword .r5 .r1 0x5220)).union
+    (CodeReq.singleton (base + 1) (.ldx .byte .r0 .r1 0xa8))).union
+    (CodeReq.singleton (base + 2) (.jne .r0 (.imm 1) target))
 
 theorem p_token_transfer_arm_h3f_spec
+    (base : Nat) (target : Nat)
     (initR0 initR1 initR5 authWord signerByte : Nat)
     (h_auth_lt : authWord < 2 ^ 64)
     (h_signer_ne : signerByte % 256 ≠ toU64 1) :
-    cuTripleWithinMem 3 0 0 h3fTarget h3fCr
+    cuTripleWithinMem 3 0 base target (h3fCr base target)
       ((.r0 ↦ᵣ initR0) ** (.r1 ↦ᵣ initR1) ** (.r5 ↦ᵣ initR5) **
         (effectiveAddr initR1 0x5220 ↦U64 authWord) **
         (effectiveAddr initR1 0xa8 ↦ₘ signerByte))
@@ -66,12 +67,13 @@ theorem p_token_transfer_arm_h3f_spec
       (fun rt =>
         rt.containsRange (effectiveAddr initR1 0x5220) 8 = true ∧
         rt.containsRange (effectiveAddr initR1 0xa8) 1 = true) := by
-  have h0 := ldxdw_spec .r5 .r1 0x5220 initR5 initR1 authWord 0 (by decide) h_auth_lt
-  have h1 := ldxb_spec .r0 .r1 0xa8 initR0 initR1 signerByte 1 (by decide)
-  have h2 := jne_imm_spec .r0 1 (signerByte % 256) 2 h3fTarget
+  have h0 := ldxdw_spec .r5 .r1 0x5220 initR5 initR1 authWord (base + 0) (by decide) h_auth_lt
+  have h1 := ldxb_spec .r0 .r1 0xa8 initR0 initR1 signerByte (base + 1) (by decide)
+  have h2 := jne_imm_spec .r0 1 (signerByte % 256) (base + 2) target
   -- jne fires under signerByte % 256 ≠ 1.
-  rw [show (if (signerByte % 256) ≠ toU64 1 then h3fTarget else 2 + 1) = h3fTarget from by
+  rw [show (if (signerByte % 256) ≠ toU64 1 then target else (base + 2) + 1) = target from by
         rw [if_pos h_signer_ne]] at h2
+  unfold h3fCr
   sl_block_iter [h0, h1, h2]
 
 end Examples.PTokenTransferArmH3fSignerExit

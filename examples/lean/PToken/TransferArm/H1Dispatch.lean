@@ -51,30 +51,35 @@ open Memory
 /-- Synthetic local PC for the jeq target on the Transfer dispatch.
     Computed as `1 + 1 + 0x6d` (PC of jeq + 1 + the jeq's offset field).
     Real image PC differs because of lddw byte-vs-PC counts; downstream
-    glue picks the absolute value. -/
+    glue picks the absolute value. Kept as the default-target hint; the
+    `base`-parameterized variant below takes the target as a parameter. -/
 def dispatchTarget : Nat := 0x6f
 
-/-- The CodeReq for the 2-instruction Transfer-arm dispatch. -/
-def transferArmDispatchCr : CodeReq :=
-  (CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
-    (CodeReq.singleton 1 (.jeq .r2 (.imm 3) dispatchTarget))
+/-- The CodeReq for the 2-instruction Transfer-arm dispatch, base-shifted
+    so the local PCs become `base + 0` and `base + 1`. The jeq target
+    is supplied externally (not shifted by `base`). -/
+def transferArmDispatchCr (base : Nat) (target : Nat) : CodeReq :=
+  (CodeReq.singleton (base + 0) (.ldx .byte .r2 .r1 0)).union
+    (CodeReq.singleton (base + 1) (.jeq .r2 (.imm 3) target))
 
 theorem p_token_transfer_arm_dispatch_spec
+    (base : Nat) (target : Nat)
     (initR1 initR2 disc : Nat)
     (h_disc : disc % 256 = toU64 3) :
-    cuTripleWithinMem 2 0 0 dispatchTarget transferArmDispatchCr
+    cuTripleWithinMem 2 0 base target (transferArmDispatchCr base target)
       ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
         (effectiveAddr initR1 0 ↦ₘ disc))
       ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ disc % 256) **
         (effectiveAddr initR1 0 ↦ₘ disc))
       (fun rt => rt.containsRange (effectiveAddr initR1 0) 1 = true) := by
   -- h0: ldxb reads the discriminator byte → r2 := disc % 256.
-  have h0 := ldxb_spec .r2 .r1 0 initR2 initR1 disc 0 (by decide)
-  -- h1: jeq's exit PC is `if disc % 256 = toU64 3 then dispatchTarget else 1+1`.
-  have h1 := jeq_imm_spec .r2 3 (disc % 256) 1 dispatchTarget
+  have h0 := ldxb_spec .r2 .r1 0 initR2 initR1 disc (base + 0) (by decide)
+  -- h1: jeq's exit PC is `if disc % 256 = toU64 3 then target else (base+1)+1`.
+  have h1 := jeq_imm_spec .r2 3 (disc % 256) (base + 1) target
   -- Collapse the conditional: under h_disc the jeq is taken.
-  rw [show (if (disc % 256) = toU64 3 then dispatchTarget else 1 + 1) = dispatchTarget
+  rw [show (if (disc % 256) = toU64 3 then target else (base + 1) + 1) = target
         from by rw [h_disc]; simp] at h1
+  unfold transferArmDispatchCr
   sl_block_iter [h0, h1]
 
 end Examples.PTokenTransferArmDispatch

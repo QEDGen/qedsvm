@@ -48,17 +48,18 @@ open Memory
 def alignedAmount (amount : Nat) : Nat :=
   ((wrapAdd amount (toU64 7)) &&& toU64 (-8)) % U64_MODULUS
 
-/-- CodeReq for H3a's 4 instructions. -/
-def h3aCr : CodeReq :=
-  (((CodeReq.singleton 0 (.ldx .dword .r4 .r1 0x5268)).union
-    (CodeReq.singleton 1 (.mov64 .r3 (.reg .r4)))).union
-    (CodeReq.singleton 2 (.add64 .r3 (.imm 7)))).union
-    (CodeReq.singleton 3 (.and64 .r3 (.imm (-8))))
+/-- CodeReq for H3a's 4 instructions, base-shifted. -/
+def h3aCr (base : Nat) : CodeReq :=
+  (((CodeReq.singleton (base + 0) (.ldx .dword .r4 .r1 0x5268)).union
+    (CodeReq.singleton (base + 1) (.mov64 .r3 (.reg .r4)))).union
+    (CodeReq.singleton (base + 2) (.add64 .r3 (.imm 7)))).union
+    (CodeReq.singleton (base + 3) (.and64 .r3 (.imm (-8))))
 
 theorem p_token_transfer_arm_h3a_spec
+    (base : Nat)
     (initR1 initR3 initR4 amount : Nat)
     (h_amt : amount < 2 ^ 64) :
-    cuTripleWithinMem 4 0 0 4 h3aCr
+    cuTripleWithinMem 4 0 base (base + 4) (h3aCr base)
       ((.r1 ↦ᵣ initR1) ** (.r3 ↦ᵣ initR3) ** (.r4 ↦ᵣ initR4) **
         (effectiveAddr initR1 0x5268 ↦U64 amount))
       ((.r1 ↦ᵣ initR1) ** (.r3 ↦ᵣ alignedAmount amount) **
@@ -66,13 +67,14 @@ theorem p_token_transfer_arm_h3a_spec
         (effectiveAddr initR1 0x5268 ↦U64 amount))
       (fun rt => rt.containsRange (effectiveAddr initR1 0x5268) 8 = true) := by
   -- h0: ldxdw r4, [r1 + 0x5268] → r4 := amount.
-  have h0 := ldxdw_spec .r4 .r1 0x5268 initR4 initR1 amount 0 (by decide) h_amt
+  have h0 := ldxdw_spec .r4 .r1 0x5268 initR4 initR1 amount (base + 0) (by decide) h_amt
   -- h1: mov64 r3, r4 → r3 := r4's value (= amount after h0).
-  have h1 := mov64_reg_spec .r3 .r4 initR3 amount 1 (by decide)
+  have h1 := mov64_reg_spec .r3 .r4 initR3 amount (base + 1) (by decide)
   -- h2: add64 r3, 0x7 → r3 := wrapAdd amount (toU64 7).
-  have h2 := add64_imm_spec .r3 7 amount 2 (by decide)
+  have h2 := add64_imm_spec .r3 7 amount (base + 2) (by decide)
   -- h3: and64 r3, -0x8 → r3 := alignedAmount amount.
-  have h3 := and64_imm_spec .r3 (-8) (wrapAdd amount (toU64 7)) 3 (by decide)
+  have h3 := and64_imm_spec .r3 (-8) (wrapAdd amount (toU64 7)) (base + 3) (by decide)
+  unfold h3aCr
   sl_block_iter [h0, h1, h2, h3]
 
 end Examples.PTokenTransferArmH3aAmountAlign
