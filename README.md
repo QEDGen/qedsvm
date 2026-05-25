@@ -1,8 +1,8 @@
 # qedsvm
 
-**Verify what runs on Solana — not what you wrote.**
+**Verify what runs on Solana, not what you wrote.**
 
-A Lean 4 model of the Solana Virtual Machine. Operates on the compiled `.so` — the same artifact mainnet runs.
+A Lean 4 model of the Solana Virtual Machine. Operates on the compiled `.so`: the same artifact mainnet runs.
 
 - **Byte-for-byte conformant** with agave on 26 mollusk-cross-checked fixtures, including p-token Transfer at 76 CU identical. Full suite: ~3s.
 - **142 per-instruction Hoare triples** in separation logic, composable end-to-end. Every triple carries a verified compute-unit bound.
@@ -55,7 +55,7 @@ cargo test --manifest-path qedsvm-rs/Cargo.toml --features diff-mollusk
 | --- | --- |
 | ALU + jumps + memory + call/return | ✅ |
 | ELF64 loader (all `R_BPF_64_*`) | ✅ |
-| Crypto syscalls (12) — agave-pinned crates | ✅ |
+| Crypto syscalls (12), agave-pinned crates | ✅ |
 | Native programs (System, ComputeBudget, BPF Loader v3, precompiles) | ✅ Firedancer-aligned |
 | CPI (Rust + C ABI, depth-2+, PDA signer promotion) | ✅ |
 | 142 per-instruction Hoare triples | ✅ |
@@ -67,7 +67,7 @@ See [`ROADMAP.md`](ROADMAP.md) for the phase-by-phase breakdown and current work
 ## Layout
 
 ```
-SVM/                  Lean library — interpreter, spec layer, Solana SL predicates
+SVM/                  Lean library: interpreter, spec layer, Solana SL predicates
 examples/lean/        Hoare-proof examples (ByteIncrement, PToken/, CompilerRt*, …)
 examples/rust/        → qedsvm-rs/examples (symlink)
 qedsvm-rs/            Cargo workspace
@@ -78,7 +78,7 @@ docs/                 Active design notes (docs/archive/ for shipped plans)
 
 ## Origin
 
-Extracted on 2026-05-12 from [QEDGen/solana-skills](https://github.com/QEDGen/solana-skills). The methodology — separation logic over machine state with bounded Hoare triples — is borrowed from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm), which descends from Kennedy/Benton/Jensen/Dagand, *"Coq: The world's best macro assembler?"* (PPDP 2013).
+Extracted on 2026-05-12 from [QEDGen/solana-skills](https://github.com/QEDGen/solana-skills). The methodology (separation logic over machine state with bounded Hoare triples) is borrowed from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm), which descends from Kennedy/Benton/Jensen/Dagand, *"Coq: The world's best macro assembler?"* (PPDP 2013).
 
 ## License
 
@@ -86,4 +86,4 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## Contributing
 
-Issues and PRs welcome. The bar is **small trust base and honest specs** — additions that broaden the surface without a clear soundness story will get pushback.
+Issues and PRs welcome. The bar is **small trust base and honest specs**. Additions that broaden the surface without a clear soundness story will get pushback.
