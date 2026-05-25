@@ -124,7 +124,7 @@ theorem minimal_transfer_spec
     (srcAddr dstAddr amount srcBalance dstBalance vR3Old : Nat)
     (h_srcBal : srcBalance < 2 ^ 64)
     (h_dstBal : dstBalance < 2 ^ 64) :
-    cuTripleWithinMem 6 0 6 minimalTransferCr
+    cuTripleWithinMem 6 0 0 6 minimalTransferCr
       ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
        (.r3 ↦ᵣ vR3Old) ** (.r4 ↦ᵣ amount) **
        (effectiveAddr srcAddr amountOff ↦U64 srcBalance) **

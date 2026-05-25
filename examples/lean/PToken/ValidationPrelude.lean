@@ -69,7 +69,7 @@ theorem p_token_transfer_validation_prelude_spec
     (hm2 : m2 % 256 = toU64 0xff)
     (hm3 : m3 = toU64 0xa5)
     (hm4 : m4 % 256 = toU64 0xff) :
-    cuTripleWithinMem 8 0 transferArmTarget validationPreludeCr
+    cuTripleWithinMem 8 0 0 transferArmTarget validationPreludeCr
       ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
         (effectiveAddr initR1 0x58   ↦U64 m1) **
         (effectiveAddr initR1 0x2910 ↦ₘ m2) **

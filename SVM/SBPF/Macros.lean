@@ -31,7 +31,7 @@ Spec: starting from any initial values for r1 and r2, after 2 compute
 units, r1 holds 7 and r2 holds 8. -/
 
 theorem two_mov_macro_spec (vOld1 vOld2 : Nat) :
-    cuTripleWithin 2 0 2
+    cuTripleWithin 2 0 0 2
       ((CodeReq.singleton 0 (.mov64 .r1 (.imm 7))).union
        (CodeReq.singleton 1 (.mov64 .r2 (.imm 8))))
       ((.r1 ↦ᵣ vOld1) ** (.r2 ↦ᵣ vOld2))
@@ -51,7 +51,7 @@ theorem two_mov_macro_spec (vOld1 vOld2 : Nat) :
     `slBlockIter`'s `isDefEq` to unify with `vOld1` / `vOld2`, and
     auto-discharges the `.r1 ≠ .r10` / `.r2 ≠ .r10` side conds. -/
 theorem two_mov_macro_spec_auto (vOld1 vOld2 : Nat) :
-    cuTripleWithin 2 0 2
+    cuTripleWithin 2 0 0 2
       ((CodeReq.singleton 0 (.mov64 .r1 (.imm 7))).union
        (CodeReq.singleton 1 (.mov64 .r2 (.imm 8))))
       ((.r1 ↦ᵣ vOld1) ** (.r2 ↦ᵣ vOld2))
@@ -74,7 +74,7 @@ threaded through the composition via the seq rule's intermediate
 assertion. -/
 
 theorem add_constants_macro_spec (vOld : Nat) :
-    cuTripleWithin 2 0 2
+    cuTripleWithin 2 0 0 2
       ((CodeReq.singleton 0 (.mov64 .r1 (.imm 10))).union
        (CodeReq.singleton 1 (.add64 .r1 (.imm 5))))
       (.r1 ↦ᵣ vOld)
@@ -101,7 +101,7 @@ After 2 compute units, `r1 = wrapAdd (toU64 100) v` and `r2` is
 unchanged. -/
 
 theorem mov_then_add_reg_macro_spec (vR1Old vR2Old : Nat) :
-    cuTripleWithin 2 0 2
+    cuTripleWithin 2 0 0 2
       ((CodeReq.singleton 0 (.mov64 .r1 (.imm 100))).union
        (CodeReq.singleton 1 (.add64 .r1 (.reg .r2))))
       ((.r1 ↦ᵣ vR1Old) ** (.r2 ↦ᵣ vR2Old))
@@ -135,7 +135,7 @@ Plumbing exercised:
 
 open Memory in
 theorem load_then_add_macro_spec (baseAddr vR2Old oldByte : Nat) :
-    cuTripleWithinMem 2 0 2
+    cuTripleWithinMem 2 0 0 2
       ((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
        (CodeReq.singleton 1 (.add64 .r2 (.imm 1))))
       ((.r2 ↦ᵣ vR2Old) ** (.r1 ↦ᵣ baseAddr) **
@@ -174,7 +174,7 @@ Plumbing exercised:
 
 open Memory in
 theorem byte_increment_macro_spec (baseAddr vR2Old oldByte : Nat) :
-    cuTripleWithinMem 3 0 3
+    cuTripleWithinMem 3 0 0 3
       (((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
         (CodeReq.singleton 1 (.add64 .r2 (.imm 1)))).union
        (CodeReq.singleton 2 (.stx .byte .r1 0 .r2)))
@@ -210,7 +210,7 @@ The `dst ≠ .r10` side conds are auto-discharged; no `v < 2^N`
 bounds for the byte width. -/
 open Memory in
 theorem byte_increment_macro_spec_auto (baseAddr vR2Old oldByte : Nat) :
-    cuTripleWithinMem 3 0 3
+    cuTripleWithinMem 3 0 0 3
       (((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
         (CodeReq.singleton 1 (.add64 .r2 (.imm 1)))).union
        (CodeReq.singleton 2 (.stx .byte .r1 0 .r2)))
@@ -235,7 +235,7 @@ open Memory in
 theorem lamport_transfer_macro_spec_auto
     (srcPtr dstPtr amount vR4 vR5 srcLam dstLam : Nat)
     (hSrcLam : srcLam < 2 ^ 64) (hDstLam : dstLam < 2 ^ 64) :
-    cuTripleWithinMem 6 0 6
+    cuTripleWithinMem 6 0 0 6
       ((((((CodeReq.singleton 0 (.ldx .dword .r4 .r1 0)).union
             (CodeReq.singleton 1 (.sub64 .r4 (.reg .r3)))).union
             (CodeReq.singleton 2 (.stx .dword .r1 0 .r4))).union
@@ -288,8 +288,10 @@ theorem byte_increment_macro_executeFn
       (executeFn fetch s k).exitCode = none ∧
       ((.r2 ↦ᵣ wrapAdd (oldByte % 256) (toU64 1)) ** (.r1 ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr 0 ↦ₘ (wrapAdd (oldByte % 256) (toU64 1) % 256))).holdsFor
-        (executeFn fetch s k) :=
-  (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec hcr hP hpc hex h_reg
+        (executeFn fetch s k) := by
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec hcr hP hpc hex h_reg
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## Lamport transfer — first real Solana primitive (Phase D)
 
@@ -328,7 +330,7 @@ open Memory in
 theorem lamport_transfer_macro_spec
     (srcPtr dstPtr amount vR4 vR5 srcLam dstLam : Nat)
     (hSrcLam : srcLam < 2 ^ 64) (hDstLam : dstLam < 2 ^ 64) :
-    cuTripleWithinMem 6 0 6
+    cuTripleWithinMem 6 0 0 6
       ((((((CodeReq.singleton 0 (.ldx .dword .r4 .r1 0)).union
             (CodeReq.singleton 1 (.sub64 .r4 (.reg .r3)))).union
             (CodeReq.singleton 2 (.stx .dword .r1 0 .r4))).union
@@ -387,9 +389,11 @@ theorem lamport_transfer_macro_executeFn
         (.r4 ↦ᵣ wrapSub srcLam amount) ** (.r5 ↦ᵣ wrapAdd dstLam amount) **
         (effectiveAddr srcPtr 0 ↦U64 wrapSub srcLam amount) **
         (effectiveAddr dstPtr 0 ↦U64 wrapAdd dstLam amount)).holdsFor
-        (executeFn fetch s k) :=
-  (lamport_transfer_macro_spec srcPtr dstPtr amount vR4 vR5 srcLam dstLam
-      hSrcLam hDstLam).toExec hcr hP hpc hex h_reg
+        (executeFn fetch s k) := by
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (lamport_transfer_macro_spec srcPtr dstPtr amount vR4 vR5 srcLam dstLam
+        hSrcLam hDstLam).toExec hcr hP hpc hex h_reg
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## 16-byte memcpy via 2x u64 dword (Phase D)
 
@@ -415,7 +419,7 @@ open Memory in
 theorem u64_memcpy_16_macro_spec
     (srcPtr dstPtr vR3 v0 v1 d0 d1 : Nat)
     (hv0 : v0 < 2 ^ 64) (hv1 : v1 < 2 ^ 64) :
-    cuTripleWithinMem 4 0 4
+    cuTripleWithinMem 4 0 0 4
       ((((CodeReq.singleton 0 (.ldx .dword .r3 .r1 0)).union
           (CodeReq.singleton 1 (.stx .dword .r2 0 .r3))).union
           (CodeReq.singleton 2 (.ldx .dword .r3 .r1 8))).union
@@ -447,7 +451,7 @@ open Memory in
 theorem u64_memcpy_16_macro_spec_auto
     (srcPtr dstPtr vR3 v0 v1 d0 d1 : Nat)
     (hv0 : v0 < 2 ^ 64) (hv1 : v1 < 2 ^ 64) :
-    cuTripleWithinMem 4 0 4
+    cuTripleWithinMem 4 0 0 4
       ((((CodeReq.singleton 0 (.ldx .dword .r3 .r1 0)).union
           (CodeReq.singleton 1 (.stx .dword .r2 0 .r3))).union
           (CodeReq.singleton 2 (.ldx .dword .r3 .r1 8))).union
@@ -500,9 +504,11 @@ theorem u64_memcpy_16_macro_executeFn
         (effectiveAddr srcPtr 8 ↦U64 v1) **
         (effectiveAddr dstPtr 0 ↦U64 v0) **
         (effectiveAddr dstPtr 8 ↦U64 v1)).holdsFor
-        (executeFn fetch s k) :=
-  (u64_memcpy_16_macro_spec srcPtr dstPtr vR3 v0 v1 d0 d1 hv0 hv1).toExec
-    hcr hP hpc hex h_reg
+        (executeFn fetch s k) := by
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (u64_memcpy_16_macro_spec srcPtr dstPtr vR3 v0 v1 d0 d1 hv0 hv1).toExec
+      hcr hP hpc hex h_reg
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## If-else macro (Phase E foundation)
 
@@ -532,7 +538,7 @@ Plumbing exercised:
 - `cuTripleWithinBranch_join` to merge at pc=4. -/
 
 theorem if_else_macro_spec (vR1 vR2 : Nat) :
-    cuTripleWithin 3 0 4
+    cuTripleWithin 3 0 0 4
       (((CodeReq.singleton 0 (.jeq .r1 (.imm 0) 3)).union
          (CodeReq.singleton 3 (.mov64 .r2 (.imm 200)))).union
          ((CodeReq.singleton 1 (.mov64 .r2 (.imm 100))).union
@@ -592,7 +598,7 @@ Plumbing exercised:
 open Memory in
 theorem spl_token_2way_dispatch_macro_spec
     (baseAddr vR0 vR2 discByte : Nat) :
-    cuTripleWithinMem 4 0 5
+    cuTripleWithinMem 4 0 0 5
       ((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
         (((CodeReq.singleton 1 (.jeq .r2 (.imm 0) 4)).union
           (CodeReq.singleton 4 (.mov64 .r0 (.imm 200)))).union
@@ -616,7 +622,7 @@ theorem spl_token_2way_dispatch_macro_spec
   have h_T_r0 := mov64_imm_spec .r0 200 vR0 4 (by decide)
   have h_F_mov_r0 := mov64_imm_spec .r0 100 vR0 2 (by decide)
   -- ja_spec's emp/emp auto-widened by sl_branch's chain builder.
-  have h_dispatch_2atom : cuTripleWithin 3 1 5
+  have h_dispatch_2atom : cuTripleWithin 3 0 1 5
         (((CodeReq.singleton 1 (.jeq .r2 (.imm 0) 4)).union
           (CodeReq.singleton 4 (.mov64 .r0 (.imm 200)))).union
          ((CodeReq.singleton 2 (.mov64 .r0 (.imm 100))).union
@@ -638,7 +644,7 @@ theorem spl_token_2way_dispatch_macro_spec
     cuTripleWithin_reshape_pre sepConj_assoc h_dispatch_4atom_post
   -- Stage 3: ldxb framed with r0 on the LEFT.
   have h_ldxb := ldxb_spec .r2 .r1 0 vR2 baseAddr discByte 0 (by decide)
-  have h_ldxb_4atom : cuTripleWithinMem 1 0 1
+  have h_ldxb_4atom : cuTripleWithinMem 1 0 0 1
       (CodeReq.singleton 0 (.ldx .byte .r2 .r1 0))
       ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ vR2) ** (.r1 ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr 0 ↦ₘ discByte))
@@ -690,8 +696,11 @@ proof body is just the four per-step specs. -/
 
 theorem pda_n0_macro_spec
     (vR0 vR2 vR3 vR4 : Nat) (r3V_imm r4V_imm : Int)
-    (pidBytes outOldBytes : ByteArray) (hpid : pidBytes.size = 32) :
-    cuTripleWithin 4 0 4
+    (pidBytes outOldBytes : ByteArray) (nCu : Nat)
+    (hpid : pidBytes.size = 32)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 4 nCu 0 4
       ((((CodeReq.singleton 0 (.mov64 .r2 (.imm 0))).union
           (CodeReq.singleton 1 (.lddw .r3 r3V_imm))).union
           (CodeReq.singleton 2 (.lddw .r4 r4V_imm))).union
@@ -709,7 +718,7 @@ theorem pda_n0_macro_spec
   have h2 := lddw_spec .r3 r3V_imm vR3 1 (by decide)
   have h3 := lddw_spec .r4 r4V_imm vR4 2 (by decide)
   have h4 := call_create_program_address_n0_spec vR0
-              (toU64 r3V_imm) (toU64 r4V_imm) pidBytes outOldBytes 3 hpid
+              (toU64 r3V_imm) (toU64 r4V_imm) pidBytes outOldBytes 3 nCu hpid hCu
   sl_block_iter [h1, h2, h3, h4]
 
 /-! ## PDA macro — executeFn bridge
@@ -720,7 +729,10 @@ into a larger execution as a single k-step jump. -/
 
 theorem pda_n0_macro_executeFn
     (vR0 vR2 vR3 vR4 : Nat) (r3V_imm r4V_imm : Int)
-    (pidBytes outOldBytes : ByteArray) (hpid : pidBytes.size = 32)
+    (pidBytes outOldBytes : ByteArray) (nCu : Nat)
+    (hpid : pidBytes.size = 32)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu)
     {fetch : Nat → Option Insn}
     (hcr : (((((CodeReq.singleton 0 (.mov64 .r2 (.imm 0))).union
                 (CodeReq.singleton 1 (.lddw .r3 r3V_imm))).union
@@ -741,9 +753,11 @@ theorem pda_n0_macro_executeFn
         (toU64 r3V_imm ↦Bytes32 pidBytes) **
         (toU64 r4V_imm ↦Bytes32 (match Pda.createProgramAddress [] pidBytes with
                                   | some bs => bs | none => outOldBytes))).holdsFor
-        (executeFn fetch s k) :=
-  (pda_n0_macro_spec vR0 vR2 vR3 vR4 r3V_imm r4V_imm pidBytes outOldBytes hpid).toExec
-    hcr hP hpc hex
+        (executeFn fetch s k) := by
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (pda_n0_macro_spec vR0 vR2 vR3 vR4 r3V_imm r4V_imm pidBytes outOldBytes
+        nCu hpid hCu).toExec hcr hP hpc hex
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## PDA derivation macro (n=1) — Session 2 deliverable
 
@@ -773,11 +787,13 @@ syscall spec; framing for the unchanged atoms is automatic. -/
 theorem pda_n1_macro_spec
     (vR0 vR1 vR2 vR3 vR4 : Nat) (r1V_imm r3V_imm r4V_imm : Int)
     (seedPtr : Nat)
-    (seedBytes pidBytes outOldBytes : ByteArray)
+    (seedBytes pidBytes outOldBytes : ByteArray) (nCu : Nat)
     (hpid : pidBytes.size = 32)
     (hseed_lt : seedPtr < 2 ^ 64)
-    (hslen_lt : seedBytes.size < 2 ^ 64) :
-    cuTripleWithin 5 0 5
+    (hslen_lt : seedBytes.size < 2 ^ 64)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 5 nCu 0 5
       (((((CodeReq.singleton 0 (.mov64 .r2 (.imm 1))).union
             (CodeReq.singleton 1 (.lddw .r1 r1V_imm))).union
             (CodeReq.singleton 2 (.lddw .r3 r3V_imm))).union
@@ -805,7 +821,7 @@ theorem pda_n1_macro_spec
   have h3 := lddw_spec .r4 r4V_imm vR4 3 (by decide)
   have h4 := call_create_program_address_n1_spec vR0 (toU64 r1V_imm)
               (toU64 r3V_imm) (toU64 r4V_imm) seedPtr seedBytes pidBytes outOldBytes 4
-              hpid hseed_lt hslen_lt
+              nCu hpid hseed_lt hslen_lt hCu
   sl_block_iter [h0, h1, h2, h3, h4]
 
 /-! ## PDA n=1 macro — executeFn bridge -/
@@ -813,10 +829,12 @@ theorem pda_n1_macro_spec
 theorem pda_n1_macro_executeFn
     (vR0 vR1 vR2 vR3 vR4 : Nat) (r1V_imm r3V_imm r4V_imm : Int)
     (seedPtr : Nat)
-    (seedBytes pidBytes outOldBytes : ByteArray)
+    (seedBytes pidBytes outOldBytes : ByteArray) (nCu : Nat)
     (hpid : pidBytes.size = 32)
     (hseed_lt : seedPtr < 2 ^ 64)
     (hslen_lt : seedBytes.size < 2 ^ 64)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu)
     {fetch : Nat → Option Insn}
     (hcr : (((((CodeReq.singleton 0 (.mov64 .r2 (.imm 1))).union
                 (CodeReq.singleton 1 (.lddw .r1 r1V_imm))).union
@@ -845,9 +863,12 @@ theorem pda_n1_macro_executeFn
         (toU64 r3V_imm ↦Bytes32 pidBytes) **
         (toU64 r4V_imm ↦Bytes32 (match Pda.createProgramAddress [seedBytes] pidBytes with
                                   | some bs => bs | none => outOldBytes))).holdsFor
-        (executeFn fetch s k) :=
-  (pda_n1_macro_spec vR0 vR1 vR2 vR3 vR4 r1V_imm r3V_imm r4V_imm seedPtr
-    seedBytes pidBytes outOldBytes hpid hseed_lt hslen_lt).toExec hcr hP hpc hex
+        (executeFn fetch s k) := by
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (pda_n1_macro_spec vR0 vR1 vR2 vR3 vR4 r1V_imm r3V_imm r4V_imm seedPtr
+      seedBytes pidBytes outOldBytes nCu hpid hseed_lt hslen_lt hCu).toExec
+        hcr hP hpc hex
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## PDA n=1 stack-VmSlice macro (Session 2B)
 
@@ -893,12 +914,14 @@ theorem pda_n1_stack_macro_spec
     (seed_imm pid_imm : Int)
     (vSlotPtr_old vSlotLen_old : Nat)
     (seedBytes pidBytes outOldBytes : ByteArray)
-    (descAddr outAddr : Nat)
+    (descAddr outAddr : Nat) (nCu : Nat)
     (hDesc : descAddr = wrapAdd r10V (toU64 (-80)))
     (hOut : outAddr = wrapAdd r10V (toU64 (-64)))
     (hpid : pidBytes.size = 32)
-    (hslen_lt : seedBytes.size < 2 ^ 64) :
-    cuTripleWithinMem 11 0 11
+    (hslen_lt : seedBytes.size < 2 ^ 64)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithinMem 11 nCu 0 11
       (((((((((((CodeReq.singleton 0 (.mov64 .r2 (.imm 1))).union
                   (CodeReq.singleton 1 (.mov64 .r1 (.reg .r10)))).union
                   (CodeReq.singleton 2 (.add64 .r1 (.imm (-80))))).union
@@ -969,7 +992,7 @@ theorem pda_n1_stack_macro_spec
     exact (Int.toNat_lt' (by decide)).mpr (Int.emod_lt_of_pos _ (by decide))
   have h10 := call_create_program_address_n1_spec vR0
               descAddr (toU64 pid_imm) outAddr (toU64 seed_imm)
-              seedBytes pidBytes outOldBytes 10 hpid htoU64_seed_lt hslen_lt
+              seedBytes pidBytes outOldBytes 10 nCu hpid htoU64_seed_lt hslen_lt hCu
   sl_block_iter [h0, h1, h2, h3, h4, h5, h6, h7, h8, h9, h10]
 
 /-! ## PDA n=1 stack-VmSlice macro — executeFn bridge -/
@@ -979,11 +1002,13 @@ theorem pda_n1_stack_macro_executeFn
     (seed_imm pid_imm : Int)
     (vSlotPtr_old vSlotLen_old : Nat)
     (seedBytes pidBytes outOldBytes : ByteArray)
-    (descAddr outAddr : Nat)
+    (descAddr outAddr : Nat) (nCu : Nat)
     (hDesc : descAddr = wrapAdd r10V (toU64 (-80)))
     (hOut : outAddr = wrapAdd r10V (toU64 (-64)))
     (hpid : pidBytes.size = 32)
     (hslen_lt : seedBytes.size < 2 ^ 64)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu)
     {fetch : Nat → Option Insn}
     (hcr : (((((((((((CodeReq.singleton 0 (.mov64 .r2 (.imm 1))).union
                   (CodeReq.singleton 1 (.mov64 .r1 (.reg .r10)))).union
@@ -1027,10 +1052,12 @@ theorem pda_n1_stack_macro_executeFn
               | some bs => bs | none => outOldBytes)) **
         (toU64 seed_imm ↦Bytes seedBytes) **
         (toU64 pid_imm ↦Bytes32 pidBytes)).holdsFor
-        (executeFn fetch s k) :=
-  (pda_n1_stack_macro_spec vR0 vR1 vR2 vR3 vR4 vR5 r10V seed_imm pid_imm
-    vSlotPtr_old vSlotLen_old seedBytes pidBytes outOldBytes descAddr outAddr
-    hDesc hOut hpid hslen_lt).toExec hcr hP hpc hex h_reg
+        (executeFn fetch s k) := by
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (pda_n1_stack_macro_spec vR0 vR1 vR2 vR3 vR4 vR5 r10V seed_imm pid_imm
+      vSlotPtr_old vSlotLen_old seedBytes pidBytes outOldBytes descAddr outAddr
+      nCu hDesc hOut hpid hslen_lt hCu).toExec hcr hP hpc hex h_reg
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## SpecGen extension smoke tests
 
@@ -1040,7 +1067,7 @@ is a tiny linear sequence; if any dispatch arm is mis-wired,
 `sl_block_auto` throws at elaboration time and the build breaks. -/
 
 example (vOld1 vOld2 : Nat) :
-    cuTripleWithin 2 0 2
+    cuTripleWithin 2 0 0 2
       ((CodeReq.singleton 0 (.lddw .r1 42)).union
        (CodeReq.singleton 1 (.add32 .r2 (.imm 5))))
       ((.r1 ↦ᵣ vOld1) ** (.r2 ↦ᵣ vOld2))
@@ -1048,7 +1075,7 @@ example (vOld1 vOld2 : Nat) :
   sl_block_auto
 
 example (vOld : Nat) :
-    cuTripleWithin 2 0 2
+    cuTripleWithin 2 0 0 2
       ((CodeReq.singleton 0 (.neg64 .r1)).union
        (CodeReq.singleton 1 (.neg32 .r1)))
       (.r1 ↦ᵣ vOld)
@@ -1056,7 +1083,7 @@ example (vOld : Nat) :
   sl_block_auto
 
 example (vOld : Nat) :
-    cuTripleWithin 2 0 2
+    cuTripleWithin 2 0 0 2
       ((CodeReq.singleton 0 (.mov32 .r1 (.imm 100))).union
        (CodeReq.singleton 1 (.mul32 .r1 (.imm 3))))
       (.r1 ↦ᵣ vOld)

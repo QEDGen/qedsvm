@@ -244,7 +244,7 @@ theorem run_reaches_spec
     {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
     (insns : Array Insn) (cfg : RunConfig)
     (hcr : cr.SatisfiedBy (fetchFromArray insns))
-    (htrip : cuTripleWithin N 0 exit_ cr P Q)
+    (htrip : cuTripleWithin N 0 0 exit_ cr P Q)
     (hP : P.holdsFor (initialState cfg)) :
     ∃ k, k ≤ N ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).pc = exit_ ∧
@@ -254,7 +254,7 @@ theorem run_reaches_spec
   have hPemp : (P ** emp).holdsFor (initialState cfg) := by
     rcases hP with ⟨hp, hcompat, hPhp⟩
     exact ⟨hp, hcompat, (sepConj_emp_right hp).mpr hPhp⟩
-  obtain ⟨k, hk, hpc, hex, hQemp⟩ :=
+  obtain ⟨k, hk, hpc, hex, _hcu, hQemp⟩ :=
     htrip emp pcFree_emp (fetchFromArray insns) hcr (initialState cfg) hPemp
           (initialState_pc cfg) (initialState_exitCode cfg)
   refine ⟨k, hk, hpc, hex, ?_⟩
@@ -270,14 +270,16 @@ theorem run_reaches_spec_mem
     {rr : Memory.RegionTable → Prop}
     (insns : Array Insn) (cfg : RunConfig)
     (hcr : cr.SatisfiedBy (fetchFromArray insns))
-    (htrip : cuTripleWithinMem N 0 exit_ cr P Q rr)
+    (htrip : cuTripleWithinMem N 0 0 exit_ cr P Q rr)
     (hP : P.holdsFor (initialState cfg))
     (hregions : rr (initialState cfg).regions) :
     ∃ k, k ≤ N ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).pc = exit_ ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).exitCode = none ∧
-      Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) :=
-  htrip.toExec hcr hP (initialState_pc cfg) (initialState_exitCode cfg) hregions
+      Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) := by
+  obtain ⟨k, hk, hpc, hex, _hcu, hQ⟩ :=
+    htrip.toExec hcr hP (initialState_pc cfg) (initialState_exitCode cfg) hregions
+  exact ⟨k, hk, hpc, hex, hQ⟩
 
 /-- Shared core: given a Form-A-style k-step witness state at the
     `Insn.exit` slot, plus the no-CPI / no-call_local / budget
@@ -376,7 +378,7 @@ theorem run_terminates_with_spec
     (hexit_fetch : fetchFromArray insns exit_ = some Insn.exit)
     (hnoCpi : ∀ i, i ∈ insns → Insn.isCpiCall i = false)
     (hnoCallLocal : ∀ i, i ∈ insns → Insn.isCallLocal i = false)
-    (htrip : cuTripleWithin N 0 exit_ cr P Q)
+    (htrip : cuTripleWithin N 0 0 exit_ cr P Q)
     (hP : P.holdsFor (initialState cfg))
     (hbudget : N + 1 ≤ cfg.cuBudget) :
     ∃ k, k ≤ N ∧
@@ -404,7 +406,7 @@ theorem run_terminates_with_spec_mem
     (hexit_fetch : fetchFromArray insns exit_ = some Insn.exit)
     (hnoCpi : ∀ i, i ∈ insns → Insn.isCpiCall i = false)
     (hnoCallLocal : ∀ i, i ∈ insns → Insn.isCallLocal i = false)
-    (htrip : cuTripleWithinMem N 0 exit_ cr P Q rr)
+    (htrip : cuTripleWithinMem N 0 0 exit_ cr P Q rr)
     (hP : P.holdsFor (initialState cfg))
     (hregions : rr (initialState cfg).regions)
     (hbudget : N + 1 ≤ cfg.cuBudget) :

@@ -24,9 +24,11 @@ proof exercises:
   construction. -/
 
 theorem call_create_program_address_n0_spec
-    (r0Old r3V r4V : Nat) (pidBytes outOldBytes : ByteArray) (pc : Nat)
-    (hpid : pidBytes.size = 32) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r3V r4V : Nat) (pidBytes outOldBytes : ByteArray) (pc : Nat) (nCu : Nat)
+    (hpid : pidBytes.size = 32)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_create_program_address))
       ((.r0 ↦ᵣ r0Old) ** (.r2 ↦ᵣ 0) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V) **
         (r3V ↦Bytes32 pidBytes) ** (r4V ↦Bytes32 outOldBytes))
@@ -321,9 +323,13 @@ theorem call_create_program_address_n0_spec
   have h_post_exitCode :
       (commitOptional s r4V 32 (Pda.createProgramAddress [] pidBytes)).exitCode = s.exitCode := by
     cases Pda.createProgramAddress [] pidBytes <;> rfl
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  have hstep_eq : executeFn fetch s 1 = step (.call .sol_create_program_address) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; show _ = none; rw [h_post_exitCode]; exact hex
+  · rw [hstep_eq]; exact hCu s
   · rw [hexec]
     -- ===== h_R cannot own any of P's affected slots. =====
     have hd_PR_regs := hd_PR.regs
@@ -737,11 +743,13 @@ r0 := 1 + output unchanged). -/
 
 theorem call_create_program_address_n1_spec
     (r0Old r1V r3V r4V seedPtr : Nat)
-    (seedBytes pidBytes outOldBytes : ByteArray) (pc : Nat)
+    (seedBytes pidBytes outOldBytes : ByteArray) (pc : Nat) (nCu : Nat)
     (hpid : pidBytes.size = 32)
     (hseed_lt : seedPtr < 2 ^ 64)
-    (hslen_lt : seedBytes.size < 2 ^ 64) :
-    cuTripleWithin 1 pc (pc + 1)
+    (hslen_lt : seedBytes.size < 2 ^ 64)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_create_program_address))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ 1) **
         (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V) **
@@ -1554,9 +1562,13 @@ theorem call_create_program_address_n1_spec
   let h_T2_new : PartialState := h_a2_new.union h_T3_new
   let h_T1_new : PartialState := h_a1_new.union h_T2_new
   let h_P_new : PartialState := h_a0_new.union h_T1_new
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  have hstep_eq : executeFn fetch s 1 = step (.call .sol_create_program_address) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; show _ = none; rw [h_post_exitCode]; exact hex
+  · rw [hstep_eq]; exact hCu s
   · rw [hexec]
     -- ===== h_R non-ownership facts. =====
     have h_R_no_r0 : h_R.regs .r0 = none := by

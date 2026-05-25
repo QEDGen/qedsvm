@@ -82,7 +82,7 @@ theorem asm_timeout_prefix_spec
     (inputAddr vR0_old vR3_old current target : Nat)
     (h_current_bound : current < 2 ^ 64)
     (h_target_bound : target < 2 ^ 64) :
-    cuTripleWithinMem 3 0 (if current > target then 4 else 3)
+    cuTripleWithinMem 3 0 0 (if current > target then 4 else 3)
       (((CodeReq.singleton 0 (.ldx .dword .r0 .r1 0x60)).union
          (CodeReq.singleton 1 (.ldx .dword .r3 .r1 0x2898))).union
          (CodeReq.singleton 2 (.jgt .r0 (.reg .r3) 4)))

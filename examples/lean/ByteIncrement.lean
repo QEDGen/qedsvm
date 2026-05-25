@@ -150,11 +150,13 @@ theorem byteIncrement_macro_witness
       ((.r2 ↦ᵣ wrapAdd (oldByte % 256) (toU64 1)) ** (.r1 ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr 0 ↦ₘ
           (wrapAdd (oldByte % 256) (toU64 1) % 256))).holdsFor sk := by
-  exact (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec
-    byteIncrement_cr_satisfied hP
-    (Runner.initialState_pc cfg)
-    (Runner.initialState_exitCode cfg)
-    hregions
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec
+      byteIncrement_cr_satisfied hP
+      (Runner.initialState_pc cfg)
+      (Runner.initialState_exitCode cfg)
+      hregions
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-- No `.call_local` in the 4-instruction program; required for Form B. -/
 theorem byteIncrement_noCallLocal :
@@ -325,11 +327,13 @@ theorem byteIncrementSo_macro_witness
       ((.r2 ↦ᵣ wrapAdd (oldByte % 256) (toU64 1)) ** (.r1 ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr 0 ↦ₘ
           (wrapAdd (oldByte % 256) (toU64 1) % 256))).holdsFor sk := by
-  exact (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec
-    byteIncrementSo_cr_satisfied hP
-    (Runner.initialState_pc cfg)
-    (Runner.initialState_exitCode cfg)
-    hregions
+  obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
+    (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec
+      byteIncrementSo_cr_satisfied hP
+      (Runner.initialState_pc cfg)
+      (Runner.initialState_exitCode cfg)
+      hregions
+  exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-- Helper: `step mov` then `step .exit` from a `callStack`-empty state
     halts with `exitCode = some 0`. Factored out to avoid simp's

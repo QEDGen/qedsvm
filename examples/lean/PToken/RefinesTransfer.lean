@@ -56,7 +56,7 @@ theorem refines_TokenTransfer_minimal_flat
     (h_noOverflow : tDst.amount + amount < 2 ^ 64)
     (h_srcBal     : tSrc.amount < 2 ^ 64)
     (h_dstBal     : tDst.amount < 2 ^ 64) :
-    cuTripleWithinMem 6 0 6 minimalTransferCr
+    cuTripleWithinMem 6 0 0 6 minimalTransferCr
       ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
        (.r3 ↦ᵣ vR3Old) ** (.r4 ↦ᵣ amount) **
        (srcAddr + MINT_OFF ↦Pubkey tSrc.mint) **

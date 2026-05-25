@@ -12,9 +12,11 @@ atom, the spec owns the input memory range and the returnData buffer:
 the post-state's returnData is exactly the input bytes. -/
 
 theorem call_sol_set_return_data_spec
-    (r0Old r1V r2V : Nat) (rdOld bsIn : ByteArray) (pc : Nat)
-    (hSize : bsIn.size = r2V) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V r2V : Nat) (rdOld bsIn : ByteArray) (pc : Nat) (nCu : Nat)
+    (hSize : bsIn.size = r2V)
+    (hCu : ∀ s : State,
+        (step (.call .sol_set_return_data) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_set_return_data))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) **
         (r1V ↦Bytes bsIn) ** returnDataIs rdOld)
@@ -387,9 +389,15 @@ theorem call_sol_set_return_data_spec
       callStack := Or.inl h_P_new_cs }
   -- ^ Above is the hd_PnewR Disjoint construction for sol_set_return_data.
   -- ==== Phase 8: assemble the witness for (Q ** R).holdsFor. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
+  · -- CU bound: executeFn fetch s 1 = step (.call .sol_set_return_data) s,
+    -- and hCu provides the bound for step.
+    have hstep : executeFn fetch s 1 = step (.call .sol_set_return_data) s := by
+      rw [show (1 : Nat) = 0 + 1 from rfl,
+          executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+    rw [hstep]; exact hCu s
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
@@ -498,12 +506,14 @@ from sepConj is ~150 LoC of pointwise contradiction). -/
 
 theorem call_sol_get_return_data_spec
     (r0Old outA maxLen pkA : Nat)
-    (rd bsOut pkOld : ByteArray) (pc : Nat)
+    (rd bsOut pkOld : ByteArray) (pc : Nat) (nCu : Nat)
     (hRdSize : rd.size = maxLen)
     (hOutSize : bsOut.size = maxLen)
     (_hPkSize : pkOld.size = 32)
-    (h_disj : outA + maxLen ≤ pkA ∨ pkA + 32 ≤ outA) :
-    cuTripleWithin 1 pc (pc + 1)
+    (h_disj : outA + maxLen ≤ pkA ∨ pkA + 32 ≤ outA)
+    (hCu : ∀ s : State,
+        (step (.call .sol_get_return_data) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_return_data))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ outA) ** (.r2 ↦ᵣ maxLen) ** (.r3 ↦ᵣ pkA) **
         (outA ↦Bytes bsOut) ** (pkA ↦Bytes32 pkOld) ** returnDataIs rd)
@@ -1084,9 +1094,10 @@ theorem call_sol_get_return_data_spec
       returnData := Or.inr h_R_no_rd
       callStack := Or.inl h_P_new_cs }
   -- ==== Phase 8: assemble the witness. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · rw [hstep_eq]; exact hCu s
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
@@ -1298,18 +1309,21 @@ Opaque in our model: `execRemainingComputeUnits s := s` (no register,
 memory, or returnData change). At the SL level, the syscall is silent
 — just advances pc by 1 and consumes its base CU charge. -/
 
-theorem call_sol_remaining_compute_units_spec (pc : Nat) :
-    cuTripleWithin 1 pc (pc + 1)
+theorem call_sol_remaining_compute_units_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_remaining_compute_units) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_remaining_compute_units))
       emp
       emp :=
-  cuTripleWithin_syscall_silent .sol_remaining_compute_units pc
+  cuTripleWithin_syscall_silent .sol_remaining_compute_units pc nCu
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s hex => by simp [step, execSyscall, Misc.execRemainingComputeUnits]; exact hex)
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
+    hCu
 
 
 end SVM.SBPF

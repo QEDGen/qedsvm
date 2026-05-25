@@ -79,7 +79,7 @@ theorem p_token_transfer_arm_two_calls_spec
     (h_initR6_lb    : initR6 ≥ oneFp)
     (h_initR6_ub    : initR6 < twoToSixtyFour_Fp)
     (hTable_lt      : cmpTableGt < 2 ^ 64) :
-    cuTripleWithinMem 48 0 callerContPc2 transferArmTwoCallsCr
+    cuTripleWithinMem 48 0 0 callerContPc2 transferArmTwoCallsCr
       ((.r1 ↦ᵣ initR1) ** (.r10 ↦ᵣ initR10) **
         (effectiveAddr initR10 stackSlotOff ↦U64 oldStackVal) **
         (.r6 ↦ᵣ initR6) ** (.r2 ↦ᵣ initR2) **

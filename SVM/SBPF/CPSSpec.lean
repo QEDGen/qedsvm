@@ -201,6 +201,18 @@ theorem cuTripleWithin_mono_nCu {nSteps nCu nCu' : Nat} {entry exit_ : Nat}
   refine ⟨k, hk, hpc', hex', ?_, hQR⟩
   exact Nat.le_trans hcu (Nat.add_le_add_left hle _)
 
+/-- Cast a triple's `nSteps` / `nCu` / `exit_` to definitionally-equal
+    Nat expressions. Used by `sl_block_iter` to coerce the iteratively
+    built chain's `(... + ...)` bound expressions back to the goal's
+    closed-form ones (e.g. `1 + 1 + 1 + 1 → 4`, `0 + 0 + 0 + nCu → nCu`).
+    All three equalities discharged by `omega`/`decide` at use sites. -/
+theorem cuTripleWithin_cast {nSteps nSteps' nCu nCu' entry exit_ exit_' : Nat}
+    {cr : CodeReq} {P Q : Assertion}
+    (hN : nSteps = nSteps') (hM : nCu = nCu') (hE : exit_ = exit_')
+    (h : cuTripleWithin nSteps nCu entry exit_ cr P Q) :
+    cuTripleWithin nSteps' nCu' entry exit_' cr P Q := by
+  subst hN; subst hM; subst hE; exact h
+
 /-- Zero-step triple: if `P ⇒ Q` pointwise and entry = exit_, the triple
     holds with bound 0 / 0. -/
 theorem cuTripleWithin_refl {entry : Nat} {P Q : Assertion}
@@ -368,6 +380,14 @@ theorem cuTripleWithinMem_frame_right (F : Assertion) (hF : F.pcFree)
     h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex h_reg
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact holdsFor_sepConj_assoc.mpr hQFR
+
+/-- Memory variant of `cuTripleWithin_cast`. -/
+theorem cuTripleWithinMem_cast {nSteps nSteps' nCu nCu' entry exit_ exit_' : Nat}
+    {cr : CodeReq} {P Q : Assertion} {rr : Memory.RegionTable → Prop}
+    (hN : nSteps = nSteps') (hM : nCu = nCu') (hE : exit_ = exit_')
+    (h : cuTripleWithinMem nSteps nCu entry exit_ cr P Q rr) :
+    cuTripleWithinMem nSteps' nCu' entry exit_' cr P Q rr := by
+  subst hN; subst hM; subst hE; exact h
 
 /-- Rule of consequence for memory triples: strengthen the pre, weaken
     the post, and strengthen `rr` (caller's stronger region claim implies

@@ -805,16 +805,18 @@ helper `cuTripleWithin_syscall_writesR1Bytes_r2r3` because the
 bytes written depend on the register values `r2V` and `r3V`. -/
 
 theorem call_sol_memset_spec
-    (r0Old r1V r2V r3V pc : Nat) (bsOld : ByteArray) (hbs : bsOld.size = r3V) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V r2V r3V pc nCu : Nat) (bsOld : ByteArray) (hbs : bsOld.size = r3V)
+    (hCu : ∀ s : State,
+        (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memset))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 r3V))) := by
   refine cuTripleWithin_syscall_writesR1Bytes_r2r3
-    .sol_memset (replicateByte (r2V % 256).toUInt8 r3V) pc r2V r3V
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld ?_
+    .sol_memset (replicateByte (r2V % 256).toUInt8 r3V) pc nCu r2V r3V
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld ?_
   · intro s
     simp only [step, execSyscall, MemOps.execSet]
   · intro s hr2 hr3 i hi
@@ -1505,17 +1507,19 @@ from the SL spec (the precondition's two `↦Bytes` atoms force
 disjointness). -/
 
 theorem call_sol_memcpy_spec
-    (r0Old r1V r2V r3V pc : Nat) (srcBytes bsOld : ByteArray)
-    (hsrc : srcBytes.size = r3V) (hbs : bsOld.size = r3V) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V r2V r3V pc nCu : Nat) (srcBytes bsOld : ByteArray)
+    (hsrc : srcBytes.size = r3V) (hbs : bsOld.size = r3V)
+    (hCu : ∀ s : State,
+        (step (.call .sol_memcpy) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memcpy))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
   refine cuTripleWithin_syscall_copiesR2ToR1
-    .sol_memcpy pc r2V r3V srcBytes hsrc
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld hbs
+    .sol_memcpy pc nCu r2V r3V srcBytes hsrc
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld hbs
   · intro s
     simp only [step, execSyscall, MemOps.execCopy]
   · intro s hr2 hr3 i hi
@@ -1546,17 +1550,19 @@ theorem call_sol_memcpy_spec
     simp only [step, execSyscall, MemOps.execCopy]
 
 theorem call_sol_memmove_spec
-    (r0Old r1V r2V r3V pc : Nat) (srcBytes bsOld : ByteArray)
-    (hsrc : srcBytes.size = r3V) (hbs : bsOld.size = r3V) :
-    cuTripleWithin 1 pc (pc + 1)
+    (r0Old r1V r2V r3V pc nCu : Nat) (srcBytes bsOld : ByteArray)
+    (hsrc : srcBytes.size = r3V) (hbs : bsOld.size = r3V)
+    (hCu : ∀ s : State,
+        (step (.call .sol_memmove) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memmove))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
   refine cuTripleWithin_syscall_copiesR2ToR1
-    .sol_memmove pc r2V r3V srcBytes hsrc
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ r0Old r1V bsOld hbs
+    .sol_memmove pc nCu r2V r3V srcBytes hsrc
+    ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld hbs
   · intro s
     simp only [step, execSyscall, MemOps.execCopy]
   · intro s hr2 hr3 i hi
@@ -1664,10 +1670,12 @@ private theorem execCmp_fold_eq (s : State) (p1V p2V n : Nat)
     Sets `r0 := 0`. Separation logic implies the three memory regions
     (p1 at r1V, p2 at r2V, output u32 at r4V) are pairwise disjoint. -/
 theorem call_sol_memcmp_spec
-    (r0Old r1V r2V r3V r4V outOld pc : Nat)
+    (r0Old r1V r2V r3V r4V outOld pc nCu : Nat)
     (p1Bytes p2Bytes : ByteArray)
-    (hsz1 : p1Bytes.size = r3V) (hsz2 : p2Bytes.size = r3V) :
-    cuTripleWithin 1 pc (pc + 1)
+    (hsz1 : p1Bytes.size = r3V) (hsz2 : p2Bytes.size = r3V)
+    (hCu : ∀ s : State,
+        (step (.call .sol_memcmp) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memcmp))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V)
        ** (r1V ↦Bytes p1Bytes) ** (r2V ↦Bytes p2Bytes) ** (r4V ↦U32 outOld))
@@ -1879,6 +1887,8 @@ theorem call_sol_memcmp_spec
   have hstep_eq : executeFn fetch s 1 = step (.call .sol_memcmp) s := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [hstep_eq]; exact hCu s
   -- Compute (step .sol_memcmp s) symbolically using execCmp_fold_eq.
   -- The mem' is writeU32 s.mem r4V cmpResult; the regs.r0 := 0.
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by

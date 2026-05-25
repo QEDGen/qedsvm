@@ -77,7 +77,7 @@ open SVM.Pubkey
 theorem p_token_transfer_balance_spec
     -- Abstract bytecode parameters (filled by downstream Layer 3b
     -- instantiation):
-    (nSteps entryPc exitPc : Nat)
+    (nSteps nCu entryPc exitPc : Nat)
     (transferCr : CodeReq)
     -- Token / account parameters:
     (x preA preB : Nat) (mint authA authB : Pubkey)
@@ -94,7 +94,7 @@ theorem p_token_transfer_balance_spec
     (h_sameMint   : True)  -- Transfer (unchecked) doesn't enforce; see docstring
     (h_restA      : restA.size = REST_SIZE)
     (h_restB      : restB.size = REST_SIZE) :
-    cuTripleWithinMem nSteps entryPc exitPc transferCr
+    cuTripleWithinMem nSteps nCu entryPc exitPc transferCr
       ( tokenAcctBalance ataA mint authA preA restA **
         tokenAcctBalance ataB mint authB preB restB **
         setupPre )
@@ -142,7 +142,7 @@ theorem p_token_transfer_balance_spec_minimal
     (h_noOverflow : preB + amount < 2 ^ 64)
     (h_srcBal     : preA < 2 ^ 64)
     (h_dstBal     : preB < 2 ^ 64) :
-    cuTripleWithinMem 6 0 6 Examples.MinimalTransferAsm.minimalTransferCr
+    cuTripleWithinMem 6 0 0 6 Examples.MinimalTransferAsm.minimalTransferCr
       ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
        (.r3 ↦ᵣ vR3Old) ** (.r4 ↦ᵣ amount) **
        (srcAddr + MINT_OFF ↦Pubkey mintSrc) **

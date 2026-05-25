@@ -84,7 +84,7 @@ theorem p_token_transfer_arm_third_call_spec
         initR6 < toU64 ((↑maxI64AsDouble : Int)))
     (h_cmpTable_pos : cmpTableGt < 2 ^ 63)
     (h_cmpTableLt_ub : cmpTableLt < 2 ^ 64) :
-    cuTripleWithinMem (52 + 1 + 21 + 1) 0 callerContPc3
+    cuTripleWithinMem (52 + 1 + 21 + 1) 0 0 callerContPc3
       transferArmThirdCallCr
       ((.r1 ↦ᵣ initR1) ** (.r10 ↦ᵣ initR10) **
         (effectiveAddr initR10 stackSlotOff ↦U64 oldStackVal) **

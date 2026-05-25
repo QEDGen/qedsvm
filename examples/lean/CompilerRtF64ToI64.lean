@@ -100,7 +100,7 @@ theorem f64_to_i64_in_range_spec
     (initR0 initR2 : Nat)
     (h_lb : r1 ≥ oneFp)
     (h_ub : r1 < twoToSixtyFour_Fp) :
-    cuTripleWithin 15 base (base + 18) (f64ToI64InRangeCr base)
+    cuTripleWithin 15 0 base (base + 18) (f64ToI64InRangeCr base)
       ((.r0 ↦ᵣ initR0) ** (.r2 ↦ᵣ initR2) ** (.r1 ↦ᵣ r1))
       ((.r0 ↦ᵣ f64ToI64Result r1) **
         (.r2 ↦ᵣ (wrapSub 0x3E (r1 >>> (52 % 64)) &&& 63) % U64_MODULUS) **

@@ -28,8 +28,10 @@ theorem therefore takes `s.callStack = []` as an extra hypothesis. -/
     `emp`: the spec owns no resources; the universally-quantified frame
     carries everything else through unobserved up to the point of
     abort. -/
-theorem call_abort_aborts_spec (pc : Nat) :
-    cuTripleAbortsWithin 1 pc
+theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .abort))
       emp ERR_ABORT := by
   intro R hRfree fetch hcr s hPR hpc hex
@@ -40,6 +42,9 @@ theorem call_abort_aborts_spec (pc : Nat) :
   clear hP1 h1
   have hfetch : fetch s.pc = some (.call .abort) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = step (.call .abort) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
   have hexec : executeFn fetch s 1 =
       { (Abort.execAbort s) with pc := s.pc + 1
                                  cuConsumed := (Abort.execAbort s).cuConsumed
@@ -48,11 +53,12 @@ theorem call_abort_aborts_spec (pc : Nat) :
         executeFn_step fetch s 0 _ hex hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_⟩
-  rw [hexec]
-  -- post: exitCode = some ERR_ABORT
-  show (Abort.execAbort s).exitCode = some ERR_ABORT
-  rfl
+  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  · rw [hexec]
+    -- post: exitCode = some ERR_ABORT
+    show (Abort.execAbort s).exitCode = some ERR_ABORT
+    rfl
+  · rw [hstep_eq]; exact hCu s
 
 /-- `.call .sol_panic_`: unconditional abort with logging of the message
     pointed to by r1/r2 (file/line in r3/r4/r5 are diagnostic and silent
@@ -62,8 +68,10 @@ theorem call_abort_aborts_spec (pc : Nat) :
     registers are not constrained by this triple — they're already loaded
     by the caller and the resulting `log` entry is silent in
     `PartialState`. -/
-theorem call_sol_panic_aborts_spec (pc : Nat) :
-    cuTripleAbortsWithin 1 pc
+theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_panic_))
       emp ERR_ABORT := by
   intro R hRfree fetch hcr s hPR hpc hex
@@ -73,6 +81,9 @@ theorem call_sol_panic_aborts_spec (pc : Nat) :
   clear hP1 h1
   have hfetch : fetch s.pc = some (.call .sol_panic_) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = step (.call .sol_panic_) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
   have hexec : executeFn fetch s 1 =
       { (Abort.execPanic s) with pc := s.pc + 1
                                  cuConsumed := (Abort.execPanic s).cuConsumed
@@ -81,10 +92,11 @@ theorem call_sol_panic_aborts_spec (pc : Nat) :
         executeFn_step fetch s 0 _ hex hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_⟩
-  rw [hexec]
-  show (Abort.execPanic s).exitCode = some ERR_ABORT
-  rfl
+  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  · rw [hexec]
+    show (Abort.execPanic s).exitCode = some ERR_ABORT
+    rfl
+  · rw [hstep_eq]; exact hCu s
 
 /-- `Insn.exit` with empty callStack: the success-exit instruction sets
     `exitCode := some (r0)`, picking up the program's return value from

@@ -66,7 +66,7 @@ def transferArmSetupCr : CodeReq :=
 
 theorem p_token_transfer_arm_setup_spec
     (initR1 initR2 initR6 initR10 oldStackVal : Nat) :
-    cuTripleWithinMem 4 0 4 transferArmSetupCr
+    cuTripleWithinMem 4 0 0 4 transferArmSetupCr
       ((.r1 ↦ᵣ initR1) ** (.r10 ↦ᵣ initR10) **
         (effectiveAddr initR10 stackSlotOff ↦U64 oldStackVal) **
         (.r6 ↦ᵣ initR6) ** (.r2 ↦ᵣ initR2))

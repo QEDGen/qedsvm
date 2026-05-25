@@ -125,7 +125,7 @@ theorem fp_cmp_gt_path_spec
     (hB_notNaN : B ≤ infBitPattern)
     (hAB_gt : A > B)
     (hTable_lt : cmpTableGt < 2 ^ 64) :
-    cuTripleWithinMem 23 base (base + 28) (fpCmpGtPathCr base)
+    cuTripleWithinMem 23 0 base (base + 28) (fpCmpGtPathCr base)
       ((.r3 ↦ᵣ initR3) ** (.r0 ↦ᵣ initR0) ** (.r4 ↦ᵣ initR4) **
         (.r1 ↦ᵣ A) ** (.r6 ↦ᵣ initR6) ** (.r5 ↦ᵣ initR5) **
         (.r2 ↦ᵣ B) **
@@ -331,7 +331,7 @@ theorem fp_cmp_lt_path_spec
     (hB_notNaN : B ≤ infBitPattern)
     (hAB_lt : A < B)
     (hTable_lt : cmpTableLt < 2 ^ 64) :
-    cuTripleWithinMem 21 base (base + 28) (fpCmpLtPathCr base)
+    cuTripleWithinMem 21 0 base (base + 28) (fpCmpLtPathCr base)
       ((.r3 ↦ᵣ initR3) ** (.r0 ↦ᵣ initR0) ** (.r4 ↦ᵣ initR4) **
         (.r1 ↦ᵣ A) ** (.r6 ↦ᵣ initR6) ** (.r5 ↦ᵣ initR5) **
         (.r2 ↦ᵣ B) **

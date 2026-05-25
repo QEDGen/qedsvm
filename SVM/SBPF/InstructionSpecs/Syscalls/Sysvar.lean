@@ -337,6 +337,10 @@ theorem call_sol_get_last_restart_slot_spec
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
     exact hex
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+    exact h_step_cu s
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
@@ -484,9 +488,10 @@ theorem call_sol_get_last_restart_slot_spec
           · right; exact h'
     · left; exact h_P_new_pc
   -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_b_new, hd_r1_b_new, rfl, rfl, rfl⟩,
@@ -639,6 +644,10 @@ theorem call_sol_get_fees_sysvar_spec
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
     exact hex
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+    exact h_step_cu s
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
@@ -777,9 +786,10 @@ theorem call_sol_get_fees_sysvar_spec
           · right; exact h'
     · left; exact h_P_new_pc
   -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
+  · exact hexec_cu
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_b_new, hd_r1_b_new, rfl, rfl, rfl⟩,

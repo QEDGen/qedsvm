@@ -77,7 +77,7 @@ theorem p_token_transfer_arm_two_calls_ext_spec
     (h_initR6_lb    : initR6 ≥ oneFp)
     (h_initR6_ub    : initR6 < twoToSixtyFour_Fp)
     (h_cmpTable_pos : cmpTableGt < 2 ^ 63) :
-    cuTripleWithinMem 52 0 afterPreCall3Pc transferArmTwoCallsExtCr
+    cuTripleWithinMem 52 0 0 afterPreCall3Pc transferArmTwoCallsExtCr
       ((.r1 ↦ᵣ initR1) ** (.r10 ↦ᵣ initR10) **
         (effectiveAddr initR10 stackSlotOff ↦U64 oldStackVal) **
         (.r6 ↦ᵣ initR6) ** (.r2 ↦ᵣ initR2) **
@@ -142,7 +142,7 @@ theorem p_token_transfer_arm_two_calls_ext_spec
   have h_lddw := lddw_spec .r2 maxI64AsDouble
     ((wrapSub 0x3E (initR6 >>> (52 % 64)) &&& 63) % U64_MODULUS) 11 (by decide)
   unfold transferArmTwoCallsExtCr afterPreCall3Pc
-  show cuTripleWithinMem (48 + 1 + 1 + 1 + 1) 0 (11 + 1) _ _ _ _
+  show cuTripleWithinMem (48 + 1 + 1 + 1 + 1) 0 0 (11 + 1) _ _ _ _
   sl_block_iter [h_glue2, h_jslt, h_stxdw, h_mov_r1, h_lddw]
 
 end Examples.PTokenTransferArmTwoCallsExt

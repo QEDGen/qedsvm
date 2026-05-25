@@ -158,10 +158,10 @@ def parseTripleType (e : Expr) : MetaM (Option (Bool × Expr × Expr)) := do
   let args := e.getAppArgs
   match e.getAppFn.constName? with
   | some ``SVM.SBPF.cuTripleWithin =>
-    if args.size = 6 then return some (false, args[4]!, args[5]!)
+    if args.size = 7 then return some (false, args[5]!, args[6]!)
     return none
   | some ``SVM.SBPF.cuTripleWithinMem =>
-    if args.size = 7 then return some (true, args[4]!, args[5]!)
+    if args.size = 8 then return some (true, args[5]!, args[6]!)
     return none
   | _ => return none
 
@@ -172,9 +172,9 @@ def getCr (e : Expr) : MetaM Expr := do
   let args := e.getAppArgs
   match e.getAppFn.constName? with
   | some ``SVM.SBPF.cuTripleWithin =>
-    if args.size = 6 then return args[3]!
+    if args.size = 7 then return args[4]!
   | some ``SVM.SBPF.cuTripleWithinMem =>
-    if args.size = 7 then return args[3]!
+    if args.size = 8 then return args[4]!
   | _ => pure ()
   throwError m!"sl_block_iter.getCr: expected cuTripleWithin[Mem] type, got\n  {e}"
 
@@ -537,20 +537,21 @@ def buildFramedStep (info : StepInfo) (fr : FrameResult)
     let pcfreeType ← mkAppOptM ``SVM.SBPF.Assertion.pcFree #[some F]
     let hF ← mkFreshExprMVar pcfreeType
     pcfreeGoals.modify (hF.mvarId! :: ·)
-    -- Extract N, pc1, pc2, cr, P, Q (and rr for Mem) from h's type to
+    -- Extract N, M, pc1, pc2, cr, P, Q (and rr for Mem) from h's type to
     -- skip mkAppM's implicit-arg inference work.
     let hType ← inferType h
     let hArgs := (← instantiateMVars hType).consumeMData.getAppArgs
-    let N := hArgs[0]!; let pc1 := hArgs[1]!; let pc2 := hArgs[2]!
-    let cr := hArgs[3]!; let P := hArgs[4]!; let Q := hArgs[5]!
+    let N := hArgs[0]!; let M := hArgs[1]!
+    let pc1 := hArgs[2]!; let pc2 := hArgs[3]!
+    let cr := hArgs[4]!; let P := hArgs[5]!; let Q := hArgs[6]!
     let framed ← if isMem then
-        let rr := hArgs[6]!
+        let rr := hArgs[7]!
         mkAppOptM ``SVM.SBPF.cuTripleWithinMem_frame_right
-          #[some F, some hF, some N, some pc1, some pc2, some cr,
+          #[some F, some hF, some N, some M, some pc1, some pc2, some cr,
             some P, some Q, some rr, some h]
       else
         mkAppOptM ``SVM.SBPF.cuTripleWithin_frame_right
-          #[some F, some hF, some N, some pc1, some pc2, some cr,
+          #[some F, some hF, some N, some M, some pc1, some pc2, some cr,
             some P, some Q, some h]
     let newPost ← mkAppOptM ``SVM.SBPF.sepConj #[some info.post, some F]
     return (framed, newPost, isMem)
@@ -560,16 +561,17 @@ def buildFramedStep (info : StepInfo) (fr : FrameResult)
     pcfreeGoals.modify (hF.mvarId! :: ·)
     let hType ← inferType h
     let hArgs := (← instantiateMVars hType).consumeMData.getAppArgs
-    let N := hArgs[0]!; let pc1 := hArgs[1]!; let pc2 := hArgs[2]!
-    let cr := hArgs[3]!; let P := hArgs[4]!; let Q := hArgs[5]!
+    let N := hArgs[0]!; let M := hArgs[1]!
+    let pc1 := hArgs[2]!; let pc2 := hArgs[3]!
+    let cr := hArgs[4]!; let P := hArgs[5]!; let Q := hArgs[6]!
     let framed ← if isMem then
-        let rr := hArgs[6]!
+        let rr := hArgs[7]!
         mkAppOptM ``SVM.SBPF.cuTripleWithinMem_frame_left
-          #[some F, some hF, some N, some pc1, some pc2, some cr,
+          #[some F, some hF, some N, some M, some pc1, some pc2, some cr,
             some P, some Q, some rr, some h]
       else
         mkAppOptM ``SVM.SBPF.cuTripleWithin_frame_left
-          #[some F, some hF, some N, some pc1, some pc2, some cr,
+          #[some F, some hF, some N, some M, some pc1, some pc2, some cr,
             some P, some Q, some h]
     let newPost ← mkAppOptM ``SVM.SBPF.sepConj #[some F, some info.post]
     return (framed, newPost, isMem)
@@ -584,16 +586,17 @@ def reshapeChainPost (chain : Expr) (chainIsMem : Bool) (iff_post : Expr) :
     MetaM Expr := do
   let chainType ← inferType chain
   let cArgs := (← instantiateMVars chainType).consumeMData.getAppArgs
-  let N := cArgs[0]!; let pc1 := cArgs[1]!; let pc2 := cArgs[2]!
-  let cr := cArgs[3]!; let P := cArgs[4]!; let Q := cArgs[5]!
+  let N := cArgs[0]!; let M := cArgs[1]!
+  let pc1 := cArgs[2]!; let pc2 := cArgs[3]!
+  let cr := cArgs[4]!; let P := cArgs[5]!; let Q := cArgs[6]!
   if chainIsMem then
-    let rr := cArgs[6]!
+    let rr := cArgs[7]!
     mkAppOptM ``SVM.SBPF.cuTripleWithinMem_reshape_post
-      #[some N, some pc1, some pc2, some cr, some P, some Q, none, some rr,
-        some iff_post, some chain]
+      #[some N, some M, some pc1, some pc2, some cr, some P, some Q, none,
+        some rr, some iff_post, some chain]
   else
     mkAppOptM ``SVM.SBPF.cuTripleWithin_reshape_post
-      #[some N, some pc1, some pc2, some cr, some P, some Q, none,
+      #[some N, some M, some pc1, some pc2, some cr, some P, some Q, none,
         some iff_post, some chain]
 
 /-- Apply `cuTripleWithin{,Mem}_reshape_pre` to chain so its pre becomes
@@ -602,16 +605,17 @@ def reshapeChainPre (chain : Expr) (chainIsMem : Bool) (iff_pre : Expr) :
     MetaM Expr := do
   let chainType ← inferType chain
   let cArgs := (← instantiateMVars chainType).consumeMData.getAppArgs
-  let N := cArgs[0]!; let pc1 := cArgs[1]!; let pc2 := cArgs[2]!
-  let cr := cArgs[3]!; let P := cArgs[4]!; let Q := cArgs[5]!
+  let N := cArgs[0]!; let M := cArgs[1]!
+  let pc1 := cArgs[2]!; let pc2 := cArgs[3]!
+  let cr := cArgs[4]!; let P := cArgs[5]!; let Q := cArgs[6]!
   if chainIsMem then
-    let rr := cArgs[6]!
+    let rr := cArgs[7]!
     mkAppOptM ``SVM.SBPF.cuTripleWithinMem_reshape_pre
-      #[some N, some pc1, some pc2, some cr, some P, none, some Q, some rr,
-        some iff_pre, some chain]
+      #[some N, some M, some pc1, some pc2, some cr, some P, none, some Q,
+        some rr, some iff_pre, some chain]
   else
     mkAppOptM ``SVM.SBPF.cuTripleWithin_reshape_pre
-      #[some N, some pc1, some pc2, some cr, some P, none, some Q,
+      #[some N, some M, some pc1, some pc2, some cr, some P, none, some Q,
         some iff_pre, some chain]
 
 /-- Compose two consecutive (already framed) triples. Picks the lemma
@@ -636,43 +640,49 @@ def composeSteps (h1 h2 : Expr) (isMem1 isMem2 : Bool)
   let h2Type ← inferType h2
   let h1Args := (← instantiateMVars h1Type).consumeMData.getAppArgs
   let h2Args := (← instantiateMVars h2Type).consumeMData.getAppArgs
+  -- New layout: cuTripleWithin N M pc1 pc2 cr P Q (Mem appends rr).
   let N1 := h1Args[0]!
-  let pc1 := h1Args[1]!
-  let pc2 := h1Args[2]!
-  let cr1 := h1Args[3]!
-  let P  := h1Args[4]!
-  let Q  := h1Args[5]!
+  let M1 := h1Args[1]!
+  let pc1 := h1Args[2]!
+  let pc2 := h1Args[3]!
+  let cr1 := h1Args[4]!
+  let P  := h1Args[5]!
+  let Q  := h1Args[6]!
   let N2 := h2Args[0]!
-  let pc3 := h2Args[2]!
-  let cr2 := h2Args[3]!
-  let R  := h2Args[5]!
+  let M2 := h2Args[1]!
+  let pc3 := h2Args[3]!
+  let cr2 := h2Args[4]!
+  let R  := h2Args[6]!
   let disjType ← mkAppOptM ``SVM.SBPF.CodeReq.Disjoint #[some cr1, some cr2]
   let hd ← mkFreshExprMVar disjType
   disjGoals.modify (hd.mvarId! :: ·)
   match isMem1, isMem2 with
   | false, false =>
     let chained ← mkAppOptM ``SVM.SBPF.cuTripleWithin_seq
-      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
-        some hd, some P, some Q, some R, some h1, some h2]
+      #[some N1, some N2, some M1, some M2, some pc1, some pc2, some pc3,
+        some cr1, some cr2, some hd, some P, some Q, some R, some h1, some h2]
     return (chained, false)
   | true, false =>
-    let rr := h1Args[6]!
+    let rr := h1Args[7]!
     let chained ← mkAppOptM ``SVM.SBPF.cuTripleWithinMem_seq_pure_right
-      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
-        some hd, some P, some Q, some R, some rr, some h1, some h2]
+      #[some N1, some N2, some M1, some M2, some pc1, some pc2, some pc3,
+        some cr1, some cr2, some hd, some P, some Q, some R, some rr,
+        some h1, some h2]
     return (chained, true)
   | false, true =>
-    let rr := h2Args[6]!
+    let rr := h2Args[7]!
     let chained ← mkAppOptM ``SVM.SBPF.cuTripleWithinMem_seq_pure_left
-      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
-        some hd, some P, some Q, some R, some rr, some h1, some h2]
+      #[some N1, some N2, some M1, some M2, some pc1, some pc2, some pc3,
+        some cr1, some cr2, some hd, some P, some Q, some R, some rr,
+        some h1, some h2]
     return (chained, true)
   | true, true =>
-    let rr1 := h1Args[6]!
-    let rr2 := h2Args[6]!
+    let rr1 := h1Args[7]!
+    let rr2 := h2Args[7]!
     let chained ← mkAppOptM ``SVM.SBPF.cuTripleWithinMem_seq
-      #[some N1, some N2, some pc1, some pc2, some pc3, some cr1, some cr2,
-        some hd, some P, some Q, some R, some rr1, some rr2, some h1, some h2]
+      #[some N1, some N2, some M1, some M2, some pc1, some pc2, some pc3,
+        some cr1, some cr2, some hd, some P, some Q, some R, some rr1, some rr2,
+        some h1, some h2]
     return (chained, true)
 
 /-- Run `tac` on each subgoal mvar in turn; throw if any fails. -/
@@ -840,7 +850,31 @@ def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
     chainExpr ← mkAppM ``SVM.SBPF.cuTripleWithin.toMem #[chainExpr]
     chainIsMem := true
   -- Bridge chain.pre / chain.post to goalPre / goalPost atom order.
-  let bridged ← bridgeChainToGoal chainExpr chainIsMem goalPre goalPost
+  let bridged₀ ← bridgeChainToGoal chainExpr chainIsMem goalPre goalPost
+  let bridgedType₀ ← inferType bridged₀
+  -- Coerce the chain's Nat bounds (nSteps, nCu, exit_) to the goal's
+  -- closed-form ones. The chain's bounds are nested `(a + b)` from each
+  -- `cuTripleWithin_seq` step; the goal usually carries the closed sum.
+  -- `cuTripleWithin_cast` discharges each equality via `omega` / `rfl`.
+  let cArgs := (← instantiateMVars bridgedType₀).consumeMData.getAppArgs
+  let tArgs := (← instantiateMVars target).consumeMData.getAppArgs
+  let expectedArity := if chainIsMem then 8 else 7
+  let mut bridged := bridged₀
+  if cArgs.size = expectedArity && tArgs.size = expectedArity then
+    let cN := cArgs[0]!; let cM := cArgs[1]!; let cE := cArgs[3]!
+    let tN := tArgs[0]!; let tM := tArgs[1]!; let tE := tArgs[3]!
+    let hN ← mkFreshExprMVar (← mkEq cN tN)
+    let hM ← mkFreshExprMVar (← mkEq cM tM)
+    let hE ← mkFreshExprMVar (← mkEq cE tE)
+    for mv in [hN.mvarId!, hM.mvarId!, hE.mvarId!] do
+      try
+        setGoals [mv]
+        evalTactic (← `(tactic| first | rfl | omega))
+      catch _ => pure ()
+    let castName := if chainIsMem then ``SVM.SBPF.cuTripleWithinMem_cast
+                    else ``SVM.SBPF.cuTripleWithin_cast
+    bridged ← mkAppM castName #[hN, hM, hE, bridged₀]
+  setGoals [goal]
   let bridgedType ← inferType bridged
   unless ← isDefEq target bridgedType do
     throwError m!"sl_block_iter: bridged chain type doesn't match goal.\n  goal:    {target}\n  chain:   {bridgedType}"
@@ -925,9 +959,9 @@ def parseBranchType (brType : Expr) : MetaM BranchInfo := do
   let args := brType.getAppArgs
   match brType.getAppFn.constName? with
   | some ``SVM.SBPF.cuTripleWithinBranch =>
-    if args.size = 9 then
-      return { cond := args[4]!, Q := args[8]! }
-    throwError m!"sl_branch: cuTripleWithinBranch application has {args.size} args, expected 9"
+    if args.size = 10 then
+      return { cond := args[5]!, Q := args[9]! }
+    throwError m!"sl_branch: cuTripleWithinBranch application has {args.size} args, expected 10"
   | _ =>
     throwError m!"sl_branch: h_br is not a cuTripleWithinBranch application:\n  {brType}"
 
@@ -959,9 +993,9 @@ elab_rules : tactic
       let mkDisjMvar (a b : Expr) : MetaM Expr := do
         mkFreshExprMVar (← mkAppM ``SVM.SBPF.CodeReq.Disjoint #[a, b])
       let hBrArgs := ((← instantiateMVars hBrType).consumeMData).getAppArgs
-      let crBr := hBrArgs[6]!
-      let crT := (((← instantiateMVars (← inferType hTExpr))).consumeMData).getAppArgs[3]!
-      let crF := (((← instantiateMVars (← inferType hFExpr))).consumeMData).getAppArgs[3]!
+      let crBr := hBrArgs[7]!
+      let crT := (((← instantiateMVars (← inferType hTExpr))).consumeMData).getAppArgs[4]!
+      let crF := (((← instantiateMVars (← inferType hFExpr))).consumeMData).getAppArgs[4]!
       let disjBT ← mkDisjMvar crBr crT
       let disjBF ← mkDisjMvar crBr crF
       let disjTF ← mkDisjMvar crT crF
