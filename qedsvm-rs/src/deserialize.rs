@@ -144,9 +144,11 @@ fn parse_non_dup_record(
     r.skip(post_align_pad + remaining_pad)?;
     r.skip(8)?;  // rent_epoch
 
-    // Build the post-execution account. We inherit `executable` and
-    // `rent_epoch` from the pre-state since the program can't change
-    // them — sticking with what the user supplied.
+    // Build the post-execution account. `executable` and `rent_epoch`
+    // are *always* inherited from pre-state — the program can't mutate
+    // either (executable is immutable once set; rent_epoch is runtime-
+    // owned). This is load-bearing: `validate_post_state` relies on it
+    // and does not re-check these fields.
     let pre = pre_accounts
         .iter()
         .find(|(k, _)| *k == *meta_key)

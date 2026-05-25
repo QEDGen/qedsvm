@@ -131,24 +131,28 @@ pub fn run_buffer_with_registry_and_pid(
 /// This bypasses the BPF VM entirely — precompiles never enter it
 /// in agave either; the Solana runtime detects their pubkey early
 /// in `process_instruction` and routes to a Rust `verify()` closure.
-pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> (u64, u64) {
+pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> Result<(u64, u64), DecodeError> {
     let g = ffi::lock();
-    let (r0, cu) = unsafe {
+    let bytes = unsafe {
         let pid_obj = ffi::alloc_bytearray(&g, pid);
         let ix_obj = ffi::alloc_bytearray(&g, ix_data);
         let result_obj = ffi::qedsvm_precompile_dispatch(pid_obj, ix_obj);
         let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
         ffi::dec_ref(&g, result_obj);
-        // 16-byte wire format: [u64 LE r0 ‖ u64 LE cu].
-        debug_assert_eq!(bytes.len(), 16, "precompile FFI returned {} bytes", bytes.len());
-        let mut r0_b = [0u8; 8];
-        let mut cu_b = [0u8; 8];
-        r0_b.copy_from_slice(&bytes[0..8]);
-        cu_b.copy_from_slice(&bytes[8..16]);
-        (u64::from_le_bytes(r0_b), u64::from_le_bytes(cu_b))
+        bytes
     };
     drop(g);
-    (r0, cu)
+    // 16-byte wire format: [u64 LE r0 ‖ u64 LE cu]. A malformed length
+    // would otherwise panic on the slice below in release — surface it
+    // as a wire-format error so callers can decide.
+    if bytes.len() != 16 {
+        return Err(DecodeError::Malformed("precompile FFI: expected 16 bytes"));
+    }
+    let mut r0_b = [0u8; 8];
+    let mut cu_b = [0u8; 8];
+    r0_b.copy_from_slice(&bytes[0..8]);
+    cu_b.copy_from_slice(&bytes[8..16]);
+    Ok((u64::from_le_bytes(r0_b), u64::from_le_bytes(cu_b)))
 }
 
 /// Build the canonical registry blob from a list of (pubkey, elf) pairs.

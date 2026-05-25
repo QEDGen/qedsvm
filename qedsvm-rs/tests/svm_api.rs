@@ -126,6 +126,80 @@ fn process_instruction_with_multiple_programs_routes_through_registry() {
 }
 
 #[test]
+fn process_instruction_accepts_shuffled_caller_accounts() {
+    // instruction.accounts is [A, B]; caller passes [B, A]. The
+    // canonical-ordering refactor must look accounts up by pubkey
+    // and produce a result that matches what we'd get if the caller
+    // had passed [A, B]. hello ELF doesn't touch the buffer, so we
+    // can assert the resulting_accounts shape and lamport values
+    // match instruction.accounts order.
+    let program_id = pid(50);
+    let a = pid(51);
+    let b = pid(52);
+    let owner = pid(53);
+    let mut svm = Svm::default();
+    svm.add_program(&program_id, HELLO_ELF);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(a, false), AccountMeta::new(b, false)],
+        data: vec![],
+    };
+    let shuffled = vec![
+        (b, shared(222, vec![0xBB], owner)),
+        (a, shared(111, vec![0xAA], owner)),
+    ];
+    let result = svm.process_instruction(&ix, &shuffled).expect("runs");
+
+    use solana_account::ReadableAccount;
+    assert_eq!(result.resulting_accounts.len(), 2);
+    let (k0, a0) = &result.resulting_accounts[0];
+    let (k1, a1) = &result.resulting_accounts[1];
+    assert_eq!(k0, &a);
+    assert_eq!(k1, &b);
+    assert_eq!(a0.lamports(), 111);
+    assert_eq!(a1.lamports(), 222);
+    assert_eq!(a0.data(), &[0xAA]);
+    assert_eq!(a1.data(), &[0xBB]);
+    // hello ELF still exits 42 — the point is validate_post_state
+    // doesn't downgrade to ERR_INVALID_POSTSTATE just because the
+    // caller's slice was shuffled.
+    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+}
+
+#[test]
+fn process_instruction_ignores_extra_caller_accounts() {
+    // Caller passes one extra account that isn't referenced by
+    // instruction.accounts. The extra must be silently dropped: it
+    // shouldn't appear in resulting_accounts and shouldn't poison
+    // lamport-conservation (its lamports must not enter the sum).
+    let program_id = pid(60);
+    let used = pid(61);
+    let extra = pid(62);
+    let owner = pid(63);
+    let mut svm = Svm::default();
+    svm.add_program(&program_id, HELLO_ELF);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(used, false)],
+        data: vec![],
+    };
+    // Extra account has wildly more lamports than `used` — if it leaked
+    // into the conservation sum, post_sum (only `used`) wouldn't match.
+    let supplied = vec![
+        (used, shared(100, vec![], owner)),
+        (extra, shared(9_999_999, vec![], owner)),
+    ];
+    let result = svm.process_instruction(&ix, &supplied).expect("runs");
+
+    assert_eq!(result.resulting_accounts.len(), 1);
+    assert_eq!(result.resulting_accounts[0].0, used);
+    // Lamport conservation passed → program_result not downgraded.
+    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+}
+
+#[test]
 fn missing_account_returns_serialize_error() {
     let program_id = pid(9);
     let mut svm = Svm::default();

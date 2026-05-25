@@ -221,7 +221,8 @@ impl Svm {
         // verbatim.
         if is_precompile(&instruction.program_id) {
             let pid_bytes = instruction.program_id.to_bytes();
-            let (r0, cu) = crate::run_precompile(&pid_bytes, &instruction.data);
+            let (r0, cu) = crate::run_precompile(&pid_bytes, &instruction.data)
+                .map_err(SvmError::InternalWireFormat)?;
             let program_result = if r0 == 0 {
                 ProgramResult::Success
             } else {
@@ -255,6 +256,13 @@ impl Svm {
                 resulting_accounts: accounts.to_vec(),
             });
         }
+
+        // Build the canonical, instruction-ordered account list once.
+        // Used for post-state validation (where pre/post must line up
+        // positionally) and as the returned `resulting_accounts` shape
+        // anchor. The caller-supplied `accounts` slice is now only a
+        // lookup source — its order doesn't affect anything downstream.
+        let canonical_accounts = accounts_for_instruction(instruction, accounts)?;
 
         let input = serialize_parameters(instruction, accounts, &instruction.program_id)?;
 
@@ -307,7 +315,7 @@ impl Svm {
         // invariants don't apply. Any violation downgrades the
         // outcome to `Failure { exit_code: ERR_INVALID_POSTSTATE }`.
         let program_result = if matches!(program_result, ProgramResult::Success) {
-            match validate_post_state(instruction, accounts, &resulting_accounts,
+            match validate_post_state(instruction, &canonical_accounts, &resulting_accounts,
                                        self.enforce_rent_state) {
                 Ok(()) => program_result,
                 Err(_) => ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE },
@@ -331,11 +339,15 @@ impl Svm {
 /// from the BPF interpreter but violates a post-instruction
 /// invariant. Mirrors the family of agave's `InstructionError`
 /// variants for these checks (`ExternalAccountDataModified`,
-/// `ExternalAccountLamportChange`, `ExecutableModified`,
-/// `RentEpochModified`, `UnbalancedInstruction`,
+/// `ExternalAccountLamportChange`, `UnbalancedInstruction`,
 /// `MaxAccountsDataAllocationsExceeded`). We collapse them to a
 /// single sentinel since our `ProgramResult` is u64-keyed; the
 /// individual checks live in `validate_post_state` below.
+///
+/// `executable` and `rent_epoch` are *not* validated here — the
+/// post-buffer deserializer inherits both fields from pre-state by
+/// construction (see `deserialize::parse_non_dup_record`), so no
+/// program-visible mutation is possible to detect.
 pub const ERR_INVALID_POSTSTATE: u64 = 0xFFFFFFFFFFFFFFFB;
 
 /// Returns `Some(pubkey)` if any AccountMeta in `instruction.accounts`
@@ -343,25 +355,56 @@ pub const ERR_INVALID_POSTSTATE: u64 = 0xFFFFFFFFFFFFFFFB;
 /// Sysvar accounts are read-only by design — the runtime maintains
 /// their contents — and agave's loader rejects an instruction that
 /// marks one as writable.
+/// Build the instruction-ordered account list used for serialization,
+/// post-state validation, and the returned `resulting_accounts`.
 ///
-/// All sysvar pubkeys (Clock, Rent, EpochSchedule, SlotHashes,
-/// SlotHistory, StakeHistory, RecentBlockhashes, Fees, Instructions,
-/// EpochRewards, LastRestartSlot) share a fixed 4-byte prefix in
-/// their *decoded* form: `[0x06, 0xa7, 0xd5, 0x17]`. This comes from
-/// the base58 namespacing of `Sysvar...` pubkeys and is unique to
-/// the sysvar program (the byte pattern is astronomically unlikely
-/// for any non-sysvar pubkey).
-fn ix_accounts_writable_sysvar(instruction: &Instruction) -> Option<Pubkey> {
-    const SYSVAR_DISCRIMINATOR: [u8; 4] = [0x06, 0xa7, 0xd5, 0x17];
+/// One entry per `AccountMeta` in `instruction.accounts`, looking up
+/// the matching account from the caller-supplied `accounts` slice by
+/// pubkey. The caller's slice may be in any order, contain extra
+/// entries (which are ignored), and is only used as a lookup source.
+///
+/// Duplicate `AccountMeta`s produce duplicate (cloned) entries that
+/// match the shape of `deserialize::deserialize_account_writes` output
+/// — so `pre` and `post` line up positionally in `validate_post_state`
+/// without any per-call ordering assumption on the caller.
+///
+/// Errors with `MissingAccount` if an `AccountMeta` references a
+/// pubkey that isn't in `accounts`.
+fn accounts_for_instruction(
+    instruction: &Instruction,
+    accounts: &[(Pubkey, AccountSharedData)],
+) -> Result<Vec<(Pubkey, AccountSharedData)>, SerializeError> {
+    let mut out = Vec::with_capacity(instruction.accounts.len());
     for meta in &instruction.accounts {
-        if meta.is_writable {
-            let bytes = meta.pubkey.to_bytes();
-            if bytes.starts_with(&SYSVAR_DISCRIMINATOR) {
-                return Some(meta.pubkey);
-            }
-        }
+        let acct = accounts.iter()
+            .find(|(k, _)| *k == meta.pubkey)
+            .map(|(_, a)| a.clone())
+            .ok_or(SerializeError::MissingAccount(meta.pubkey))?;
+        out.push((meta.pubkey, acct));
     }
-    None
+    Ok(out)
+}
+
+fn is_sysvar_id(pk: &Pubkey) -> bool {
+    use solana_sdk_ids::sysvar;
+    *pk == sysvar::clock::ID
+        || *pk == sysvar::epoch_rewards::ID
+        || *pk == sysvar::epoch_schedule::ID
+        || *pk == sysvar::fees::ID
+        || *pk == sysvar::instructions::ID
+        || *pk == sysvar::last_restart_slot::ID
+        || *pk == sysvar::recent_blockhashes::ID
+        || *pk == sysvar::rent::ID
+        || *pk == sysvar::rewards::ID
+        || *pk == sysvar::slot_hashes::ID
+        || *pk == sysvar::slot_history::ID
+        || *pk == sysvar::stake_history::ID
+}
+
+fn ix_accounts_writable_sysvar(instruction: &Instruction) -> Option<Pubkey> {
+    instruction.accounts.iter()
+        .find(|m| m.is_writable && is_sysvar_id(&m.pubkey))
+        .map(|m| m.pubkey)
 }
 
 /// Whether `pid` is one of the three sig-verify precompile pubkeys
@@ -383,10 +426,6 @@ fn is_precompile(pid: &Pubkey) -> bool {
 pub enum PostStateError {
     /// A read-only account's lamports, data, or owner changed.
     ReadOnlyAccountModified(Pubkey),
-    /// `executable` flag flipped after the instruction.
-    ExecutableModified(Pubkey),
-    /// `rent_epoch` field changed (programs may not mutate it).
-    RentEpochModified(Pubkey),
     /// Sum of lamports across all listed accounts changed.
     /// Caller wouldn't be able to mint or destroy lamports.
     LamportConservationViolated { pre_sum: u128, post_sum: u128 },
@@ -494,23 +533,17 @@ fn validate_post_state(
         return Err(PostStateError::LamportConservationViolated { pre_sum, post_sum });
     }
 
-    // Per-account checks. Index alignment between pre/post is
-    // guaranteed by `deserialize_account_writes` — it emits one
-    // entry per AccountMeta in `instruction.accounts` in order.
-    for ((pre_pk, pre_acct), (post_pk, post_acct)) in pre.iter().zip(post.iter()) {
-        debug_assert_eq!(pre_pk, post_pk);
+    // Per-account checks. Both `pre` and `post` are in
+    // `instruction.accounts` order — `pre` comes from
+    // `accounts_for_instruction` (canonical) and `post` from
+    // `deserialize_account_writes` (one entry per AccountMeta in
+    // order). The zip pairs corresponding accounts.
+    for ((_, pre_acct), (post_pk, post_acct)) in pre.iter().zip(post.iter()) {
         let pk = *post_pk;
 
-        // executable: monotone — once true, must stay true. agave is
-        // stricter (no flip in either direction during a normal ix);
-        // we mirror.
-        if pre_acct.executable() != post_acct.executable() {
-            return Err(PostStateError::ExecutableModified(pk));
-        }
-        // rent_epoch: programs can't mutate; the runtime owns it.
-        if pre_acct.rent_epoch() != post_acct.rent_epoch() {
-            return Err(PostStateError::RentEpochModified(pk));
-        }
+        // `executable` and `rent_epoch` are inherited from pre-state
+        // in `deserialize::parse_non_dup_record`, so we don't compare
+        // them here — there's nothing a program could have changed.
 
         // Read-only enforcement: find this pubkey's AccountMeta. If
         // it's marked `is_writable = false`, lamports / data / owner
@@ -749,5 +782,124 @@ mod rent_state_tests {
         let pre  = RentState::RentExempt;
         let post = RentState::Uninitialized;
         assert!(rent_transition_allowed(&pre, &post));
+    }
+
+    #[test]
+    fn writable_real_sysvar_is_flagged() {
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(solana_sdk_ids::sysvar::clock::ID)],
+            data: vec![],
+        };
+        assert_eq!(
+            ix_accounts_writable_sysvar(&ix),
+            Some(solana_sdk_ids::sysvar::clock::ID),
+        );
+    }
+
+    #[test]
+    fn readonly_real_sysvar_is_not_flagged() {
+        let meta = solana_instruction::AccountMeta {
+            pubkey: solana_sdk_ids::sysvar::rent::ID,
+            is_signer: false,
+            is_writable: false,
+        };
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![meta],
+            data: vec![],
+        };
+        assert_eq!(ix_accounts_writable_sysvar(&ix), None);
+    }
+
+    #[test]
+    fn accounts_for_instruction_reorders_to_instruction_order() {
+        // Caller passes accounts in [B, A] order, instruction.accounts
+        // is [A, B] order. Canonical must come out [A, B].
+        let a = test_pk(1);
+        let b = test_pk(2);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(a), writable_meta(b)],
+            data: vec![],
+        };
+        let shuffled = vec![acct(b, 200, 0), acct(a, 100, 0)];
+        let canonical = accounts_for_instruction(&ix, &shuffled).expect("ok");
+        assert_eq!(canonical.len(), 2);
+        assert_eq!(canonical[0].0, a);
+        assert_eq!(canonical[1].0, b);
+        use solana_account::ReadableAccount;
+        assert_eq!(canonical[0].1.lamports(), 100);
+        assert_eq!(canonical[1].1.lamports(), 200);
+    }
+
+    #[test]
+    fn accounts_for_instruction_ignores_extras() {
+        // Caller passes [A, B, C] but instruction only references [B].
+        // Canonical must contain only B.
+        let a = test_pk(1);
+        let b = test_pk(2);
+        let c = test_pk(3);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(b)],
+            data: vec![],
+        };
+        let supplied = vec![acct(a, 100, 0), acct(b, 200, 0), acct(c, 300, 0)];
+        let canonical = accounts_for_instruction(&ix, &supplied).expect("ok");
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(canonical[0].0, b);
+    }
+
+    #[test]
+    fn accounts_for_instruction_clones_duplicates() {
+        // instruction.accounts contains the same pubkey twice. The
+        // canonical list emits one entry per AccountMeta — matching
+        // the shape of `deserialize_account_writes` output so that
+        // `validate_post_state` zips them positionally.
+        let a = test_pk(1);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(a), writable_meta(a)],
+            data: vec![],
+        };
+        let supplied = vec![acct(a, 500, 0)];
+        let canonical = accounts_for_instruction(&ix, &supplied).expect("ok");
+        assert_eq!(canonical.len(), 2);
+        assert_eq!(canonical[0].0, a);
+        assert_eq!(canonical[1].0, a);
+    }
+
+    #[test]
+    fn accounts_for_instruction_missing_pubkey_errors() {
+        let a = test_pk(1);
+        let b = test_pk(2);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(a), writable_meta(b)],
+            data: vec![],
+        };
+        // b is missing from the supplied slice.
+        let supplied = vec![acct(a, 100, 0)];
+        match accounts_for_instruction(&ix, &supplied) {
+            Err(SerializeError::MissingAccount(pk)) => assert_eq!(pk, b),
+            other => panic!("expected MissingAccount({b}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fake_sysvar_prefix_pubkey_is_not_flagged() {
+        // The old prefix-based detector flagged any pubkey starting
+        // with [0x06, 0xa7, 0xd5, 0x17]. The explicit-list detector
+        // must not.
+        let mut bytes = [0u8; 32];
+        bytes[0] = 0x06; bytes[1] = 0xa7; bytes[2] = 0xd5; bytes[3] = 0x17;
+        let fake = Pubkey::new_from_array(bytes);
+        let ix = Instruction {
+            program_id: test_pk(99),
+            accounts: vec![writable_meta(fake)],
+            data: vec![],
+        };
+        assert_eq!(ix_accounts_writable_sysvar(&ix), None);
     }
 }
