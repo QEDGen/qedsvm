@@ -1833,6 +1833,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "p256"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
+dependencies = [
+ "ecdsa",
+ "elliptic-curve",
+ "primeorder",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "pairing"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1953,6 +1965,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "primeorder"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
+dependencies = [
+ "elliptic-curve",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1990,6 +2011,25 @@ dependencies = [
  "solana-sdk-ids",
  "solana-secp256k1-program",
  "solana-secp256r1-program",
+]
+
+[[package]]
+name = "qedsvm-bridge"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254 0.5.0",
+ "blake3",
+ "cc",
+ "curve25519-dalek",
+ "ed25519-dalek",
+ "libsecp256k1 0.7.2",
+ "light-poseidon 0.4.0",
+ "p256",
+ "sha2 0.10.9",
+ "sha3",
+ "solana-big-mod-exp",
+ "solana-bls12-381-syscall",
+ "solana-bn254",
 ]
 
 [[package]]
@@ -2534,6 +2574,20 @@ dependencies = [
  "thiserror 2.0.18",
  "wincode",
  "zeroize",
+]
+
+[[package]]
+name = "solana-bls12-381-syscall"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28a699aa5e660203c17c18ceaef0eff78c67fd5193f4dbe90a07148e06030ab6"
+dependencies = [
+ "blst",
+ "blstrs",
+ "bytemuck",
+ "bytemuck_derive",
+ "group",
+ "pairing",
 ]
 
 [[package]]

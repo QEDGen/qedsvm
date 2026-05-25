@@ -4,8 +4,15 @@ Worked examples demonstrating qedsvm's reach: running real
 hand-written sBPF programs through the Lean reference VM, and proving
 Lean Hoare specs over them.
 
+Layout:
+
+- `examples/lean/` — Lean Hoare proofs (`lake build Examples`).
+- `examples/rust/` → symlink to `qedsvm-rs/examples/`. Cargo requires
+  examples to live under the crate that defines them, so the source
+  lives there; this symlink keeps the two halves visible side-by-side.
+
 The examples are **independent of the core library** — modifying or
-removing them doesn't touch `Svm.SBPF.*`. Lean proofs live under
+removing them doesn't touch `SVM.SBPF.*`. Lean proofs live under
 `Examples.*` (separate `lean_lib`); shell scripts run via
 `qedsvm-cli`.
 
@@ -17,7 +24,7 @@ removing them doesn't touch `Svm.SBPF.*`. Lean proofs live under
 cargo run --release --example doppler --manifest-path qedsvm-rs/Cargo.toml
 ```
 
-Drives the doppler oracle program through `Svm::process_instruction`
+Drives the doppler oracle program through `SVM::process_instruction`
 (the mollusk-shaped Rust API), exercising all three code paths:
 
 | Scenario | Path | Result |
@@ -48,7 +55,7 @@ DOPPLER_SO=/path/to/doppler_program.so \
 lake build Examples
 ```
 
-builds the proofs in `examples/lean/`. They import from `Svm.SBPF.*`
+builds the proofs in `examples/lean/`. They import from `SVM.SBPF.*`
 but are NOT imported back into the core library.
 
 ### `examples/lean/ByteIncrement.lean`

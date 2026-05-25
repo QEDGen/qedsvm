@@ -33,13 +33,13 @@
   branching primitive itself, which is the most spec-revealing part.
 -/
 
-import Svm.SBPF.Macros
-import Svm.SBPF.RunnerBridge
+import SVM.SBPF.Macros
+import SVM.SBPF.RunnerBridge
 
 namespace Examples.AsmTimeout
 
-open Svm.SBPF
-open Svm.SBPF.Runner
+open SVM.SBPF
+open SVM.SBPF.Runner
 open Memory
 
 /-- The `.text` section of `asm-timeout.so` (56 bytes), extracted at

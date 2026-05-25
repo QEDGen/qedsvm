@@ -28,7 +28,7 @@
   to characterize *both* arms of a branch.
 
   **PC numbering.** The Lean model treats `lddw` as a single PC slot
-  (see `Svm/SBPF/Execute.lean:189-190`: `pc' := s.pc + 1` regardless
+  (see `SVM/SBPF/Execute.lean:189-190`: `pc' := s.pc + 1` regardless
   of `lddw`). Real sBPF bytecode lays `lddw` out as two 8-byte slots.
   The PCs in this file use the abstract/Lean numbering, not byte
   offsets — for the 3 `lddw` insns at byte offsets 0x18600, 0x18620,
@@ -55,13 +55,13 @@
   `jeq` (PC 22), and the upstream NaN / zero guards.
 -/
 
-import Svm.SBPF.InstructionSpecs
-import Svm.SBPF.SLTactic
-import Svm.SBPF.Macros
+import SVM.SBPF.InstructionSpecs
+import SVM.SBPF.Tactic.SL
+import SVM.SBPF.Macros
 
 namespace Examples.CompilerRtFpCmp
 
-open Svm.SBPF
+open SVM.SBPF
 open Memory
 
 /-! ## Bit-pattern literals -/

@@ -119,7 +119,7 @@ pub fn run_buffer_with_registry_and_pid(
 }
 
 /// Drive the Lean precompile dispatcher
-/// (`Svm.Native.Precompiles.dispatch`) for the three sig-verify
+/// (`SVM.Native.Precompiles.dispatch`) for the three sig-verify
 /// precompile pubkeys. Returns `(r0, compute_units_consumed)`:
 ///   - `r0 == 0` → all signatures verified (ProgramResult::Success).
 ///   - `r0 == 1` → any failure (bad offsets, bad sig, out-of-bounds,
@@ -152,7 +152,7 @@ pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> (u64, u64) {
 }
 
 /// Build the canonical registry blob from a list of (pubkey, elf) pairs.
-/// Matches `Svm.Ffi.parseRegistry` in the Lean side.
+/// Matches `SVM.Ffi.parseRegistry` in the Lean side.
 pub fn encode_registry(entries: &[(&[u8; 32], &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(entries.len() as u32).to_le_bytes());

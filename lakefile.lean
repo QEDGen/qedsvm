@@ -7,29 +7,32 @@ open Lake DSL System
 -- reasoning (`Fin → α`, `BigOperators`, ring/omega over closed forms)
 -- belongs in a downstream consumer, not here.
 --
--- Native crypto: every cryptographic syscall goes through `rust-bridge/`,
--- a `cargo` staticlib that pulls the exact crates agave's runtime uses
--- (`libsecp256k1 = 0.7.2` paritytech, `curve25519-dalek = 4.1.3`,
--- `sha2 = 0.10.8`, `sha3 = 0.10.8`, `blake3 = 1.8.5`) and exposes them
--- as `@[extern "lean_*"]` targets via direct Rust ↔ Lean ABI calls (no
--- intermediate C shim layer). Adds `cargo` as a build prerequisite.
--- Payoff: byte-for-byte conformance with agave, version-pinned in
--- `rust-bridge/Cargo.toml`.
+-- Native crypto: every cryptographic syscall goes through
+-- `qedsvm-rs/lean-bridge/`, a `cargo` staticlib that pulls the exact
+-- crates agave's runtime uses (`libsecp256k1 = 0.7.2` paritytech,
+-- `curve25519-dalek = 4.1.3`, `sha2 = 0.10.8`, `sha3 = 0.10.8`,
+-- `blake3 = 1.8.5`) and exposes them as `@[extern "lean_*"]` targets
+-- via direct Rust ↔ Lean ABI calls (no intermediate C shim layer).
+-- Adds `cargo` as a build prerequisite. Payoff: byte-for-byte
+-- conformance with agave, version-pinned in
+-- `qedsvm-rs/lean-bridge/Cargo.toml`. Builds as a member of the
+-- `qedsvm-rs` Cargo workspace, so output lands at
+-- `qedsvm-rs/target/release/libqedsvm_bridge.a`.
 --
 -- Scope (F1, reference semantics):
---   Svm.Account — Pubkey and Account data model
---   Svm.Cpi     — invoke_signed envelope, well-known program IDs, discriminators
---   Svm.SBPF.*  — sBPF interpreter (ISA, Memory, Execute, WP tactic)
+--   SVM.Pubkey     — Pubkey and Account data model
+--   SVM.Solana.Cpi — invoke_signed envelope, well-known program IDs, discriminators
+--   SVM.SBPF.*  — sBPF interpreter (ISA, Memory, Execute, WP tactic)
 --
 -- See README.md and ROADMAP.md for scope.
 package qedsvm
 
 target rustBridge pkg : FilePath := do
-  let manifestJob ← inputTextFile <| pkg.dir / "rust-bridge" / "Cargo.toml"
-  let libRsJob    ← inputTextFile <| pkg.dir / "rust-bridge" / "src" / "lib.rs"
-  let leanFfiJob  ← inputTextFile <| pkg.dir / "rust-bridge" / "src" / "lean_ffi.rs"
-  let manifest := pkg.dir / "rust-bridge" / "Cargo.toml"
-  let outFile  := pkg.dir / "rust-bridge" / "target" / "release" / "libqedsvm_bridge.a"
+  let manifestJob ← inputTextFile <| pkg.dir / "qedsvm-rs" / "lean-bridge" / "Cargo.toml"
+  let libRsJob    ← inputTextFile <| pkg.dir / "qedsvm-rs" / "lean-bridge" / "src" / "lib.rs"
+  let leanFfiJob  ← inputTextFile <| pkg.dir / "qedsvm-rs" / "lean-bridge" / "src" / "lean_ffi.rs"
+  let manifest := pkg.dir / "qedsvm-rs" / "lean-bridge" / "Cargo.toml"
+  let outFile  := pkg.dir / "qedsvm-rs" / "target" / "release" / "libqedsvm_bridge.a"
   manifestJob.bindM fun _ =>
     libRsJob.bindM fun _ =>
       leanFfiJob.mapM fun _ => do
@@ -48,8 +51,8 @@ extern_lib leanbridge pkg := do
     return outFile
 
 @[default_target]
-lean_lib Svm where
-  roots := #[`Svm]
+lean_lib SVM where
+  roots := #[`SVM]
   precompileModules := true
 
 -- Examples — standalone proofs demonstrating the verification chain
@@ -57,5 +60,19 @@ lean_lib Svm where
 -- build with `lake build Examples` to type-check the proofs.
 lean_lib Examples where
   srcDir := "examples/lean"
-  roots := #[`ByteIncrement, `AsmTimeout, `PTokenValidationPrelude, `PTokenTransferArmSetup, `CompilerRtFpCmp, `PTokenTransferArm, `CompilerRtF64ToI64, `PTokenTransferArmTwoCalls, `PTokenTransferArmTwoCallsExt, `PTokenTransferBalanceSpec, `PTokenTransferArmThirdCall, `MinimalTransferAsm, `RefinesTokenTransfer]
+  roots := #[
+    `ByteIncrement,
+    `AsmTimeout,
+    `MinimalTransferAsm,
+    `CompilerRtFpCmp,
+    `CompilerRtF64ToI64,
+    `PToken.ValidationPrelude,
+    `PToken.BalanceSpec,
+    `PToken.RefinesTransfer,
+    `PToken.TransferArm.L1Setup,
+    `PToken.TransferArm.L2Bytecode,
+    `PToken.TransferArm.L3TwoCalls,
+    `PToken.TransferArm.L4TwoCallsExt,
+    `PToken.TransferArm.L5ThirdCall
+  ]
   precompileModules := true

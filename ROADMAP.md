@@ -28,12 +28,12 @@ The methodology — separation logic over machine state, bounded Hoare triples, 
 | Phase C — Tactic suite | ✅ shipped (with one mitigation) | `sl_block_iter`, `sl_branch`, `sl_rw_abs` elab tactics in `SLTactic.lean`. Gap 3 (structural reduction ceiling) closed-with-mitigation via `sl_rw_abs` — kernel-attribute path confirmed dead |
 | Phase D — sBPF macro library | ✅ mostly shipped | Memory (`u64_memcpy_16`), control flow (`if_else`, 2-way dispatch), CPI envelope pieces (PDA n=0, n=1, full stack-VmSlice variant) all proven in `MacroDemo.lean`. Stack frame setup/teardown library polish + sized memcmp still open |
 | Phase E — Solana program library | ⚠️ partial | System `Transfer` shipped end-to-end via the `Native` path (byte + CU parity vs mollusk); rent-exempt enforcement integration tests landed. SPL Token / ATA / Anchor patterns not yet written as verified macros (Token + ATA are Core-BPF, so they ride the BPF VM + Loader v3 path today rather than a native dispatcher) |
-| Solana data-model SL predicates | ✅ first three shipped | `Svm/Solana/{TokenAccount,AccountInfo,Pda}.lean` + companion `Svm/SBPF/PubkeySL.lean`. The qedsvm-side library that high-level theorems land against; per the Direction-A MIR pivot (QEDGen/solana-skills#66), this is now on the production critical path (was previously "Phase E off critical path"). ~10 more intrinsic targets to add as Layer 3b consumers surface need |
+| Solana data-model SL predicates | ✅ first three shipped | `SVM/Solana/{TokenAccount,AccountInfo,Pda}.lean` + companion `SVM/SBPF/PubkeySL.lean`. The qedsvm-side library that high-level theorems land against; per the Direction-A MIR pivot (QEDGen/solana-skills#66), this is now on the production critical path (was previously "Phase E off critical path"). ~10 more intrinsic targets to add as Layer 3b consumers surface need |
 | Phase F — Differential testing | ✅ mostly shipped | 26 diff-mollusk fixtures (incl. **p-token Transfer at 76 CU byte+CU-identical to mollusk**, the first mainnet-track program in the harness) + 5 precompile-dispatch + 11 svm_api + rent + thread-safety; PT_LOAD-only ELFs (verified out of scope) + fuzz/sweep harness still open |
 | Phase G — ELF loader + arbitrary program execution | ✅ shipped | Tier-1 #1 (region bounds — `RegionTable` in `Memory.lean` traps OOR accesses with `ERR_ACCESS_VIOLATION`), Tier-1 #2 (native programs aligned with Firedancer: System + ComputeBudget + BPF Loader v3 Upgradeable + ed25519/secp256k1/secp256r1 precompiles), Tier-1 #2b (precompile dispatch), all Tier-2 ship-blockers (rent enforcement, log-data base64, `sol_log_compute_units_` agave-parity, top-level CU limit). `executeFnCpi ≡ executeFn` bridge for non-CPI programs landed. **Real CPI shipped**: program registry + recursive `executeFn`, ABI deserialization (Rust + C), account write-back, log/returnData propagation, proportional CU split, account aliasing detection, depth-2+ recursion, ixData propagation to callee, **PDA signer-seed promotion** (r4/r5 → `create_program_address(seeds, callerPid)` → promote matching AccountInfo to `is_signer=true`). **R_BPF_64_RELATIVE** applied to `.text` (lddw imm bump via `applyRelRelativeText`) and `.data.rel.ro` (pointer field shifts via `applyDataRelocations`). **Per-byte hash CU** (`hashSliceCost` in `Machine.lean`: `max(10, len/2)` per slice + 85 base) for sha256/sha512/keccak256/blake3, matching agave. **Mem refactor (2026-05-20)**: `Mem` is now a struct with a `Std.HashMap` overlay; diff_mollusk dropped from ~50 min → ~3 s (~1000×). PT_LOAD-only ELFs verified out of scope (agave rejects them) |
 | Phase H — Crypto syscalls | ✅ mostly shipped | All 12 crypto syscalls (sha256/sha512/keccak256/blake3, secp256k1, curve25519, BLS12-381, alt_bn128, big_mod_exp, poseidon, PDA) shipped via Rust FFI bridge to the same crates agave uses — explicit trust statements per syscall. SHA-256 + Murmur3 are pure-Lean and kernel-reducible. Pure-Lean ports of the remaining syscalls are a long-horizon followup, not on the production critical path |
 
-**Headline numbers**: 142 instruction-spec Hoare triples in `InstructionSpecs.lean` (full ALU + branch + memory + call/return + 24+ syscalls); ~59 Rust tests green (26 diff-mollusk incl. **p-token Transfer at 76 CU byte+CU-identical to mollusk** + 5 precompile + 11 svm_api + 17 other); end-to-end Hoare-triple witness for a 4-instruction hand-encoded program (`examples/lean/ByteIncrement.lean` — Layer 3a per the README); **seven Hoare triples over compiler-emitted p-token bytecode at 52 of 76 CU on the Transfer happy path** — 8-insn validation prelude with 4-branch composition (`examples/lean/PTokenValidationPrelude.lean`), 4-insn Transfer-arm setup with r10-relative stack store (`examples/lean/PTokenTransferArmSetup.lean`), 23-insn happy-path triple over a compiler-rt IEEE-754 FP-compare callee with 6 conditional jumps (`examples/lean/CompilerRtFpCmp.lean`), 29-insn glue triple composing setup → `call_local` → callee → `exit_pops` (`examples/lean/PTokenTransferArm.lean`, threads `callStackIs` through a real cross-procedure composition), 15-insn happy-path triple over the compiler-rt f64→i64 conversion callee (`examples/lean/CompilerRtF64ToI64.lean`, second reusable FP-helper triple), 48-CU two-call glue chain reusing both callee triples (`examples/lean/PTokenTransferArmTwoCalls.lean`, 6-component `sl_block_iter` composition), and **52-CU post-second-call extension** through a jslt collapse + stxdw + 2 setup insns for the third call site (`examples/lean/PTokenTransferArmTwoCallsExt.lean`) — Layer 3b per the README. Plus **`examples/lean/PTokenTransferBalanceSpec.lean`** — high-level `tokenAcctBalance`-shifting refinement target stated (body `sorry` pending Layer 3b closure). Plus **three Solana data-model SL predicates** in `Svm/Solana/{TokenAccount,AccountInfo,Pda}.lean` (the qedsvm-side library that high-level theorems compose against; per Direction-A MIR direction in QEDGen/solana-skills#66).
+**Headline numbers**: 142 instruction-spec Hoare triples in `InstructionSpecs.lean` (full ALU + branch + memory + call/return + 24+ syscalls); ~59 Rust tests green (26 diff-mollusk incl. **p-token Transfer at 76 CU byte+CU-identical to mollusk** + 5 precompile + 11 svm_api + 17 other); end-to-end Hoare-triple witness for a 4-instruction hand-encoded program (`examples/lean/ByteIncrement.lean` — Layer 3a per the README); **seven Hoare triples over compiler-emitted p-token bytecode at 52 of 76 CU on the Transfer happy path** — 8-insn validation prelude with 4-branch composition (`examples/lean/PToken/ValidationPrelude.lean`), 4-insn Transfer-arm setup with r10-relative stack store (`examples/lean/PToken/TransferArm/L1Setup.lean`), 23-insn happy-path triple over a compiler-rt IEEE-754 FP-compare callee with 6 conditional jumps (`examples/lean/CompilerRtFpCmp.lean`), 29-insn glue triple composing setup → `call_local` → callee → `exit_pops` (`examples/lean/PToken/TransferArm/L2Bytecode.lean`, threads `callStackIs` through a real cross-procedure composition), 15-insn happy-path triple over the compiler-rt f64→i64 conversion callee (`examples/lean/CompilerRtF64ToI64.lean`, second reusable FP-helper triple), 48-CU two-call glue chain reusing both callee triples (`examples/lean/PToken/TransferArm/L3TwoCalls.lean`, 6-component `sl_block_iter` composition), and **52-CU post-second-call extension** through a jslt collapse + stxdw + 2 setup insns for the third call site (`examples/lean/PToken/TransferArm/L4TwoCallsExt.lean`) — Layer 3b per the README. Plus **`examples/lean/PToken/BalanceSpec.lean`** — high-level `tokenAcctBalance`-shifting refinement target stated (body `sorry` pending Layer 3b closure). Plus **three Solana data-model SL predicates** in `SVM/Solana/{TokenAccount,AccountInfo,Pda}.lean` (the qedsvm-side library that high-level theorems compose against; per Direction-A MIR direction in QEDGen/solana-skills#66).
 
 **Next milestone — Layer 3b closed (~24 CU remaining)**: concrete punchlist for the remaining bytecode:
 
@@ -42,7 +42,7 @@ The methodology — separation logic over machine state, bounded Hoare triples, 
 3. `PTokenTransferArmFarJump.lean` — 11-insn linear ALU + `ja` slice (~1h).
 4. `PTokenTransferArmHappyPath.lean` (4a/4b/4c) — account-mutation block at the jump target ~200-300 insns (3-5 elapsed days; account-write `stxdw [r7+off]` chains, 2-3 more compiler-rt calls).
 
-**Total: 5-7 elapsed days, pure grind, no blockers.** Acceptance: a single `p_token_transfer_arm_happy_path_spec` triple covering 76 CU end-to-end with account-mutation postconditions; a follow-up ~1-2h Layer-3c refinement step discharges the `sorry` in `PTokenTransferBalanceSpec.lean` to land the high-level `tokenAcctBalance` shift. See [`docs/p-token-spike.md`](docs/p-token-spike.md) for the original methodology validation; the Layer-3b closeout report (parallel to the spike report) lands once item 4 closes.
+**Total: 5-7 elapsed days, pure grind, no blockers.** Acceptance: a single `p_token_transfer_arm_happy_path_spec` triple covering 76 CU end-to-end with account-mutation postconditions; a follow-up ~1-2h Layer-3c refinement step discharges the `sorry` in `PTokenTransferBalanceSpec.lean` to land the high-level `tokenAcctBalance` shift. See [`docs/archive/p-token-spike.md`](docs/archive/p-token-spike.md) for the original methodology validation; the Layer-3b closeout report (parallel to the spike report) lands once item 4 closes.
 
 **Rough completeness, weighted by impact, not LOC**:
 
@@ -54,14 +54,14 @@ The methodology — separation logic over machine state, bounded Hoare triples, 
   - Truncated-copy variant of `sol_get_return_data` (exact-fit case shipped; truncated case is a follow-up)
 
 *On the production critical path — Solana data-model library* (added 2026-05-24 per the Direction-A MIR pivot in QEDGen/solana-skills#66):
-- **`Svm/Solana/`** — bundled SL predicates over Solana account layouts that high-level handler theorems land against. Three shipped (`tokenAcctBalance`, `accountInfoHeader`, `isPda`); ~10 more to grow as each Direction-A MIR intrinsic (`Stmt::TokenTransfer`, `Stmt::SystemTransfer`, `Stmt::Pda`, ...) needs a refinement target. Half-day per predicate at the current cadence.
+- **`SVM/Solana/`** — bundled SL predicates over Solana account layouts that high-level handler theorems land against. Three shipped (`tokenAcctBalance`, `accountInfoHeader`, `isPda`); ~10 more to grow as each Direction-A MIR intrinsic (`Stmt::TokenTransfer`, `Stmt::SystemTransfer`, `Stmt::Pda`, ...) needs a refinement target. Half-day per predicate at the current cadence.
 
 *Off the production critical path* — verified-macro **authoring** track (distinct from the data-model SL predicates above):
 - Phase D (~85%), Phase E (~20%). Useful for writing programs directly in Lean; not required to run or verify compiled Solana programs.
 
 **Tooling-track ideas** live in [`docs/improvement-plan.md`](docs/improvement-plan.md) — orthogonal to the phase plan above.
 
-**Deferred architectural lifts** (SL track, post-mem-op-family closeout). Design sketches and priority order in [`docs/deferred-arch-lifts.md`](docs/deferred-arch-lifts.md). Status as of 2026-05-24:
+**Deferred architectural lifts** (SL track, post-mem-op-family closeout). Design sketches and priority order in [`docs/archive/deferred-arch-lifts.md`](docs/archive/deferred-arch-lifts.md). Status as of 2026-05-24:
 - ✅ #0 `Disjoint`/`CompatibleWith` redesign (named-field structures) — `9d90932`
 - ✅ #1 terminating triples (`cuTripleAbortsWithin` + `exit`/`abort`/`sol_panic_`) — `96c4df9`
 - ✅ #2 returnData SL atom — infra `6822161`, user-facing specs `7cb0e9b` (`call_sol_set_return_data_spec`) + `b0f250b` (`call_sol_get_return_data_spec`). Confirmed propagation cost ~2100 LoC (still 2-3× the doc's estimate); shipped without the `ResourceSet` prereq via scripted `Disjoint`/`CompatibleWith` site migration.
@@ -75,7 +75,7 @@ All architectural lifts except crypto success-path are shipped. None remaining a
 
 ### v0.2.0 — Phase 0: Axiom cleanup (partial) ✅
 
-Removed the five `axiom` declarations in `Svm/Account.lean` (list-update lemmas, now real theorems in core Lean). The 13 read/write-coherence axioms in `Svm/SBPF/Memory.lean` were left as a follow-up — they don't disappear with `simp` lemmas on the flat `Mem` model, but they're naturally eliminated by the byte-level separation-logic memory introduced in Phase A. After Phase A, the macro library uses byte-level `↦ₘ` predicates, the flat `Mem` axioms drop out, and the trust base is the Lean 4 ISA semantics + crypto primitives only.
+Removed the five `axiom` declarations in `SVM/Account.lean` (list-update lemmas, now real theorems in core Lean). The 13 read/write-coherence axioms in `SVM/SBPF/Memory.lean` were left as a follow-up — they don't disappear with `simp` lemmas on the flat `Mem` model, but they're naturally eliminated by the byte-level separation-logic memory introduced in Phase A. After Phase A, the macro library uses byte-level `↦ₘ` predicates, the flat `Mem` axioms drop out, and the trust base is the Lean 4 ISA semantics + crypto primitives only.
 
 ## Current track: v0.3.x — Reference interpreter + spec layer
 
@@ -87,18 +87,18 @@ The phases below are numbered in their original Phase A → E order for continui
 
 The minimum needed to write the first Hoare-triple instruction spec.
 
-- `Svm/SBPF/SepLogic.lean`
+- `SVM/SBPF/SepLogic.lean`
   - `PartialState` (partial heap over registers, memory bytes, PC)
   - `Assertion := PartialState → Prop`, separating conjunction `**`, `emp`
   - Points-to: `r ↦ᵣ v`, `addr ↦ₘ b` (byte), `pcIs v`
   - `holdsFor : Assertion → State → Prop` bridge to the executable `State`
   - Structural lemmas: `Disjoint.symm`, `union_comm_of_disjoint`, `sepConj_comm/assoc`, `emp` identities
-- `Svm/SBPF/CPSSpec.lean`
+- `SVM/SBPF/CPSSpec.lean`
   - `CodeReq := Nat → Option Insn`, `CodeReq.SatisfiedBy fetch`, `union`, `Disjoint`
   - `cuTripleWithin (N : Nat) (entry exit_ : Nat) (cr : CodeReq) (P Q : Assertion) : Prop`
   - `cuBranchWithin` two-exit variant for conditional jumps
   - Structural rules: `weaken`, `seq`, `frame` (already baked into the definition), `mono_nSteps`, `refl`, `branch_merge`
-- `Svm/SBPF/InstructionSpecs.lean` (first half)
+- `SVM/SBPF/InstructionSpecs.lean` (first half)
   - `mov64` reg→reg as the proof-of-pattern
   - extend through the pure-ALU 64-bit ops (`add64`, `sub64`, `and64`, `or64`, `xor64`, etc.)
 
@@ -156,7 +156,7 @@ Each ships as: an sBPF macro (in Lean), a Hoare triple (with separation logic ov
 
 ### Phase F — Differential testing *(byte-for-byte cross-engine agreement on real cargo-build-sbf output)*
 
-Extract the sBPF semantics (`Svm.SBPF.Execute`) to executable Lean / native and oracle-align against:
+Extract the sBPF semantics (`SVM.SBPF.Execute`) to executable Lean / native and oracle-align against:
 - Firedancer's `vm-fuzz` corpus
 - Agave's `solana-sbpf` test suite
 - A curated mainnet program corpus
@@ -164,10 +164,10 @@ Extract the sBPF semantics (`Svm.SBPF.Execute`) to executable Lean / native and 
 Every disagreement is either a bug in our semantics or evidence of cross-client divergence worth surfacing. This is the empirical answer to the "is the ISA model correct" question — until it passes, every Phase-E spec inherits this uncertainty.
 
 **What's shipped (through 2026-05-14):**
-- `qedsvm-rs/` Rust crate exposes the Lean runner via a Mollusk-shaped API (`Svm::process_instruction(&ix, &accounts) -> InstructionResult`). Same types as published agave-master pins (`solana-pubkey`, `solana-instruction`, `solana-account`), so Mollusk tests can swap engines by changing one type name.
+- `qedsvm-rs/` Rust crate exposes the Lean runner via a Mollusk-shaped API (`SVM::process_instruction(&ix, &accounts) -> InstructionResult`). Same types as published agave-master pins (`solana-pubkey`, `solana-instruction`, `solana-account`), so Mollusk tests can swap engines by changing one type name.
 - Agave-conformant input-buffer serializer with round-trip test against `solana_program_entrypoint::deserialize`, plus byte-level known-offset checks.
 - Thread-safe Lean runtime access (process-wide `Mutex`, stress-tested at 8 threads × 50 iters × varied input sizes).
-- `tests/diff_mollusk.rs` (gated `--features diff-mollusk`): runs the same `Instruction` through `qedsvm::Svm` and `mollusk_svm::Mollusk`, asserting equality on `program_result`, `return_data`, `resulting_accounts`, `compute_units_consumed`.
+- `tests/diff_mollusk.rs` (gated `--features diff-mollusk`): runs the same `Instruction` through `qedsvm::SVM` and `mollusk_svm::Mollusk`, asserting equality on `program_result`, `return_data`, `resulting_accounts`, `compute_units_consumed`.
 - **Five real `cargo-build-sbf` fixtures pass byte-for-byte cross-engine equality**: minimal noop (CU=2), `solana_program::entrypoint!` noop (CU=98), `msg!("hi")` logger (CU=202), incrementer that mutates `accounts[0].data` and writes back (CU=321), and noop+instruction-data. The incrementer is the strongest end-to-end conformance claim: `entrypoint!()` deserializes input, `try_borrow_mut_data()` succeeds, `u64+1` write-back is byte-identical to mollusk's resulting accounts.
 - ELF + decoder coverage for actual `cargo-build-sbf` (3.1.11 / platform-tools v1.52) output: `e_entry` honored, `R_BPF_64_32` Murmur3 relocations applied, `0x85` call decoder is src-agnostic (syscall hash lookup first, else `.call_local` PC-relative), `0x8d callx` (indirect call) decoded.
 - **V0 stack frames** (`solana-sbpf::Interpreter::push_frame` semantics): `.call_local` pushes a `CallFrame(retPc, savedR6..savedR10)` and bumps `r10 += 0x2000` (stack_frame_gaps); `.exit` restores all six fields. Without this LLVM-emitted entrypoint deserializers iterate forever because their loop counter spills to the same `r10 + const` offset across sub-calls.
@@ -187,25 +187,25 @@ Every disagreement is either a bug in our semantics or evidence of cross-client 
 The full pipeline runs end-to-end: `ByteArray` → Decoder → typed
 `Syscall` dispatch → executor with observable side channels → result.
 
-**Bytecode parsing — `Svm/SBPF/Decode.lean`**: 8-byte (and 16-byte
+**Bytecode parsing — `SVM/SBPF/Decode.lean`**: 8-byte (and 16-byte
 `lddw`) instruction encoding for the full ALU set (64-bit and 32-bit,
 imm and reg sources), all conditional and unconditional jumps (imm and
 reg), `exit`, `call`, and load/store across all four widths. Two-pass
 design with a byte-slot → logical-PC map so jump offsets resolve
 correctly when `lddw` is mixed with branches.
 
-**ELF loading — `Svm/SBPF/Elf.lean`**: ELF64 header parse with magic /
+**ELF loading — `SVM/SBPF/Elf.lean`**: ELF64 header parse with magic /
 class / endianness validation, section header table walk, name lookup
 in `.shstrtab`, `.text` and `.rodata` extraction with their `sh_addr`s.
 
-**Syscall hash dispatch — `Svm/SBPF/Murmur3.lean` +
-`Svm/SBPF/SyscallHash.lean`**: pure-Lean Murmur3-32 implementation
+**Syscall hash dispatch — `SVM/SBPF/Murmur3.lean` +
+`SVM/SBPF/SyscallHash.lean`**: pure-Lean Murmur3-32 implementation
 (kernel-reducible for `native_decide`), precomputed hashes for all 25
 syscall names in the `Syscall` enum, `fromHash : Nat → Syscall`
 resolver. The decoder's `call` arm produces *typed* `Syscall` variants
 straight from the bytes.
 
-**Production runner — `Svm/SBPF/Runner.lean`**:
+**Production runner — `SVM/SBPF/Runner.lean`**:
 
 ```lean
 structure RunConfig where
@@ -222,7 +222,7 @@ Runner.runElfForExit : ByteArray → RunConfig → Option Nat
 fields** (untouched by separation-logic assertions, so existing Hoare
 triples are unaffected).
 
-**Syscall semantics implemented in `Svm/SBPF/Execute.lean`**:
+**Syscall semantics implemented in `SVM/SBPF/Execute.lean`**:
 - `sol_log_`, `sol_log_pubkey` — append message bytes to `state.log`
 - `sol_log_64_`, `sol_log_compute_units_`, `sol_log_data` — empty-marker push (full formatting TODO)
 - `sol_memcpy_`, `sol_memmove_` — actual byte copy in `Mem`
@@ -234,7 +234,7 @@ triples are unaffected).
   `sol_get_last_restart_slot` — zero-fill the output buffer at `*r1`
   (real sysvar values aren't tracked; zero is the safe default)
 
-**Verification — `Svm/SBPF/RunnerDemo.lean`** (separate target, not in
+**Verification — `SVM/SBPF/RunnerDemo.lean`** (separate target, not in
 the production aggregator): 21 `native_decide`-proved end-to-end runs
 including raw ALU, backward-jump loops, `lddw`, ELF round trip (`.text`
 only and with `.rodata`), typed syscall dispatch with Murmur3 round
@@ -245,9 +245,9 @@ clock-sysvar zero-fill.
 **What's shipped since the original Phase-G writeup (through 2026-05-14):**
 
 - **Hash syscalls**: `sol_sha256` (pure-Lean FIPS-180-4, kernel-reducible),
-  `sol_sha512` / `sol_keccak256` / `sol_blake3` (rust-bridge to the same
+  `sol_sha512` / `sol_keccak256` / `sol_blake3` (qedsvm-rs/lean-bridge to the same
   crates agave uses — `sha2`, `sha3`, `blake3`). All four produce real
-  digests via `readSlices` + `writeBytes` helpers in `Svm/SBPF/Machine.lean`.
+  digests via `readSlices` + `writeBytes` helpers in `SVM/SBPF/Machine.lean`.
 - **Curve syscalls**: `sol_secp256k1_recover` (paritytech `libsecp256k1`),
   full `sol_curve_*` family for Curve25519 (validate / group_op / MSM),
   `sol_curve_decompress` + `sol_curve_pairing_map` for BLS12-381,
@@ -268,8 +268,8 @@ clock-sysvar zero-fill.
   to a per-module `exec` / `cu` defined next to its primitive.
   `Execute.lean` shrank from 1332 to 640 lines; `execSyscall` and
   `syscallCu` are pure 50-line dispatchers. New file
-  `Svm/SBPF/Machine.lean` carries `State`, `RegFile`, `CallFrame`, and
-  the shared body helpers; new directory `Svm/Syscalls/` hosts the
+  `SVM/SBPF/Machine.lean` carries `State`, `RegFile`, `CallFrame`, and
+  the shared body helpers; new directory `SVM/Syscalls/` hosts the
   previously-inline syscalls (logging, mem ops, sysvar, return data,
   abort, misc, CPI).
 
@@ -282,10 +282,10 @@ clock-sysvar zero-fill.
   valid Solana programs in agave; no support is needed.
 
 **CPI status (2026-05-19)**: real CPI shipped through `executeFnCpiWithFuel`
-in `Svm/SBPF/Runner.lean`. Verified by 12 `diff_mollusk` fixtures (9 prior
+in `SVM/SBPF/Runner.lean`. Verified by 12 `diff_mollusk` fixtures (9 prior
 + 3 new probers — depth-2 chain, returnData round-trip, PDA signer
 promotion), all byte+CU-equal to mollusk. The dead `r0:=0` stub in
-`Svm/Syscalls/Cpi.lean` is only reached by `executeFn` (the non-CPI
+`SVM/Syscalls/Cpi.lean` is only reached by `executeFn` (the non-CPI
 spec stepper); the production path goes through `executeFnCpi`.
 
 **R_BPF_64_RELATIVE status (2026-05-19)**: shipped for `.text` (lddw

@@ -3,7 +3,7 @@
 //! agave routes the three sig-verify precompiles (`Ed25519SigVerify…`,
 //! `KeccakSecp256k1…`, `Secp256r1SigVerify…`) without entering the BPF
 //! VM. qedsvm's `Svm::process_instruction` mirrors by detecting
-//! the precompile pubkeys and calling `Svm.Native.Precompiles.dispatch`
+//! the precompile pubkeys and calling `SVM.Native.Precompiles.dispatch`
 //! through the `qedsvm_precompile_dispatch` FFI entry point.
 //!
 //! ## Why these aren't diff-mollusk tests
@@ -24,7 +24,7 @@
 //!   signatures, so a valid pair here means a valid pair anywhere.
 //! - We exercise the full path: Rust pubkey-detect →
 //!   `qedsvm_precompile_dispatch` FFI → Lean
-//!   `Svm.Native.Precompiles.dispatch` → the rust-bridge crypto
+//!   `SVM.Native.Precompiles.dispatch` → the lean-bridge crypto
 //!   exports (`lean_ed25519_verify_strict`, `lean_secp256r1_verify`,
 //!   existing `lean_secp256k1_recover` + `lean_keccak256`).
 //!

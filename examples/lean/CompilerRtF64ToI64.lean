@@ -35,13 +35,13 @@
   be glued at any callee PC.
 -/
 
-import Svm.SBPF.InstructionSpecs
-import Svm.SBPF.SLTactic
-import Svm.SBPF.Macros
+import SVM.SBPF.InstructionSpecs
+import SVM.SBPF.Tactic.SL
+import SVM.SBPF.Macros
 
 namespace Examples.CompilerRtF64ToI64
 
-open Svm.SBPF
+open SVM.SBPF
 open Memory
 
 /-- IEEE-754 f64 bit pattern for `+1.0`. Lower bound of the in-range

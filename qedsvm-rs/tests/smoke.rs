@@ -10,7 +10,7 @@
 use qedsvm::{run_buffer, ExitOutcome};
 
 /// 289-byte ELF64 sBPF binary containing `mov64 r0, 42; exit`.
-/// Identical to `Svm.SBPF.RunnerDemo.helloElf` (Demo 8). Lives as a
+/// Identical to `SVM.SBPF.RunnerDemo.helloElf` (Demo 8). Lives as a
 /// binary fixture so we don't have to keep transcribing it.
 const HELLO_ELF: &[u8] = include_bytes!("fixtures/hello.elf");
 
@@ -26,7 +26,7 @@ fn hello_elf_runs_through_lean_to_exit_42() {
 
 #[test]
 fn hello_elf_length_matches_lean_fixture() {
-    assert_eq!(HELLO_ELF.len(), 289, "must match Svm.SBPF.RunnerDemo.helloElf");
+    assert_eq!(HELLO_ELF.len(), 289, "must match SVM.SBPF.RunnerDemo.helloElf");
 }
 
 #[test]

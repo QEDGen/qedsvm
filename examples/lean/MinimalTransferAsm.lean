@@ -16,11 +16,11 @@
 
   Convention: r1 = from-account base, r2 = to-account base,
   r4 = transfer amount; offset 64 matches the SPL Token v4 Pack
-  layout's `amount` field (see `Svm/Solana/TokenAccount.lean`).
+  layout's `amount` field (see `SVM/Solana/TokenAccount.lean`).
   r3 is a scratch register for load-modify-store.
 
   This is the refinement-pilot's asm-side anchor (Tasks 7-8 — see
-  Svm/Solana/Abstract/Refinement.lean and the matching
+  SVM/Solana/Abstract/Refinement.lean and the matching
   refines_TokenTransfer lemma). We chose a synthetic anchor over a
   proven Layer 3b fragment because the existing Layer 3b artifacts
   (PTokenTransferArmSetup / PTokenTransferArm / *TwoCalls* /
@@ -36,24 +36,24 @@
   shift.
 -/
 
-import Svm.SBPF.InstructionSpecs
-import Svm.SBPF.SLTactic
-import Svm.SBPF.Macros
-import Svm.SBPF.RunnerBridge
+import SVM.SBPF.InstructionSpecs
+import SVM.SBPF.Tactic.SL
+import SVM.SBPF.Macros
+import SVM.SBPF.RunnerBridge
 
 namespace Examples.MinimalTransferAsm
 
-open Svm.SBPF
+open SVM.SBPF
 open Memory
 
 /-- Byte offset of the `amount` field in an SPL Token v4 account.
-    Matches `Svm.Solana.AMOUNT_OFF`. -/
+    Matches `SVM.Solana.AMOUNT_OFF`. -/
 def amountOff : Int := 64
 
 /-! ## Encoding
 
 Hand-encoded bytes, 7 × 8 = 56 bytes. Encoding follows
-`Svm.SBPF.Decode.decodeInsn`:
+`SVM.SBPF.Decode.decodeInsn`:
 `opcode | (src<<4 | dst) | off16 LE | imm32 LE`.
 
 Opcodes:

@@ -1,5 +1,5 @@
 //! Operational sanity for the LLVM-compiled byte_increment fixture
-//! used in `Svm.SBPF.RunnerSpecDemo` (Session 3b of Gap 1 wiring).
+//! used in `SVM.SBPF.RunnerSpecDemo` (Session 3b of Gap 1 wiring).
 //!
 //! The Lean side proves: the .text bytes of `byte_increment.so` decode
 //! to a known 5-insn array, and the first 3 satisfy
@@ -46,7 +46,7 @@ fn byte_increment_runs_and_exits_cleanly() {
 
 #[test]
 fn byte_increment_text_matches_lean_literal() {
-    // The 40 bytes of .text we embed in `Svm.SBPF.RunnerSpecDemo` as
+    // The 40 bytes of .text we embed in `SVM.SBPF.RunnerSpecDemo` as
     // `byteIncrementSoText`. If `cargo-build-sbf` is re-run with a
     // different toolchain and emits different bytes, this test fails
     // and the Lean theorems become unsound w.r.t. the actual .so —
@@ -62,5 +62,5 @@ fn byte_increment_text_matches_lean_literal() {
     const TEXT_OFFSET: usize = 0x120;
     let text = &BYTE_INCREMENT_SO[TEXT_OFFSET..TEXT_OFFSET + EXPECTED_TEXT.len()];
     assert_eq!(text, &EXPECTED_TEXT[..],
-        "byte_increment.so .text bytes drifted from the Lean literal — re-run cargo-build-sbf and update Svm.SBPF.RunnerSpecDemo or revert the toolchain");
+        "byte_increment.so .text bytes drifted from the Lean literal — re-run cargo-build-sbf and update SVM.SBPF.RunnerSpecDemo or revert the toolchain");
 }

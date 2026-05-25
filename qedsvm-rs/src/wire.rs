@@ -1,4 +1,4 @@
-//! Decode the wire format `Svm.Ffi.runElfBuffer` produces.
+//! Decode the wire format `SVM.Ffi.runElfBuffer` produces.
 //!
 //! Layout (see `Svm/Ffi.lean` for the canonical description):
 //!
@@ -25,7 +25,7 @@ pub enum ExitOutcome {
     OutOfBudget,
     /// The program halted (cleanly via `exit` or via a runtime error
     /// code in the upper portion of the u64 space — see
-    /// `Svm.SBPF.Execute.ERR_*`). `0` means clean success.
+    /// `SVM.SBPF.Execute.ERR_*`). `0` means clean success.
     Halted(u64),
 }
 

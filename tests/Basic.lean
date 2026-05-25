@@ -1,10 +1,10 @@
-import Svm
+import SVM
 
--- Basic smoke tests for the Svm package.
+-- Basic smoke tests for the SVM package.
 -- Real proof patterns live in downstream consumers; this just verifies
 -- that the public surface is wired up correctly.
 
-open Svm
+open SVM
 
 -- Pubkey reflexivity
 example (k : Pubkey) : k = k := rfl
@@ -19,7 +19,7 @@ example :
       , accounts := [⟨⟨1, 0, 0, 0⟩, true, false⟩]
       , data := DISC_TRANSFER }
       TOKEN_PROGRAM_ID := by
-  unfold targetsProgram Svm.Cpi.targetsProgram
+  unfold targetsProgram SVM.Cpi.targetsProgram
   rfl
 
 -- Discriminator prefix check
@@ -29,5 +29,5 @@ example :
       , accounts := []
       , data := DISC_TRANSFER ++ [1, 2, 3] }
       DISC_TRANSFER := by
-  unfold hasDiscriminator Svm.Cpi.hasDiscriminator
+  unfold hasDiscriminator SVM.Cpi.hasDiscriminator
   decide

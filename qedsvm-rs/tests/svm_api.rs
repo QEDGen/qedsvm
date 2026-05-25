@@ -14,7 +14,7 @@ use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
 // 289-byte ELF: mov64 r0, 42; exit. Same fixture as
-// `Svm.SBPF.RunnerDemo.helloElf` and `tests/smoke.rs`. Generated from
+// `SVM.SBPF.RunnerDemo.helloElf` and `tests/smoke.rs`. Generated from
 // the Lean fixture (see `tests/fixtures/`).
 const HELLO_ELF: &[u8] = include_bytes!("fixtures/hello.elf");
 

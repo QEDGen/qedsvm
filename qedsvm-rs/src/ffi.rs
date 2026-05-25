@@ -4,10 +4,10 @@
 //! - Lean runtime entry points (`lean_initialize_runtime_module`,
 //!   `lean_io_mark_end_initialization`) — direct symbols from
 //!   `libleanshared`.
-//! - The compiled `Svm.Ffi` module — its init function
-//!   (`initialize_qedsvm_Svm_Ffi`) and our `@[export]`'d entry
+//! - The compiled `SVM.Ffi` module — its init function
+//!   (`initialize_qedsvm_SVM_Ffi`) and our `@[export]`'d entry
 //!   point `qedsvm_run_elf_buffer`. Both come from
-//!   `qedsvm_Svm_Ffi.dylib`.
+//!   `qedsvm_SVM_Ffi.dylib`.
 //! - Helper wrappers (`leanfsvm_*`) compiled from
 //!   `csrc/init_glue.c` — they expose the otherwise-static-inline
 //!   ByteArray + IO-result accessors as out-of-line symbols.
@@ -29,7 +29,7 @@
 //!
 //! - `b_lean_obj_arg` ("borrowed") — no refcount change.
 //! - `lean_obj_arg` / `lean_obj_res` ("owned") — refcount transferred
-//!   on call boundary. Functions in `Svm.Ffi` that take owned
+//!   on call boundary. Functions in `SVM.Ffi` that take owned
 //!   ByteArrays *consume* their refs. The returned ByteArray's ref
 //!   is *transferred to us* — we must `dec_ref` it after copying
 //!   the bytes out.
@@ -52,11 +52,11 @@ extern "C" {
     fn lean_initialize_runtime_module();
     fn lean_io_mark_end_initialization();
 
-    // ─ Compiled Svm.Ffi module. ───────────────────────────────────
-    fn initialize_qedsvm_Svm_Ffi(builtin: u8) -> lean_obj_res;
+    // ─ Compiled SVM.Ffi module. ───────────────────────────────────
+    fn initialize_qedsvm_SVM_Ffi(builtin: u8) -> lean_obj_res;
     /// The Lean `@[export]` entry point. Takes two ByteArrays and a
     /// u64, returns a ByteArray (wire format documented in
-    /// `Svm/Ffi.lean`).
+    /// `SVM/Ffi.lean`).
     pub fn qedsvm_run_elf_buffer(
         elf: lean_obj_arg,
         input: lean_obj_arg,
@@ -97,7 +97,7 @@ extern "C" {
     /// Top-level dispatch for the three sig-verify precompiles
     /// (ed25519 / secp256k1 / secp256r1). agave routes these without
     /// entering the BPF VM; this entrypoint runs
-    /// `Svm.Native.Precompiles.dispatch` against the raw ix data.
+    /// `SVM.Native.Precompiles.dispatch` against the raw ix data.
     ///
     /// Inputs: `pid_bytes` (32-byte program pubkey) + `ix_data`
     /// (the full instruction-data blob).
@@ -137,7 +137,7 @@ pub struct LeanGuard<'a>(#[allow(dead_code)] MutexGuard<'a, bool>);
 /// # Panics
 /// - If `LEAN_LOCK` is poisoned by a prior panic-mid-call. We refuse
 ///   to recover because Lean's heap state could be corrupt.
-/// - If the `Svm.Ffi` module init fails (indicates a stale or
+/// - If the `SVM.Ffi` module init fails (indicates a stale or
 ///   mismatched `.dylib` — a build-time problem, not a runtime one).
 pub fn lock() -> LeanGuard<'static> {
     let mut guard = LEAN_LOCK
@@ -149,13 +149,13 @@ pub fn lock() -> LeanGuard<'static> {
         // thread is touching the runtime.
         unsafe {
             lean_initialize_runtime_module();
-            let res = initialize_qedsvm_Svm_Ffi(/* builtin = */ 1);
+            let res = initialize_qedsvm_SVM_Ffi(/* builtin = */ 1);
             if leanfsvm_io_result_is_error(res) != 0 {
                 leanfsvm_dec_ref(res);
                 // Poison the lock — there's no recovery from a
                 // failed init.
                 panic!(
-                    "Svm.Ffi module init failed. Likely cause: stale \
+                    "SVM.Ffi module init failed. Likely cause: stale \
                      .dylib in .lake/build/ from a different Lean version. \
                      Run `lake clean && lake build` and try again."
                 );

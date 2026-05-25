@@ -6,7 +6,7 @@
  *
  * We can't reuse rust-bridge's glue from this crate because rust-bridge
  * is a staticlib *Lean* links — re-using its symbols would create a
- * circular link dep (qedsvm-rs → libleanbridge.a → ... → Svm's
+ * circular link dep (qedsvm-rs → libleanbridge.a → ... → SVM's
  * dylibs). Keep the two glue files cleanly separated.
  */
 
@@ -15,7 +15,7 @@
 #include <lean/lean.h>
 
 /* IO result inspection — used to check whether
- * `initialize_qedsvm_Svm_Ffi(...)` succeeded. */
+ * `initialize_qedsvm_SVM_Ffi(...)` succeeded. */
 LEAN_EXPORT uint8_t leanfsvm_io_result_is_ok(b_lean_obj_arg r) {
     return lean_io_result_is_ok(r);
 }

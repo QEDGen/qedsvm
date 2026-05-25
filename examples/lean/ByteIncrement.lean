@@ -17,13 +17,13 @@
   been incremented modulo 256.
 -/
 
-import Svm.SBPF.RunnerBridge
-import Svm.SBPF.Macros
+import SVM.SBPF.RunnerBridge
+import SVM.SBPF.Macros
 
 namespace Examples.ByteIncrement
 
-open Svm.SBPF
-open Svm.SBPF.Runner
+open SVM.SBPF
+open SVM.SBPF.Runner
 open Memory
 
 /-- Hand-encoded sBPF bytecode for byte_increment. Four 8-byte slots:
@@ -33,7 +33,7 @@ open Memory
     `pc=2  stx .byte .r1 0 .r2`   → `73 21 00 00 00 00 00 00`
     `pc=3  exit`                  → `95 00 00 00 00 00 00 00`
 
-    Encoding follows `Svm.SBPF.Decode.decodeInsn`:
+    Encoding follows `SVM.SBPF.Decode.decodeInsn`:
     `opcode | (src<<4 | dst) | off16 LE | imm32 LE`. -/
 def byteIncrementBytes : ByteArray :=
   ⟨#[ 0x71, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

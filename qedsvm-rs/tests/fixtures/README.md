@@ -2,7 +2,7 @@
 
 ## `hello.elf` (289 bytes)
 Hand-assembled minimal ELF64 sBPF binary: `mov64 r0, 42; exit`.
-Identical to `Svm.SBPF.RunnerDemo.helloElf` (Demo 8). Used by
+Identical to `SVM.SBPF.RunnerDemo.helloElf` (Demo 8). Used by
 `smoke.rs` and `svm_api.rs` for the simplest possible end-to-end
 round trip through the Lean runtime.
 

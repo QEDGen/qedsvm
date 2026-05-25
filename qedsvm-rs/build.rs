@@ -111,17 +111,20 @@ fn main() {
     // Curve25519.execValidate.
     //
     // Force-loading the whole archive (`-Wl,-force_load,...`) pulls
-    // in 200+ duplicate Rust std/core symbols because rust-bridge
+    // in 200+ duplicate Rust std/core symbols because lean-bridge
     // statically embeds them. Instead we tell the linker each FFI
     // symbol we want is "needed" via `-Wl,-u,<sym>` — this pulls
     // *only* the object containing that symbol from the archive,
     // leaving the rest (and the std/core duplicates) alone.
     //
-    // Derive the symbol list by parsing `rust-bridge/src/lib.rs` for
+    // Derive the symbol list by parsing `lean-bridge/src/lib.rs` for
     // `pub extern "C" fn lean_*` signatures, so adding a new syscall
     // export there automatically gets picked up here — no manual
     // sync, no runtime SIGSEGV from a forgotten entry.
-    let bridge_src = workspace_root.join("rust-bridge").join("src").join("lib.rs");
+    let bridge_src = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("lean-bridge")
+        .join("src")
+        .join("lib.rs");
     let ffi_syms = parse_lean_exports(&bridge_src);
     if ffi_syms.is_empty() {
         panic!(

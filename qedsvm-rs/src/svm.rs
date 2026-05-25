@@ -35,7 +35,7 @@ pub enum ProgramResult {
     /// Program halted with `exit r0 = 0`.
     Success,
     /// Program halted with non-zero r0, or with one of the runtime
-    /// error sentinels in `Svm.SBPF.Execute.ERR_*` (invalid PC, abort,
+    /// error sentinels in `SVM.SBPF.Execute.ERR_*` (invalid PC, abort,
     /// divide-by-zero). `exit_code` is r0 — interpret per the BPF
     /// program's contract.
     Failure { exit_code: u64 },
@@ -80,7 +80,7 @@ pub enum SvmError {
     /// agave's).
     BufferParse(DeserializeError),
     /// The Lean side returned a malformed wire response — should be
-    /// impossible if `Svm.Ffi` is built from a matching Lean tree.
+    /// impossible if `SVM.Ffi` is built from a matching Lean tree.
     InternalWireFormat(crate::DecodeError),
 }
 
@@ -212,7 +212,7 @@ impl Svm {
         // Top-level precompile dispatch. Agave's runtime detects
         // ed25519 / secp256k1 / secp256r1 program-ids before
         // invoking the BPF VM and routes to a Rust `verify()` closure.
-        // The Lean spec (`Svm.Native.Precompiles.dispatch`) is the
+        // The Lean spec (`SVM.Native.Precompiles.dispatch`) is the
         // source of truth; we call it directly via FFI without
         // serializing parameters or running the interpreter.
         //
@@ -369,7 +369,7 @@ fn ix_accounts_writable_sysvar(instruction: &Instruction) -> Option<Pubkey> {
 /// `Secp256r1SigVerify1111…`). agave's runtime routes these without
 /// entering the BPF VM; we mirror by detecting them in
 /// `process_instruction` and calling
-/// `Svm.Native.Precompiles.dispatch` via FFI.
+/// `SVM.Native.Precompiles.dispatch` via FFI.
 fn is_precompile(pid: &Pubkey) -> bool {
     *pid == solana_sdk_ids::ed25519_program::ID
         || *pid == solana_sdk_ids::secp256k1_program::ID

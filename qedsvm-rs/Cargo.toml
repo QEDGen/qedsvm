@@ -1,3 +1,9 @@
+[workspace]
+members = ["lean-bridge"]
+# Test fixtures contain many `*_src/Cargo.toml` sub-crates built by
+# cargo-build-sbf; they are not part of this workspace.
+exclude = ["tests/fixtures"]
+
 [package]
 name = "qedsvm"
 description = "Rust-side driver for the qedsvm Lean reference VM. Mollusk-shaped API for differential testing of Solana programs against the formal semantics."
