@@ -79,6 +79,7 @@ lean_lib Examples where
     `PToken.TransferArm.H1Dispatch,
     `PToken.TransferArm.H3aAmountAlign,
     `PToken.TransferArm.H3bIndexBound,
-    `PToken.TransferArm.H3cStateChecks
+    `PToken.TransferArm.H3cStateChecks,
+    `PToken.TransferArm.H3dBalanceCheck
   ]
   precompileModules := true
