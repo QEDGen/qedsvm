@@ -87,3 +87,19 @@ in the harness — exercises pinocchio's zero-copy account access
 pattern (raw pointer casts into the serialized input buffer, no
 Borsh) against our memory model. Used as a cross-engine diff input;
 not built in this repo.
+
+## `janus_pyth_price_resolver_devnet.so` (13 KB)
+
+`janus-pyth-price-resolver` (Pinocchio 0.8), pulled from devnet via
+`solana program dump --url devnet 3WDargKHd1UaP9UKPhJY8pF5bv5zJnaFAYDA9uahs5aL`
+at 2026-05-26.
+
+SHA-256: `0b891f14ed0945fc2ace325a974be59f0f0d88e695536df5dc3bfbfdd70f0a16`
+
+Source: <https://github.com/saicharanpogul/janus> (the program the
+issue #2 reporter used). Used by
+`tests/pinocchio_program_error.rs` to confirm Pinocchio's
+`(error_code << 32)` r0 encoding round-trips through
+`ProgramResult::from_bpf_r0` into the typed `ProgramError` variant
+that matches mollusk's `Failure(InstructionError::ProgramError(_))`
+surface.
