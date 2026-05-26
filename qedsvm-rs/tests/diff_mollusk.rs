@@ -155,6 +155,16 @@ const CPI_SET_RETURN_DATA_CALLEE_SO: &[u8] =
 const CPI_DEPTH_2_OUTER_SO: &[u8] =
     include_bytes!("fixtures/cpi_depth_2_outer.so");
 
+/// Janus slot-height-resolver, devnet-deployed Pinocchio 0.8 binary
+/// (`solana program dump --url devnet
+/// 3y75gGqFK1KhNF5k1sMy6ydnw6WLcbn1SPRoYbyRkjMj`). Reporter's program
+/// from issue #2; used by `janus_slot_height_resolver_initialize_matches_mollusk`
+/// to reproduce issue #10 (System Program CreateAccount CPI via
+/// `invoke_signed` with a PDA target — the synthetic
+/// `system_create_account_cpi_matches_mollusk` covers the non-PDA case).
+const JANUS_SLOT_HEIGHT_RESOLVER_SO: &[u8] =
+    include_bytes!("fixtures/janus_slot_height_resolver_devnet.so");
+
 fn pid(seed: u64) -> Pubkey {
     let mut b = [0u8; 32];
     b[..8].copy_from_slice(&seed.to_le_bytes());
@@ -2220,5 +2230,134 @@ fn cpi_depth_2_chain_matches_mollusk() {
         fs_acct.data());
     assert_eq!(ml_acct.data.as_slice(), expected.as_slice(),
         "mollusk: leaf increment not visible (sanity); got {:?}", ml_acct.data);
+}
+
+/// Reproduces issue #10 against the deployed Janus slot-height-resolver
+/// binary. The `Initialize` handler issues a System Program
+/// `CreateAccount` CPI via `invoke_signed` with the state PDA's seeds —
+/// the new account is a PDA (not a regular signer), so the dispatcher
+/// must promote it to `isSigner = true` based on seed derivation
+/// before `execCreateAccount`'s signer check runs.
+///
+/// The synthetic `system_create_account_cpi_matches_mollusk` test
+/// passes because it uses a non-PDA `new_pk` that signs the outer
+/// instruction (`AccountMeta::new(*, true)`). PDA-target CreateAccount
+/// is structurally different and is what the reporter hits.
+///
+/// Expected outcome: mollusk Success (allocates 48-byte state
+/// account), qedsvm should match. Asserts on `program_result`,
+/// CU, and `account[1].data.len() == 48`.
+#[test]
+fn janus_slot_height_resolver_initialize_matches_mollusk() {
+    use solana_account::WritableAccount;
+
+    let program_id: Pubkey = "3y75gGqFK1KhNF5k1sMy6ydnw6WLcbn1SPRoYbyRkjMj".parse().unwrap();
+    let system_program = solana_sdk_ids::system_program::id();
+
+    let payer = Pubkey::new_unique();
+    let authority = Pubkey::new_unique();
+    let seed_key = Pubkey::new_unique();
+    let (state, bump) = Pubkey::find_program_address(
+        &[b"slot-resolver", seed_key.as_ref()],
+        &program_id,
+    );
+
+    // Initialize tag = 1, then outcome | bump | 6B padding | u64 target_slot | 32B seed_key.
+    let mut data = Vec::with_capacity(49);
+    data.push(1u8); // Initialize
+    data.push(1u8); // outcome
+    data.push(bump);
+    data.extend_from_slice(&[0u8; 6]);
+    data.extend_from_slice(&500u64.to_le_bytes()); // target_slot
+    data.extend_from_slice(seed_key.as_ref());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(payer, true),
+            AccountMeta::new(state, false),         // PDA target — not a hard signer
+            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new_readonly(system_program, false),
+        ],
+        data,
+    };
+
+    // Pre-states: payer is funded + system-owned, state empty (the
+    // PDA hasn't been initialized yet), authority empty + system-owned.
+    let payer_pre_fs = {
+        let mut a = AccountSharedData::default();
+        a.set_lamports(1_000_000_000_000);
+        a.set_owner(system_program);
+        a
+    };
+    let payer_pre_ml = mollusk_account::Account {
+        lamports: 1_000_000_000_000, data: vec![],
+        owner: system_program, executable: false, rent_epoch: 0,
+    };
+    let state_pre_fs = AccountSharedData::default();
+    let state_pre_ml = mollusk_account::Account::default();
+    let authority_pre_fs = {
+        let mut a = AccountSharedData::default();
+        a.set_owner(system_program);
+        a
+    };
+    let authority_pre_ml = mollusk_account::Account {
+        lamports: 0, data: vec![], owner: system_program,
+        executable: false, rent_epoch: 0,
+    };
+    let (mollusk_system_id, mollusk_system_acct) =
+        mollusk_svm::program::keyed_account_for_system_program();
+    let system_stub_fs = AccountSharedData::from(Account {
+        lamports: mollusk_system_acct.lamports,
+        data: mollusk_system_acct.data.clone(),
+        owner: mollusk_system_acct.owner,
+        executable: mollusk_system_acct.executable,
+        rent_epoch: mollusk_system_acct.rent_epoch,
+    });
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, JANUS_SLOT_HEIGHT_RESOLVER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (payer, payer_pre_fs),
+        (state, state_pre_fs),
+        (authority, authority_pre_fs),
+        (system_program, system_stub_fs),
+    ]).expect("qedsvm runs slot_height_resolver Initialize");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        JANUS_SLOT_HEIGHT_RESOLVER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (payer, payer_pre_ml),
+        (state, state_pre_ml),
+        (authority, authority_pre_ml),
+        (mollusk_system_id, mollusk_system_acct),
+    ]);
+
+    eprintln!("mollusk: {:?} cu={} accounts={}",
+        m_r.program_result, m_r.compute_units_consumed, m_r.resulting_accounts.len());
+    eprintln!("qedsvm:  {:?} cu={} accounts={}",
+        fs_r.program_result, fs_r.compute_units_consumed, fs_r.resulting_accounts.len());
+    let m_state = m_r.resulting_accounts.iter()
+        .find(|(k, _)| *k == state).expect("mollusk state present").1.clone();
+    let fs_state = fs_r.resulting_accounts.iter()
+        .find(|(k, _)| *k == state).expect("qedsvm state present").1.clone();
+    eprintln!("mollusk state.data.len={} lamports={} owner={}",
+        m_state.data.len(), m_state.lamports, m_state.owner);
+    eprintln!("qedsvm  state.data.len={} lamports={} owner={}",
+        fs_state.data().len(), fs_state.lamports(), fs_state.owner());
+
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert_eq!(fs_state.data().len(), 48,
+        "state.data.len: expected 48, got {}", fs_state.data().len());
+    assert_eq!(fs_state.data(), m_state.data.as_slice(),
+        "state.data divergence");
+    assert_eq!(fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU divergence: qedsvm={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed);
 }
 
