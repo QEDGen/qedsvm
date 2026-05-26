@@ -90,6 +90,39 @@ fn main() {
 
 Run `lake build` in the qedsvm checkout first so the helper has a populated `.lake/build/`.
 
+#### Diff-test crates: handling the `solana-account` version split
+
+`qedsvm::Svm::process_instruction` takes `(Pubkey, AccountSharedData)` from `solana-account 4.x`. `mollusk-svm 0.12.1-agave-4.0::process_instruction` takes the same shape but from `solana-account 3.x` (mollusk's interface crate hasn't moved to 4.x yet). Cargo pulls both versions; they share names but are not directly interconvertible.
+
+A one-line dev-dep alias for mollusk's older copy is the established workaround:
+
+```toml
+[dev-dependencies]
+qedsvm = { path = "...", features = ["diff-mollusk"] }
+mollusk-svm = "0.12.1-agave-4.0"
+solana-account = "4.3.0"
+# Aliased name lets you construct the version mollusk expects without
+# colliding with qedsvm's 4.x.
+mollusk-account = { package = "solana-account", version = "3.4.0" }
+```
+
+For the actual conversion, use the helpers under `qedsvm::diff::*` (gated by `diff-mollusk`) so you're not rewriting the field copy in every diff-test crate:
+
+```rust
+use qedsvm::diff::{mollusk_to_qedsvm, qedsvm_to_mollusk};
+
+// Build the fixture once in mollusk shape, run on both engines.
+let qedsvm_accounts = mollusk_to_qedsvm(&mollusk_accounts);
+let mollusk_result = mollusk.process_instruction(&ix, &mollusk_accounts);
+let qedsvm_result  = svm.process_instruction(&ix, &qedsvm_accounts);
+
+// Round-trip works the other way too (e.g. fuzzers that drive qedsvm
+// first and then cross-check with mollusk).
+let mollusk_accounts_back = qedsvm_to_mollusk(&qedsvm_accounts);
+```
+
+The Janus differential-test harness ([`saicharanpogul/janus/tests-qedsvm`](https://github.com/saicharanpogul/janus/tree/main/tests-qedsvm)) is a complete working example.
+
 ## Coverage
 
 | Layer | Status |
