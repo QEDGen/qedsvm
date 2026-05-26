@@ -2000,6 +2000,7 @@ dependencies = [
  "libsecp256k1 0.7.2",
  "mollusk-svm",
  "openssl",
+ "qedsvm-buildscript",
  "rand 0.8.6",
  "solana-account 3.4.0",
  "solana-account 4.3.0",
@@ -2033,6 +2034,10 @@ dependencies = [
  "solana-bls12-381-syscall",
  "solana-bn254",
 ]
+
+[[package]]
+name = "qedsvm-buildscript"
+version = "0.1.0"
 
 [[package]]
 name = "qstring"

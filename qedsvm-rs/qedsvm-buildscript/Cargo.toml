@@ -1,0 +1,9 @@
+[package]
+name = "qedsvm-buildscript"
+description = "Reusable Cargo build-script helper for downstream crates linking against the qedsvm Lean runtime. Replaces ~95 lines of hand-rolled link-arg replication with a single function call."
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
