@@ -8,7 +8,10 @@
 //! return data". The point is to exercise the full plumbing path:
 //!   instruction + accounts → serialize → Lean → deserialize → result
 
-use qedsvm::{ProgramResult, SerializeError, Svm, SvmError};
+use qedsvm::{
+    deserialize_account_writes, serialize_parameters,
+    ProgramResult, SerializeError, Svm, SvmError,
+};
 use solana_account::{Account, AccountSharedData};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -317,4 +320,127 @@ fn compute_budget_from_instructions_last_set_limit_wins() {
     // distinguish. The "last wins" semantics are covered by an
     // OutOfBudget-on-set-1 test if needed; this asserts the call works.
     assert!(result.compute_units_consumed > 0);
+}
+
+// --- pinocchio borrow_state reproducer (issue #2) ---
+//
+// Pinocchio's RuntimeAccount overlays a `borrow_state: u8` field on
+// byte 0 of each per-account record (= the dup_info byte). When a
+// program calls `try_borrow_mut_*`, that byte is set to 0; the matching
+// `Drop` restores it to `NOT_BORROWED` (0xFF). If a borrow guard
+// outlives the entrypoint return (a valid Pinocchio pattern), the byte
+// stays at 0 (mut-borrowed) or 1..254 (partial immutable borrow drops).
+//
+// Our deserializer reads dup_info from the buffer and rejects anything
+// it can't make sense of — turning a perfectly valid Pinocchio handler
+// into `BufferParse(InvalidDupIndex)`. Worse, with ≥2 accounts a
+// stomped value can collide with a real dup index and silently return
+// the wrong account.
+//
+// Confirmed mechanism: `solana-account-view/src/lib.rs`
+// (`NOT_BORROWED = u8::MAX` is "the same as NON_DUP_MARKER"; `Drop for
+// RefMut` writes `NOT_BORROWED`; `try_borrow_mut` writes 0).
+//
+// These tests drive the failure synthetically by stomping the byte
+// post-serialize — no Pinocchio program required.
+
+fn stomp_first_dup_byte(buf: &mut [u8], to: u8) {
+    // [u64 num_accounts][u8 dup_info ...] — first dup byte is at offset 8.
+    buf[8] = to;
+}
+
+#[test]
+fn deserialize_tolerates_pinocchio_mut_borrow_leaked_to_byte_zero() {
+    // Reporter's exact shape: 1 read-only account, byte 0 of the record
+    // ends at 0 (try_borrow_mut held across return).
+    let program_id = pid(60);
+    let key = pid(61);
+    let owner = pid(62);
+    let pre = shared(1_000, vec![1, 2, 3, 4, 5], owner);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new_readonly(key, false)],
+        data: vec![0u8],
+    };
+    let mut buf = serialize_parameters(&ix, &[(key, pre.clone())], &program_id)
+        .expect("serialize");
+    assert_eq!(buf[8], 0xFF, "sanity: serializer wrote NON_DUP_MARKER");
+    stomp_first_dup_byte(&mut buf, 0);
+
+    let out = deserialize_account_writes(&buf, &ix, &[(key, pre.clone())])
+        .expect("deserializer must tolerate stomped borrow_state byte");
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].0, key);
+}
+
+#[test]
+fn deserialize_tolerates_partial_immutable_borrow_drop() {
+    // try_borrow + miss-a-drop leaves byte at 0xFE.
+    let program_id = pid(63);
+    let key = pid(64);
+    let owner = pid(65);
+    let pre = shared(2_000, vec![9, 9, 9], owner);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new_readonly(key, false)],
+        data: vec![],
+    };
+    let mut buf = serialize_parameters(&ix, &[(key, pre.clone())], &program_id)
+        .expect("serialize");
+    stomp_first_dup_byte(&mut buf, 0xFE);
+
+    let out = deserialize_account_writes(&buf, &ix, &[(key, pre.clone())])
+        .expect("deserializer must tolerate any post-execution borrow_state value");
+    assert_eq!(out.len(), 1);
+}
+
+#[test]
+fn deserialize_with_two_distinct_accounts_does_not_misread_stomped_byte_as_dup() {
+    // The dangerous case: 2 *distinct* accounts, byte 0 of the second
+    // record stomped to 0. A buffer-trusting deserializer would treat
+    // that as "this is a dup of account 0" and return account 0's data
+    // for the second slot — silently wrong. We assert the right key
+    // comes back in slot 1.
+    let program_id = pid(70);
+    let a = pid(71);
+    let b = pid(72);
+    let owner = pid(73);
+    let pre_a = shared(100, vec![0xAA, 0xAA, 0xAA], owner);
+    let pre_b = shared(200, vec![0xBB, 0xBB], owner);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new_readonly(a, false),
+            AccountMeta::new_readonly(b, false),
+        ],
+        data: vec![],
+    };
+    let pre = [(a, pre_a.clone()), (b, pre_b.clone())];
+    let mut buf = serialize_parameters(&ix, &pre, &program_id).expect("serialize");
+
+    // Locate the second account's dup byte. First record is:
+    //   [u64 num_accounts] + 1B dup + 1B sig + 1B writable + 1B exec
+    //   + 4B padding + 32B key + 32B owner + 8B lamports + 8B data_len
+    //   + data_len bytes + align_pad + MAX_PERMITTED_DATA_INCREASE
+    //   + 8B rent_epoch
+    use solana_program_entrypoint::{BPF_ALIGN_OF_U128, MAX_PERMITTED_DATA_INCREASE};
+    let first_record_data_len = 3usize;
+    let align_pad = (BPF_ALIGN_OF_U128 - first_record_data_len % BPF_ALIGN_OF_U128) % BPF_ALIGN_OF_U128;
+    let first_record_size =
+        1 + 1 + 1 + 1 + 4 + 32 + 32 + 8 + 8 + first_record_data_len + align_pad + MAX_PERMITTED_DATA_INCREASE + 8;
+    let second_dup_offset = 8 + first_record_size;
+    assert_eq!(buf[second_dup_offset], 0xFF, "sanity: second record starts with NON_DUP_MARKER");
+    buf[second_dup_offset] = 0;
+
+    let out = deserialize_account_writes(&buf, &ix, &pre)
+        .expect("deserializer must not silently treat stomped byte as a dup");
+    assert_eq!(out.len(), 2);
+    assert_eq!(out[0].0, a);
+    assert_eq!(out[1].0, b, "slot 1 must be account B, not silently aliased to A");
+    use solana_account::ReadableAccount;
+    assert_eq!(out[1].1.lamports(), 200);
+    assert_eq!(out[1].1.data(), &[0xBB, 0xBB]);
 }

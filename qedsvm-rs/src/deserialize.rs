@@ -19,7 +19,7 @@
 use solana_account::AccountSharedData;
 use solana_account::WritableAccount;
 use solana_instruction::Instruction;
-use solana_program_entrypoint::{MAX_PERMITTED_DATA_INCREASE, NON_DUP_MARKER};
+use solana_program_entrypoint::MAX_PERMITTED_DATA_INCREASE;
 use solana_pubkey::Pubkey;
 
 /// Walk `buffer` (the post-execution `INPUT_START` region) and produce
@@ -50,21 +50,29 @@ pub fn deserialize_account_writes(
 
     // Walk the buffer once, collecting per-first-occurrence updates.
     // Subsequent dup entries share that update.
+    //
+    // We *do not* read `dup_info` from the buffer to decide non-dup vs
+    // dup, because programs that use pinocchio's RefCell-style borrow
+    // tracking (`solana-account-view`) overlay a mutable `borrow_state`
+    // field on that exact byte and can leave it at any value 0..=255
+    // on return. Trusting the byte then produces spurious
+    // `InvalidDupIndex` errors on perfectly valid Pinocchio handlers
+    // (issue #2), and could in adversarial shapes silently alias slots.
+    // The dup *structure* is fully determined by `instruction.accounts`
+    // — it has to be, because the serializer derives it from there —
+    // so we recompute it the same way the serializer does and skip
+    // 8 bytes for any record we identify as a dup.
     let mut by_first_occurrence: Vec<Option<AccountSharedData>> = vec![None; num_accounts];
-
     for i in 0..num_accounts {
-        let dup_info = r.read_u8()?;
-        if dup_info == NON_DUP_MARKER {
+        let first = (0..i).find(|j| instruction.accounts[*j].pubkey == instruction.accounts[i].pubkey);
+        if first.is_some() {
+            // Dup: 1B (post-execution borrow_state, ignored) + 7B padding.
+            r.skip(8)?;
+        } else {
+            // Non-dup: 1B (post-execution borrow_state, ignored) + rest of record.
+            r.skip(1)?;
             let updated = parse_non_dup_record(&mut r, &instruction.accounts[i].pubkey, pre_accounts)?;
             by_first_occurrence[i] = Some(updated);
-        } else {
-            // 7 bytes padding, then this entry inherits from
-            // `by_first_occurrence[dup_info as usize]`.
-            r.skip(7)?;
-            let src = dup_info as usize;
-            if src >= num_accounts || by_first_occurrence[src].is_none() {
-                return Err(DeserializeError::InvalidDupIndex(src));
-            }
         }
     }
 
@@ -167,7 +175,6 @@ fn parse_non_dup_record(
 pub enum DeserializeError {
     Truncated,
     AccountCountMismatch { expected: usize, got: usize },
-    InvalidDupIndex(usize),
     MissingFirstOccurrence(usize),
     PubkeyMismatch { expected: Pubkey, got: Pubkey },
     DataLengthOverflow(usize),
@@ -180,8 +187,6 @@ impl std::fmt::Display for DeserializeError {
             Self::Truncated => write!(f, "buffer truncated"),
             Self::AccountCountMismatch { expected, got } =>
                 write!(f, "account count mismatch: expected {expected}, got {got}"),
-            Self::InvalidDupIndex(i) =>
-                write!(f, "dup_info points at non-existent first-occurrence index {i}"),
             Self::MissingFirstOccurrence(i) =>
                 write!(f, "missing first-occurrence record for account {i}"),
             Self::PubkeyMismatch { expected, got } =>
@@ -209,7 +214,6 @@ impl<'a> Reader<'a> {
     }
 
     fn skip(&mut self, n: usize) -> Result<(), DeserializeError> { self.take(n)?; Ok(()) }
-    fn read_u8(&mut self) -> Result<u8, DeserializeError> { Ok(self.take(1)?[0]) }
     fn read_u64(&mut self) -> Result<u64, DeserializeError> {
         let b = self.take(8)?;
         Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
