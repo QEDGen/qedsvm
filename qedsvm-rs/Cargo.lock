@@ -2007,6 +2007,7 @@ dependencies = [
  "solana-ed25519-program",
  "solana-instruction",
  "solana-program-entrypoint",
+ "solana-pubkey 3.0.0",
  "solana-pubkey 4.2.0",
  "solana-sdk-ids",
  "solana-secp256k1-program",

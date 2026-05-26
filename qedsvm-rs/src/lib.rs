@@ -17,6 +17,13 @@ mod serialize;
 mod svm;
 mod wire;
 
+/// Diff-testing utilities — converters + assertion helpers for
+/// running the same fixture through both qedsvm and Mollusk. Only
+/// compiled when the `diff-mollusk` feature is on (same gate as the
+/// `mollusk-svm` dependency).
+#[cfg(feature = "diff-mollusk")]
+pub mod diff;
+
 pub use deserialize::{deserialize_account_writes, DeserializeError};
 pub use serialize::{serialize_parameters, SerializeError};
 pub use svm::{InstructionResult, ProgramResult, Svm, SvmError, ERR_INVALID_POSTSTATE};
