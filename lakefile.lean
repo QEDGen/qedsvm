@@ -85,6 +85,7 @@ lean_lib Examples where
     `PToken.TransferArm.H3fSignerExit,
     `PToken.TransferArm.H4aDestMintCheck,
     `PToken.TransferArm.H4bBalanceMutation,
-    `PToken.TransferArm.FullHappyPath
+    `PToken.TransferArm.FullHappyPath,
+    `PToken.MirRefines
   ]
   precompileModules := true

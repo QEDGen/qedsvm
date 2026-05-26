@@ -35,6 +35,7 @@ import SVM.SBPF.Tactic.SL
 
 namespace Examples.RefinesTokenTransfer
 
+open SVM
 open SVM.SBPF
 open Memory
 open SVM.Solana
@@ -143,5 +144,126 @@ flat theorem but will be required by the user-facing wrapper (the
 `↦Bytes` atom is well-formed only when the byte array has the
 declared size).
 -/
+
+/-! ## Wrapped form — pre/post stated via `tokenAcctBalance`
+
+The flat theorem above produces a 12-atom right-folded chain (4
+registers + 4 per-account-field atoms × 2). The user-facing form
+re-brackets the per-account atoms inside `tokenAcctBalance`, producing
+a 6-atom chain (4 registers + 1 per account). The two are equal up to
+`sepConj_assoc` × 3; this section provides the bridging iffs and
+the corollary.
+-/
+
+/-- Re-bracket two adjacent 4-atom right-folded blocks into a single
+    8-atom right-folded chain. Three applications of `sepConj_assoc`
+    nested via `sepConj_iff_congr_right`. -/
+private theorem two_block_unfold_iff
+    (sMint sOwn sAmt sRest dChain : Assertion) :
+    ∀ h, ((sMint ** sOwn ** sAmt ** sRest) ** dChain) h ↔
+         (sMint ** sOwn ** sAmt ** sRest ** dChain) h := by
+  intro h
+  refine Iff.trans (sepConj_assoc h) ?_
+  refine sepConj_iff_congr_right sMint ?_ h
+  intro h1
+  refine Iff.trans (sepConj_assoc h1) ?_
+  refine sepConj_iff_congr_right sOwn ?_ h1
+  intro h2
+  exact sepConj_assoc h2
+
+/-- Descend a tail iff through a 4-atom right-folded register prefix. -/
+private theorem reg_prefix_descend_iff
+    (a1 a2 a3 a4 : Assertion) {L R : Assertion}
+    (hLR : ∀ h, L h ↔ R h) :
+    ∀ h, (a1 ** a2 ** a3 ** a4 ** L) h ↔ (a1 ** a2 ** a3 ** a4 ** R) h := by
+  intro h
+  refine sepConj_iff_congr_right a1 ?_ h
+  intro h1
+  refine sepConj_iff_congr_right a2 ?_ h1
+  intro h2
+  refine sepConj_iff_congr_right a3 ?_ h2
+  intro h3
+  exact sepConj_iff_congr_right a4 hLR h3
+
+/-- Pointwise iff between the wrapped form and the flat form on the
+    pre-state side. Unfolds `tokenAcctBalance` at both ATA sites, then
+    re-brackets via the two helpers above. -/
+private theorem wrap_iff
+    (a1 a2 a3 a4 : Assertion)
+    (srcAddr dstAddr : Nat)
+    (mintSrc ownerSrc mintDst ownerDst : Pubkey)
+    (amtSrc amtDst : Nat)
+    (restSrc restDst : ByteArray) :
+    ∀ h, (a1 ** a2 ** a3 ** a4 **
+            tokenAcctBalance srcAddr mintSrc ownerSrc amtSrc restSrc **
+            tokenAcctBalance dstAddr mintDst ownerDst amtDst restDst) h ↔
+         (a1 ** a2 ** a3 ** a4 **
+            (srcAddr + MINT_OFF ↦Pubkey mintSrc) **
+            (srcAddr + OWNER_OFF ↦Pubkey ownerSrc) **
+            (srcAddr + AMOUNT_OFF ↦U64 amtSrc) **
+            (srcAddr + REST_OFF ↦Bytes restSrc) **
+            (dstAddr + MINT_OFF ↦Pubkey mintDst) **
+            (dstAddr + OWNER_OFF ↦Pubkey ownerDst) **
+            (dstAddr + AMOUNT_OFF ↦U64 amtDst) **
+            (dstAddr + REST_OFF ↦Bytes restDst)) h := by
+  intro h
+  -- Definitional unfold of `tokenAcctBalance` on both sides.
+  show (a1 ** a2 ** a3 ** a4 **
+          ((srcAddr + MINT_OFF ↦Pubkey mintSrc) **
+           (srcAddr + OWNER_OFF ↦Pubkey ownerSrc) **
+           (srcAddr + AMOUNT_OFF ↦U64 amtSrc) **
+           (srcAddr + REST_OFF ↦Bytes restSrc)) **
+          ((dstAddr + MINT_OFF ↦Pubkey mintDst) **
+           (dstAddr + OWNER_OFF ↦Pubkey ownerDst) **
+           (dstAddr + AMOUNT_OFF ↦U64 amtDst) **
+           (dstAddr + REST_OFF ↦Bytes restDst))) h ↔ _
+  exact reg_prefix_descend_iff a1 a2 a3 a4
+    (two_block_unfold_iff _ _ _ _ _) h
+
+/-! ## `refines_TokenTransfer_minimal` — wrapped corollary
+
+The user-facing form. Pre/post wrap each account's MINT/OWNER/AMOUNT/
+REST atoms inside a single `tokenAcctBalance`. Discharges via the wrap
+iff applied to `refines_TokenTransfer_minimal_flat`. -/
+
+theorem refines_TokenTransfer_minimal
+    (srcAddr dstAddr amount vR3Old : Nat)
+    (tSrc tDst : Abstract.TokenAccount)
+    (h_funds      : amount ≤ tSrc.amount)
+    (h_noOverflow : tDst.amount + amount < 2 ^ 64)
+    (h_srcBal     : tSrc.amount < 2 ^ 64)
+    (h_dstBal     : tDst.amount < 2 ^ 64) :
+    cuTripleWithinMem 6 0 0 6 minimalTransferCr
+      ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
+       (.r3 ↦ᵣ vR3Old) ** (.r4 ↦ᵣ amount) **
+       tokenAcctBalance srcAddr tSrc.mint tSrc.owner tSrc.amount tSrc.rest **
+       tokenAcctBalance dstAddr tDst.mint tDst.owner tDst.amount tDst.rest)
+      ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
+       (.r3 ↦ᵣ tDst.amount + amount) ** (.r4 ↦ᵣ amount) **
+       tokenAcctBalance srcAddr tSrc.mint tSrc.owner (tSrc.amount - amount) tSrc.rest **
+       tokenAcctBalance dstAddr tDst.mint tDst.owner (tDst.amount + amount) tDst.rest)
+      (fun rt =>
+        ((rt.containsRange (srcAddr + AMOUNT_OFF) 8 = true ∧
+            rt.containsWritable (srcAddr + AMOUNT_OFF) 8 = true) ∧
+          rt.containsRange (dstAddr + AMOUNT_OFF) 8 = true) ∧
+        rt.containsWritable (dstAddr + AMOUNT_OFF) 8 = true) := by
+  have h_flat := refines_TokenTransfer_minimal_flat srcAddr dstAddr amount vR3Old
+                   tSrc tDst h_funds h_noOverflow h_srcBal h_dstBal
+  refine cuTripleWithinMem_reshape_pre ?_
+           (cuTripleWithinMem_reshape_post ?_ h_flat)
+  · -- pre iff: flat ↔ wrapped (reshape_pre demands OLD ↔ NEW)
+    intro h
+    exact (wrap_iff (.r1 ↦ᵣ srcAddr) (.r2 ↦ᵣ dstAddr)
+             (.r3 ↦ᵣ vR3Old) (.r4 ↦ᵣ amount)
+             srcAddr dstAddr
+             tSrc.mint tSrc.owner tDst.mint tDst.owner
+             tSrc.amount tDst.amount tSrc.rest tDst.rest h).symm
+  · -- post iff: flat ↔ wrapped (reshape_post demands OLD ↔ NEW)
+    intro h
+    exact (wrap_iff (.r1 ↦ᵣ srcAddr) (.r2 ↦ᵣ dstAddr)
+             (.r3 ↦ᵣ tDst.amount + amount) (.r4 ↦ᵣ amount)
+             srcAddr dstAddr
+             tSrc.mint tSrc.owner tDst.mint tDst.owner
+             (tSrc.amount - amount) (tDst.amount + amount) tSrc.rest tDst.rest h).symm
 
 end Examples.RefinesTokenTransfer
