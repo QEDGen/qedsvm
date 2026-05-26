@@ -46,6 +46,7 @@ solana-pubkey = { version = "4.2.0", default-features = false }
 solana-instruction = { version = "3.4.0", default-features = false, features = ["std"] }
 solana-account = "4.3.0"
 solana-program-entrypoint = "3.1.1"  # for MAX_PERMITTED_DATA_INCREASE / BPF_ALIGN_OF_U128 / NON_DUP_MARKER
+solana-program-error = "3.0.0"       # for ProgramError + From<u64> decode of Pinocchio-encoded r0
 
 # Differential testing against the agave-backed Mollusk harness.
 # Optional + feature-gated: only built and linked when
@@ -71,6 +72,12 @@ solana-sdk-ids = "3.1.0"
 # programs link to). If our serialized output deserializes back to the
 # same accounts via this crate, we know we match the on-chain format.
 solana-account-info = "3.1.1"
+# Pubkey features for tests: `rand` (new_unique) + `curve25519`
+# (find_program_address). Cargo unifies the dev-dep features into the
+# runtime crate's solana-pubkey too, so the runtime gets bloated
+# slightly when tests are built — acceptable given how often tests
+# build PDAs.
+solana-pubkey = { version = "4.2.0", features = ["rand", "curve25519"] }
 # Precompile instruction builders + sig-gen helpers. Used by the
 # top-level precompile diff-mollusk fixtures; mirror the interface
 # crates mollusk's own tests use.

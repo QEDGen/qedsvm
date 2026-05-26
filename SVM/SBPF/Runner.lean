@@ -371,6 +371,74 @@ def buildAcctSlots (parsed : List ParsedAcct) : List AcctSlot :=
 def parseAccountInfos (mem : Mem) (baseAddr count : Nat) : List ParsedAcct :=
   (List.range count).map (fun i => parseAccountInfo mem (baseAddr + i * 48))
 
+/-- Parse one `CpiAccount` struct at `addr` in `mem`. This is the
+    C-shaped variant `sol_invoke_signed_c` callers (Pinocchio,
+    `solana-instruction-view`) pass instead of `AccountInfo`.
+
+    Layout (`#[repr(C)]` from `solana-instruction-view/src/cpi.rs`):
+    ```
+    +0   address: *const Address    (u64 ptr)
+    +8   lamports: *const u64       (u64 ptr — direct, not Rc-chained)
+    +16  data_len: u64              (inline u64)
+    +24  data: *const u8            (u64 ptr — direct)
+    +32  owner: *const Address      (u64 ptr)
+    +40  rent_epoch: u64            (inline u64)
+    +48  is_signer: u8
+    +49  is_writable: u8
+    +50  executable: u8
+    +51  _padding: u8
+    +52..+56  trailing pad to satisfy struct alignment (largest field
+              is u64, so size rounds up to 56)
+    ```
+
+    Notable differences from `parseAccountInfo`:
+    - 56-byte stride vs. 48-byte stride
+    - lamports / data pointers are direct (no Rc chain to chase
+      through `+24` to reach the real address)
+    - `data_len` is inline at `+16` rather than carried inside the
+      `Rc<RefCell<&mut [u8]>>` length slot
+    - flag bytes sit at `+48..+51` rather than `+40..+43`
+
+    For write-back, the harness needs caller-memory addresses where
+    each mutable field lives:
+    - `lamportsRefAddr` = the value of the `lamports` pointer
+      (CpiAccount stores a direct ptr; the u64 lives at that address
+      in the caller's input buffer).
+    - `dataLenRefAddr` = `addr + 16` (inline slot in the CpiAccount
+      itself). Note: pinocchio's `AccountView` reads `data_len` out
+      of the **input buffer** at `dataPtr - 8`, so the second
+      `writeU64 _ (dataPtr - 8) _` in `execCreateAccount` /
+      `execAllocate` is what the program actually sees post-CPI.
+      The `dataLenRefAddr` write keeps the CpiAccount struct in sync
+      for any code that re-reads it.
+    - `dataPtr` = the value of the `data` pointer (points into the
+      input buffer's data region for that account).
+    - `ownerPtr` = the value of the `owner` pointer (32 bytes at
+      that caller address — the same slot CreateAccount overwrites). -/
+def parseCpiAccount (mem : Mem) (addr : Nat) : ParsedAcct :=
+  let keyPtr          := Memory.readU64 mem addr
+  let lamportsRefAddr := Memory.readU64 mem (addr + 8)
+  let dataLen         := Memory.readU64 mem (addr + 16)
+  let dataPtr         := Memory.readU64 mem (addr + 24)
+  let ownerPtr        := Memory.readU64 mem (addr + 32)
+  let rentEpoch       := Memory.readU64 mem (addr + 40)
+  let isSigner        := (mem (addr + 48)) % 256 ≠ 0
+  let isWritable      := (mem (addr + 49)) % 256 ≠ 0
+  let executable      := (mem (addr + 50)) % 256 ≠ 0
+  let dataLenRefAddr  := addr + 16
+  let lamports        := Memory.readU64 mem lamportsRefAddr
+  let key             := readMemBytes mem keyPtr 32
+  let owner           := readMemBytes mem ownerPtr 32
+  let data            := readMemBytes mem dataPtr dataLen
+  { key, owner, lamports, dataLen, data,
+    isSigner, isWritable, executable, rentEpoch,
+    ownerPtr, lamportsRefAddr, dataPtr, dataLenRefAddr }
+
+/-- Parse `count` consecutive `CpiAccount` structs starting at
+    `baseAddr`. Stride is 56 bytes (vs. 48 for `AccountInfo`). -/
+def parseCpiAccounts (mem : Mem) (baseAddr count : Nat) : List ParsedAcct :=
+  (List.range count).map (fun i => parseCpiAccount mem (baseAddr + i * 56))
+
 /-- Emit a single non-dup account block (88 + dataLen + align_pad +
     MAX_PERMITTED_DATA_INCREASE + 8 bytes). -/
 private def emitNonDupBlock (p : ParsedAcct) : ByteArray :=
@@ -527,8 +595,24 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
   let pid := (List.range 32).foldl
     (fun acc i => acc + (s.mem (pubkeyAddr + i) % 256) * 256^i) 0
   let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
+  -- Account-info struct layout differs between the two CPI ABIs:
+  --   - `sol_invoke_signed` (Rust ABI): 48-byte `AccountInfo` with
+  --     `Rc<RefCell<&mut u64>>` for lamports and
+  --     `Rc<RefCell<&mut [u8]>>` for data. `parseAccountInfo` chases
+  --     the Rc/RefCell chain to reach the underlying bytes.
+  --   - `sol_invoke_signed_c` (C ABI): 56-byte `CpiAccount` with
+  --     direct `*const u64` / `*const u8` pointers and an inline
+  --     `data_len: u64`. Pinocchio + `solana-instruction-view`
+  --     callers use this. `parseCpiAccount` reads it directly.
+  -- Parsing the wrong layout silently produces garbage `lamports`,
+  -- `data`, and `is_signer` values — which is what caused #10
+  -- (Pinocchio's PDA-target `CreateAccount` saw `is_signer=false`
+  -- because the dispatcher read the CpiAccount's flag byte from
+  -- the wrong offset and aborted before promotion).
   let parsedAcctsRaw : List ParsedAcct :=
-    parseAccountInfos s.mem s.regs.r2 accountCount
+    match sc with
+    | .sol_invoke_signed_c => parseCpiAccounts   s.mem s.regs.r2 accountCount
+    | _                    => parseAccountInfos  s.mem s.regs.r2 accountCount
   -- PDA signer-seed promotion: derive PDAs from r4/r5 using the
   -- currently-running program's id (`s.progIdBytes`) and flip
   -- is_signer=true on any parsed account whose key matches.
@@ -737,7 +821,12 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             let pubkeyAddr := Memory.readU64 s.mem s.regs.r1
             let pidBytes := readMemBytes s.mem pubkeyAddr 32
             let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            let parsedAcctsRaw := parseAccountInfos s.mem s.regs.r2 accountCount
+            -- C ABI passes `CpiAccount` structs (56-byte stride, direct
+            -- pointers, inline data_len) instead of `AccountInfo`.
+            -- Must use `parseCpiAccounts`, not `parseAccountInfos`,
+            -- or `is_signer` lands at the wrong offset and the PDA
+            -- promotion below picks up the wrong account (issue #10).
+            let parsedAcctsRaw := parseCpiAccounts s.mem s.regs.r2 accountCount
             let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
             let parsedAccts := promoteSigners parsedAcctsRaw derivedPdas
             -- C ABI SolInstruction: data_addr@+24, data_len@+32.

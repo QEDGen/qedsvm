@@ -87,3 +87,37 @@ in the harness — exercises pinocchio's zero-copy account access
 pattern (raw pointer casts into the serialized input buffer, no
 Borsh) against our memory model. Used as a cross-engine diff input;
 not built in this repo.
+
+## `janus_pyth_price_resolver_devnet.so` (13 KB)
+
+`janus-pyth-price-resolver` (Pinocchio 0.8), pulled from devnet via
+`solana program dump --url devnet 3WDargKHd1UaP9UKPhJY8pF5bv5zJnaFAYDA9uahs5aL`
+at 2026-05-26.
+
+SHA-256: `0b891f14ed0945fc2ace325a974be59f0f0d88e695536df5dc3bfbfdd70f0a16`
+
+Source: <https://github.com/saicharanpogul/janus> (the program the
+issue #2 reporter used). Used by
+`tests/pinocchio_program_error.rs` to confirm Pinocchio's
+`(error_code << 32)` r0 encoding round-trips through
+`ProgramResult::from_bpf_r0` into the typed `ProgramError` variant
+that matches mollusk's `Failure(InstructionError::ProgramError(_))`
+surface.
+
+## `janus_slot_height_resolver_devnet.so` (12 KB)
+
+`janus-slot-height-resolver` (Pinocchio 0.8), pulled from devnet via
+`solana program dump --url devnet 3y75gGqFK1KhNF5k1sMy6ydnw6WLcbn1SPRoYbyRkjMj`
+at 2026-05-26.
+
+SHA-256: `cf989fab1e8c4712723831766ddeb28a1162f55a4a43050dfb7c88258fb989db`
+
+Source: <https://github.com/saicharanpogul/janus> (sibling program
+to the pyth-price-resolver fixture above; same reporter). Used by
+`diff_mollusk.rs`'s
+`janus_slot_height_resolver_initialize_matches_mollusk` to confirm
+`sol_invoke_signed_c` + PDA-target `CreateAccount` CPI works
+end-to-end. The synthetic `system_create_account_cpi_matches_mollusk`
+covers the simpler Rust-ABI / hard-signer case; this fixture
+specifically exercises the C-ABI `CpiAccount` parsing path that
+issue #10 was about.
