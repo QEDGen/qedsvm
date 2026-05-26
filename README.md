@@ -65,6 +65,31 @@ Types pin to agave master (`solana-pubkey`, `solana-instruction`, `solana-accoun
 cargo test --manifest-path qedsvm-rs/Cargo.toml --features diff-mollusk
 ```
 
+#### Consuming qedsvm from a downstream crate
+
+Cargo doesn't propagate `cargo:rustc-link-arg` directives from a dependency's `build.rs` to dependent crates' link commands, so a downstream crate depending on `qedsvm` link-fails on the ~80 Lean dylibs and the forced-load `lean_*` crypto bridge symbols unless it re-emits them itself. The `qedsvm-buildscript` helper crate handles all of that in one call:
+
+```toml
+# Your Cargo.toml
+[dependencies]
+qedsvm = { path = "../qedsvm/qedsvm-rs", features = ["diff-mollusk"] }
+
+[build-dependencies]
+qedsvm-buildscript = { path = "../qedsvm/qedsvm-rs/qedsvm-buildscript" }
+```
+
+```rust
+// Your build.rs
+fn main() {
+    let qedsvm_root = std::env::var("QEDSVM_ROOT")
+        .unwrap_or_else(|_| "../qedsvm".to_string());
+    qedsvm_buildscript::emit_link_args(std::path::Path::new(&qedsvm_root))
+        .expect("emit qedsvm link args");
+}
+```
+
+Run `lake build` in the qedsvm checkout first so the helper has a populated `.lake/build/`.
+
 ## Coverage
 
 | Layer | Status |

@@ -1,5 +1,5 @@
 [workspace]
-members = ["lean-bridge"]
+members = ["lean-bridge", "qedsvm-buildscript"]
 # Test fixtures contain many `*_src/Cargo.toml` sub-crates built by
 # cargo-build-sbf; they are not part of this workspace.
 exclude = ["tests/fixtures"]
@@ -101,3 +101,4 @@ required-features = ["diff-mollusk"]
 
 [build-dependencies]
 cc = "1"
+qedsvm-buildscript = { path = "qedsvm-buildscript" }
