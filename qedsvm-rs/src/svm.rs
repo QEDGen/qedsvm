@@ -11,14 +11,11 @@
 //!   read). Programs that invoke other programs will get `r0 = 1`
 //!   from the CPI call. The `add_program` map is wired but unused
 //!   until the Lean side gets a `Pubkey → ByteArray` registry.
-//! - Mapping to Mollusk's `ProgramError` enum: we use a coarser
-//!   `ProgramResult::{Success, Failure { exit_code }, OutOfBudget}`
-//!   that doesn't require dragging in `solana-program-error`.
-
 use std::collections::HashMap;
 
 use solana_account::AccountSharedData;
 use solana_instruction::Instruction;
+use solana_program_error::ProgramError;
 use solana_pubkey::Pubkey;
 
 use crate::deserialize::{deserialize_account_writes, DeserializeError};
@@ -34,13 +31,122 @@ pub const DEFAULT_CU_BUDGET: u64 = 200_000;
 pub enum ProgramResult {
     /// Program halted with `exit r0 = 0`.
     Success,
-    /// Program halted with non-zero r0, or with one of the runtime
-    /// error sentinels in `SVM.SBPF.Execute.ERR_*` (invalid PC, abort,
-    /// divide-by-zero). `exit_code` is r0 — interpret per the BPF
-    /// program's contract.
+    /// Program halted with non-zero r0 that didn't carry a
+    /// Pinocchio-encoded `ProgramError` (raw r0 in the low 32 bits,
+    /// upper 32 bits zero). Covers hand-rolled exit codes
+    /// (e.g. `exit 42` from a smoke program), the runtime error
+    /// sentinels in `SVM.SBPF.Execute.ERR_*` (invalid PC, abort,
+    /// divide-by-zero), and our internal post-state-invalid sentinel
+    /// (`ERR_INVALID_POSTSTATE`).
     Failure { exit_code: u64 },
+    /// Program returned an `Err(ProgramError)` from a
+    /// `solana-program-entrypoint`-compatible handler (Pinocchio,
+    /// `solana-program`, etc.). The handler's
+    /// `Err(...)?` packs the error as `(code as u64) << 32`, which we
+    /// decode back into the typed variant here. Mirrors mollusk's
+    /// `Failure(InstructionError::ProgramError(_))` so cross-engine
+    /// diff tests can compare the variant directly.
+    ProgramError(ProgramError),
     /// The CU budget was exhausted before the program halted.
     OutOfBudget,
+}
+
+impl ProgramResult {
+    /// Build a `ProgramResult` from the BPF interpreter's r0 value.
+    /// Decodes Pinocchio-/agave-encoded `ProgramError`s when the
+    /// upper 32 bits are non-zero (the documented "builtin return
+    /// values occupy the upper 32 bits" convention from
+    /// `solana-program-error`). Raw r0 values fall through to
+    /// `Failure { exit_code }` unchanged so existing exit-code
+    /// matchers keep working.
+    pub(crate) fn from_bpf_r0(r0: u64) -> Self {
+        if r0 == 0 {
+            return Self::Success;
+        }
+        if (r0 >> 32) != 0 {
+            // `From<u64> for ProgramError` is a total function:
+            // unknown high bits fall into `Custom(low as u32)`, which
+            // matches what mollusk surfaces for an unrecognized
+            // builtin code.
+            return Self::ProgramError(ProgramError::from(r0));
+        }
+        Self::Failure { exit_code: r0 }
+    }
+}
+
+#[cfg(test)]
+mod from_bpf_r0_tests {
+    use super::*;
+
+    #[test]
+    fn r0_zero_is_success() {
+        assert_eq!(ProgramResult::from_bpf_r0(0), ProgramResult::Success);
+    }
+
+    #[test]
+    fn small_raw_exit_code_preserved() {
+        // hello.elf returns r0=42; CU-budget exhaustion sentinels also
+        // sit in the low half. These must NOT be decoded as ProgramError
+        // — every existing exit-code matcher in the test suite would
+        // break otherwise.
+        assert_eq!(
+            ProgramResult::from_bpf_r0(42),
+            ProgramResult::Failure { exit_code: 42 },
+        );
+        assert_eq!(
+            ProgramResult::from_bpf_r0(1),
+            ProgramResult::Failure { exit_code: 1 },
+        );
+    }
+
+    #[test]
+    fn pinocchio_invalid_account_data_decodes() {
+        // The reporter's exact wire value (issue #9): pyth_resolver
+        // returned `Err(ProgramError::InvalidAccountData)` from its
+        // Pinocchio handler, which the entrypoint encodes as
+        // (4 << 32) = 17_179_869_184.
+        assert_eq!(
+            ProgramResult::from_bpf_r0(17_179_869_184),
+            ProgramResult::ProgramError(ProgramError::InvalidAccountData),
+        );
+    }
+
+    #[test]
+    fn pinocchio_custom_error_decodes() {
+        // `Err(ProgramError::Custom(7))` packs as `(1 << 32) | 7`
+        // (CUSTOM_ZERO marker | low-half error code).
+        let packed = (1u64 << 32) | 7;
+        assert_eq!(
+            ProgramResult::from_bpf_r0(packed),
+            ProgramResult::ProgramError(ProgramError::Custom(7)),
+        );
+    }
+
+    #[test]
+    fn pinocchio_custom_zero_decodes() {
+        // `Err(ProgramError::Custom(0))` is the one case that uses
+        // CUSTOM_ZERO with no low-half code; ensure it round-trips.
+        assert_eq!(
+            ProgramResult::from_bpf_r0(1u64 << 32),
+            ProgramResult::ProgramError(ProgramError::Custom(0)),
+        );
+    }
+
+    #[test]
+    fn err_invalid_poststate_sentinel_is_explicit_not_decoded() {
+        // ERR_INVALID_POSTSTATE is a qedsvm-side sentinel synthesized
+        // by `validate_post_state` AFTER a Success outcome — it never
+        // arrives via `from_bpf_r0` in the normal path. But if anyone
+        // ever did pass it through this function, the high u32
+        // (0xFFFFFFFF) lies outside the builtin range, so the
+        // `From<u64>` catch-all decodes it to `Custom(0xFFFFFFFB)`.
+        // We document the behavior here so it's not surprising.
+        let r = ProgramResult::from_bpf_r0(ERR_INVALID_POSTSTATE);
+        assert_eq!(
+            r,
+            ProgramResult::ProgramError(ProgramError::Custom(0xFFFFFFFB)),
+        );
+    }
 }
 
 /// Mirrors the shape of `mollusk_svm::result::InstructionResult`.
@@ -223,11 +329,7 @@ impl Svm {
             let pid_bytes = instruction.program_id.to_bytes();
             let (r0, cu) = crate::run_precompile(&pid_bytes, &instruction.data)
                 .map_err(SvmError::InternalWireFormat)?;
-            let program_result = if r0 == 0 {
-                ProgramResult::Success
-            } else {
-                ProgramResult::Failure { exit_code: r0 }
-            };
+            let program_result = ProgramResult::from_bpf_r0(r0);
             return Ok(InstructionResult {
                 program_result,
                 compute_units_consumed: cu,
@@ -297,8 +399,7 @@ impl Svm {
 
         let program_result = match raw.outcome {
             ExitOutcome::OutOfBudget => ProgramResult::OutOfBudget,
-            ExitOutcome::Halted(0) => ProgramResult::Success,
-            ExitOutcome::Halted(n) => ProgramResult::Failure { exit_code: n },
+            ExitOutcome::Halted(n) => ProgramResult::from_bpf_r0(n),
         };
 
         let resulting_accounts = if accounts.is_empty() && instruction.accounts.is_empty() {
