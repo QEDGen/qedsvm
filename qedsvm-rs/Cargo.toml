@@ -53,6 +53,16 @@ solana-program-error = "3.0.0"       # for ProgramError + From<u64> decode of Pi
 # `cargo test --features diff-mollusk` is invoked. Otherwise zero
 # cost to the default build.
 mollusk-svm = { version = "0.12.1-agave-4.0", optional = true, features = ["register-tracing", "all-builtins"] }
+# Mollusk's internal account type is `solana-account 3.x` (not 4.x).
+# Aliased here so `src/diff.rs` can offer a converter between the two
+# without callers having to set up the alias themselves. Optional +
+# feature-gated alongside `mollusk-svm`.
+mollusk-account = { package = "solana-account", version = "3.4.0", optional = true }
+# Same alias trick for solana-pubkey: mollusk-account's `owner` field
+# is `solana_pubkey::Pubkey` from the 3.x crate, not 4.x. Needed by
+# `shared_to_mollusk_account` to construct the field when converting
+# qedsvm → mollusk fixtures.
+mollusk-pubkey = { package = "solana-pubkey", version = "3.0", optional = true, default-features = false }
 # Precompile + bpf-loader pubkey constants. Used by `is_precompile`
 # in svm.rs (top-level dispatch) and by diff_mollusk.rs.
 solana-sdk-ids = "3.1.0"
@@ -78,13 +88,9 @@ ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 libsecp256k1 = "0.7.2"
 openssl = "0.10"
 rand = "0.8"
-# Mollusk uses solana-account 3.x internally; expose it under an alias
-# so cross-engine tests can construct the version mollusk expects
-# without touching the runtime crate's 4.x dependency.
-mollusk-account = { package = "solana-account", version = "3.4.0" }
 
 [features]
-diff-mollusk = ["dep:mollusk-svm"]
+diff-mollusk = ["dep:mollusk-svm", "dep:mollusk-account", "dep:mollusk-pubkey"]
 
 # Side-by-side demo: runs incrementer + p-token Transfer through both
 # `qedsvm::Svm` and `mollusk_svm::Mollusk`, prints a comparison table.
