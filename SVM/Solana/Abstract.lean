@@ -11,3 +11,4 @@ import SVM.Solana.Abstract.Triples
 import SVM.Solana.Abstract.Refinement
 import SVM.Solana.Abstract.Domain
 import SVM.Solana.Abstract.Footprint
+import SVM.Solana.Abstract.Abi
