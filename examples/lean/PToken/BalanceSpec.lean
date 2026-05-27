@@ -209,6 +209,47 @@ theorem p_token_transfer_balance_spec_minimal
     { mint := mintDst, owner := ownerDst, amount := preB, rest := restDst }
     h_funds h_noOverflow h_srcBal h_dstBal
 
+/-! ## Wrapped synthetic anchor — the user-facing shape
+
+Companion to `p_token_transfer_balance_spec_minimal` that states pre/
+post via `tokenAcctBalance` (the wrapper SL atom) instead of the flat
+4-atoms-per-account form. Discharges through
+`Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal`, which
+in turn lifts the flat triple via three `sepConj_assoc` applications
+inside the wrap iff.
+
+This is the synthetic counterpart to the deferred pinocchio-side
+wrap. Demonstrates that the lift mechanism works end-to-end on an
+asm anchor, ahead of the more involved pinocchio reshape work. -/
+
+theorem p_token_transfer_balance_spec_minimal_wrapped
+    (srcAddr dstAddr amount preA preB vR3Old : Nat)
+    (mintSrc mintDst ownerSrc ownerDst : Pubkey)
+    (restSrc restDst : ByteArray)
+    (h_funds      : amount ≤ preA)
+    (h_noOverflow : preB + amount < 2 ^ 64)
+    (h_srcBal     : preA < 2 ^ 64)
+    (h_dstBal     : preB < 2 ^ 64) :
+    cuTripleWithinMem 6 0 0 6 Examples.MinimalTransferAsm.minimalTransferCr
+      ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
+       (.r3 ↦ᵣ vR3Old) ** (.r4 ↦ᵣ amount) **
+       tokenAcctBalance srcAddr mintSrc ownerSrc preA restSrc **
+       tokenAcctBalance dstAddr mintDst ownerDst preB restDst)
+      ((.r1 ↦ᵣ srcAddr) ** (.r2 ↦ᵣ dstAddr) **
+       (.r3 ↦ᵣ preB + amount) ** (.r4 ↦ᵣ amount) **
+       tokenAcctBalance srcAddr mintSrc ownerSrc (preA - amount) restSrc **
+       tokenAcctBalance dstAddr mintDst ownerDst (preB + amount) restDst)
+      (fun rt =>
+        ((rt.containsRange (srcAddr + AMOUNT_OFF) 8 = true ∧
+            rt.containsWritable (srcAddr + AMOUNT_OFF) 8 = true) ∧
+          rt.containsRange (dstAddr + AMOUNT_OFF) 8 = true) ∧
+        rt.containsWritable (dstAddr + AMOUNT_OFF) 8 = true) :=
+  Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal
+    srcAddr dstAddr amount vR3Old
+    { mint := mintSrc, owner := ownerSrc, amount := preA, rest := restSrc }
+    { mint := mintDst, owner := ownerDst, amount := preB, rest := restDst }
+    h_funds h_noOverflow h_srcBal h_dstBal
+
 /-! ## Real-pinocchio version — proven via the FullHappyPath chain.
 
 This is the second proven instance of the balance-shifting shape, this time
