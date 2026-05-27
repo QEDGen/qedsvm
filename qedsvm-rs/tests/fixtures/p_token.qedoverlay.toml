@@ -1,0 +1,24 @@
+# qedsvm overlay for pinocchio p_token.
+#
+# Layered on top of the canonical SPL Token Codama IDL (which carries
+# discriminator + account layout + arg types). This file only names
+# the qedsvm-specific bits that no IDL describes:
+#   * which MIR intrinsic each instruction refines
+#   * the CU budget we claim to verify against
+#
+# Production form (when qedgen ships) is whatever qedgen prefers
+# emitting; the only contract is "supply the same fields keyed by
+# instruction name."
+
+schema_version = 1
+
+# Path to the program's Codama IDL, relative to this file.
+idl = "spl_token.codama.json"
+
+# One [[instruction]] block per instruction we claim qedsvm semantics
+# for. Instructions absent from this list aren't part of the qedsvm
+# verification scope (yet); qedrecover skips them.
+[[instruction]]
+name      = "transfer"
+refines   = "Mir.tokenTransfer"
+cu_budget = 76
