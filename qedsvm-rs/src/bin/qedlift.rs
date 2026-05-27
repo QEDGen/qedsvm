@@ -544,7 +544,7 @@ fn w_short(w: Width) -> &'static str {
 /// closing the proof — `sl_block_auto` doesn't currently collapse
 /// these on its own.
 #[derive(Clone, Debug)]
-enum BranchKind { JeqImm, JneImm }
+enum BranchKind { JeqImm, JneImm, JgtImm }
 
 #[derive(Clone, Debug)]
 struct BranchHyp {
@@ -567,6 +567,11 @@ impl BranchHyp {
             (BranchKind::JeqImm, true)  => format!("{} = toU64 {}", v, self.imm),
             (BranchKind::JneImm, false) => format!("{} = toU64 {}", v, self.imm),
             (BranchKind::JneImm, true)  => format!("{} ≠ toU64 {}", v, self.imm),
+            // `jgt` is unsigned >. Taken => vDst > toU64 imm; not-taken
+            // is the strict negation (¬ >). The Lean helper accepts
+            // exactly these via if_pos/if_neg.
+            (BranchKind::JgtImm, false) => format!("¬ {} > toU64 {}", v, self.imm),
+            (BranchKind::JgtImm, true)  => format!("{} > toU64 {}", v, self.imm),
         }
     }
     fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
@@ -794,6 +799,20 @@ fn spec_call_for(
                 hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
             )
         }
+        JGT64_IMM | JGT32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jgt_imm_taken_spec"
+            } else {
+                "jgt_imm_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
         JA => {
             let target = (pc as i64) + 1 + off;
             format!("have {} := ja_spec {} {}", hyp_name, target, pc)
@@ -901,6 +920,14 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneImm, dst_value: r, imm,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JGT64_IMM | JGT32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JgtImm, dst_value: r, imm,
                 taken: branch_taken.unwrap_or(false),
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
@@ -1288,7 +1315,8 @@ fn lift_one(
             let branch_hyp = format!("h_branch{}", branch_idx);
             let is_cond_jump = matches!(ins.opc,
                 ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
-                ebpf::JNE64_IMM | ebpf::JNE32_IMM);
+                ebpf::JNE64_IMM | ebpf::JNE32_IMM |
+                ebpf::JGT64_IMM | ebpf::JGT32_IMM);
             let branch_hyp_for_call = if is_cond_jump {
                 Some(branch_hyp.as_str())
             } else { None };
@@ -1301,6 +1329,16 @@ fn lift_one(
                 }
                 (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => {
                     Some(ins.imm != td)
+                }
+                // JGT-on-discriminator: with `--target-disc td`, the
+                // taken branch fires when the discriminator (the
+                // imm being compared) is strictly less than td. This
+                // matches `jgt dst, imm, target` semantics: "jump if
+                // r3 > imm". For dispatcher cascades that use the
+                // pattern `if (disc > N) goto upper_half`, td <= imm
+                // means we take the upper branch.
+                (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) => {
+                    Some(td > ins.imm)
                 }
                 _ if is_cond_jump => Some(false), // default: not-taken
                 _ => None,
@@ -1317,7 +1355,8 @@ fn lift_one(
                     pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
                 }
                 ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
-                ebpf::JNE64_IMM | ebpf::JNE32_IMM
+                ebpf::JNE64_IMM | ebpf::JNE32_IMM |
+                ebpf::JGT64_IMM | ebpf::JGT32_IMM
                     if branch_taken == Some(true) => {
                     // Take the branch: pc = pc + 1 + off
                     pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
