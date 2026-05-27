@@ -18,6 +18,9 @@ import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
 
+set_option maxRecDepth 65536
+set_option maxHeartbeats 4000000
+
 namespace Examples.Lifted.CounterLifted
 
 open SVM.SBPF
@@ -55,20 +58,20 @@ decoded insns left-to-right. Closed by `sl_block_auto`. -/
 
 open Memory in
 theorem CounterLifted_lifted_spec
-    (baseAddr oldMemD_off0 vR2Old vR0Old : Nat)
-    (holdMemD_off0_lt : oldMemD_off0 < 2 ^ 64)
+    (baseAddr oldMemD_0 vR2Old vR0Old : Nat)
+    (holdMemD_0_lt : oldMemD_0 < 2 ^ 64)
     : cuTripleWithinMem 4 0 0 4
       (((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 0)).union
         (CodeReq.singleton 1 (.add64 .r2 (.imm 1)))).union
         (CodeReq.singleton 2 (.stx .dword .r1 0 .r2))).union
         (CodeReq.singleton 3 (.mov64 .r0 (.imm 0)))))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 0 ↦U64 oldMemD_off0) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
       (.r2 ↦ᵣ vR2Old) **
       (.r0 ↦ᵣ vR0Old))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 0 ↦U64 wrapAdd oldMemD_off0 (toU64 1)) **
-      (.r2 ↦ᵣ wrapAdd oldMemD_off0 (toU64 1)) **
+      (effectiveAddr baseAddr 0 ↦U64 wrapAdd oldMemD_0 (toU64 1)) **
+      (.r2 ↦ᵣ wrapAdd oldMemD_0 (toU64 1)) **
       (.r0 ↦ᵣ toU64 0))
       (fun rt => (rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 0) 8 = true) := by

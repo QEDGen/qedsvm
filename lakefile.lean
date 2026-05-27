@@ -90,6 +90,7 @@ lean_lib Examples where
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     `Generated.ByteIncrementLifted,
     `Generated.CounterLifted,
-    `Generated.GuardedCounterLifted
+    `Generated.GuardedCounterLifted,
+    `Generated.CounterWithHelperLifted
   ]
   precompileModules := true

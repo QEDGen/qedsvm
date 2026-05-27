@@ -326,6 +326,37 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
         mkAppM ``Eq #[v, u64])
   | ``SVM.SBPF.Insn.ja =>
     jaSpec pcLit args[0]!
+  -- call_local: take the target PC literal directly, then build
+  -- `call_local_spec`. The five r6..r10 values + call stack get
+  -- their own mvars; slBlockIter unifies them with whatever's in
+  -- the chain's state at this point.
+  | ``SVM.SBPF.Insn.call_local =>
+    let target := args[0]!
+    let cs ← mkFreshExprMVar (← mkAppM ``List #[Lean.Expr.const ``SVM.SBPF.CallFrame []])
+    let r6V ← mkNatMVar
+    let r7V ← mkNatMVar
+    let r8V ← mkNatMVar
+    let r9V ← mkNatMVar
+    let r10V ← mkNatMVar
+    let app ← mkAppM ``SVM.SBPF.call_local_spec
+      #[target, cs, r6V, r7V, r8V, r9V, r10V, pcLit]
+    return { app, sideGoals := [] }
+  -- exit: dispatch to `exit_pops_spec` (the nested-return case).
+  -- The frame and remaining-stack are mvars unified by slBlockIter
+  -- against the call_local that pushed the frame. Top-level exit
+  -- (which terminates the program) is NOT in this chain — the
+  -- qedlift walker stops before reaching it.
+  | ``SVM.SBPF.Insn.exit =>
+    let frame ← mkFreshExprMVar (Lean.Expr.const ``SVM.SBPF.CallFrame [])
+    let cs ← mkFreshExprMVar (← mkAppM ``List #[Lean.Expr.const ``SVM.SBPF.CallFrame []])
+    let r6V ← mkNatMVar
+    let r7V ← mkNatMVar
+    let r8V ← mkNatMVar
+    let r9V ← mkNatMVar
+    let r10V ← mkNatMVar
+    let app ← mkAppM ``SVM.SBPF.exit_pops_spec
+      #[frame, cs, r6V, r7V, r8V, r9V, r10V, pcLit]
+    return { app, sideGoals := [] }
   | _ =>
     throwError m!"SpecGen.mkSpec: unsupported Insn ctor {ctor}; add a dispatch case in SVM/SBPF/SpecGen.lean"
 
