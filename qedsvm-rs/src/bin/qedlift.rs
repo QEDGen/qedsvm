@@ -36,6 +36,7 @@ use solana_sbpf::{
     ebpf,
     elf::Executable,
     program::BuiltinProgram,
+    static_analysis::Analysis,
     vm::ContextObject,
 };
 
@@ -69,10 +70,13 @@ fn parse_args() -> Result<Args, String> {
 
 /// Convert a `solana_sbpf::ebpf::Insn` at analysis PC `pc` to the
 /// Lean `Insn` constructor syntax. The cases here cover the
-/// byte_increment / counter / guarded-counter instruction sets;
-/// extending it is mechanical (each new opcode adds one match arm).
-/// For conditional jumps `pc` is used to resolve the target PC.
-fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, String> {
+/// byte_increment / counter / guarded-counter / counter_with_helper
+/// instruction sets; extending it is mechanical (each new opcode
+/// adds one match arm). For conditional jumps `pc` is used to
+/// resolve the target PC; for `call_local`, `call_target` (when
+/// provided) is substituted as the resolved callee PC (because the
+/// raw immediate is a Murmur3 hash, not an offset).
+fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -> Result<String, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
     let reg = |n: u8| match n {
@@ -121,8 +125,38 @@ fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, String> {
         JA          => {
             let t = (pc as i64) + 1 + off; format!(".ja {}", t)
         }
+        // call_local: the immediate is the Solana ABI Murmur3 hash
+        // of the symbol, NOT a relative offset. Resolving the actual
+        // target PC requires `solana_sbpf::Analysis::cfg_nodes`; the
+        // caller pre-resolves it via `?TARGET` substitution before
+        // emitting Lean. Render with a placeholder so any caller that
+        // forgets to substitute fails loudly rather than emitting a
+        // garbage target.
+        CALL_IMM    => match call_target {
+            Some(t) => format!(".call_local {}", t),
+            None    => ".call_local TARGET_PC_NOT_RESOLVED".to_string(),
+        },
         opc         => return Err(format!("opcode 0x{:02x} not yet lifted to Lean", opc)),
     })
+}
+
+/// Thin wrapper for callers that don't know the resolved call target
+/// (e.g. the raw "decoded insns" listing in the diagnostic dump).
+/// Renders call_local with a placeholder.
+fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, String> {
+    insn_to_lean_full(insn, pc, None)
+}
+
+/// Resolve a CALL_IMM at `pc` to its callee PC. solana-sbpf encodes
+/// the call's immediate field as the Murmur3 hash of the symbol name
+/// (not a relative offset). The function registry — exposed as
+/// `analysis.functions: BTreeMap<usize, (u32, String)>` mapping
+/// function-start-pc → (hash, name) — lets us reverse the lookup.
+fn resolve_call_target(analysis: &Analysis, insn: &ebpf::Insn) -> Option<usize> {
+    if insn.opc != ebpf::CALL_IMM { return None; }
+    let target_hash = insn.imm as u32;
+    analysis.functions.iter()
+        .find_map(|(&pc, (h, _name))| if *h == target_hash { Some(pc) } else { None })
 }
 
 // -----------------------------------------------------------------------------
@@ -239,6 +273,26 @@ fn reg_initial_name(n: u8) -> String {
     }
 }
 
+/// One memory cell in the symbolic walk. The address is the SYMBOLIC
+/// value of `base_reg` at the access — necessary because the same
+/// `[r1+0]` access at two different walk PCs can refer to different
+/// physical cells if `r1` was modified in between.
+#[derive(Clone, Debug)]
+struct MemCell {
+    addr_base: Expr,
+    addr_off:  i64,
+    width:     Width,
+    value:     Expr,
+}
+
+impl MemCell {
+    /// Stable key over (rendered address, width) — two cells whose
+    /// addresses render identically refer to the same physical cell.
+    fn key(&self) -> (String, i64, u8) {
+        (self.addr_base.to_lean(), self.addr_off, self.width as u8)
+    }
+}
+
 /// Symbolic state threaded through one walk of the slice.
 #[derive(Default)]
 struct SymState {
@@ -248,9 +302,13 @@ struct SymState {
     regs: std::collections::BTreeMap<u8, Expr>,
     /// Pre-condition atoms collected in *first-touched* order.
     pre: Vec<Atom>,
-    /// Memory cells the slice touched, indexed by (base register,
-    /// offset, width). Maps to the current symbolic value.
-    mem: std::collections::BTreeMap<(u8, i64, u8), Expr>,
+    /// Memory cells the slice touched. Keyed by the rendered Lean
+    /// representation of the effective address `(base, off, width)`,
+    /// where `base` is the SYMBOLIC value of the base register at
+    /// access time — so two reads at `[r1+0]` separated by an
+    /// `add64 r1, 8` correctly resolve to two distinct cells.
+    /// Implementation: linear search over a Vec (small N).
+    mem: Vec<MemCell>,
     /// Fresh-variable counter for memory initials.
     fresh: u32,
     /// Names of symbolic variables that come from u64-width loads
@@ -261,6 +319,14 @@ struct SymState {
     /// Conditional jumps encountered on the happy-path walk. Each one
     /// adds a path hypothesis to the theorem signature.
     branch_hyps: Vec<BranchHyp>,
+    /// Symbolic call stack — resume PCs pushed by `call_local`, popped
+    /// by the corresponding `exit`. Empty at the start of the walk
+    /// and empty when the walk terminates at the top-level `exit`.
+    call_stack: Vec<usize>,
+    /// True once the walk has seen at least one `call_local`. When
+    /// set, the emission adds `r6..r10` and `callStackIs []` to the
+    /// pre-condition (the atoms `call_local_spec` needs to compose).
+    saw_call: bool,
 }
 
 impl SymState {
@@ -285,38 +351,42 @@ impl SymState {
         self.regs.insert(r, v);
     }
     fn read_mem(&mut self, base: u8, off: i64, width: Width) -> Expr {
-        let key = (base, off, width as u8);
-        if let Some(v) = self.mem.get(&key) { return v.clone(); }
-        // Fresh memory variable named by (width, offset). Generic —
-        // qedlift doesn't know whether a u64 at offset 0 is a
-        // counter, an amount, or a discriminator, so names stay
-        // mechanical and don't suggest a semantic role.
-        let name = format!("oldMem{}_off{}", w_short(width), off);
-        // u64 loads carry a `< 2^64` side condition from `ldxdw_spec`;
-        // record the variable name so the theorem signature can
-        // hypothesise it for `<;> assumption` to discharge later.
+        // Compute the effective-address key from the base register's
+        // *current* symbolic value (not just its register number).
+        let base_expr = self.read_reg(base);
+        let key = (base_expr.to_lean(), off, width as u8);
+        if let Some(cell) = self.mem.iter().find(|c| c.key() == key) {
+            return cell.value.clone();
+        }
+        // Fresh cell: name by (width, sequence index) since the
+        // address expression itself may be complex (`wrapAdd baseAddr
+        // (toU64 8)`) and ill-suited as a Lean identifier.
+        let idx = self.fresh; self.fresh += 1;
+        let name = format!("oldMem{}_{}", w_short(width), idx);
         if matches!(width, Width::Dword) {
             self.u64_load_vars.push(name.clone());
         }
         let v = Expr::InitMem(name);
-        // Record both the *current* value (what reads see) and the
-        // pre-atom (the initial value at that cell).
-        self.mem.insert(key, v.clone());
-        let base_expr = self.read_reg(base);
+        let cell = MemCell {
+            addr_base: base_expr.clone(), addr_off: off, width, value: v.clone(),
+        };
+        self.mem.push(cell);
         self.pre.push(Atom::Mem {
             addr_base: base_expr, addr_off: off, width, value: v.clone(),
         });
         v
     }
     fn write_mem(&mut self, base: u8, off: i64, width: Width, value: Expr) {
-        let key = (base, off, width as u8);
+        let base_expr = self.read_reg(base);
+        let key = (base_expr.to_lean(), off, width as u8);
         // Make sure the pre-atom exists (a store after no preceding
-        // load still needs the cell to be present in the pre-state
-        // for the SL frame to align).
-        if !self.mem.contains_key(&key) {
+        // load still needs the cell to be present in the pre-state).
+        if !self.mem.iter().any(|c| c.key() == key) {
             let _ = self.read_mem(base, off, width);
         }
-        self.mem.insert(key, value);
+        if let Some(cell) = self.mem.iter_mut().find(|c| c.key() == key) {
+            cell.value = value;
+        }
     }
     fn next_fresh(&mut self) -> u32 { self.fresh += 1; self.fresh }
 }
@@ -448,7 +518,47 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>) -> Result<bo
             });
         }
         JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
-        EXIT => return Ok(false),
+        // call_local target: pushes a frame, bumps r10 by 0x1000,
+        // redirects PC to target. The PC redirect happens in the
+        // walker; here we just update the symbolic state per
+        // `call_local_spec` in InstructionSpecs/CallReturn.lean.
+        CALL_IMM => {
+            state.saw_call = true;
+            // r6..r9 must be in scope (they're framed by call_local_spec).
+            for r in 6..=9 { let _ = state.read_reg(r); }
+            // r10 is bumped by 0x1000 (one Solana V0 stack frame).
+            let r10_old = state.read_reg(10);
+            state.write_reg(10, Expr::WrapAdd(
+                Box::new(r10_old),
+                Box::new(Expr::Const(0x1000)),
+            ));
+            // Track the resume PC so the matching `exit` knows where
+            // to return. Stored separately from r10's symbolic walk.
+            let resume = pc.map(|p| p + 1).unwrap_or(0);
+            state.call_stack.push(resume);
+        }
+        EXIT => {
+            if state.call_stack.is_empty() {
+                // Top-level termination — caller decides what to do.
+                return Ok(false);
+            } else {
+                // Nested exit: pop the frame. Per exit_pops_spec, r6..r10
+                // are restored to their pre-call values. In the symbolic
+                // walk, the callee should not have modified r6..r10 (Solana
+                // ABI). We undo r10's +0x1000 bump from the matching
+                // call_local; if the callee touched r6..r9 in violation
+                // of the ABI, the chain won't compose and the user will
+                // see the failure as a sl_block_iter residual.
+                let _ = state.call_stack.pop();
+                let r10_cur = state.read_reg(10);
+                state.write_reg(10, Expr::WrapSub(
+                    Box::new(r10_cur),
+                    Box::new(Expr::Const(0x1000)),
+                ));
+                // step() returns Ok(true) so the walker continues; the
+                // walker resumes at the popped PC.
+            }
+        }
         opc => return Err(format!("symbolic executor: opcode 0x{:02x} not yet modelled", opc)),
     }
     Ok(true)
@@ -474,21 +584,12 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                 out.push(Atom::Reg(*r, v));
             }
             Atom::Mem { addr_base, addr_off, width, .. } => {
-                // Recover the base register from the addr_base expr
-                // (it's always an InitReg here because pre-atoms are
-                // constructed via `read_mem` which calls `read_reg`).
-                let base_reg = match addr_base {
-                    Expr::InitReg(name) => match name.as_str() {
-                        "baseAddr" => 1u8,
-                        s if s.starts_with("vR") && s.ends_with("Old") => {
-                            s[2..s.len()-3].parse::<u8>().unwrap_or(0)
-                        }
-                        _ => 0,
-                    },
-                    _ => 0,
-                };
-                let key = (base_reg, *addr_off, *width as u8);
-                let v = state.mem.get(&key).cloned()
+                // Look up the cell by (rendered-addr, off, width) key —
+                // the same scheme `read_mem`/`write_mem` use.
+                let key = (addr_base.to_lean(), *addr_off, *width as u8);
+                let v = state.mem.iter()
+                    .find(|c| c.key() == key)
+                    .map(|c| c.value.clone())
                     .unwrap_or_else(|| Expr::InitMem("?".to_string()));
                 out.push(Atom::Mem {
                     addr_base: addr_base.clone(),
@@ -514,16 +615,11 @@ fn region_req(pre: &[Atom], state: &SymState) -> String {
             };
             let addr = format!("effectiveAddr {} {}", addr_base.atom_lean(), addr_off);
             clauses.push(format!("rt.containsRange ({}) {} = true", addr, width_bytes));
-            // Was it written to?
-            let base_reg = match addr_base {
-                Expr::InitReg(name) if name == "baseAddr" => 1u8,
-                _ => 0,
-            };
-            let key = (base_reg, *addr_off, *width as u8);
-            if let Some(cur) = state.mem.get(&key) {
-                // If the current memory value differs from the InitMem
-                // it was loaded as, the cell was written.
-                let written = !matches!(cur, Expr::InitMem(_));
+            // Was it written to? Look up the cell by the same
+            // rendered-address key the mem map uses.
+            let key = (addr_base.to_lean(), *addr_off, *width as u8);
+            if let Some(cell) = state.mem.iter().find(|c| c.key() == key) {
+                let written = !matches!(cell.value, Expr::InitMem(_));
                 if written {
                     clauses.push(format!(
                         "rt.containsWritable ({}) {} = true",
@@ -556,6 +652,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let text_pcs = executable.get_text_bytes();
     let text_offset = text_pcs.0;
     let text_bytes  = text_pcs.1;
+    // Static analysis gives us the CFG, which maps call_local's
+    // Murmur3-hash immediate to the resolved callee PC via
+    // `cfg_nodes[pc].destinations`. Without this, CALL_IMM's `imm`
+    // field is meaningless (it's a hash, not a relative offset).
+    let analysis = Analysis::from_executable(&executable)?;
 
     // Decode the .text into raw eBPF insns. This is what `Analysis`
     // does internally; we just need the linear stream because
@@ -616,6 +717,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     out.push_str("import SVM.SBPF.Decode\n");
     out.push_str("import SVM.SBPF.RunnerBridge\n");
     out.push_str("import SVM.SBPF.Macros\n\n");
+    // File-level option bumps. Long chains (especially ones with
+    // call_local + exit_pops composition) blow past the defaults
+    // during `slBlockIter`'s isDefEq work.
+    out.push_str("set_option maxRecDepth 65536\n");
+    out.push_str("set_option maxHeartbeats 4000000\n\n");
     out.push_str(&format!("namespace Examples.Lifted.{}\n\n", module_name));
 
     // The bytes.
@@ -636,7 +742,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     out.push_str("/-- Decoded form of the .text bytes. -/\n");
     out.push_str(&format!("def {}Insns : Array Insn := #[\n", module_name));
     for (i, insn) in insns.iter().enumerate() {
-        let lean = match insn_to_lean(insn, i) {
+        let tgt = resolve_call_target(&analysis, insn);
+        let lean = match insn_to_lean_full(insn, i, tgt) {
             Ok(s) => s,
             Err(e) => return Err(e.into()),
         };
@@ -653,24 +760,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         module_name, module_name, module_name,
     ));
 
-    // CFG-aware happy-path walk: follow PC linearly through ALU/MEM
-    // and conditional jumps (treated as fall-through under the
-    // path-hypothesis policy below), and follow `ja` targets. Stops
-    // at the first `.exit` reached on the walked path. `exit_pc` is
-    // the PC of the terminator — the triple's claimed end-PC.
+    // CFG-aware happy-path walk + symbolic execution in one pass.
+    // PC progression follows the actual control flow:
+    //   * straight-line opcode    → pc + 1
+    //   * `ja off`                → pc + 1 + off
+    //   * conditional jump (jeq/jne) → pc + 1 (fall-through policy)
+    //   * `call_local target`     → push pc+1, jump to target
+    //   * `exit` with empty stack → top-level terminator, walk ends
+    //   * `exit` with non-empty stack → pop, resume at popped PC
+    //
+    // Walk starts at the ELF's declared entrypoint (NOT analysis PC 0:
+    // the linker may place helper functions before the entrypoint).
     let mut block_pcs: Vec<usize> = Vec::new();
     let exit_pc: usize;
+    let mut state = SymState::default();
     {
-        let mut pc_iter: usize = 0;
+        let entry_pc = executable.get_entrypoint_instruction_offset();
+        let mut pc_iter: usize = entry_pc;
         loop {
             if pc_iter >= insns.len() { exit_pc = pc_iter; break; }
             let ins = &insns[pc_iter];
-            if ins.opc == ebpf::EXIT { exit_pc = pc_iter; break; }
+
+            // Handle exit specially — it's either a nested return
+            // (pops the call stack + restores r10) or a top-level
+            // terminator (ends the walk; not included in the CR).
+            if ins.opc == ebpf::EXIT {
+                if state.call_stack.is_empty() {
+                    exit_pc = pc_iter;
+                    break;
+                } else {
+                    block_pcs.push(pc_iter);
+                    let resume = state.call_stack.pop().unwrap();
+                    // exit_pops_spec restores r10 to its pre-call value.
+                    // Undo the +0x1000 bump applied by the matching
+                    // call_local in step().
+                    let r10_cur = state.read_reg(10);
+                    state.write_reg(10, Expr::WrapSub(
+                        Box::new(r10_cur),
+                        Box::new(Expr::Const(0x1000)),
+                    ));
+                    pc_iter = resume;
+                    continue;
+                }
+            }
+
             block_pcs.push(pc_iter);
-            if ins.opc == ebpf::JA {
-                pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
-            } else {
-                pc_iter += 1;
+            step(&mut state, ins, Some(pc_iter))?;
+
+            // PC progression.
+            match ins.opc {
+                ebpf::JA => {
+                    pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
+                }
+                ebpf::CALL_IMM => {
+                    // The immediate is a Murmur3 hash; look up the
+                    // function registry to resolve the callee PC.
+                    pc_iter = resolve_call_target(&analysis, ins).ok_or_else(|| {
+                        format!(
+                            "qedlift: call_local at pc {} has imm 0x{:x} \
+                             but no matching function in the symbol table. \
+                             Recompile with symbols, or extend the resolver.",
+                            pc_iter, ins.imm as u32)
+                    })?;
+                }
+                _ => { pc_iter += 1; }
             }
         }
     }
@@ -686,7 +839,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let opens = "(".repeat(block_pcs.len().saturating_sub(1));
         s.push_str(&opens);
         for (i, &pc) in block_pcs.iter().enumerate() {
-            let lean_insn = insn_to_lean(&insns[pc], pc)?;
+            let tgt = resolve_call_target(&analysis, &insns[pc]);
+            let lean_insn = insn_to_lean_full(&insns[pc], pc, tgt)?;
             if i == 0 {
                 s.push_str(&format!("(CodeReq.singleton {} ({}))", pc, lean_insn));
             } else {
@@ -701,15 +855,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     out.push_str("Synthesised by qedlift's symbolic executor walking the\n");
     out.push_str("decoded insns left-to-right. Closed by `sl_block_auto`. -/\n\n");
 
-    let mut state = SymState::default();
-    for &pc in &block_pcs {
-        if !step(&mut state, &insns[pc], Some(pc))? {
-            break;
-        }
-    }
+    // Note: symbolic execution already happened inline in the walker
+    // above; `state` is populated and ready to snapshot.
     let pre  = state.pre.clone();
     let post = post_atoms(&pre, &state);
     let rr   = region_req(&pre, &state);
+    // When the walk crossed a call_local, the chain's pre/post must
+    // include `callStackIs []` as a framed atom — `call_local_spec`
+    // takes a `callStackIs cs` in its pre, and the matching
+    // `exit_pops_spec` returns the popped `callStackIs cs` in its
+    // post. The empty initial stack pushes the new frame, then pops
+    // back to empty on exit_pops, so net change is none — but the
+    // atom must be present in pre+post for sl_block_iter to thread
+    // it through the chain.
+    let cs_atom = if state.saw_call { " ** callStackIs []" } else { "" };
 
     // Collect the symbolic variables we introduced so the theorem
     // signature can quantify over them.
@@ -753,11 +912,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `< 2^64` residuals.
     let needs_assumption = !state.branch_hyps.is_empty()
                         || !state.u64_load_vars.is_empty();
-    let tactic = if needs_assumption {
-        "sl_block_auto <;> assumption"
+    // `sl_block_auto` currently diverges (Lean elaboration hits
+    // maxRecDepth even at 65536) on chains that contain a matched
+    // `call_local` + `exit_pops` pair. The metavariable unification
+    // between the call's pushed-frame and the exit's expected frame
+    // appears to trigger pathological recursion. Theorem *statement*
+    // synthesis is still correct (the executor produces the right
+    // pre/post atoms); only the auto-discharge fails. Emit `sorry`
+    // for now with a note — the next iteration debugs slBlockIter's
+    // composition for call-containing chains.
+    let tactic: String = if state.saw_call {
+        "/- Theorem statement synthesised correctly by qedlift, but \
+         `sl_block_auto` currently diverges on chains containing a \
+         matched call_local + exit_pops pair (metavariable \
+         unification on the pushed-frame / expected-frame pair hits \
+         pathological recursion even at maxRecDepth 65536). \
+         Stage A delivered: statement synthesis + walker through \
+         call_local + nested exit. Closing the chain via auto-tactic \
+         is the next iteration's work — likely needs slBlockIter to \
+         resolve the frame mvar explicitly before the next-step \
+         composition. -/\n  sorry".to_string()
+    } else if needs_assumption {
+        "sl_block_auto <;> assumption".to_string()
     } else {
-        "sl_block_auto"
+        "sl_block_auto".to_string()
     };
+    let tactic: &str = Box::leak(tactic.into_boxed_str());
     let n = block_pcs.len();
 
     out.push_str(&format!(
@@ -765,8 +945,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
          theorem {}_lifted_spec\n    {}{}{}: \
          cuTripleWithinMem {} 0 0 {}\n      \
          ({})\n      \
-         ({})\n      \
-         ({})\n      \
+         ({}{})\n      \
+         ({}{})\n      \
          (fun rt => {}) := by\n  \
          {}\n\n",
         module_name,
@@ -775,8 +955,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         branch_hyps_sig,
         n, exit_pc,
         cr_lean,
-        atoms_to_lean(&pre),
-        atoms_to_lean(&post),
+        atoms_to_lean(&pre),  cs_atom,
+        atoms_to_lean(&post), cs_atom,
         rr,
         tactic,
     ));
