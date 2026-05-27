@@ -105,8 +105,9 @@ theorem p_token_transfer_full_happy_path_spec
     (initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7 : Nat)
     -- Discriminator (H1)
     (disc : Nat)
-    -- Magic bytes (H2)
-    (m1 m3 : Nat) (m2 m4 : Nat)
+    -- Magic bytes (H2): m1 and m3 are fixed constants 0xa5 (lifted to
+    -- `let`s in the body); only the alignment-byte parameters remain.
+    (m2 m4 : Nat)
     -- Amount / aligned-index (H3a, H3b, H3d)
     (amount : Nat)
     (layoutBound layoutTag : Nat)
@@ -123,8 +124,6 @@ theorem p_token_transfer_full_happy_path_spec
     -- Authority/signer (H3f, H4b)
     (authWord signerByte authByte closeFlag : Nat)
     -- Size hypotheses
-    (h_m1_lt : m1 < 2 ^ 64)
-    (h_m3_lt : m3 < 2 ^ 64)
     (h_amt_in : amount < 2 ^ 64)
     (h_bound_lt : layoutBound < 2 ^ 64)
     (h_tx_lt : txAmount < 2 ^ 64)
@@ -141,10 +140,8 @@ theorem p_token_transfer_full_happy_path_spec
     (h_auth_lt : authWord < 2 ^ 64)
     -- H1: discriminator = 3
     (h_disc : disc % 256 = toU64 3)
-    -- H2: magic-byte matches
-    (hm1 : m1 = toU64 0xa5)
+    -- H2: magic-byte matches (m1 and m3 are now constant lets in the body)
     (hm2 : m2 % 256 = toU64 0xff)
-    (hm3 : m3 = toU64 0xa5)
     (hm4 : m4 % 256 = toU64 0xff)
     -- H3b: layout bound and tag
     (h_bound_ge : layoutBound ≥ 9)
@@ -169,6 +166,12 @@ theorem p_token_transfer_full_happy_path_spec
     (h_amt_ne_0 : txAmount ≠ toU64 0)
     (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
     (h_close_ne_1 : closeFlag % 256 ≠ toU64 1) :
+    -- Magic-byte witnesses are lifted into the type as `let`s.
+    -- The precondition cells at 0x58 and 0x2960 contain these fixed
+    -- constants. The body `intro`s them before the existing tactic
+    -- block runs.
+    let m1 : Nat := toU64 0xa5
+    let m3 : Nat := toU64 0xa5
     cuTripleWithinMem 75 0 0 75 fullHappyPathCr
       -- PRECONDITION: all register and memory state at chain entry
       ((.r0 ↦ᵣ initR0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
@@ -291,6 +294,15 @@ theorem p_token_transfer_full_happy_path_spec
           rt.containsRange (effectiveAddr initR1 10664) 8 = true) ∧
         rt.containsWritable (effectiveAddr initR1 10664) 8 = true) ∧
       rt.containsRange (effectiveAddr initR1 205) 1 = true) := by
+  -- Introduce the magic-byte `let`s from the type into the proof
+  -- context, then restore the original hypothesis names as local
+  -- `have`s so the existing tactic block (which references
+  -- hm1/hm3/h_m1_lt/h_m3_lt by name) runs unchanged.
+  intro m1 m3
+  have h_m1_lt : m1 < 2 ^ 64 := by decide
+  have h_m3_lt : m3 < 2 ^ 64 := by decide
+  have hm1 : m1 = toU64 0xa5 := rfl
+  have hm3 : m3 = toU64 0xa5 := rfl
   -- Instantiate each sub-arm spec at its base PC with the threaded
   -- intermediate state. Pre/post atom values are alpha-renamed to
   -- the chain-level names where the threading happens.
@@ -380,7 +392,8 @@ set_option maxHeartbeats 8000000 in
 theorem p_token_transfer_full_happy_path_terminates
     (initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7 : Nat)
     (disc : Nat)
-    (m1 m3 : Nat) (m2 m4 : Nat)
+    -- m1 and m3 are fixed constants 0xa5 (lifted in body); only m2 m4 remain.
+    (m2 m4 : Nat)
     (amount : Nat)
     (layoutBound layoutTag : Nat)
     (srcState dstState : Nat)
@@ -390,8 +403,6 @@ theorem p_token_transfer_full_happy_path_terminates
     (dst1 dst2 dst3 dst4 : Nat)
     (dstMint2 dstMint3 dstMint4 : Nat)
     (authWord signerByte authByte closeFlag : Nat)
-    (h_m1_lt : m1 < 2 ^ 64)
-    (h_m3_lt : m3 < 2 ^ 64)
     (h_amt_in : amount < 2 ^ 64)
     (h_bound_lt : layoutBound < 2 ^ 64)
     (h_tx_lt : txAmount < 2 ^ 64)
@@ -407,9 +418,7 @@ theorem p_token_transfer_full_happy_path_terminates
     (h_dm4_lt : dstMint4 < 2 ^ 64)
     (h_auth_lt : authWord < 2 ^ 64)
     (h_disc : disc % 256 = toU64 3)
-    (hm1 : m1 = toU64 0xa5)
     (hm2 : m2 % 256 = toU64 0xff)
-    (hm3 : m3 = toU64 0xa5)
     (hm4 : m4 % 256 = toU64 0xff)
     (h_bound_ge : layoutBound ≥ 9)
     (h_tag : layoutTag % 256 = toU64 3)
@@ -427,6 +436,11 @@ theorem p_token_transfer_full_happy_path_terminates
     (h_amt_ne_0 : txAmount ≠ toU64 0)
     (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
     (h_close_ne_1 : closeFlag % 256 ≠ toU64 1) :
+    -- Magic-byte witnesses are lifted as `let`s; mirrors the
+    -- FullHappyPath spec so the precondition's `m1`/`m3` cells resolve
+    -- to the same fixed constants.
+    let m1 : Nat := toU64 0xa5
+    let m3 : Nat := toU64 0xa5
     cuTripleAbortsWithinMem 76 0 0
       (fullHappyPathCr.union (CodeReq.singleton 75 .exit))
       -- PRECONDITION: FullHappyPath's pre (in explicit left-grouped
@@ -514,21 +528,24 @@ theorem p_token_transfer_full_happy_path_terminates
   --   2. Compose with exit_aborts_spec_cuTriple via the new
   --      cuTripleWithinMem_seq_abort_pure lemma.
   --   3. Reshape pre and post atoms via cuTripleAbortsWithinMem_weaken.
+  -- Introduce the magic-byte `let`s from the type; the FullHappyPath
+  -- spec has the same shape so its call below sees the same names.
+  intro m1 m3
   have h_full :=
     p_token_transfer_full_happy_path_spec
       initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7
-      disc m1 m3 m2 m4 amount layoutBound layoutTag srcState dstState
+      disc m2 m4 amount layoutBound layoutTag srcState dstState
       txAmount srcBalance dstBalance
       canonMint1 canonMint2 canonMint3 canonMint4
       src1 src2 src3 src4 dst1 dst2 dst3 dst4
       dstMint2 dstMint3 dstMint4
       authWord signerByte authByte closeFlag
-      h_m1_lt h_m3_lt h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
+      h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
       h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
       h_s1_lt h_s2_lt h_s3_lt h_s4_lt
       h_d1_lt h_d2_lt h_d3_lt h_d4_lt
       h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
-      h_disc hm1 hm2 hm3 hm4 h_bound_ge h_tag
+      h_disc hm2 hm4 h_bound_ge h_tag
       h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
       h_eq_s1 h_eq_s2 h_eq_s3 h_eq_s4 h_signer_ne h_r0_eq_r5_at_h4a
       h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne

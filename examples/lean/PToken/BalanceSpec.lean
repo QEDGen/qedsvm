@@ -290,7 +290,8 @@ set_option linter.unusedVariables false in
 theorem p_token_transfer_balance_spec_pinocchio
     (initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7 : Nat)
     (disc : Nat)
-    (m1 m3 : Nat) (m2 m4 : Nat)
+    -- m1 and m3 are fixed constants 0xa5, lifted to `let`s in the type.
+    (m2 m4 : Nat)
     (amount : Nat)
     (layoutBound layoutTag : Nat)
     (srcState dstState : Nat)
@@ -301,8 +302,6 @@ theorem p_token_transfer_balance_spec_pinocchio
     (dstMint2 dstMint3 dstMint4 : Nat)
     (authWord signerByte authByte closeFlag : Nat)
     -- Size hypotheses (same as FullHappyPath)
-    (h_m1_lt : m1 < 2 ^ 64)
-    (h_m3_lt : m3 < 2 ^ 64)
     (h_amt_in : amount < 2 ^ 64)
     (h_bound_lt : layoutBound < 2 ^ 64)
     (h_tx_lt : txAmount < 2 ^ 64)
@@ -319,9 +318,7 @@ theorem p_token_transfer_balance_spec_pinocchio
     (h_auth_lt : authWord < 2 ^ 64)
     -- Sub-arm structural hypotheses (same as FullHappyPath)
     (h_disc : disc % 256 = toU64 3)
-    (hm1 : m1 = toU64 0xa5)
     (hm2 : m2 % 256 = toU64 0xff)
-    (hm3 : m3 = toU64 0xa5)
     (hm4 : m4 % 256 = toU64 0xff)
     (h_bound_ge : layoutBound ≥ 9)
     (h_tag : layoutTag % 256 = toU64 3)
@@ -345,6 +342,9 @@ theorem p_token_transfer_balance_spec_pinocchio
     -- linter-disable below.
     (h_funds      : txAmount ≤ srcBalance)
     (h_noOverflow : dstBalance + txAmount < 2 ^ 64) :
+    -- Magic-byte witnesses lifted as `let`s, mirroring FullHappyPath.
+    let m1 : Nat := toU64 0xa5
+    let m3 : Nat := toU64 0xa5
     cuTripleWithinMem 75 0 0 75
       Examples.PTokenTransferFullHappyPath.fullHappyPathCr
       -- PRECONDITION — identical to FullHappyPath
@@ -456,23 +456,26 @@ theorem p_token_transfer_balance_spec_pinocchio
           rt.containsRange (effectiveAddr initR1 10664) 8 = true) ∧
         rt.containsWritable (effectiveAddr initR1 10664) 8 = true) ∧
       rt.containsRange (effectiveAddr initR1 205) 1 = true) := by
+  -- Introduce the magic-byte lets from the type before citing
+  -- FullHappyPath (which has the same lets in its own conclusion).
+  intro m1 m3
   -- Cite the proven FullHappyPath triple.
   have h_full :=
     Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec
       initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7
-      disc m1 m3 m2 m4 amount layoutBound layoutTag srcState dstState
+      disc m2 m4 amount layoutBound layoutTag srcState dstState
       txAmount srcBalance dstBalance
       canonMint1 canonMint2 canonMint3 canonMint4
       src1 src2 src3 src4
       dst1 dst2 dst3 dst4
       dstMint2 dstMint3 dstMint4
       authWord signerByte authByte closeFlag
-      h_m1_lt h_m3_lt h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
+      h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
       h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
       h_s1_lt h_s2_lt h_s3_lt h_s4_lt
       h_d1_lt h_d2_lt h_d3_lt h_d4_lt
       h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
-      h_disc hm1 hm2 hm3 hm4 h_bound_ge h_tag
+      h_disc hm2 hm4 h_bound_ge h_tag
       h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
       h_eq_s1 h_eq_s2 h_eq_s3 h_eq_s4 h_signer_ne h_r0_eq_r5_at_h4a
       h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne
