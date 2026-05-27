@@ -1,0 +1,24 @@
+# Minimal IDL for the two_op fixture: a discriminator-dispatched
+# u64 counter with two instructions. Designed to validate the
+# qedrecover → qedlift handoff: each instruction's dispatcher arm
+# is identified by its (discriminator_offset, discriminator_value)
+# pair, then lifted into its own Lean theorem.
+#
+# Production replacement: Codama IDL (the same format qedrecover
+# already consumes). This minimal TOML is the simplest thing that
+# captures what's needed for the lift.
+
+schema_version = 1
+
+# Where in the input buffer the discriminator lives.
+[discriminator]
+offset = 0       # byte 0 of the input
+width  = 1       # u8
+
+[[instruction]]
+name = "increment"
+discriminator = 1
+
+[[instruction]]
+name = "decrement"
+discriminator = 2

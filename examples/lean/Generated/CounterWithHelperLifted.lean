@@ -48,9 +48,9 @@ def CounterWithHelperLiftedInsns : Array Insn := #[
   .stx .dword .r1 0 .r3,
   .exit,
   .ldx .dword .r2 .r1 0,
-  .add64 .r1 (.imm 8),
+  .add64 .r1 (.imm (8)),
   .call_local 0,
-  .mov64 .r0 (.imm 0),
+  .mov64 .r0 (.imm (0)),
   .exit
 ]
 
@@ -73,13 +73,13 @@ theorem CounterWithHelperLifted_lifted_spec
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
     : cuTripleWithinMem 8 0 4 8
       (((((((((CodeReq.singleton 4 (.ldx .dword .r2 .r1 0)).union
-        (CodeReq.singleton 5 (.add64 .r1 (.imm 8)))).union
+        (CodeReq.singleton 5 (.add64 .r1 (.imm (8))))).union
         (CodeReq.singleton 6 (.call_local 0))).union
         (CodeReq.singleton 0 (.ldx .dword .r3 .r1 0))).union
         (CodeReq.singleton 1 (.add64 .r3 (.reg .r2)))).union
         (CodeReq.singleton 2 (.stx .dword .r1 0 .r3))).union
         (CodeReq.singleton 3 (.exit))).union
-        (CodeReq.singleton 7 (.mov64 .r0 (.imm 0)))))
+        (CodeReq.singleton 7 (.mov64 .r0 (.imm (0))))))
       ((.r1 ↦ᵣ baseAddr) **
       (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
       (.r2 ↦ᵣ vR2Old) **

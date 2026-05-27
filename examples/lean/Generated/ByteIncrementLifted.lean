@@ -40,9 +40,9 @@ def ByteIncrementLiftedTextOffset : Nat := 0x100000120
 /-- Decoded form of the .text bytes. -/
 def ByteIncrementLiftedInsns : Array Insn := #[
   .ldx .byte .r2 .r1 0,
-  .add64 .r2 (.imm 1),
+  .add64 .r2 (.imm (1)),
   .stx .byte .r1 0 .r2,
-  .mov64 .r0 (.imm 0),
+  .mov64 .r0 (.imm (0)),
   .exit
 ]
 
@@ -61,9 +61,9 @@ theorem ByteIncrementLifted_lifted_spec
     (baseAddr oldMemB_0 vR2Old vR0Old : Nat)
     : cuTripleWithinMem 4 0 0 4
       (((((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
-        (CodeReq.singleton 1 (.add64 .r2 (.imm 1)))).union
+        (CodeReq.singleton 1 (.add64 .r2 (.imm (1))))).union
         (CodeReq.singleton 2 (.stx .byte .r1 0 .r2))).union
-        (CodeReq.singleton 3 (.mov64 .r0 (.imm 0)))))
+        (CodeReq.singleton 3 (.mov64 .r0 (.imm (0))))))
       ((.r1 ↦ᵣ baseAddr) **
       (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
       (.r2 ↦ᵣ vR2Old) **
