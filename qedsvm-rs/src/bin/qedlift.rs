@@ -29,7 +29,7 @@
 //!     --so tests/fixtures/byte_increment.so \
 //!     --output examples/lean/Generated/ByteIncrementLifted.lean
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use solana_sbpf::{
@@ -56,6 +56,100 @@ struct Args {
     /// consistent with `disc_byte == target_disc`. Each such jump
     /// adds a path hypothesis to the theorem signature.
     target_disc: Option<i64>,
+    /// IDL file (TOML). When given, qedlift loops over the IDL's
+    /// instructions and emits one Lean file per instruction. The
+    /// per-instruction module names are derived from the IDL's
+    /// instruction names; the output directory is `--output-dir`.
+    idl:         Option<PathBuf>,
+    output_dir:  Option<PathBuf>,
+}
+
+// -----------------------------------------------------------------------------
+// IDL parsing. Two formats are supported, dispatched on file extension:
+//   • .toml  — minimal in-tree schema for fixtures (see two_op.qedidl.toml)
+//   • .json  — Codama IDL (the de-facto format Solana programs ship with;
+//              same JSON qedrecover already consumes)
+// Both flatten to a `Vec<IdlInstruction>` for the batch loop.
+// -----------------------------------------------------------------------------
+
+#[derive(Debug)]
+struct IdlInstruction {
+    name:          String,
+    discriminator: i64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct IdlToml {
+    #[allow(dead_code)] schema_version: u32,
+    instruction: Vec<IdlInstructionToml>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct IdlInstructionToml {
+    name:          String,
+    discriminator: i64,
+}
+
+fn load_idl(path: &Path) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)?;
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("toml") => {
+            let raw: IdlToml = toml::from_str(&text)?;
+            Ok(raw.instruction.into_iter()
+                .map(|i| IdlInstruction { name: i.name, discriminator: i.discriminator })
+                .collect())
+        }
+        Some("json") => load_codama(&text),
+        ext => Err(format!("unsupported IDL extension: {:?}", ext).into()),
+    }
+}
+
+// Codama is a tree of typed nodes. For the batch lift, we only need
+// `(name, discriminator)` per instructionNode. The discriminator value
+// lives in the `arguments[]` entry whose `name` matches the
+// `discriminators[0].name`, under `defaultValue.number`. Only the
+// "u8 at offset 0" shape is handled today — that covers SPL Token,
+// p-token, and our in-tree fixtures. Anchor's 8-byte sighashes need
+// a wider executor and aren't supported yet.
+fn load_codama(text: &str) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Error>> {
+    let root: serde_json::Value = serde_json::from_str(text)?;
+    let instructions = root.pointer("/program/instructions")
+        .and_then(|v| v.as_array())
+        .ok_or("codama: /program/instructions missing or not an array")?;
+    let mut out = Vec::new();
+    let mut skipped = Vec::new();
+    for ix in instructions {
+        let name = ix.get("name").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+        let discs = match ix.get("discriminators").and_then(|v| v.as_array()) {
+            Some(d) if !d.is_empty() => d,
+            _ => { skipped.push((name, "no discriminators")); continue; }
+        };
+        // Only field-style single-byte discriminators at offset 0.
+        let d0 = &discs[0];
+        let d_kind   = d0.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let d_name   = d0.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let d_offset = d0.get("offset").and_then(|v| v.as_i64()).unwrap_or(-1);
+        if d_kind != "fieldDiscriminatorNode" {
+            skipped.push((name, "non-field discriminator")); continue;
+        }
+        if d_offset != 0 {
+            skipped.push((name, "non-zero discriminator offset")); continue;
+        }
+        let args = ix.get("arguments").and_then(|v| v.as_array());
+        let value = args.and_then(|a| a.iter().find(|a| a.get("name").and_then(|v| v.as_str()) == Some(&d_name)))
+            .and_then(|a| a.get("defaultValue"))
+            .and_then(|v| v.get("number"))
+            .and_then(|v| v.as_i64());
+        match value {
+            Some(n) => out.push(IdlInstruction { name, discriminator: n }),
+            None    => skipped.push((name, "missing default value")),
+        }
+    }
+    if !skipped.is_empty() {
+        eprintln!("codama: skipped {} instruction(s):", skipped.len());
+        for (n, why) in &skipped { eprintln!("  - {:<24} {}", n, why); }
+    }
+    Ok(out)
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -63,6 +157,8 @@ fn parse_args() -> Result<Args, String> {
     let mut output:      Option<PathBuf> = None;
     let mut module:      Option<String>  = None;
     let mut target_disc: Option<i64>     = None;
+    let mut idl:         Option<PathBuf> = None;
+    let mut output_dir:  Option<PathBuf> = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -72,12 +168,14 @@ fn parse_args() -> Result<Args, String> {
             "--target-disc" => target_disc = Some(
                 it.next().ok_or("--target-disc needs an integer")?
                   .parse().map_err(|e| format!("--target-disc: {}", e))?),
+            "--idl"         => idl         = Some(it.next().ok_or("--idl needs a path")?.into()),
+            "--output-dir"  => output_dir  = Some(it.next().ok_or("--output-dir needs a path")?.into()),
             other           => return Err(format!("unknown arg: {}", other)),
         }
     }
     Ok(Args {
         so: so.ok_or("missing --so")?,
-        output, module, target_disc,
+        output, module, target_disc, idl, output_dir,
     })
 }
 
@@ -110,6 +208,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         ADD64_IMM   => format!(".add64 {} (.imm ({}))",     reg(dst), imm),
         SUB64_IMM   => format!(".sub64 {} (.imm ({}))",     reg(dst), imm),
         MOV64_IMM   => format!(".mov64 {} (.imm ({}))",     reg(dst), imm),
+        AND64_IMM   => format!(".and64 {} (.imm ({}))",     reg(dst), imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
@@ -205,6 +304,10 @@ enum Expr {
     /// Plain `Nat.add a b`. Used for `call_local_spec`'s `r10 +
     /// 0x1000` which uses Nat addition rather than `wrapAdd`.
     NatAdd(Box<Expr>, Box<Expr>),
+    /// `(a &&& toU64 imm) % U64_MODULUS` — output of `and64_imm_spec`.
+    /// The `imm` arg is the raw immediate; we render `toU64 imm`
+    /// inside `to_lean`.
+    AndU64Imm(Box<Expr>, i64),
 }
 
 impl Expr {
@@ -217,6 +320,11 @@ impl Expr {
             Expr::WrapAdd(a, b) => format!("wrapAdd {} {}", a.atom_lean(), b.atom_lean()),
             Expr::WrapSub(a, b) => format!("wrapSub {} {}", a.atom_lean(), b.atom_lean()),
             Expr::NatAdd(a, b) => format!("{} + {}", a.atom_lean(), b.atom_lean()),
+            Expr::AndU64Imm(a, imm) => {
+                // Render exactly as `and64_imm_spec` writes its post.
+                let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
+                format!("({} &&& toU64 {}) % U64_MODULUS", a.atom_lean(), imm_lean)
+            }
         }
     }
     /// Lean rendering suitable for use as a function argument
@@ -586,6 +694,14 @@ fn spec_call_for(
                 hyp_name, reg(dst), imm, v_old, pc,
             )
         }
+        AND64_IMM => {
+            // and64_imm_spec dst imm vOld pc hne — same shape as add64_imm.
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := and64_imm_spec {} {} ({}) {} (by decide)",
+                hyp_name, reg(dst), imm, v_old, pc,
+            )
+        }
         ADD64_REG => {
             // add64_reg_spec dst src vOld v pc hne
             let v_old = reg_val_lean(dst);
@@ -739,6 +855,10 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 Box::new(cur),
                 Box::new(Expr::ToU64(Box::new(Expr::Const(imm)))),
             ));
+        }
+        AND64_IMM => {
+            let cur = state.read_reg(dst);
+            state.write_reg(dst, Expr::AndU64Imm(Box::new(cur), imm));
         }
         SUB64_IMM => {
             let cur = state.read_reg(dst);
@@ -946,31 +1066,55 @@ fn region_req(
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
-    let bytes = std::fs::read(&args.so)?;
+struct LiftOutput {
+    lean:        String,
+    module_name: String,
+    text_bytes:  usize,
+    insn_count:  usize,
+}
+
+// Per-binary context shared across arms in batch mode. Building
+// `Executable` + `Analysis` for a large program (e.g. p_token at
+// ~80KB compiled) is ~10s; reusing the same context for every arm
+// keeps batch runs proportional to the number of arms, not the
+// product of arms × binary size.
+struct BinaryCtx {
+    executable:  Executable<NoopCtx>,
+    text_offset: u64,
+    text_bytes:  Vec<u8>,
+    insns:       Vec<ebpf::Insn>,
+}
+
+fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(so_path)?;
     let loader = Arc::new(BuiltinProgram::new_mock());
     let executable: Executable<NoopCtx> = Executable::load(&bytes, loader)?;
-    let text_pcs = executable.get_text_bytes();
-    let text_offset = text_pcs.0;
-    let text_bytes  = text_pcs.1;
-    // Static analysis gives us the CFG, which maps call_local's
-    // Murmur3-hash immediate to the resolved callee PC via
-    // `cfg_nodes[pc].destinations`. Without this, CALL_IMM's `imm`
-    // field is meaningless (it's a hash, not a relative offset).
-    let analysis = Analysis::from_executable(&executable)?;
-
-    // Decode the .text into raw eBPF insns. This is what `Analysis`
-    // does internally; we just need the linear stream because
-    // byte_increment is straight-line.
+    let (text_offset, text_bytes) = {
+        let (o, b) = executable.get_text_bytes();
+        (o, b.to_vec())
+    };
     let mut insns = Vec::new();
     let mut pc = 0;
     while pc * ebpf::INSN_SIZE < text_bytes.len() {
-        let insn = ebpf::get_insn(text_bytes, pc);
+        let insn = ebpf::get_insn(&text_bytes, pc);
         let opc  = insn.opc;
         insns.push(insn);
         pc += if opc == ebpf::LD_DW_IMM { 2 } else { 1 };
     }
+    Ok(BinaryCtx { executable, text_offset, text_bytes, insns })
+}
+
+fn lift_one(
+    so_path:         &Path,
+    ctx:             &BinaryCtx,
+    analysis:        &Analysis<'_>,
+    target_disc:     Option<i64>,
+    module_override: Option<String>,
+) -> Result<LiftOutput, Box<dyn std::error::Error>> {
+    let executable  = &ctx.executable;
+    let text_offset = ctx.text_offset;
+    let text_bytes  = ctx.text_bytes.as_slice();
+    let insns       = &ctx.insns;
 
     // Diagnostic dump (stderr) — useful when step() can't model an
     // opcode and we want to see the surrounding shape anyway.
@@ -982,10 +1126,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!();
 
     // Default module name from the .so filename.
-    let so_stem = args.so.file_stem()
+    let so_stem = so_path.file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "lifted".to_string());
-    let module_name = args.module.unwrap_or_else(|| {
+    let module_name = module_override.unwrap_or_else(|| {
         // PascalCase: byte_increment → ByteIncrement
         let mut out = String::new();
         let mut up = true;
@@ -1014,7 +1158,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             theorem is proved by `sl_block_auto` against the same\n\
             instruction sequence.\n\
          -/\n\n",
-        args.so.display(), so_stem,
+        so_path.display(), so_stem,
     ));
     out.push_str("import SVM.SBPF.Decode\n");
     out.push_str("import SVM.SBPF.RunnerBridge\n");
@@ -1041,26 +1185,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     out.push_str(&format!("def {}TextOffset : Nat := 0x{:x}\n\n", module_name, text_offset));
 
     // The decoded insns.
-    out.push_str("/-- Decoded form of the .text bytes. -/\n");
-    out.push_str(&format!("def {}Insns : Array Insn := #[\n", module_name));
+    // Try to render the full decoded `.text` as an `Array Insn`. This
+    // doubles as a sanity-check (the `*_decodes` theorem proves
+    // byte→insn correspondence by `native_decide`) but it isn't
+    // load-bearing for the Hoare triple — the triple's `CodeReq` is
+    // built from walked-PC singletons, decoupled from this array.
+    //
+    // If any opcode in `.text` can't yet be rendered, we skip both
+    // the array def and the decode theorem and continue with just
+    // the Hoare triple. This lets us lift a known-good arm out of a
+    // binary that contains other arms we don't yet model (e.g. lifting
+    // SPL Token's `Transfer` arm out of p_token even though some other
+    // arm uses `jgt_reg`).
+    let mut rendered_insns: Vec<String> = Vec::with_capacity(insns.len());
+    let mut decode_skip_reason: Option<String> = None;
     for (i, insn) in insns.iter().enumerate() {
         let tgt = resolve_call_target(&analysis, insn);
-        let lean = match insn_to_lean_full(insn, i, tgt) {
-            Ok(s) => s,
-            Err(e) => return Err(e.into()),
-        };
-        let sep = if i + 1 < insns.len() { "," } else { "" };
-        out.push_str(&format!("  {}{}\n", lean, sep));
+        match insn_to_lean_full(insn, i, tgt) {
+            Ok(s)  => rendered_insns.push(s),
+            Err(e) => { decode_skip_reason = Some(format!("pc={} opc=0x{:02x}: {}", i, insn.opc, e)); break; }
+        }
     }
-    out.push_str("]\n\n");
-
-    // The decode equality proof.
-    out.push_str("/-- The bytes decode exactly to the expected instruction array. -/\n");
-    out.push_str(&format!(
-        "theorem {}_decodes :\n    \
-         Decode.decodeProgram {}Bytes = some {}Insns := by\n  native_decide\n\n",
-        module_name, module_name, module_name,
-    ));
+    if let Some(reason) = decode_skip_reason {
+        out.push_str(&format!(
+            "-- NOTE: `{}Insns` + `{}_decodes` omitted — `.text` contains an\n\
+             -- opcode the renderer doesn't model yet ({}). The Hoare\n\
+             -- triple below is unaffected: its `CodeReq` references only\n\
+             -- the walked-arm PCs, not the full `.text`.\n\n",
+            module_name, module_name, reason,
+        ));
+    } else {
+        out.push_str("/-- Decoded form of the .text bytes. -/\n");
+        out.push_str(&format!("def {}Insns : Array Insn := #[\n", module_name));
+        for (i, lean) in rendered_insns.iter().enumerate() {
+            let sep = if i + 1 < rendered_insns.len() { "," } else { "" };
+            out.push_str(&format!("  {}{}\n", lean, sep));
+        }
+        out.push_str("]\n\n");
+        out.push_str("/-- The bytes decode exactly to the expected instruction array. -/\n");
+        out.push_str(&format!(
+            "theorem {}_decodes :\n    \
+             Decode.decodeProgram {}Bytes = some {}Insns := by\n  native_decide\n\n",
+            module_name, module_name, module_name,
+        ));
+    }
 
     // Spec calls collected during the walk for the
     // `sl_block_iter` proof emission (when needed).
@@ -1127,7 +1295,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // For conditional jumps and a target discriminator, decide
             // the direction based on (opcode, imm, target_disc).
             // Default (no target_disc): treat as fall-through.
-            let branch_taken: Option<bool> = match (ins.opc, args.target_disc) {
+            let branch_taken: Option<bool> = match (ins.opc, target_disc) {
                 (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) => {
                     Some(ins.imm == td)
                 }
@@ -1369,23 +1537,104 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     out.push_str(&format!("end Examples.Lifted.{}\n", module_name));
 
-    // Emit.
+    Ok(LiftOutput {
+        lean: out,
+        module_name,
+        text_bytes: text_bytes.len(),
+        insn_count: insns.len(),
+    })
+}
+
+// PascalCase: "transfer_checked" → "TransferChecked".
+fn pascal_case(s: &str) -> String {
+    let mut out = String::new();
+    let mut up = true;
+    for c in s.chars() {
+        if c == '_' || c == '-' || c == ' ' { up = true; continue; }
+        if up { out.extend(c.to_uppercase()); up = false; }
+        else  { out.push(c); }
+    }
+    out
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
+    // Load the .so + analysis once. For batch runs over a large
+    // binary (p_token: ~28 arms, ~10s/arm cold), this hoists the
+    // per-arm cost from ~10s to a few ms by amortising the parse
+    // + CFG build over the whole batch.
+    let ctx = load_binary(&args.so)?;
+    let analysis = Analysis::from_executable(&ctx.executable)?;
+
+    // Batch mode: --idl <toml|json> + --output-dir <dir>.
+    if let Some(idl_path) = args.idl.as_ref() {
+        let output_dir = args.output_dir.as_ref()
+            .ok_or("--idl requires --output-dir")?;
+        let idl = load_idl(idl_path)?;
+        std::fs::create_dir_all(output_dir)?;
+
+        let so_stem = args.so.file_stem()
+            .map(|s| pascal_case(&s.to_string_lossy()))
+            .unwrap_or_else(|| "Lifted".to_string());
+
+        println!("=== qedlift (batch) ===");
+        println!("  input  : {}", args.so.display());
+        println!("  idl    : {}", idl_path.display());
+        println!("  outdir : {}", output_dir.display());
+        println!("  arms   : {}", idl.len());
+
+        let mut lifted = 0usize;
+        let mut skipped: Vec<(String, String)> = Vec::new();
+        for ix in &idl {
+            // Convention: namespace `Examples.Lifted.<SoStem><Name>`,
+            // file `<SoStem><Name>Lifted.lean`. The "Lifted" suffix
+            // lives only on the filename so the namespace stays tidy.
+            let module_name = format!("{}{}", so_stem, pascal_case(&ix.name));
+            // Per-arm error tolerance: an arm that hits an unmodelled
+            // opcode (in either the .text renderer or the symbolic
+            // executor) is reported and skipped, not fatal. This makes
+            // the batch a coverage probe.
+            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone())) {
+                Ok(result) => {
+                    let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
+                    if let Some(parent) = out_path.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&out_path, &result.lean)?;
+                    println!("  ✔ {:<24} disc={:<4} {} insns → {}",
+                        ix.name, ix.discriminator, result.insn_count, out_path.display());
+                    lifted += 1;
+                }
+                Err(e) => {
+                    println!("  ✘ {:<24} disc={:<4} {}", ix.name, ix.discriminator, e);
+                    skipped.push((ix.name.clone(), e.to_string()));
+                }
+            }
+        }
+        println!("=== batch summary ===");
+        println!("  lifted  : {}", lifted);
+        println!("  skipped : {}", skipped.len());
+        return Ok(());
+    }
+
+    // Single-instruction mode (unchanged behaviour).
+    let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone())?;
     match args.output {
         Some(path) => {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::write(&path, &out)?;
+            std::fs::write(&path, &result.lean)?;
             println!("=== qedlift ===");
             println!("  input  : {}", args.so.display());
             println!("  output : {}", path.display());
-            println!("  .text  : {} bytes ({} insns)", text_bytes.len(), insns.len());
-            println!("  module : Examples.Lifted.{}", module_name);
+            println!("  .text  : {} bytes ({} insns)", result.text_bytes, result.insn_count);
+            println!("  module : Examples.Lifted.{}", result.module_name);
         }
         None => {
-            print!("{}", out);
+            print!("{}", result.lean);
         }
     }
-
     Ok(())
 }
