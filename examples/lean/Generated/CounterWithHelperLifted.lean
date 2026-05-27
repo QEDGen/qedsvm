@@ -67,9 +67,11 @@ decoded insns left-to-right. Closed by `sl_block_auto`. -/
 open Memory in
 theorem CounterWithHelperLifted_lifted_spec
     (baseAddr oldMemD_0 vR2Old vR6Old vR7Old vR8Old vR9Old vR10Old oldMemD_1 vR3Old vR0Old : Nat)
+    (addr0 : Nat)
+    (h_addr0 : addr0 = wrapAdd baseAddr (toU64 8))
     (holdMemD_0_lt : oldMemD_0 < 2 ^ 64)
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
-    : cuTripleWithinMem 8 0 0 8
+    : cuTripleWithinMem 8 0 4 8
       (((((((((CodeReq.singleton 4 (.ldx .dword .r2 .r1 0)).union
         (CodeReq.singleton 5 (.add64 .r1 (.imm 8)))).union
         (CodeReq.singleton 6 (.call_local 0))).union
@@ -86,24 +88,33 @@ theorem CounterWithHelperLifted_lifted_spec
       (.r8 ↦ᵣ vR8Old) **
       (.r9 ↦ᵣ vR9Old) **
       (.r10 ↦ᵣ vR10Old) **
-      (effectiveAddr (wrapAdd baseAddr (toU64 8)) 0 ↦U64 oldMemD_1) **
+      (effectiveAddr addr0 0 ↦U64 oldMemD_1) **
       (.r3 ↦ᵣ vR3Old) **
       (.r0 ↦ᵣ vR0Old) ** callStackIs [])
-      ((.r1 ↦ᵣ wrapAdd baseAddr (toU64 8)) **
+      ((.r1 ↦ᵣ addr0) **
       (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
       (.r2 ↦ᵣ oldMemD_0) **
       (.r6 ↦ᵣ vR6Old) **
       (.r7 ↦ᵣ vR7Old) **
       (.r8 ↦ᵣ vR8Old) **
       (.r9 ↦ᵣ vR9Old) **
-      (.r10 ↦ᵣ wrapSub (wrapAdd vR10Old 4096) 4096) **
-      (effectiveAddr (wrapAdd baseAddr (toU64 8)) 0 ↦U64 wrapAdd oldMemD_1 oldMemD_0) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr addr0 0 ↦U64 wrapAdd oldMemD_1 oldMemD_0) **
       (.r3 ↦ᵣ wrapAdd oldMemD_1 oldMemD_0) **
       (.r0 ↦ᵣ toU64 0) ** callStackIs [])
       (fun rt => ((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
-                  rt.containsRange (effectiveAddr (wrapAdd baseAddr (toU64 8)) 0) 8 = true) ∧
-                  rt.containsWritable (effectiveAddr (wrapAdd baseAddr (toU64 8)) 0) 8 = true) := by
-  /- sl_block_auto diverges on call_local + exit_pops chains in the current slBlockIter implementation (atom-permutation search scaling, see SL.lean comments). Theorem statement is synthesised correctly. Next iteration: debug slBlockIter or use a dedicated call-composition lemma. -/
-  sorry
+                  rt.containsRange (effectiveAddr addr0 0) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr addr0 0) 8 = true) := by
+  have h_4 := ldxdw_spec .r2 .r1 0 (vR2Old) (baseAddr) oldMemD_0 4 (by decide) holdMemD_0_lt
+  have h_5 := add64_imm_spec .r1 8 (baseAddr) 5 (by decide)
+  have h_6 := call_local_spec 0 [] (vR6Old) (vR7Old) (vR8Old) (vR9Old) (vR10Old) 6
+  have h_0 := ldxdw_spec .r3 .r1 0 (vR3Old) (wrapAdd baseAddr (toU64 8)) oldMemD_1 0 (by decide) holdMemD_1_lt
+  have h_1 := add64_reg_spec .r3 .r2 (oldMemD_1) (oldMemD_0) 1 (by decide)
+  have h_2 := stxdw_spec .r1 .r3 0 (wrapAdd baseAddr (toU64 8)) (wrapAdd oldMemD_1 oldMemD_0) oldMemD_1 2
+  have h_3 := exit_pops_spec ⟨7, (vR6Old), (vR7Old), (vR8Old), (vR9Old), (vR10Old)⟩ [] (vR6Old) (vR7Old) (vR8Old) (vR9Old) (vR10Old + 4096) 3
+  dsimp only at h_3
+  have h_7 := mov64_imm_spec .r0 0 (vR0Old) 7 (by decide)
+  sl_rw_abs [h_addr0] at [h_4, h_5, h_6, h_0, h_1, h_2, h_3, h_7]
+  sl_block_iter [h_4, h_5, h_6, h_0, h_1, h_2, h_3, h_7]
 
 end Examples.Lifted.CounterWithHelperLifted

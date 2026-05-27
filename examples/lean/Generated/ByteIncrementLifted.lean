@@ -74,6 +74,6 @@ theorem ByteIncrementLifted_lifted_spec
       (.r0 ↦ᵣ toU64 0))
       (fun rt => (rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 0) 1 = true) := by
-  sl_block_auto
+sl_block_auto
 
 end Examples.Lifted.ByteIncrementLifted
