@@ -55,19 +55,19 @@ decoded insns left-to-right. Closed by `sl_block_auto`. -/
 
 open Memory in
 theorem ByteIncrementLifted_lifted_spec
-    (baseAddr oldByte vR2Old vR0Old : Nat)
+    (baseAddr oldMemB_off0 vR2Old vR0Old : Nat)
     : cuTripleWithinMem 4 0 0 4
       (((((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
         (CodeReq.singleton 1 (.add64 .r2 (.imm 1)))).union
         (CodeReq.singleton 2 (.stx .byte .r1 0 .r2))).union
         (CodeReq.singleton 3 (.mov64 .r0 (.imm 0)))))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 0 ↦ₘ oldByte) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_off0) **
       (.r2 ↦ᵣ vR2Old) **
       (.r0 ↦ᵣ vR0Old))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 0 ↦ₘ (wrapAdd (oldByte % 256) (toU64 1)) % 256) **
-      (.r2 ↦ᵣ wrapAdd (oldByte % 256) (toU64 1)) **
+      (effectiveAddr baseAddr 0 ↦ₘ (wrapAdd (oldMemB_off0 % 256) (toU64 1)) % 256) **
+      (.r2 ↦ᵣ wrapAdd (oldMemB_off0 % 256) (toU64 1)) **
       (.r0 ↦ᵣ toU64 0))
       (fun rt => rt.containsRange (effectiveAddr baseAddr 0) 1 = true ∧
                   rt.containsWritable (effectiveAddr baseAddr 0) 1 = true) := by

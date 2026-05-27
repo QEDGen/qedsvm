@@ -67,12 +67,14 @@ fn parse_args() -> Result<Args, String> {
     Ok(Args { so: so.ok_or("missing --so")?, output, module })
 }
 
-/// Convert a `solana_sbpf::ebpf::Insn` to the Lean `Insn` constructor
-/// syntax. The cases here cover the byte_increment instruction set;
+/// Convert a `solana_sbpf::ebpf::Insn` at analysis PC `pc` to the
+/// Lean `Insn` constructor syntax. The cases here cover the
+/// byte_increment / counter / guarded-counter instruction sets;
 /// extending it is mechanical (each new opcode adds one match arm).
-fn insn_to_lean(insn: &ebpf::Insn) -> Result<String, String> {
+/// For conditional jumps `pc` is used to resolve the target PC.
+fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, String> {
     use ebpf::*;
-    let (dst, src, off, imm) = (insn.dst, insn.src, insn.off, insn.imm);
+    let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
     let reg = |n: u8| match n {
         0 => ".r0", 1 => ".r1", 2 => ".r2", 3 => ".r3",
         4 => ".r4", 5 => ".r5", 6 => ".r6", 7 => ".r7",
@@ -95,6 +97,30 @@ fn insn_to_lean(insn: &ebpf::Insn) -> Result<String, String> {
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
         EXIT        => ".exit".to_string(),
+        // Conditional jumps with immediate operand. Lean syntax is
+        // `.jXX dst (.imm K) target_pc`. We resolve `target_pc` to the
+        // absolute PC the jump lands at (caller-supplied).
+        JEQ64_IMM | JEQ32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jeq {} (.imm {}) {}", reg(dst), imm, t)
+        }
+        JNE64_IMM | JNE32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jne {} (.imm {}) {}", reg(dst), imm, t)
+        }
+        JGT64_IMM | JGT32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jgt {} (.imm {}) {}", reg(dst), imm, t)
+        }
+        JGE64_IMM | JGE32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jge {} (.imm {}) {}", reg(dst), imm, t)
+        }
+        JLT64_IMM | JLT32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jlt {} (.imm {}) {}", reg(dst), imm, t)
+        }
+        JLE64_IMM | JLE32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jle {} (.imm {}) {}", reg(dst), imm, t)
+        }
+        JA          => {
+            let t = (pc as i64) + 1 + off; format!(".ja {}", t)
+        }
         opc         => return Err(format!("opcode 0x{:02x} not yet lifted to Lean", opc)),
     })
 }
@@ -232,6 +258,9 @@ struct SymState {
     /// `< 2^64` side condition that the theorem signature must
     /// hypothesise so `sl_block_auto <;> assumption` discharges it.
     u64_load_vars: Vec<String>,
+    /// Conditional jumps encountered on the happy-path walk. Each one
+    /// adds a path hypothesis to the theorem signature.
+    branch_hyps: Vec<BranchHyp>,
 }
 
 impl SymState {
@@ -258,12 +287,11 @@ impl SymState {
     fn read_mem(&mut self, base: u8, off: i64, width: Width) -> Expr {
         let key = (base, off, width as u8);
         if let Some(v) = self.mem.get(&key) { return v.clone(); }
-        // Fresh memory variable named after the access shape.
-        let name = match (width, off) {
-            (Width::Byte, 0)  => "oldByte".to_string(),
-            (Width::Dword, 0) => "oldCounter".to_string(),
-            (w, _)            => format!("oldMem{}_{}", w_short(w), self.next_fresh()),
-        };
+        // Fresh memory variable named by (width, offset). Generic —
+        // qedlift doesn't know whether a u64 at offset 0 is a
+        // counter, an amount, or a discriminator, so names stay
+        // mechanical and don't suggest a semantic role.
+        let name = format!("oldMem{}_off{}", w_short(width), off);
         // u64 loads carry a `< 2^64` side condition from `ldxdw_spec`;
         // record the variable name so the theorem signature can
         // hypothesise it for `<;> assumption` to discharge later.
@@ -297,11 +325,41 @@ fn w_short(w: Width) -> &'static str {
     match w { Width::Byte => "B", Width::Halfword => "H", Width::Word => "W", Width::Dword => "D" }
 }
 
+/// A conditional jump the symbolic executor walked past on its
+/// happy-path traversal. The theorem signature surfaces this as a
+/// hypothesis the user (or a downstream tactic) must invoke when
+/// closing the proof — `sl_block_auto` doesn't currently collapse
+/// these on its own.
+#[derive(Clone, Debug)]
+enum BranchKind { JeqImm, JneImm }
+
+#[derive(Clone, Debug)]
+struct BranchHyp {
+    kind: BranchKind,
+    dst_value: Expr,
+    imm: i64,
+    #[allow(dead_code)] target_pc: usize,
+}
+
+impl BranchHyp {
+    /// Render the hypothesis in the form needed for the theorem
+    /// signature, i.e. `<dst_value> ≠ toU64 <imm>` for a JeqImm whose
+    /// happy path is fall-through.
+    fn lean_hyp(&self) -> String {
+        match self.kind {
+            BranchKind::JeqImm => format!("{} ≠ toU64 {}", self.dst_value.to_lean(), self.imm),
+            BranchKind::JneImm => format!("{} = toU64 {}", self.dst_value.to_lean(), self.imm),
+        }
+    }
+    fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
+}
+
 /// Step one instruction's effect through `state`. Returns Ok(true) if
 /// the instruction was a recognised non-terminator; Ok(false) if it
 /// was `exit` (slice terminates); Err for opcodes the executor
-/// doesn't model yet.
-fn step(state: &mut SymState, insn: &ebpf::Insn) -> Result<bool, String> {
+/// doesn't model yet. `pc` is the analysis-PC of `insn` (only used
+/// to resolve relative jump targets).
+fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>) -> Result<bool, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
     match insn.opc {
@@ -370,6 +428,26 @@ fn step(state: &mut SymState, insn: &ebpf::Insn) -> Result<bool, String> {
             let b = state.read_reg(src);
             state.write_reg(dst, Expr::WrapSub(Box::new(a), Box::new(b)));
         }
+        // Conditional jumps on an immediate. Modelled as "happy path
+        // = fall-through" by default (the common shape for guard
+        // checks at function start). Records a path hypothesis the
+        // theorem signature will surface; doesn't change reg/mem
+        // state. Caller invents a path-hypothesis variable name.
+        JEQ64_IMM | JEQ32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JeqImm, dst_value: r, imm,
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JNE64_IMM | JNE32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JneImm, dst_value: r, imm,
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
         EXIT => return Ok(false),
         opc => return Err(format!("symbolic executor: opcode 0x{:02x} not yet modelled", opc)),
     }
@@ -483,6 +561,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         pc += if opc == ebpf::LD_DW_IMM { 2 } else { 1 };
     }
 
+    // Diagnostic dump (stderr) — useful when step() can't model an
+    // opcode and we want to see the surrounding shape anyway.
+    eprintln!("=== decoded insns ===");
+    for (i, ins) in insns.iter().enumerate() {
+        let rendered = insn_to_lean(ins, i).unwrap_or_else(|e| format!("?? ({})", e));
+        eprintln!("  pc={:3}  opc=0x{:02x}  {}", i, ins.opc, rendered);
+    }
+    eprintln!();
+
     // Default module name from the .so filename.
     let so_stem = args.so.file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -541,7 +628,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     out.push_str("/-- Decoded form of the .text bytes. -/\n");
     out.push_str(&format!("def {}Insns : Array Insn := #[\n", module_name));
     for (i, insn) in insns.iter().enumerate() {
-        let lean = match insn_to_lean(insn) {
+        let lean = match insn_to_lean(insn, i) {
             Ok(s) => s,
             Err(e) => return Err(e.into()),
         };
@@ -558,11 +645,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         module_name, module_name, module_name,
     ));
 
-    // Block-PCs (excluding any trailing `.exit`, which the macro spec
-    // doesn't cover).
-    let block_pcs: Vec<usize> = insns.iter().enumerate()
-        .filter_map(|(i, ins)| if ins.opc == ebpf::EXIT { None } else { Some(i) })
-        .collect();
+    // CFG-aware happy-path walk: follow PC linearly through ALU/MEM
+    // and conditional jumps (treated as fall-through under the
+    // path-hypothesis policy below), and follow `ja` targets. Stops
+    // at the first `.exit` reached on the walked path. `exit_pc` is
+    // the PC of the terminator — the triple's claimed end-PC.
+    let mut block_pcs: Vec<usize> = Vec::new();
+    let exit_pc: usize;
+    {
+        let mut pc_iter: usize = 0;
+        loop {
+            if pc_iter >= insns.len() { exit_pc = pc_iter; break; }
+            let ins = &insns[pc_iter];
+            if ins.opc == ebpf::EXIT { exit_pc = pc_iter; break; }
+            block_pcs.push(pc_iter);
+            if ins.opc == ebpf::JA {
+                pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
+            } else {
+                pc_iter += 1;
+            }
+        }
+    }
 
     // Build the CR as a Lean string. `sl_block_auto` requires the CR
     // to appear as a literal `union`-of-`singleton`s in the theorem
@@ -575,7 +678,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let opens = "(".repeat(block_pcs.len().saturating_sub(1));
         s.push_str(&opens);
         for (i, &pc) in block_pcs.iter().enumerate() {
-            let lean_insn = insn_to_lean(&insns[pc])?;
+            let lean_insn = insn_to_lean(&insns[pc], pc)?;
             if i == 0 {
                 s.push_str(&format!("(CodeReq.singleton {} ({}))", pc, lean_insn));
             } else {
@@ -592,7 +695,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut state = SymState::default();
     for &pc in &block_pcs {
-        if !step(&mut state, &insns[pc])? {
+        if !step(&mut state, &insns[pc], Some(pc))? {
             break;
         }
     }
@@ -627,16 +730,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for v in &state.u64_load_vars {
         u64_hyps.push_str(&format!("(h{}_lt : {} < 2 ^ 64)\n    ", v, v));
     }
-    let tactic = if state.u64_load_vars.is_empty() {
-        "sl_block_auto"
+    // Path-hypothesis surface for any conditional jumps we walked.
+    // For a JeqImm whose happy path is fall-through (the common
+    // guard-check shape), the hypothesis is `dst ≠ toU64 imm`.
+    let mut branch_hyps_sig = String::new();
+    for (i, bh) in state.branch_hyps.iter().enumerate() {
+        branch_hyps_sig.push_str(&format!("({} : {})\n    ", bh.name(i), bh.lean_hyp()));
+    }
+    // `sl_block_auto`'s current `mkSpec` dispatch table doesn't
+    // include conditional-jump opcodes (see SVM/SBPF/SpecGen.lean) —
+    // jeq/jne/etc need explicit `rw` collapses before composition.
+    // When the walk encountered any conditional jumps we therefore
+    // emit a `sorry` placeholder + a comment block describing the
+    // mechanical proof shape; this is the next iteration's work.
+    let has_branches = !state.branch_hyps.is_empty();
+    let tactic = if has_branches {
+        "/- Mechanical `sl_block_iter` proof goes here: emit `have h_N := <spec>` per insn, \
+         `rw` to collapse each conditional jump against the corresponding `h_branchK` \
+         hypothesis (mirroring `H1Dispatch.lean`'s pattern), then `sl_block_iter [h_0, ...]`. \
+         Auto-generating this is the next qedlift iteration — extending SpecGen.lean's \
+         `mkSpec` to dispatch on jeq/jne/ja with path-hypothesis collapsing is the cleanest \
+         route. -/\n  sorry".to_string()
+    } else if state.u64_load_vars.is_empty() {
+        "sl_block_auto".to_string()
     } else {
-        "sl_block_auto <;> assumption"
+        "sl_block_auto <;> assumption".to_string()
     };
+    let tactic: &str = Box::leak(tactic.into_boxed_str());
     let n = block_pcs.len();
 
     out.push_str(&format!(
         "open Memory in\n\
-         theorem {}_lifted_spec\n    {}{}: \
+         theorem {}_lifted_spec\n    {}{}{}: \
          cuTripleWithinMem {} 0 0 {}\n      \
          ({})\n      \
          ({})\n      \
@@ -646,7 +771,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         module_name,
         vars_sig,
         u64_hyps,
-        n, n,
+        branch_hyps_sig,
+        n, exit_pc,
         cr_lean,
         atoms_to_lean(&pre),
         atoms_to_lean(&post),

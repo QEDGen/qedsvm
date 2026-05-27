@@ -55,20 +55,20 @@ decoded insns left-to-right. Closed by `sl_block_auto`. -/
 
 open Memory in
 theorem CounterLifted_lifted_spec
-    (baseAddr oldCounter vR2Old vR0Old : Nat)
-    (holdCounter_lt : oldCounter < 2 ^ 64)
+    (baseAddr oldMemD_off0 vR2Old vR0Old : Nat)
+    (holdMemD_off0_lt : oldMemD_off0 < 2 ^ 64)
     : cuTripleWithinMem 4 0 0 4
       (((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 0)).union
         (CodeReq.singleton 1 (.add64 .r2 (.imm 1)))).union
         (CodeReq.singleton 2 (.stx .dword .r1 0 .r2))).union
         (CodeReq.singleton 3 (.mov64 .r0 (.imm 0)))))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 0 ↦U64 oldCounter) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_off0) **
       (.r2 ↦ᵣ vR2Old) **
       (.r0 ↦ᵣ vR0Old))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 0 ↦U64 wrapAdd oldCounter (toU64 1)) **
-      (.r2 ↦ᵣ wrapAdd oldCounter (toU64 1)) **
+      (effectiveAddr baseAddr 0 ↦U64 wrapAdd oldMemD_off0 (toU64 1)) **
+      (.r2 ↦ᵣ wrapAdd oldMemD_off0 (toU64 1)) **
       (.r0 ↦ᵣ toU64 0))
       (fun rt => rt.containsRange (effectiveAddr baseAddr 0) 8 = true ∧
                   rt.containsWritable (effectiveAddr baseAddr 0) 8 = true) := by
