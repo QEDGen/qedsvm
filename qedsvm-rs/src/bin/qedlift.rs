@@ -536,7 +536,15 @@ fn region_req(pre: &[Atom], state: &SymState) -> String {
     if clauses.is_empty() {
         "True".to_string()
     } else {
-        clauses.join(" ∧\n                  ")
+        // Left-associative: `((A ∧ B) ∧ C) ∧ D`. `sl_block_iter`'s
+        // chain composition produces this shape (each step's rr is
+        // ∧-merged on the left); to keep the goal isDefEq to the
+        // chain, the emitted goal needs the same parenthesisation.
+        let mut out = clauses[0].clone();
+        for c in clauses.iter().skip(1) {
+            out = format!("({}) ∧\n                  {}", out, c);
+        }
+        out
     }
 }
 
@@ -737,26 +745,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (i, bh) in state.branch_hyps.iter().enumerate() {
         branch_hyps_sig.push_str(&format!("({} : {})\n    ", bh.name(i), bh.lean_hyp()));
     }
-    // `sl_block_auto`'s current `mkSpec` dispatch table doesn't
-    // include conditional-jump opcodes (see SVM/SBPF/SpecGen.lean) —
-    // jeq/jne/etc need explicit `rw` collapses before composition.
-    // When the walk encountered any conditional jumps we therefore
-    // emit a `sorry` placeholder + a comment block describing the
-    // mechanical proof shape; this is the next iteration's work.
-    let has_branches = !state.branch_hyps.is_empty();
-    let tactic = if has_branches {
-        "/- Mechanical `sl_block_iter` proof goes here: emit `have h_N := <spec>` per insn, \
-         `rw` to collapse each conditional jump against the corresponding `h_branchK` \
-         hypothesis (mirroring `H1Dispatch.lean`'s pattern), then `sl_block_iter [h_0, ...]`. \
-         Auto-generating this is the next qedlift iteration — extending SpecGen.lean's \
-         `mkSpec` to dispatch on jeq/jne/ja with path-hypothesis collapsing is the cleanest \
-         route. -/\n  sorry".to_string()
-    } else if state.u64_load_vars.is_empty() {
-        "sl_block_auto".to_string()
+    // `sl_block_auto` now dispatches conditional jumps to their
+    // `_not_taken` variants in InstructionSpecs/Jump.lean (see
+    // SVM/SBPF/SpecGen.lean), surfacing the path hypothesis as a
+    // residual side goal. `<;> assumption` closes them against the
+    // theorem's `h_branchK` hypotheses, alongside any u64-load
+    // `< 2^64` residuals.
+    let needs_assumption = !state.branch_hyps.is_empty()
+                        || !state.u64_load_vars.is_empty();
+    let tactic = if needs_assumption {
+        "sl_block_auto <;> assumption"
     } else {
-        "sl_block_auto <;> assumption".to_string()
+        "sl_block_auto"
     };
-    let tactic: &str = Box::leak(tactic.into_boxed_str());
     let n = block_pcs.len();
 
     out.push_str(&format!(

@@ -87,10 +87,9 @@ theorem GuardedCounterLifted_lifted_spec
       (effectiveAddr baseAddr 8 ↦U64 wrapAdd oldMemD_off8 oldMemD_off0) **
       (.r3 ↦ᵣ wrapAdd oldMemD_off8 oldMemD_off0) **
       (.r0 ↦ᵣ toU64 0))
-      (fun rt => rt.containsRange (effectiveAddr baseAddr 0) 8 = true ∧
-                  rt.containsRange (effectiveAddr baseAddr 8) 8 = true ∧
+      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 8) 8 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 8) 8 = true) := by
-  /- Mechanical `sl_block_iter` proof goes here: emit `have h_N := <spec>` per insn, `rw` to collapse each conditional jump against the corresponding `h_branchK` hypothesis (mirroring `H1Dispatch.lean`'s pattern), then `sl_block_iter [h_0, ...]`. Auto-generating this is the next qedlift iteration — extending SpecGen.lean's `mkSpec` to dispatch on jeq/jne/ja with path-hypothesis collapsing is the cleanest route. -/
-  sorry
+  sl_block_auto <;> assumption
 
 end Examples.Lifted.GuardedCounterLifted
