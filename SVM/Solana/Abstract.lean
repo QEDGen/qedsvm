@@ -9,3 +9,4 @@ import SVM.Solana.Abstract.State
 import SVM.Solana.Abstract.SepLogic
 import SVM.Solana.Abstract.Triples
 import SVM.Solana.Abstract.Refinement
+import SVM.Solana.Abstract.Domain
