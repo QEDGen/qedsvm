@@ -115,9 +115,10 @@ theorem p_token_transfer_full_happy_path_spec
     (srcState dstState : Nat)
     -- Balance fields (H3d, H4b)
     (txAmount srcBalance dstBalance : Nat)
-    -- Canonical mint words (H3e) and source-account mint words
+    -- Canonical mint words (H3e); the source-account mint words
+    -- (src1..src4) are pinned by hypothesis to the canonical mints,
+    -- lifted to `let`s in the type below.
     (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
-    (src1 src2 src3 src4 : Nat)
     -- Destination-account mint words and dest-canonical mint words (H4a)
     (dst1 dst2 dst3 dst4 : Nat)
     (dstMint2 dstMint3 dstMint4 : Nat)
@@ -131,8 +132,6 @@ theorem p_token_transfer_full_happy_path_spec
     (h_dst_bal_lt : dstBalance < 2 ^ 64)
     (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
     (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
-    (h_s1_lt : src1 < 2 ^ 64) (h_s2_lt : src2 < 2 ^ 64)
-    (h_s3_lt : src3 < 2 ^ 64) (h_s4_lt : src4 < 2 ^ 64)
     (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
     (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
     (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
@@ -152,9 +151,7 @@ theorem p_token_transfer_full_happy_path_spec
     -- H3d: state ≠ Frozen, balance covers amount
     (h_src_ne2 : srcState % 256 ≠ 2) (h_dst_ne2 : dstState % 256 ≠ 2)
     (h_bal_ge : srcBalance ≥ txAmount)
-    -- H3e: source-mint = canonical
-    (h_eq_s1 : src1 = canonMint1) (h_eq_s2 : src2 = canonMint2)
-    (h_eq_s3 : src3 = canonMint3) (h_eq_s4 : src4 = canonMint4)
+    -- H3e: source-mint = canonical (lifted as `let`s in the type)
     -- H3f: not signer (`jne r0, 0x1` taken)
     (h_signer_ne : signerByte % 256 ≠ toU64 1)
     -- H4a: dest-mint = canonical, and chain-coupling r0=r5 at H4a entry
@@ -166,12 +163,16 @@ theorem p_token_transfer_full_happy_path_spec
     (h_amt_ne_0 : txAmount ≠ toU64 0)
     (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
     (h_close_ne_1 : closeFlag % 256 ≠ toU64 1) :
-    -- Magic-byte witnesses are lifted into the type as `let`s.
-    -- The precondition cells at 0x58 and 0x2960 contain these fixed
-    -- constants. The body `intro`s them before the existing tactic
-    -- block runs.
+    -- Witnesses lifted into the type as `let`s. Magic-byte cells m1
+    -- and m3 are fixed constants; source-mint words src1..src4 are
+    -- pinned by hypothesis to the canonical mint words. The body
+    -- `intro`s them before the existing tactic block runs.
     let m1 : Nat := toU64 0xa5
     let m3 : Nat := toU64 0xa5
+    let src1 : Nat := canonMint1
+    let src2 : Nat := canonMint2
+    let src3 : Nat := canonMint3
+    let src4 : Nat := canonMint4
     cuTripleWithinMem 75 0 0 75 fullHappyPathCr
       -- PRECONDITION: all register and memory state at chain entry
       ((.r0 ↦ᵣ initR0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
@@ -294,15 +295,23 @@ theorem p_token_transfer_full_happy_path_spec
           rt.containsRange (effectiveAddr initR1 10664) 8 = true) ∧
         rt.containsWritable (effectiveAddr initR1 10664) 8 = true) ∧
       rt.containsRange (effectiveAddr initR1 205) 1 = true) := by
-  -- Introduce the magic-byte `let`s from the type into the proof
-  -- context, then restore the original hypothesis names as local
-  -- `have`s so the existing tactic block (which references
-  -- hm1/hm3/h_m1_lt/h_m3_lt by name) runs unchanged.
-  intro m1 m3
+  -- Introduce the type-level `let`s into the proof context, then
+  -- restore the original hypothesis names as local `have`s so the
+  -- existing tactic block (which references hm1/hm3/h_m1_lt/h_m3_lt
+  -- and h_eq_s1..s4/h_s1_lt..s4_lt by name) runs unchanged.
+  intro m1 m3 src1 src2 src3 src4
   have h_m1_lt : m1 < 2 ^ 64 := by decide
   have h_m3_lt : m3 < 2 ^ 64 := by decide
   have hm1 : m1 = toU64 0xa5 := rfl
   have hm3 : m3 = toU64 0xa5 := rfl
+  have h_s1_lt : src1 < 2 ^ 64 := h_canon1_lt
+  have h_s2_lt : src2 < 2 ^ 64 := h_canon2_lt
+  have h_s3_lt : src3 < 2 ^ 64 := h_canon3_lt
+  have h_s4_lt : src4 < 2 ^ 64 := h_canon4_lt
+  have h_eq_s1 : src1 = canonMint1 := rfl
+  have h_eq_s2 : src2 = canonMint2 := rfl
+  have h_eq_s3 : src3 = canonMint3 := rfl
+  have h_eq_s4 : src4 = canonMint4 := rfl
   -- Instantiate each sub-arm spec at its base PC with the threaded
   -- intermediate state. Pre/post atom values are alpha-renamed to
   -- the chain-level names where the threading happens.
@@ -398,8 +407,8 @@ theorem p_token_transfer_full_happy_path_terminates
     (layoutBound layoutTag : Nat)
     (srcState dstState : Nat)
     (txAmount srcBalance dstBalance : Nat)
+    -- Source-mint words src1..src4 are pinned to canonMint*, lifted as `let`s.
     (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
-    (src1 src2 src3 src4 : Nat)
     (dst1 dst2 dst3 dst4 : Nat)
     (dstMint2 dstMint3 dstMint4 : Nat)
     (authWord signerByte authByte closeFlag : Nat)
@@ -410,8 +419,6 @@ theorem p_token_transfer_full_happy_path_terminates
     (h_dst_bal_lt : dstBalance < 2 ^ 64)
     (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
     (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
-    (h_s1_lt : src1 < 2 ^ 64) (h_s2_lt : src2 < 2 ^ 64)
-    (h_s3_lt : src3 < 2 ^ 64) (h_s4_lt : src4 < 2 ^ 64)
     (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
     (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
     (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
@@ -426,8 +433,6 @@ theorem p_token_transfer_full_happy_path_terminates
     (h_dst_le : dstState % 256 ≤ 2) (h_dst_ne : dstState % 256 ≠ 0)
     (h_src_ne2 : srcState % 256 ≠ 2) (h_dst_ne2 : dstState % 256 ≠ 2)
     (h_bal_ge : srcBalance ≥ txAmount)
-    (h_eq_s1 : src1 = canonMint1) (h_eq_s2 : src2 = canonMint2)
-    (h_eq_s3 : src3 = canonMint3) (h_eq_s4 : src4 = canonMint4)
     (h_signer_ne : signerByte % 256 ≠ toU64 1)
     (h_r0_eq_r5_at_h4a : signerByte % 256 = authWord)
     (h_eq_d1 : dst1 = authWord) (h_eq_d2 : dst2 = dstMint2)
@@ -436,11 +441,13 @@ theorem p_token_transfer_full_happy_path_terminates
     (h_amt_ne_0 : txAmount ≠ toU64 0)
     (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
     (h_close_ne_1 : closeFlag % 256 ≠ toU64 1) :
-    -- Magic-byte witnesses are lifted as `let`s; mirrors the
-    -- FullHappyPath spec so the precondition's `m1`/`m3` cells resolve
-    -- to the same fixed constants.
+    -- Witnesses lifted as `let`s; mirrors the FullHappyPath spec.
     let m1 : Nat := toU64 0xa5
     let m3 : Nat := toU64 0xa5
+    let src1 : Nat := canonMint1
+    let src2 : Nat := canonMint2
+    let src3 : Nat := canonMint3
+    let src4 : Nat := canonMint4
     cuTripleAbortsWithinMem 76 0 0
       (fullHappyPathCr.union (CodeReq.singleton 75 .exit))
       -- PRECONDITION: FullHappyPath's pre (in explicit left-grouped
@@ -528,26 +535,25 @@ theorem p_token_transfer_full_happy_path_terminates
   --   2. Compose with exit_aborts_spec_cuTriple via the new
   --      cuTripleWithinMem_seq_abort_pure lemma.
   --   3. Reshape pre and post atoms via cuTripleAbortsWithinMem_weaken.
-  -- Introduce the magic-byte `let`s from the type; the FullHappyPath
-  -- spec has the same shape so its call below sees the same names.
-  intro m1 m3
+  -- Introduce the type-level `let`s; the FullHappyPath spec has the
+  -- same shape so its call below sees the same names.
+  intro m1 m3 src1 src2 src3 src4
   have h_full :=
     p_token_transfer_full_happy_path_spec
       initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7
       disc m2 m4 amount layoutBound layoutTag srcState dstState
       txAmount srcBalance dstBalance
       canonMint1 canonMint2 canonMint3 canonMint4
-      src1 src2 src3 src4 dst1 dst2 dst3 dst4
+      dst1 dst2 dst3 dst4
       dstMint2 dstMint3 dstMint4
       authWord signerByte authByte closeFlag
       h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
       h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
-      h_s1_lt h_s2_lt h_s3_lt h_s4_lt
       h_d1_lt h_d2_lt h_d3_lt h_d4_lt
       h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
       h_disc hm2 hm4 h_bound_ge h_tag
       h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
-      h_eq_s1 h_eq_s2 h_eq_s3 h_eq_s4 h_signer_ne h_r0_eq_r5_at_h4a
+      h_signer_ne h_r0_eq_r5_at_h4a
       h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne
       h_amt_ne_0 h_auth_ne_0 h_close_ne_1
   -- h_full : cuTripleWithinMem 75 0 0 75 fullHappyPathCr <pre> <post> <rr>

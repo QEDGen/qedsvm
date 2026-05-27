@@ -296,8 +296,8 @@ theorem p_token_transfer_balance_spec_pinocchio
     (layoutBound layoutTag : Nat)
     (srcState dstState : Nat)
     (txAmount srcBalance dstBalance : Nat)
+    -- src1..src4 are pinned to canonMint*, lifted as `let`s.
     (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
-    (src1 src2 src3 src4 : Nat)
     (dst1 dst2 dst3 dst4 : Nat)
     (dstMint2 dstMint3 dstMint4 : Nat)
     (authWord signerByte authByte closeFlag : Nat)
@@ -309,8 +309,6 @@ theorem p_token_transfer_balance_spec_pinocchio
     (h_dst_bal_lt : dstBalance < 2 ^ 64)
     (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
     (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
-    (h_s1_lt : src1 < 2 ^ 64) (h_s2_lt : src2 < 2 ^ 64)
-    (h_s3_lt : src3 < 2 ^ 64) (h_s4_lt : src4 < 2 ^ 64)
     (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
     (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
     (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
@@ -326,8 +324,6 @@ theorem p_token_transfer_balance_spec_pinocchio
     (h_dst_le : dstState % 256 ≤ 2) (h_dst_ne : dstState % 256 ≠ 0)
     (h_src_ne2 : srcState % 256 ≠ 2) (h_dst_ne2 : dstState % 256 ≠ 2)
     (h_bal_ge : srcBalance ≥ txAmount)
-    (h_eq_s1 : src1 = canonMint1) (h_eq_s2 : src2 = canonMint2)
-    (h_eq_s3 : src3 = canonMint3) (h_eq_s4 : src4 = canonMint4)
     (h_signer_ne : signerByte % 256 ≠ toU64 1)
     (h_r0_eq_r5_at_h4a : signerByte % 256 = authWord)
     (h_eq_d1 : dst1 = authWord) (h_eq_d2 : dst2 = dstMint2)
@@ -342,9 +338,13 @@ theorem p_token_transfer_balance_spec_pinocchio
     -- linter-disable below.
     (h_funds      : txAmount ≤ srcBalance)
     (h_noOverflow : dstBalance + txAmount < 2 ^ 64) :
-    -- Magic-byte witnesses lifted as `let`s, mirroring FullHappyPath.
+    -- Witnesses lifted as `let`s, mirroring FullHappyPath.
     let m1 : Nat := toU64 0xa5
     let m3 : Nat := toU64 0xa5
+    let src1 : Nat := canonMint1
+    let src2 : Nat := canonMint2
+    let src3 : Nat := canonMint3
+    let src4 : Nat := canonMint4
     cuTripleWithinMem 75 0 0 75
       Examples.PTokenTransferFullHappyPath.fullHappyPathCr
       -- PRECONDITION — identical to FullHappyPath
@@ -456,9 +456,9 @@ theorem p_token_transfer_balance_spec_pinocchio
           rt.containsRange (effectiveAddr initR1 10664) 8 = true) ∧
         rt.containsWritable (effectiveAddr initR1 10664) 8 = true) ∧
       rt.containsRange (effectiveAddr initR1 205) 1 = true) := by
-  -- Introduce the magic-byte lets from the type before citing
-  -- FullHappyPath (which has the same lets in its own conclusion).
-  intro m1 m3
+  -- Introduce the type-level `let`s before citing FullHappyPath
+  -- (which has the same lets in its own conclusion).
+  intro m1 m3 src1 src2 src3 src4
   -- Cite the proven FullHappyPath triple.
   have h_full :=
     Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec
@@ -466,18 +466,16 @@ theorem p_token_transfer_balance_spec_pinocchio
       disc m2 m4 amount layoutBound layoutTag srcState dstState
       txAmount srcBalance dstBalance
       canonMint1 canonMint2 canonMint3 canonMint4
-      src1 src2 src3 src4
       dst1 dst2 dst3 dst4
       dstMint2 dstMint3 dstMint4
       authWord signerByte authByte closeFlag
       h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
       h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
-      h_s1_lt h_s2_lt h_s3_lt h_s4_lt
       h_d1_lt h_d2_lt h_d3_lt h_d4_lt
       h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
       h_disc hm2 hm4 h_bound_ge h_tag
       h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
-      h_eq_s1 h_eq_s2 h_eq_s3 h_eq_s4 h_signer_ne h_r0_eq_r5_at_h4a
+      h_signer_ne h_r0_eq_r5_at_h4a
       h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne
       h_amt_ne_0 h_auth_ne_0 h_close_ne_1
   -- Wrap-arithmetic collapse to unsigned form. Mirrors the
