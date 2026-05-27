@@ -46,6 +46,16 @@ name = "qedrecover"
 path = "src/bin/qedrecover.rs"
 required-features = ["qedrecover"]
 
+# qedlift — end-to-end lift demo: load a Solana .so, extract .text,
+# decode to insns, emit a Lean module with the bytes + decoded insns
+# + decode-equality proof + Hoare-triple skeleton ready for
+# `sl_block_auto` to close. Same feature gate as qedrecover (shares
+# the solana-sbpf dep).
+[[bin]]
+name = "qedlift"
+path = "src/bin/qedlift.rs"
+required-features = ["qedrecover"]
+
 [dependencies]
 # Pinned to agave master's published versions (see anza-xyz/agave Cargo.toml).
 # The whole point of these crates is to be Mollusk-shape-compatible:
