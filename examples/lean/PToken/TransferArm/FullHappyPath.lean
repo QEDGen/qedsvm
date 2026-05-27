@@ -119,8 +119,10 @@ theorem p_token_transfer_full_happy_path_spec
     -- (src1..src4) are pinned by hypothesis to the canonical mints,
     -- lifted to `let`s in the type below.
     (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
-    -- Destination-account mint words and dest-canonical mint words (H4a)
-    (dst1 dst2 dst3 dst4 : Nat)
+    -- Destination-account mint words dst1..dst4 are pinned by H4a's
+    -- hypotheses (dst1 = authWord, dst2..dst4 = dstMint2..dstMint4),
+    -- so they're lifted as `let`s in the type. The canonical dest
+    -- mint words (dstMint2..dstMint4) remain real parameters.
     (dstMint2 dstMint3 dstMint4 : Nat)
     -- Authority/signer (H3f, H4b)
     (authWord signerByte authByte closeFlag : Nat)
@@ -132,8 +134,6 @@ theorem p_token_transfer_full_happy_path_spec
     (h_dst_bal_lt : dstBalance < 2 ^ 64)
     (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
     (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
-    (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
-    (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
     (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
     (h_dm4_lt : dstMint4 < 2 ^ 64)
     (h_auth_lt : authWord < 2 ^ 64)
@@ -154,10 +154,9 @@ theorem p_token_transfer_full_happy_path_spec
     -- H3e: source-mint = canonical (lifted as `let`s in the type)
     -- H3f: not signer (`jne r0, 0x1` taken)
     (h_signer_ne : signerByte % 256 ≠ toU64 1)
-    -- H4a: dest-mint = canonical, and chain-coupling r0=r5 at H4a entry
+    -- H4a: chain-coupling r0=r5 at H4a entry; dest-mint = canonical
+    -- equalities are baked into the dst1..dst4 lets in the type.
     (h_r0_eq_r5_at_h4a : signerByte % 256 = authWord)
-    (h_eq_d1 : dst1 = authWord) (h_eq_d2 : dst2 = dstMint2)
-    (h_eq_d3 : dst3 = dstMint3) (h_eq_d4 : dst4 = dstMint4)
     (h_r4_ne : amount ≠ toU64 0x163)
     -- H4b: nonzero amount, nonzero auth, close-flag != 1 (jne taken)
     (h_amt_ne_0 : txAmount ≠ toU64 0)
@@ -173,6 +172,10 @@ theorem p_token_transfer_full_happy_path_spec
     let src2 : Nat := canonMint2
     let src3 : Nat := canonMint3
     let src4 : Nat := canonMint4
+    let dst1 : Nat := authWord
+    let dst2 : Nat := dstMint2
+    let dst3 : Nat := dstMint3
+    let dst4 : Nat := dstMint4
     cuTripleWithinMem 75 0 0 75 fullHappyPathCr
       -- PRECONDITION: all register and memory state at chain entry
       ((.r0 ↦ᵣ initR0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
@@ -299,7 +302,7 @@ theorem p_token_transfer_full_happy_path_spec
   -- restore the original hypothesis names as local `have`s so the
   -- existing tactic block (which references hm1/hm3/h_m1_lt/h_m3_lt
   -- and h_eq_s1..s4/h_s1_lt..s4_lt by name) runs unchanged.
-  intro m1 m3 src1 src2 src3 src4
+  intro m1 m3 src1 src2 src3 src4 dst1 dst2 dst3 dst4
   have h_m1_lt : m1 < 2 ^ 64 := by decide
   have h_m3_lt : m3 < 2 ^ 64 := by decide
   have hm1 : m1 = toU64 0xa5 := rfl
@@ -312,6 +315,14 @@ theorem p_token_transfer_full_happy_path_spec
   have h_eq_s2 : src2 = canonMint2 := rfl
   have h_eq_s3 : src3 = canonMint3 := rfl
   have h_eq_s4 : src4 = canonMint4 := rfl
+  have h_d1_lt : dst1 < 2 ^ 64 := h_auth_lt
+  have h_d2_lt : dst2 < 2 ^ 64 := h_dm2_lt
+  have h_d3_lt : dst3 < 2 ^ 64 := h_dm3_lt
+  have h_d4_lt : dst4 < 2 ^ 64 := h_dm4_lt
+  have h_eq_d1 : dst1 = authWord := rfl
+  have h_eq_d2 : dst2 = dstMint2 := rfl
+  have h_eq_d3 : dst3 = dstMint3 := rfl
+  have h_eq_d4 : dst4 = dstMint4 := rfl
   -- Instantiate each sub-arm spec at its base PC with the threaded
   -- intermediate state. Pre/post atom values are alpha-renamed to
   -- the chain-level names where the threading happens.
@@ -407,9 +418,10 @@ theorem p_token_transfer_full_happy_path_terminates
     (layoutBound layoutTag : Nat)
     (srcState dstState : Nat)
     (txAmount srcBalance dstBalance : Nat)
-    -- Source-mint words src1..src4 are pinned to canonMint*, lifted as `let`s.
+    -- Source-mint words src1..src4 pinned to canonMint*; dest-mint
+    -- words dst1..dst4 pinned to authWord / dstMint2..dstMint4. Both
+    -- groups lifted as `let`s in the type.
     (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
-    (dst1 dst2 dst3 dst4 : Nat)
     (dstMint2 dstMint3 dstMint4 : Nat)
     (authWord signerByte authByte closeFlag : Nat)
     (h_amt_in : amount < 2 ^ 64)
@@ -419,8 +431,6 @@ theorem p_token_transfer_full_happy_path_terminates
     (h_dst_bal_lt : dstBalance < 2 ^ 64)
     (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
     (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
-    (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
-    (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
     (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
     (h_dm4_lt : dstMint4 < 2 ^ 64)
     (h_auth_lt : authWord < 2 ^ 64)
@@ -435,8 +445,6 @@ theorem p_token_transfer_full_happy_path_terminates
     (h_bal_ge : srcBalance ≥ txAmount)
     (h_signer_ne : signerByte % 256 ≠ toU64 1)
     (h_r0_eq_r5_at_h4a : signerByte % 256 = authWord)
-    (h_eq_d1 : dst1 = authWord) (h_eq_d2 : dst2 = dstMint2)
-    (h_eq_d3 : dst3 = dstMint3) (h_eq_d4 : dst4 = dstMint4)
     (h_r4_ne : amount ≠ toU64 0x163)
     (h_amt_ne_0 : txAmount ≠ toU64 0)
     (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
@@ -448,6 +456,10 @@ theorem p_token_transfer_full_happy_path_terminates
     let src2 : Nat := canonMint2
     let src3 : Nat := canonMint3
     let src4 : Nat := canonMint4
+    let dst1 : Nat := authWord
+    let dst2 : Nat := dstMint2
+    let dst3 : Nat := dstMint3
+    let dst4 : Nat := dstMint4
     cuTripleAbortsWithinMem 76 0 0
       (fullHappyPathCr.union (CodeReq.singleton 75 .exit))
       -- PRECONDITION: FullHappyPath's pre (in explicit left-grouped
@@ -537,24 +549,21 @@ theorem p_token_transfer_full_happy_path_terminates
   --   3. Reshape pre and post atoms via cuTripleAbortsWithinMem_weaken.
   -- Introduce the type-level `let`s; the FullHappyPath spec has the
   -- same shape so its call below sees the same names.
-  intro m1 m3 src1 src2 src3 src4
+  intro m1 m3 src1 src2 src3 src4 dst1 dst2 dst3 dst4
   have h_full :=
     p_token_transfer_full_happy_path_spec
       initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7
       disc m2 m4 amount layoutBound layoutTag srcState dstState
       txAmount srcBalance dstBalance
       canonMint1 canonMint2 canonMint3 canonMint4
-      dst1 dst2 dst3 dst4
       dstMint2 dstMint3 dstMint4
       authWord signerByte authByte closeFlag
       h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
       h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
-      h_d1_lt h_d2_lt h_d3_lt h_d4_lt
       h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
       h_disc hm2 hm4 h_bound_ge h_tag
       h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
-      h_signer_ne h_r0_eq_r5_at_h4a
-      h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne
+      h_signer_ne h_r0_eq_r5_at_h4a h_r4_ne
       h_amt_ne_0 h_auth_ne_0 h_close_ne_1
   -- h_full : cuTripleWithinMem 75 0 0 75 fullHappyPathCr <pre> <post> <rr>
   -- Drop into the unfolded `cuTripleAbortsWithinMem` definition.

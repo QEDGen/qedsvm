@@ -296,9 +296,9 @@ theorem p_token_transfer_balance_spec_pinocchio
     (layoutBound layoutTag : Nat)
     (srcState dstState : Nat)
     (txAmount srcBalance dstBalance : Nat)
-    -- src1..src4 are pinned to canonMint*, lifted as `let`s.
+    -- src1..src4 and dst1..dst4 are pinned by hypothesis to other
+    -- params (canonMint*, authWord, dstMint*), lifted as `let`s.
     (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
-    (dst1 dst2 dst3 dst4 : Nat)
     (dstMint2 dstMint3 dstMint4 : Nat)
     (authWord signerByte authByte closeFlag : Nat)
     -- Size hypotheses (same as FullHappyPath)
@@ -309,8 +309,6 @@ theorem p_token_transfer_balance_spec_pinocchio
     (h_dst_bal_lt : dstBalance < 2 ^ 64)
     (h_canon1_lt : canonMint1 < 2 ^ 64) (h_canon2_lt : canonMint2 < 2 ^ 64)
     (h_canon3_lt : canonMint3 < 2 ^ 64) (h_canon4_lt : canonMint4 < 2 ^ 64)
-    (h_d1_lt : dst1 < 2 ^ 64) (h_d2_lt : dst2 < 2 ^ 64)
-    (h_d3_lt : dst3 < 2 ^ 64) (h_d4_lt : dst4 < 2 ^ 64)
     (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
     (h_dm4_lt : dstMint4 < 2 ^ 64)
     (h_auth_lt : authWord < 2 ^ 64)
@@ -326,8 +324,6 @@ theorem p_token_transfer_balance_spec_pinocchio
     (h_bal_ge : srcBalance ≥ txAmount)
     (h_signer_ne : signerByte % 256 ≠ toU64 1)
     (h_r0_eq_r5_at_h4a : signerByte % 256 = authWord)
-    (h_eq_d1 : dst1 = authWord) (h_eq_d2 : dst2 = dstMint2)
-    (h_eq_d3 : dst3 = dstMint3) (h_eq_d4 : dst4 = dstMint4)
     (h_r4_ne : amount ≠ toU64 0x163)
     (h_amt_ne_0 : txAmount ≠ toU64 0)
     (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
@@ -345,6 +341,10 @@ theorem p_token_transfer_balance_spec_pinocchio
     let src2 : Nat := canonMint2
     let src3 : Nat := canonMint3
     let src4 : Nat := canonMint4
+    let dst1 : Nat := authWord
+    let dst2 : Nat := dstMint2
+    let dst3 : Nat := dstMint3
+    let dst4 : Nat := dstMint4
     cuTripleWithinMem 75 0 0 75
       Examples.PTokenTransferFullHappyPath.fullHappyPathCr
       -- PRECONDITION — identical to FullHappyPath
@@ -458,7 +458,7 @@ theorem p_token_transfer_balance_spec_pinocchio
       rt.containsRange (effectiveAddr initR1 205) 1 = true) := by
   -- Introduce the type-level `let`s before citing FullHappyPath
   -- (which has the same lets in its own conclusion).
-  intro m1 m3 src1 src2 src3 src4
+  intro m1 m3 src1 src2 src3 src4 dst1 dst2 dst3 dst4
   -- Cite the proven FullHappyPath triple.
   have h_full :=
     Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec
@@ -466,17 +466,14 @@ theorem p_token_transfer_balance_spec_pinocchio
       disc m2 m4 amount layoutBound layoutTag srcState dstState
       txAmount srcBalance dstBalance
       canonMint1 canonMint2 canonMint3 canonMint4
-      dst1 dst2 dst3 dst4
       dstMint2 dstMint3 dstMint4
       authWord signerByte authByte closeFlag
       h_amt_in h_bound_lt h_tx_lt h_bal_lt h_dst_bal_lt
       h_canon1_lt h_canon2_lt h_canon3_lt h_canon4_lt
-      h_d1_lt h_d2_lt h_d3_lt h_d4_lt
       h_dm2_lt h_dm3_lt h_dm4_lt h_auth_lt
       h_disc hm2 hm4 h_bound_ge h_tag
       h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
-      h_signer_ne h_r0_eq_r5_at_h4a
-      h_eq_d1 h_eq_d2 h_eq_d3 h_eq_d4 h_r4_ne
+      h_signer_ne h_r0_eq_r5_at_h4a h_r4_ne
       h_amt_ne_0 h_auth_ne_0 h_close_ne_1
   -- Wrap-arithmetic collapse to unsigned form. Mirrors the
   -- `h_wsub`/`h_wadd` pattern from RefinesTransfer.lean L86-100.
