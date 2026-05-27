@@ -16,12 +16,13 @@
 //! the binary, we can produce the Lean proof obligation automatically;
 //! `sl_block_auto` then closes it.
 //!
-//! Scope: only loads .so → decodes → emits Lean. Pre/post atom synthesis
-//! is **out of scope for this iteration** — the emitted theorem has the
-//! pre/post template as `sorry`s with a `TODO: replace with symbolic
-//! executor output` comment. The user runs `sl_block_auto` on the
-//! template-filled version. Full pre/post synthesis is the next step
-//! (the "symbolic executor" piece).
+//! Phase 2 (this iteration): a symbolic executor walks the decoded
+//! insns left-to-right, maintaining a `SymState` (symbolic regs +
+//! memory atoms), and synthesises the pre/post-condition assertions
+//! that `sl_block_auto` then closes. Supports the byte_increment +
+//! counter instruction set today: ldxb/ldxdw/stxb/stxdw, add64.imm,
+//! sub64.imm, mov64.imm. Extending to more opcodes is mechanical —
+//! one match arm per `ebpf::OPCODE`.
 //!
 //! Usage:
 //!   cargo run --features qedrecover --bin qedlift -- \
@@ -96,6 +97,369 @@ fn insn_to_lean(insn: &ebpf::Insn) -> Result<String, String> {
         EXIT        => ".exit".to_string(),
         opc         => return Err(format!("opcode 0x{:02x} not yet lifted to Lean", opc)),
     })
+}
+
+// -----------------------------------------------------------------------------
+// Symbolic executor — phase 2 of the lift
+// -----------------------------------------------------------------------------
+//
+// Walks a straight-line slice of decoded eBPF insns, maintaining a
+// SymState (symbolic register values + ordered list of pre-condition
+// atoms touched). Emits the Lean SL expressions for the precondition
+// and postcondition. The triple type is `cuTripleWithinMem n 0 0 n cr
+// PRE POST RR` where `n` is the number of insns covered (excluding
+// the trailing exit, if any) — exactly the shape `sl_block_auto`
+// accepts.
+
+/// Symbolic-algebra expression representing a Nat value during
+/// symbolic execution. Stringified to Lean source via `to_lean`.
+#[derive(Clone, Debug)]
+enum Expr {
+    /// Initial value of a register at entry (e.g., "initR2", "baseAddr").
+    InitReg(String),
+    /// Initial value of a memory cell loaded during execution (e.g., "oldCounter").
+    InitMem(String),
+    /// Integer literal.
+    Const(i64),
+    /// `toU64 n` — Solana ABI helper for sign-extended Nat literals.
+    ToU64(Box<Expr>),
+    /// `e % m` — narrowing modulus from a byte/half/word load.
+    Mod(Box<Expr>, u64),
+    /// `wrapAdd a b` — 64-bit wrapping add.
+    WrapAdd(Box<Expr>, Box<Expr>),
+    /// `wrapSub a b` — 64-bit wrapping sub.
+    WrapSub(Box<Expr>, Box<Expr>),
+}
+
+impl Expr {
+    fn to_lean(&self) -> String {
+        match self {
+            Expr::InitReg(n) | Expr::InitMem(n) => n.clone(),
+            Expr::Const(n) => format!("{}", n),
+            Expr::ToU64(e) => format!("toU64 {}", e.atom_lean()),
+            Expr::Mod(e, m) => format!("{} % {}", e.atom_lean(), m),
+            Expr::WrapAdd(a, b) => format!("wrapAdd {} {}", a.atom_lean(), b.atom_lean()),
+            Expr::WrapSub(a, b) => format!("wrapSub {} {}", a.atom_lean(), b.atom_lean()),
+        }
+    }
+    /// Lean rendering suitable for use as a function argument
+    /// (parenthesised when the head isn't already atomic).
+    fn atom_lean(&self) -> String {
+        match self {
+            Expr::InitReg(_) | Expr::InitMem(_) | Expr::Const(_) => self.to_lean(),
+            _ => format!("({})", self.to_lean()),
+        }
+    }
+}
+
+/// Load/store width — used to pick the right Lean memory binding
+/// notation (↦ₘ for byte, ↦U16/32/64 for wider).
+#[derive(Clone, Copy, Debug)]
+enum Width { Byte, Halfword, Word, Dword }
+
+impl Width {
+    fn lean_arrow(&self) -> &'static str {
+        match self {
+            Width::Byte     => "↦ₘ",
+            Width::Halfword => "↦U16",
+            Width::Word     => "↦U32",
+            Width::Dword    => "↦U64",
+        }
+    }
+    fn modulus(&self) -> u64 {
+        match self {
+            Width::Byte     => 256,
+            Width::Halfword => 1 << 16,
+            Width::Word     => 1 << 32,
+            Width::Dword    => 0, // no narrowing
+        }
+    }
+}
+
+/// One precondition atom: a register binding or a memory cell binding.
+#[derive(Clone, Debug)]
+enum Atom {
+    Reg(u8, Expr),
+    Mem { addr_base: Expr, addr_off: i64, width: Width, value: Expr },
+}
+
+impl Atom {
+    fn to_lean(&self) -> String {
+        match self {
+            Atom::Reg(r, v) => format!("(.{} ↦ᵣ {})", reg_lit(*r), v.to_lean()),
+            Atom::Mem { addr_base, addr_off, width, value } => format!(
+                "(effectiveAddr {} {} {} {})",
+                addr_base.atom_lean(),
+                addr_off,
+                width.lean_arrow(),
+                value.to_lean(),
+            ),
+        }
+    }
+}
+
+fn reg_lit(n: u8) -> &'static str {
+    match n {
+        0 => "r0", 1 => "r1", 2 => "r2", 3 => "r3", 4 => "r4",
+        5 => "r5", 6 => "r6", 7 => "r7", 8 => "r8", 9 => "r9", 10 => "r10",
+        _ => "r0",
+    }
+}
+
+fn reg_initial_name(n: u8) -> String {
+    match n {
+        1 => "baseAddr".to_string(),    // r1 = input ptr by Solana ABI
+        _ => format!("vR{}Old", n),
+    }
+}
+
+/// Symbolic state threaded through one walk of the slice.
+#[derive(Default)]
+struct SymState {
+    /// Current symbolic value of each register, if read or written.
+    /// Registers not present are treated as their initial value
+    /// (`InitReg(reg_initial_name(r))`).
+    regs: std::collections::BTreeMap<u8, Expr>,
+    /// Pre-condition atoms collected in *first-touched* order.
+    pre: Vec<Atom>,
+    /// Memory cells the slice touched, indexed by (base register,
+    /// offset, width). Maps to the current symbolic value.
+    mem: std::collections::BTreeMap<(u8, i64, u8), Expr>,
+    /// Fresh-variable counter for memory initials.
+    fresh: u32,
+    /// Names of symbolic variables that come from u64-width loads
+    /// (`ldxdw`). The corresponding per-instruction spec carries a
+    /// `< 2^64` side condition that the theorem signature must
+    /// hypothesise so `sl_block_auto <;> assumption` discharges it.
+    u64_load_vars: Vec<String>,
+}
+
+impl SymState {
+    fn read_reg(&mut self, r: u8) -> Expr {
+        if let Some(v) = self.regs.get(&r) { return v.clone(); }
+        let v = Expr::InitReg(reg_initial_name(r));
+        self.regs.insert(r, v.clone());
+        // Register reads from r0/r2..r9 add a pre-atom (we need to
+        // know its initial value); r1 (input ptr) and r10 (frame top)
+        // are conventional and also recorded.
+        self.pre.push(Atom::Reg(r, v.clone()));
+        v
+    }
+    fn write_reg(&mut self, r: u8, v: Expr) {
+        // Ensure r has a pre-atom: if it was never read, its initial
+        // value is still "free" — record it before overwriting.
+        if !self.regs.contains_key(&r) {
+            let init = Expr::InitReg(reg_initial_name(r));
+            self.regs.insert(r, init.clone());
+            self.pre.push(Atom::Reg(r, init));
+        }
+        self.regs.insert(r, v);
+    }
+    fn read_mem(&mut self, base: u8, off: i64, width: Width) -> Expr {
+        let key = (base, off, width as u8);
+        if let Some(v) = self.mem.get(&key) { return v.clone(); }
+        // Fresh memory variable named after the access shape.
+        let name = match (width, off) {
+            (Width::Byte, 0)  => "oldByte".to_string(),
+            (Width::Dword, 0) => "oldCounter".to_string(),
+            (w, _)            => format!("oldMem{}_{}", w_short(w), self.next_fresh()),
+        };
+        // u64 loads carry a `< 2^64` side condition from `ldxdw_spec`;
+        // record the variable name so the theorem signature can
+        // hypothesise it for `<;> assumption` to discharge later.
+        if matches!(width, Width::Dword) {
+            self.u64_load_vars.push(name.clone());
+        }
+        let v = Expr::InitMem(name);
+        // Record both the *current* value (what reads see) and the
+        // pre-atom (the initial value at that cell).
+        self.mem.insert(key, v.clone());
+        let base_expr = self.read_reg(base);
+        self.pre.push(Atom::Mem {
+            addr_base: base_expr, addr_off: off, width, value: v.clone(),
+        });
+        v
+    }
+    fn write_mem(&mut self, base: u8, off: i64, width: Width, value: Expr) {
+        let key = (base, off, width as u8);
+        // Make sure the pre-atom exists (a store after no preceding
+        // load still needs the cell to be present in the pre-state
+        // for the SL frame to align).
+        if !self.mem.contains_key(&key) {
+            let _ = self.read_mem(base, off, width);
+        }
+        self.mem.insert(key, value);
+    }
+    fn next_fresh(&mut self) -> u32 { self.fresh += 1; self.fresh }
+}
+
+fn w_short(w: Width) -> &'static str {
+    match w { Width::Byte => "B", Width::Halfword => "H", Width::Word => "W", Width::Dword => "D" }
+}
+
+/// Step one instruction's effect through `state`. Returns Ok(true) if
+/// the instruction was a recognised non-terminator; Ok(false) if it
+/// was `exit` (slice terminates); Err for opcodes the executor
+/// doesn't model yet.
+fn step(state: &mut SymState, insn: &ebpf::Insn) -> Result<bool, String> {
+    use ebpf::*;
+    let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
+    match insn.opc {
+        LD_B_REG => {
+            let raw = state.read_mem(src, off, Width::Byte);
+            // Byte load narrows: r := raw % 256.
+            state.write_reg(dst, Expr::Mod(Box::new(raw), 256));
+        }
+        LD_H_REG => {
+            let raw = state.read_mem(src, off, Width::Halfword);
+            state.write_reg(dst, Expr::Mod(Box::new(raw), 1 << 16));
+        }
+        LD_W_REG => {
+            let raw = state.read_mem(src, off, Width::Word);
+            state.write_reg(dst, Expr::Mod(Box::new(raw), 1 << 32));
+        }
+        LD_DW_REG => {
+            let raw = state.read_mem(src, off, Width::Dword);
+            state.write_reg(dst, raw);
+        }
+        ST_B_REG => {
+            let cur = state.read_reg(src);
+            // Byte store narrows: mem := r % 256.
+            state.write_mem(dst, off, Width::Byte, Expr::Mod(Box::new(cur), 256));
+        }
+        ST_H_REG => {
+            let cur = state.read_reg(src);
+            state.write_mem(dst, off, Width::Halfword, Expr::Mod(Box::new(cur), 1 << 16));
+        }
+        ST_W_REG => {
+            let cur = state.read_reg(src);
+            state.write_mem(dst, off, Width::Word, Expr::Mod(Box::new(cur), 1 << 32));
+        }
+        ST_DW_REG => {
+            let cur = state.read_reg(src);
+            state.write_mem(dst, off, Width::Dword, cur);
+        }
+        ADD64_IMM => {
+            let cur = state.read_reg(dst);
+            state.write_reg(dst, Expr::WrapAdd(
+                Box::new(cur),
+                Box::new(Expr::ToU64(Box::new(Expr::Const(imm)))),
+            ));
+        }
+        SUB64_IMM => {
+            let cur = state.read_reg(dst);
+            state.write_reg(dst, Expr::WrapSub(
+                Box::new(cur),
+                Box::new(Expr::ToU64(Box::new(Expr::Const(imm)))),
+            ));
+        }
+        MOV64_IMM => {
+            state.write_reg(dst, Expr::ToU64(Box::new(Expr::Const(imm))));
+        }
+        MOV64_REG => {
+            let v = state.read_reg(src);
+            state.write_reg(dst, v);
+        }
+        ADD64_REG => {
+            let a = state.read_reg(dst);
+            let b = state.read_reg(src);
+            state.write_reg(dst, Expr::WrapAdd(Box::new(a), Box::new(b)));
+        }
+        SUB64_REG => {
+            let a = state.read_reg(dst);
+            let b = state.read_reg(src);
+            state.write_reg(dst, Expr::WrapSub(Box::new(a), Box::new(b)));
+        }
+        EXIT => return Ok(false),
+        opc => return Err(format!("symbolic executor: opcode 0x{:02x} not yet modelled", opc)),
+    }
+    Ok(true)
+}
+
+/// Concatenate the pre-atom list into a Lean `**`-separated SL
+/// expression. Empty list renders as `emp`.
+fn atoms_to_lean(atoms: &[Atom]) -> String {
+    if atoms.is_empty() { return "emp".to_string(); }
+    let parts: Vec<String> = atoms.iter().map(Atom::to_lean).collect();
+    parts.join(" **\n      ")
+}
+
+/// Build the postcondition atom list: same shape as pre, but each atom
+/// reflects the symbolic value at the end of the walk.
+fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
+    let mut out = Vec::with_capacity(initial_pre.len());
+    for atom in initial_pre {
+        match atom {
+            Atom::Reg(r, _) => {
+                let v = state.regs.get(r).cloned()
+                    .unwrap_or_else(|| Expr::InitReg(reg_initial_name(*r)));
+                out.push(Atom::Reg(*r, v));
+            }
+            Atom::Mem { addr_base, addr_off, width, .. } => {
+                // Recover the base register from the addr_base expr
+                // (it's always an InitReg here because pre-atoms are
+                // constructed via `read_mem` which calls `read_reg`).
+                let base_reg = match addr_base {
+                    Expr::InitReg(name) => match name.as_str() {
+                        "baseAddr" => 1u8,
+                        s if s.starts_with("vR") && s.ends_with("Old") => {
+                            s[2..s.len()-3].parse::<u8>().unwrap_or(0)
+                        }
+                        _ => 0,
+                    },
+                    _ => 0,
+                };
+                let key = (base_reg, *addr_off, *width as u8);
+                let v = state.mem.get(&key).cloned()
+                    .unwrap_or_else(|| Expr::InitMem("?".to_string()));
+                out.push(Atom::Mem {
+                    addr_base: addr_base.clone(),
+                    addr_off:  *addr_off,
+                    width:     *width,
+                    value:     v,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Build the region-requirement clause: for each memory atom in pre,
+/// emit `rt.containsRange addr width = true` (and `containsWritable`
+/// for any atom we mutated).
+fn region_req(pre: &[Atom], state: &SymState) -> String {
+    let mut clauses = Vec::new();
+    for atom in pre {
+        if let Atom::Mem { addr_base, addr_off, width, .. } = atom {
+            let width_bytes = match width {
+                Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
+            };
+            let addr = format!("effectiveAddr {} {}", addr_base.atom_lean(), addr_off);
+            clauses.push(format!("rt.containsRange ({}) {} = true", addr, width_bytes));
+            // Was it written to?
+            let base_reg = match addr_base {
+                Expr::InitReg(name) if name == "baseAddr" => 1u8,
+                _ => 0,
+            };
+            let key = (base_reg, *addr_off, *width as u8);
+            if let Some(cur) = state.mem.get(&key) {
+                // If the current memory value differs from the InitMem
+                // it was loaded as, the cell was written.
+                let written = !matches!(cur, Expr::InitMem(_));
+                if written {
+                    clauses.push(format!(
+                        "rt.containsWritable ({}) {} = true",
+                        addr, width_bytes,
+                    ));
+                }
+            }
+        }
+    }
+    if clauses.is_empty() {
+        "True".to_string()
+    } else {
+        clauses.join(" ∧\n                  ")
+    }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -194,43 +558,101 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         module_name, module_name, module_name,
     ));
 
-    // The triple skeleton — pre/post left as a TODO marker for the
-    // next iteration (the symbolic executor).
-    out.push_str("/-! ## Hoare-triple skeleton (next iteration: symbolic executor)\n\n");
-    out.push_str("The shape below is what qedlift would emit for the lift's\n");
-    out.push_str("**theorem statement**. Pre/post atom synthesis from the\n");
-    out.push_str("decoded insns is the next iteration's work; for now this\n");
-    out.push_str("file demonstrates the bytes → decoded → ready-to-prove\n");
-    out.push_str("pipeline. Cite `byte_increment_macro_spec_auto` in\n");
-    out.push_str("`SVM/SBPF/Macros.lean` for the proved form of the same\n");
-    out.push_str("triple — `sl_block_auto` closes it in one tactic call. -/\n\n");
-
     // Block-PCs (excluding any trailing `.exit`, which the macro spec
     // doesn't cover).
     let block_pcs: Vec<usize> = insns.iter().enumerate()
         .filter_map(|(i, ins)| if ins.opc == ebpf::EXIT { None } else { Some(i) })
         .collect();
 
-    out.push_str("/-- Macro CodeReq for the non-exit prefix of the program. -/\n");
-    out.push_str(&format!("def {}MacroCr : CodeReq :=\n", module_name));
-    // Build a left-folded `((A.union B).union C).union D` shape so
-    // every union associates to the left the same way the hand-written
-    // arm files in `examples/lean/PToken/TransferArm/` do.
-    if block_pcs.is_empty() {
-        out.push_str("  CodeReq.empty -- (no non-exit instructions)\n");
+    // Build the CR as a Lean string. `sl_block_auto` requires the CR
+    // to appear as a literal `union`-of-`singleton`s in the theorem
+    // statement (it walks the AST), so we capture the string here and
+    // inline it below instead of emitting a `def`.
+    let cr_lean: String = if block_pcs.is_empty() {
+        "CodeReq.empty".to_string()
     } else {
+        let mut s = String::new();
         let opens = "(".repeat(block_pcs.len().saturating_sub(1));
-        out.push_str(&format!("  {}", opens));
+        s.push_str(&opens);
         for (i, &pc) in block_pcs.iter().enumerate() {
             let lean_insn = insn_to_lean(&insns[pc])?;
             if i == 0 {
-                out.push_str(&format!("(CodeReq.singleton {} ({}))", pc, lean_insn));
+                s.push_str(&format!("(CodeReq.singleton {} ({}))", pc, lean_insn));
             } else {
-                out.push_str(&format!(".union\n      (CodeReq.singleton {} ({})))", pc, lean_insn));
+                s.push_str(&format!(".union\n        (CodeReq.singleton {} ({})))", pc, lean_insn));
+            }
+        }
+        s
+    };
+
+    // --- Phase 2: symbolic execution + Hoare-triple emission. ---
+    out.push_str("/-! ## Symbolically lifted Hoare triple\n\n");
+    out.push_str("Synthesised by qedlift's symbolic executor walking the\n");
+    out.push_str("decoded insns left-to-right. Closed by `sl_block_auto`. -/\n\n");
+
+    let mut state = SymState::default();
+    for &pc in &block_pcs {
+        if !step(&mut state, &insns[pc])? {
+            break;
+        }
+    }
+    let pre  = state.pre.clone();
+    let post = post_atoms(&pre, &state);
+    let rr   = region_req(&pre, &state);
+
+    // Collect the symbolic variables we introduced so the theorem
+    // signature can quantify over them.
+    let mut vars: Vec<String> = Vec::new();
+    let mut push_var = |v: &Expr, vars: &mut Vec<String>| {
+        if let Expr::InitReg(n) | Expr::InitMem(n) = v {
+            if !vars.contains(n) { vars.push(n.clone()); }
+        }
+    };
+    for atom in &pre {
+        match atom {
+            Atom::Reg(_, v) => push_var(v, &mut vars),
+            Atom::Mem { addr_base, value, .. } => {
+                push_var(addr_base, &mut vars);
+                push_var(value, &mut vars);
             }
         }
     }
-    out.push_str("\n\n");
+    let vars_sig = if vars.is_empty() { String::new() }
+                   else { format!("({} : Nat)\n    ", vars.join(" ")) };
+    // Side-condition hypotheses for u64-width loads. Per
+    // `ldxdw_spec`, each loaded value carries a `< 2^64` constraint
+    // that `sl_block_auto` leaves as a residual goal; we surface them
+    // as theorem hypotheses and discharge with `<;> assumption`.
+    let mut u64_hyps = String::new();
+    for v in &state.u64_load_vars {
+        u64_hyps.push_str(&format!("(h{}_lt : {} < 2 ^ 64)\n    ", v, v));
+    }
+    let tactic = if state.u64_load_vars.is_empty() {
+        "sl_block_auto"
+    } else {
+        "sl_block_auto <;> assumption"
+    };
+    let n = block_pcs.len();
+
+    out.push_str(&format!(
+        "open Memory in\n\
+         theorem {}_lifted_spec\n    {}{}: \
+         cuTripleWithinMem {} 0 0 {}\n      \
+         ({})\n      \
+         ({})\n      \
+         ({})\n      \
+         (fun rt => {}) := by\n  \
+         {}\n\n",
+        module_name,
+        vars_sig,
+        u64_hyps,
+        n, n,
+        cr_lean,
+        atoms_to_lean(&pre),
+        atoms_to_lean(&post),
+        rr,
+        tactic,
+    ));
 
     out.push_str(&format!("end Examples.Lifted.{}\n", module_name));
 
