@@ -56,14 +56,14 @@ def transferArmTarget : Nat := 0xf69
     Base-shifted; the 3 jne fall-through targets shift with `base`,
     while the final jeq target is supplied externally. -/
 def validationPreludeCr (base : Nat) (target : Nat) : CodeReq :=
-  (((((((CodeReq.singleton (base + 0) (.ldx .dword .r2 .r1 0x58)).union
-        (CodeReq.singleton (base + 1) (.jne .r2 (.imm 0xa5) (base + 8)))).union
-        (CodeReq.singleton (base + 2) (.ldx .byte .r2 .r1 0x2910))).union
-        (CodeReq.singleton (base + 3) (.jne .r2 (.imm 0xff) (base + 8)))).union
-        (CodeReq.singleton (base + 4) (.ldx .dword .r2 .r1 0x2960))).union
-        (CodeReq.singleton (base + 5) (.jne .r2 (.imm 0xa5) (base + 8)))).union
-        (CodeReq.singleton (base + 6) (.ldx .byte .r2 .r1 0x5218))).union
-        (CodeReq.singleton (base + 7) (.jeq .r2 (.imm 0xff) target))
+  cr![ base + 0 ↦ .ldx .dword .r2 .r1 0x58,
+       base + 1 ↦ .jne .r2 (.imm 0xa5) (base + 8),
+       base + 2 ↦ .ldx .byte .r2 .r1 0x2910,
+       base + 3 ↦ .jne .r2 (.imm 0xff) (base + 8),
+       base + 4 ↦ .ldx .dword .r2 .r1 0x2960,
+       base + 5 ↦ .jne .r2 (.imm 0xa5) (base + 8),
+       base + 6 ↦ .ldx .byte .r2 .r1 0x5218,
+       base + 7 ↦ .jeq .r2 (.imm 0xff) target ]
 
 theorem p_token_transfer_validation_prelude_spec
     (base : Nat) (target : Nat)

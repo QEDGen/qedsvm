@@ -52,14 +52,14 @@ open Memory
 def h3dErrPc : Nat := 300
 
 def h3dCr (base : Nat) : CodeReq :=
-  (((((((CodeReq.singleton (base + 0) (.mov64 .r6 (.imm 0))).union
-        (CodeReq.singleton (base + 1) (.mov64 .r7 (.imm 0x11)))).union
-        (CodeReq.singleton (base + 2) (.jeq .r3 (.imm 2) h3dErrPc))).union
-        (CodeReq.singleton (base + 3) (.jeq .r5 (.imm 2) h3dErrPc))).union
-        (CodeReq.singleton (base + 4) (.ldx .dword .r2 .r2 0x7a81))).union
-        (CodeReq.singleton (base + 5) (.mov64 .r7 (.imm 1)))).union
-        (CodeReq.singleton (base + 6) (.ldx .dword .r3 .r1 0xa0))).union
-        (CodeReq.singleton (base + 7) (.jlt .r3 (.reg .r2) h3dErrPc))
+  cr![ base + 0 ↦ .mov64 .r6 (.imm 0),
+       base + 1 ↦ .mov64 .r7 (.imm 0x11),
+       base + 2 ↦ .jeq .r3 (.imm 2) h3dErrPc,
+       base + 3 ↦ .jeq .r5 (.imm 2) h3dErrPc,
+       base + 4 ↦ .ldx .dword .r2 .r2 0x7a81,
+       base + 5 ↦ .mov64 .r7 (.imm 1),
+       base + 6 ↦ .ldx .dword .r3 .r1 0xa0,
+       base + 7 ↦ .jlt .r3 (.reg .r2) h3dErrPc ]
 
 theorem p_token_transfer_arm_h3d_spec
     (base : Nat)
