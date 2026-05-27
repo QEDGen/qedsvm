@@ -209,6 +209,8 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         SUB64_IMM   => format!(".sub64 {} (.imm ({}))",     reg(dst), imm),
         MOV64_IMM   => format!(".mov64 {} (.imm ({}))",     reg(dst), imm),
         AND64_IMM   => format!(".and64 {} (.imm ({}))",     reg(dst), imm),
+        LSH64_IMM   => format!(".lsh64 {} (.imm ({}))",     reg(dst), imm),
+        ST_B_IMM    => format!(".st .byte {} {} ({})",      reg(dst), off, imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
@@ -236,6 +238,18 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         }
         JA          => {
             let t = (pc as i64) + 1 + off; format!(".ja {}", t)
+        }
+        JSGT64_IMM | JSGT32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jsgt {} (.imm ({})) {}", reg(dst), imm, t)
+        }
+        JEQ64_REG | JEQ32_REG => {
+            let t = (pc as i64) + 1 + off; format!(".jeq {} (.reg {}) {}", reg(dst), reg(src), t)
+        }
+        JNE64_REG | JNE32_REG => {
+            let t = (pc as i64) + 1 + off; format!(".jne {} (.reg {}) {}", reg(dst), reg(src), t)
+        }
+        JLT64_REG | JLT32_REG => {
+            let t = (pc as i64) + 1 + off; format!(".jlt {} (.reg {}) {}", reg(dst), reg(src), t)
         }
         // call_local: the immediate is the Solana ABI Murmur3 hash
         // of the symbol, NOT a relative offset. Resolving the actual
@@ -308,6 +322,10 @@ enum Expr {
     /// The `imm` arg is the raw immediate; we render `toU64 imm`
     /// inside `to_lean`.
     AndU64Imm(Box<Expr>, i64),
+    /// `(a <<< (toU64 imm % 64)) % U64_MODULUS` — output of
+    /// `lsh64_imm_spec` (logical left shift by immediate, modulo 64,
+    /// truncated to 64 bits).
+    LshU64Imm(Box<Expr>, i64),
 }
 
 impl Expr {
@@ -324,6 +342,10 @@ impl Expr {
                 // Render exactly as `and64_imm_spec` writes its post.
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
                 format!("({} &&& toU64 {}) % U64_MODULUS", a.atom_lean(), imm_lean)
+            }
+            Expr::LshU64Imm(a, imm) => {
+                let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
+                format!("({} <<< (toU64 {} % 64)) % U64_MODULUS", a.atom_lean(), imm_lean)
             }
         }
     }
@@ -544,12 +566,18 @@ fn w_short(w: Width) -> &'static str {
 /// closing the proof — `sl_block_auto` doesn't currently collapse
 /// these on its own.
 #[derive(Clone, Debug)]
-enum BranchKind { JeqImm, JneImm, JgtImm }
+enum BranchKind {
+    JeqImm, JneImm, JgtImm, JsgtImm,
+    JeqReg, JneReg, JltReg,
+}
 
 #[derive(Clone, Debug)]
 struct BranchHyp {
     kind: BranchKind,
     dst_value: Expr,
+    /// For reg-form jumps, this is the src register's symbolic value.
+    /// `None` for imm-form jumps (the imm is in `self.imm`).
+    src_value: Option<Expr>,
     imm: i64,
     /// `true` if the branch was taken on the walked path; `false`
     /// if it was the fall-through. Determines the form of the path
@@ -562,6 +590,7 @@ struct BranchHyp {
 impl BranchHyp {
     fn lean_hyp(&self) -> String {
         let v = self.dst_value.to_lean();
+        let s = self.src_value.as_ref().map(|e| e.to_lean()).unwrap_or_default();
         match (self.kind.clone(), self.taken) {
             (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, self.imm),
             (BranchKind::JeqImm, true)  => format!("{} = toU64 {}", v, self.imm),
@@ -572,6 +601,17 @@ impl BranchHyp {
             // exactly these via if_pos/if_neg.
             (BranchKind::JgtImm, false) => format!("¬ {} > toU64 {}", v, self.imm),
             (BranchKind::JgtImm, true)  => format!("{} > toU64 {}", v, self.imm),
+            // `jsgt` is signed >. Lean spec compares
+            // `toSigned64 vDst > toSigned64 (toU64 imm)`.
+            (BranchKind::JsgtImm, false) => format!("¬ toSigned64 {} > toSigned64 (toU64 {})", v, self.imm),
+            (BranchKind::JsgtImm, true)  => format!("toSigned64 {} > toSigned64 (toU64 {})", v, self.imm),
+            // Register-form jumps compare two registers directly.
+            (BranchKind::JeqReg, false) => format!("{} ≠ {}", v, s),
+            (BranchKind::JeqReg, true)  => format!("{} = {}", v, s),
+            (BranchKind::JneReg, false) => format!("{} = {}", v, s),
+            (BranchKind::JneReg, true)  => format!("{} ≠ {}", v, s),
+            (BranchKind::JltReg, false) => format!("¬ {} < {}", v, s),
+            (BranchKind::JltReg, true)  => format!("{} < {}", v, s),
         }
     }
     fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
@@ -707,6 +747,32 @@ fn spec_call_for(
                 hyp_name, reg(dst), imm, v_old, pc,
             )
         }
+        LSH64_IMM => {
+            // lsh64_imm_spec dst imm vOld pc hne
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := lsh64_imm_spec {} {} ({}) {} (by decide)",
+                hyp_name, reg(dst), imm, v_old, pc,
+            )
+        }
+        ST_B_IMM => {
+            // stb_spec baseReg off imm baseAddr oldByteVal pc
+            let base_addr = reg_val_lean(dst);
+            // The old byte value lives in state.mem keyed by the
+            // base-address expression + offset + byte width. Same
+            // pattern as ST_DW_REG.
+            let key_addr = base_addr.clone();
+            let old_v = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == key_addr
+                       && c.addr_off == off
+                       && c.width as u8 == Width::Byte as u8)
+                .map(|c| c.value.to_lean())
+                .unwrap_or_else(|| "?oldByte".into());
+            format!(
+                "have {} := stb_spec {} {} {} ({}) ({}) {}",
+                hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
+            )
+        }
         ADD64_REG => {
             // add64_reg_spec dst src vOld v pc hne
             let v_old = reg_val_lean(dst);
@@ -813,6 +879,65 @@ fn spec_call_for(
                 hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
             )
         }
+        JSGT64_IMM | JSGT32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jsgt_imm_taken_spec"
+            } else {
+                "jsgt_imm_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
+        JEQ64_REG | JEQ32_REG => {
+            let v_dst = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jeq_reg_taken_spec"
+            } else {
+                "jeq_reg_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} {} {}",
+                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+            )
+        }
+        JNE64_REG | JNE32_REG => {
+            let v_dst = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jne_reg_taken_spec"
+            } else {
+                "jne_reg_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} {} {}",
+                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+            )
+        }
+        JLT64_REG | JLT32_REG => {
+            let v_dst = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jlt_reg_taken_spec"
+            } else {
+                "jlt_reg_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} {} {}",
+                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+            )
+        }
         JA => {
             let target = (pc as i64) + 1 + off;
             format!("have {} := ja_spec {} {}", hyp_name, target, pc)
@@ -879,6 +1004,15 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let cur = state.read_reg(dst);
             state.write_reg(dst, Expr::AndU64Imm(Box::new(cur), imm));
         }
+        LSH64_IMM => {
+            let cur = state.read_reg(dst);
+            state.write_reg(dst, Expr::LshU64Imm(Box::new(cur), imm));
+        }
+        ST_B_IMM => {
+            // Write a constant byte (toU64 imm % 256) at [dst + off].
+            state.write_mem(dst, off, Width::Byte,
+                Expr::Mod(Box::new(Expr::ToU64(Box::new(Expr::Const(imm)))), 256));
+        }
         SUB64_IMM => {
             let cur = state.read_reg(dst);
             state.write_reg(dst, Expr::WrapSub(
@@ -911,7 +1045,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         JEQ64_IMM | JEQ32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
-                kind: BranchKind::JeqImm, dst_value: r, imm,
+                kind: BranchKind::JeqImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
@@ -919,7 +1053,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         JNE64_IMM | JNE32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
-                kind: BranchKind::JneImm, dst_value: r, imm,
+                kind: BranchKind::JneImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
@@ -927,7 +1061,42 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         JGT64_IMM | JGT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
-                kind: BranchKind::JgtImm, dst_value: r, imm,
+                kind: BranchKind::JgtImm, dst_value: r, src_value: None, imm,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JSGT64_IMM | JSGT32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JsgtImm, dst_value: r, src_value: None, imm,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JEQ64_REG | JEQ32_REG => {
+            let rd = state.read_reg(dst);
+            let rs = state.read_reg(src);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JeqReg, dst_value: rd, src_value: Some(rs), imm: 0,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JNE64_REG | JNE32_REG => {
+            let rd = state.read_reg(dst);
+            let rs = state.read_reg(src);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JneReg, dst_value: rd, src_value: Some(rs), imm: 0,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JLT64_REG | JLT32_REG => {
+            let rd = state.read_reg(dst);
+            let rs = state.read_reg(src);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JltReg, dst_value: rd, src_value: Some(rs), imm: 0,
                 taken: branch_taken.unwrap_or(false),
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
@@ -1278,7 +1447,21 @@ fn lift_one(
     let mut state = SymState::default();
     {
         let mut pc_iter: usize = entry_pc;
+        // Safety cap on walk length. Without this, an unmodelled
+        // back-branch (e.g. a copy loop whose conditional jump we
+        // default to "not taken") can spin the walker forever. The
+        // cap is high enough to permit deep dispatcher cascades
+        // (SPL Token has 28 arms; 16 PCs/arm + 200 PCs/handler ≈ 700)
+        // but low enough to fail fast on a runaway.
+        const WALK_CAP: usize = 1024;
+        let mut walk_steps: usize = 0;
         loop {
+            walk_steps += 1;
+            if walk_steps > WALK_CAP {
+                return Err(format!(
+                    "walker exceeded {} steps at pc={} (likely back-branch \
+                     defaulted to fall-through)", WALK_CAP, pc_iter).into());
+            }
             if pc_iter >= insns.len() { exit_pc = pc_iter; break; }
             let ins = &insns[pc_iter];
 
@@ -1316,7 +1499,11 @@ fn lift_one(
             let is_cond_jump = matches!(ins.opc,
                 ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
                 ebpf::JNE64_IMM | ebpf::JNE32_IMM |
-                ebpf::JGT64_IMM | ebpf::JGT32_IMM);
+                ebpf::JGT64_IMM | ebpf::JGT32_IMM |
+                ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
+                ebpf::JEQ64_REG | ebpf::JEQ32_REG |
+                ebpf::JNE64_REG | ebpf::JNE32_REG |
+                ebpf::JLT64_REG | ebpf::JLT32_REG);
             let branch_hyp_for_call = if is_cond_jump {
                 Some(branch_hyp.as_str())
             } else { None };
@@ -1356,7 +1543,11 @@ fn lift_one(
                 }
                 ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
                 ebpf::JNE64_IMM | ebpf::JNE32_IMM |
-                ebpf::JGT64_IMM | ebpf::JGT32_IMM
+                ebpf::JGT64_IMM | ebpf::JGT32_IMM |
+                ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
+                ebpf::JEQ64_REG | ebpf::JEQ32_REG |
+                ebpf::JNE64_REG | ebpf::JNE32_REG |
+                ebpf::JLT64_REG | ebpf::JLT32_REG
                     if branch_taken == Some(true) => {
                     // Take the branch: pc = pc + 1 + off
                     pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
