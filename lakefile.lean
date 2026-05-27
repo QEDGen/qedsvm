@@ -89,6 +89,7 @@ lean_lib Examples where
     `PToken.MirRefines,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     `Generated.ByteIncrementLifted,
-    `Generated.CounterLifted
+    `Generated.CounterLifted,
+    `Generated.GuardedCounterLifted
   ]
   precompileModules := true
