@@ -342,12 +342,27 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
       #[target, cs, r6V, r7V, r8V, r9V, r10V, pcLit]
     return { app, sideGoals := [] }
   -- exit: dispatch to `exit_pops_spec` (the nested-return case).
-  -- The frame and remaining-stack are mvars unified by slBlockIter
-  -- against the call_local that pushed the frame. Top-level exit
-  -- (which terminates the program) is NOT in this chain — the
-  -- qedlift walker stops before reaching it.
+  -- The frame is constructed explicitly as `CallFrame.mk` with
+  -- field-level mvars (rather than a single opaque frame mvar). When
+  -- slBlockIter composes the chain, the frame this exit pops needs
+  -- to unify with the frame pushed by the matching `call_local`'s
+  -- post — which is itself constructed as `⟨pc+1, r6V, ...⟩`. With
+  -- both sides as constructor applications, the unifier reduces the
+  -- problem to field-wise Nat equalities (linear in the number of
+  -- fields). With one side opaque (`frame : CallFrame`), the
+  -- elaborator has to peel off `frame.retPc`, `frame.savedR6`, etc.
+  -- via projection — that path triggers pathological recursion.
+  -- Top-level exit (which terminates the program) is NOT in this
+  -- chain — the qedlift walker stops before reaching it.
   | ``SVM.SBPF.Insn.exit =>
-    let frame ← mkFreshExprMVar (Lean.Expr.const ``SVM.SBPF.CallFrame [])
+    let retPc    ← mkNatMVar
+    let savedR6  ← mkNatMVar
+    let savedR7  ← mkNatMVar
+    let savedR8  ← mkNatMVar
+    let savedR9  ← mkNatMVar
+    let savedR10 ← mkNatMVar
+    let frame ← mkAppM ``SVM.SBPF.CallFrame.mk
+      #[retPc, savedR6, savedR7, savedR8, savedR9, savedR10]
     let cs ← mkFreshExprMVar (← mkAppM ``List #[Lean.Expr.const ``SVM.SBPF.CallFrame []])
     let r6V ← mkNatMVar
     let r7V ← mkNatMVar

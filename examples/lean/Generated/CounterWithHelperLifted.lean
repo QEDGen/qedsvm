@@ -103,7 +103,7 @@ theorem CounterWithHelperLifted_lifted_spec
       (fun rt => ((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
                   rt.containsRange (effectiveAddr (wrapAdd baseAddr (toU64 8)) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (wrapAdd baseAddr (toU64 8)) 0) 8 = true) := by
-  /- Theorem statement synthesised correctly by qedlift, but `sl_block_auto` currently diverges on chains containing a matched call_local + exit_pops pair (metavariable unification on the pushed-frame / expected-frame pair hits pathological recursion even at maxRecDepth 65536). Stage A delivered: statement synthesis + walker through call_local + nested exit. Closing the chain via auto-tactic is the next iteration's work — likely needs slBlockIter to resolve the frame mvar explicitly before the next-step composition. -/
+  /- sl_block_auto diverges on call_local + exit_pops chains in the current slBlockIter implementation (atom-permutation search scaling, see SL.lean comments). Theorem statement is synthesised correctly. Next iteration: debug slBlockIter or use a dedicated call-composition lemma. -/
   sorry
 
 end Examples.Lifted.CounterWithHelperLifted

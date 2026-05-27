@@ -912,26 +912,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `< 2^64` residuals.
     let needs_assumption = !state.branch_hyps.is_empty()
                         || !state.u64_load_vars.is_empty();
-    // `sl_block_auto` currently diverges (Lean elaboration hits
-    // maxRecDepth even at 65536) on chains that contain a matched
-    // `call_local` + `exit_pops` pair. The metavariable unification
-    // between the call's pushed-frame and the exit's expected frame
-    // appears to trigger pathological recursion. Theorem *statement*
-    // synthesis is still correct (the executor produces the right
-    // pre/post atoms); only the auto-discharge fails. Emit `sorry`
-    // for now with a note — the next iteration debugs slBlockIter's
-    // composition for call-containing chains.
+    // Call-containing chains: theorem statement is correct, but
+    // `sl_block_auto`'s composition pass hits a recursion depth
+    // problem (likely in slBlockIter's atom-permutation search,
+    // which has known scaling issues per the SL.lean comments —
+    // ~30s/iter at iter 5 of an 11-instruction macro). Emit `sorry`
+    // so the file type-checks; next iteration debugs slBlockIter.
     let tactic: String = if state.saw_call {
-        "/- Theorem statement synthesised correctly by qedlift, but \
-         `sl_block_auto` currently diverges on chains containing a \
-         matched call_local + exit_pops pair (metavariable \
-         unification on the pushed-frame / expected-frame pair hits \
-         pathological recursion even at maxRecDepth 65536). \
-         Stage A delivered: statement synthesis + walker through \
-         call_local + nested exit. Closing the chain via auto-tactic \
-         is the next iteration's work — likely needs slBlockIter to \
-         resolve the frame mvar explicitly before the next-step \
-         composition. -/\n  sorry".to_string()
+        "/- sl_block_auto diverges on call_local + exit_pops chains \
+         in the current slBlockIter implementation (atom-permutation \
+         search scaling, see SL.lean comments). Theorem statement is \
+         synthesised correctly. Next iteration: debug slBlockIter or \
+         use a dedicated call-composition lemma. -/\n  sorry".to_string()
     } else if needs_assumption {
         "sl_block_auto <;> assumption".to_string()
     } else {
