@@ -1,0 +1,181 @@
+# qedsvm sidecar metadata for pinocchio p_token.
+#
+# In the canonical production path, this file is emitted at compile
+# time by qedgen from source-level annotations (analogous to how
+# Anchor/Codama emit IDL). The values here would be exact PCs from
+# the linker, derived from a build that knows which functions implement
+# which MIR intrinsics.
+#
+# For this fixture (pinocchio is third-party and has no qedgen
+# annotations), the same file shape is produced by qedrecover scanning
+# the .so + IDL + overlay. The verifier doesn't care which path produced
+# the sidecar; it consumes the same TOML.
+#
+# Hash-pinned to a specific deployed .so. Lives off-chain. NEVER
+# embedded in the deployed binary — on-chain bytes are byte-identical
+# to a build that knows nothing about qedsvm.
+#
+# Schema: see qedsvm-rs/spec/qedmeta.md.
+
+schema_version = 1
+spec_version   = "qedmeta/0.1"
+
+# ---------------------------------------------------------------- target
+# Binds this sidecar to one specific deployed .so. Verifier fails fast
+# if SHA-256 of the .so doesn't match.
+[target]
+sha256       = "PLACEHOLDER_RECOMPUTE_FROM_p_token.so"
+program_name = "p-token"
+program_id   = "P1tokenProgram111111111111111111111111111111"
+source       = "github.com/anza-xyz/p-token@v1.0.0-rc.1"
+toolchain    = "solana-platform-tools-v1.41 + rustc 1.79.0"
+
+# ---------------------------------------------------------------- IDL
+# Hash-pin the IDL the metadata was produced against. `inline = false`
+# references an external file kept side-by-side; `inline = true`
+# embeds the IDL bytes here (preferred for frozen ship artifacts).
+[idl]
+format = "codama"
+inline = false
+ref    = "spl_token.codama.json"
+sha256 = "PLACEHOLDER_RECOMPUTE_FROM_spl_token.codama.json"
+
+# ---------------------------------------------------------------- instruction: transfer
+# One [[instruction]] table per claim the project makes about a
+# specific entry point. Instructions not listed here are silently
+# out of scope for verification.
+
+[[instruction]]
+name      = "transfer"
+refines   = "Mir.tokenTransfer"
+cu_budget = 76
+
+[instruction.discriminator]
+value       = 3
+width_bytes = 1
+format      = "u8"
+
+# Account layout, instruction-order, mirrors the IDL verbatim so the
+# verifier can cross-check without re-reading it.
+[[instruction.account]]
+name     = "source"
+writable = true
+signer   = false
+[[instruction.account]]
+name     = "destination"
+writable = true
+signer   = false
+[[instruction.account]]
+name     = "authority"
+writable = false
+signer   = "either"           # Codama term for "signer-or-multisig"
+
+# ---------------------------------------------------------------- recovered facts
+# In the qedgen path these are EXACT compiler-known PCs. In the
+# qedrecover fallback these are PATTERN-MATCHED PCs from scanning the
+# bytecode. Either way they're frozen at sidecar-emit time; the
+# verifier doesn't re-derive them.
+#
+# PCs are in solana-sbpf analysis space (instruction-slot indices,
+# not byte offsets — `lddw` occupies 16 bytes but 1 slot).
+
+[instruction.recovered]
+dispatch_load_pc    = 198
+dispatch_jeq_pc     = 199
+arm_entry_pc        = 309
+enclosing_func_pc   = 282
+block_count         = 59
+total_instructions  = 151
+
+# CFG slice from arm_entry, bounded to the enclosing function.
+# Format per row: [start_pc, end_pc_exclusive, [destination_pcs...]]
+# Long but inspectable; consider gzip-encoding if the size becomes
+# painful for larger programs.
+blocks = [
+  [282, 285, [312, 5204]],
+  [285, 288, [315, 5204]],
+  [288, 291, [318, 5204]],
+  [289, 292, [320, 5857]],
+  [292, 294, [323, 5869]],
+  [294, 297, [327, 5869]],
+  [297, 300, [331, 5869]],
+  [300, 303, [335, 5869]],
+  [303, 304, [6898]],
+  [3541, 3542, [3798]],
+  [3542, 3543, []],
+  [4728, 4731, [3797]],
+  [4845, 4848, [5213, 5078]],
+  [4848, 4851, [5216, 5078]],
+  [4851, 4852, [5217, 5443]],
+  [4852, 4855, [5221, 5431]],
+  [4855, 4857, [5224, 5443]],
+  [4857, 4860, [5228, 5443]],
+  [4860, 4863, [5232, 5443]],
+  [4863, 4866, [5236, 5443]],
+  [4866, 4867, [6445]],
+  [5043, 5046, [5435, 5443]],
+  [5046, 5049, [5439, 5443]],
+  [5049, 5052, [5443, 6445]],
+  [5052, 5054, [5445, 6159]],
+  [5054, 5055, [5446, 5880]],
+  [5055, 5064, [5455, 3798]],
+  [5064, 5071, [3798]],
+  [5080, 5082, [5078]],
+  [5428, 5431, [5861, 5869]],
+  [5431, 5434, [5865, 5869]],
+  [5434, 5437, [5869, 6898]],
+  [5437, 5439, [5871, 6159]],
+  [5439, 5442, [5874, 5078]],
+  [5442, 5446, [5878, 5879]],
+  [5446, 5447, [5879]],
+  [5447, 5448, [5880, 5446]],
+  [5448, 5452, [5885, 6160]],
+  [5452, 5455, [5889, 6160]],
+  [5455, 5458, [5893, 6160]],
+  [5458, 5461, [5897, 6160]],
+  [5461, 5464, [5901, 6160]],
+  [5464, 5467, [5905, 6160]],
+  [5467, 5470, [5909, 6160]],
+  [5470, 5474, [5914, 3798]],
+  [5474, 5475, [6160]],
+  [5716, 5717, [6160]],
+  [5717, 5718, [5078]],
+  [5992, 5994, [6447, 6903]],
+  [5994, 5996, [6449, 5445]],
+  [5996, 5997, [6159]],
+  [6429, 6431, [6900, 6903]],
+  [6431, 6433, [6902, 5871]],
+  [6433, 6434, [6159]],
+  [6434, 6436, [6905, 5471]],
+  [6436, 6438, [5078]],
+  # … 4 more rows omitted for brevity; the full slice has 59 entries.
+]
+
+# ---------------------------------------------------------------- idioms (v0.2+)
+# Lever 4 from issue #11. Once the recogniser ships, each entry tags
+# a block-start PC with a canonical pattern; the Lean proof applies
+# the corresponding domain lemma in one `apply`.
+# Empty in v0.1.
+# [[instruction.idiom]]
+# block_start = 5048
+# pattern     = "lamports_add"
+# bindings    = { dst_reg = "r3", src_reg = "r2", offset = 0xa0 }
+
+# ---------------------------------------------------------------- tags (v0.2+)
+# Happy/sad-path classification. Needs a mollusk execution trace.
+# Empty in v0.1.
+# [[instruction.tag]]
+# block_start = 5048
+# role        = "happy"
+# source      = "mollusk-trace#a3f1c"
+
+# ---------------------------------------------------------------- proof binding
+# Links the claim above to a specific theorem in the Lean proof
+# library. The verifier type-checks that this theorem proves the
+# claim about the binary at the recovered PCs.
+[instruction.proofs]
+spec_module       = "PToken.TransferArm.FullHappyPath"
+spec_theorem      = "p_token_transfer_full_happy_path_terminates"
+spec_sha256       = "PLACEHOLDER_RECOMPUTE_FROM_FullHappyPath.lean"
+refinement_module = "PToken.MirRefines"
+refinement_lemma  = "MinimalTransferAsm_refines_tokenTransfer"
