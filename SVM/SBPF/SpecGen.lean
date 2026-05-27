@@ -186,6 +186,37 @@ private def stxSpec
   let app ← mkAppM specName #[baseReg, valReg, off, baseAddr, vSrc, oldV, pcLit]
   return { app, sideGoals := [] }
 
+/-- Conditional-jump dispatch (imm-src variant). Builds the
+    `<op>_imm_not_taken_spec` application — the linear form where the
+    path hypothesis collapses the conditional to the fall-through PC
+    (`pc + 1`). The hypothesis becomes a side mvar that `<;>
+    assumption` discharges. `mkCondProp` builds the type of the path
+    hypothesis from the (vDst, imm) pair — e.g. `vDst ≠ toU64 imm`
+    for jeq, `vDst = toU64 imm` for jne. -/
+private def condJumpImmSpec
+    (pcLit dst src tgt : Expr)
+    (notTakenSpec : Name)
+    (mkCondProp : Expr → Expr → MetaM Expr) :
+    MetaM SpecApp := do
+  let srcN := src.consumeMData
+  let srcArgs := srcN.getAppArgs
+  match srcN.getAppFn.constName? with
+  | some ``SVM.SBPF.Src.imm =>
+    let imm := srcArgs[0]!
+    let vDst ← mkNatMVar
+    let condProp ← mkCondProp vDst imm
+    let h ← mkFreshExprMVar condProp
+    let app ← mkAppM notTakenSpec #[dst, imm, vDst, pcLit, tgt, h]
+    return { app, sideGoals := [h.mvarId!] }
+  | _ =>
+    throwError m!"SpecGen: conditional jump with non-.imm src is not yet supported"
+
+/-- `ja target`: unconditional jump. No side conds; post-PC is the
+    target. -/
+private def jaSpec (pcLit tgt : Expr) : MetaM SpecApp := do
+  let app ← mkAppM ``SVM.SBPF.ja_spec #[tgt, pcLit]
+  return { app, sideGoals := [] }
+
 /-! ## Top-level dispatcher -/
 
 /-- Build the spec application for one `(pc, insn)` pair. Returns the
@@ -277,6 +308,24 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
     ldxSpec pcLit args[0]! args[1]! args[2]! args[3]!
   | ``SVM.SBPF.Insn.stx =>
     stxSpec pcLit args[0]! args[1]! args[2]! args[3]!
+  -- Control flow. Conditional jumps dispatch to the linear "not
+  -- taken" variants in InstructionSpecs/Jump.lean — the path
+  -- hypothesis becomes a residual goal discharged by
+  -- `<;> assumption` once `vDst` is unified by the chain.
+  | ``SVM.SBPF.Insn.jeq =>
+    condJumpImmSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jeq_imm_not_taken_spec
+      (fun v i => do
+        let u64 ← mkAppM ``SVM.SBPF.toU64 #[i]
+        mkAppM ``Ne #[v, u64])
+  | ``SVM.SBPF.Insn.jne =>
+    condJumpImmSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jne_imm_not_taken_spec
+      (fun v i => do
+        let u64 ← mkAppM ``SVM.SBPF.toU64 #[i]
+        mkAppM ``Eq #[v, u64])
+  | ``SVM.SBPF.Insn.ja =>
+    jaSpec pcLit args[0]!
   | _ =>
     throwError m!"SpecGen.mkSpec: unsupported Insn ctor {ctor}; add a dispatch case in SVM/SBPF/SpecGen.lean"
 

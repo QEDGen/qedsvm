@@ -69,7 +69,7 @@ theorem ByteIncrementLifted_lifted_spec
       (effectiveAddr baseAddr 0 ↦ₘ (wrapAdd (oldMemB_off0 % 256) (toU64 1)) % 256) **
       (.r2 ↦ᵣ wrapAdd (oldMemB_off0 % 256) (toU64 1)) **
       (.r0 ↦ᵣ toU64 0))
-      (fun rt => rt.containsRange (effectiveAddr baseAddr 0) 1 = true ∧
+      (fun rt => (rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 0) 1 = true) := by
   sl_block_auto
 

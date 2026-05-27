@@ -252,6 +252,58 @@ theorem jne_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     (vDst ≠ toU64 imm)
     (fun _ hdst => by simp only [step, resolveSrc, hdst])
 
+/-! ## Linear (fall-through / taken) variants of conditional jumps
+
+These are the shapes `sl_block_auto` needs to chain conditional jumps
+into a straight-line block. Each takes the path hypothesis as a
+precondition and collapses the conditional in the corresponding
+`*_imm_spec`. The path hypothesis becomes a side goal in `mkSpec`'s
+dispatch, discharged by the user via `<;> assumption`. -/
+
+/-- `jeq dst, imm`: NOT taken case. Given `vDst ≠ toU64 imm` the
+    conditional collapses to the fall-through (`pc + 1`). -/
+theorem jeq_imm_not_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst ≠ toU64 imm) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jeq dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jeq_imm_spec dst imm vDst pc target
+  rwa [if_neg h] at base
+
+/-- `jeq dst, imm`: TAKEN case. Given `vDst = toU64 imm` the
+    conditional collapses to the jump target. -/
+theorem jeq_imm_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst = toU64 imm) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jeq dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jeq_imm_spec dst imm vDst pc target
+  rwa [if_pos h] at base
+
+/-- `jne dst, imm`: NOT taken case. Given `vDst = toU64 imm` the
+    conditional collapses to the fall-through (`pc + 1`). -/
+theorem jne_imm_not_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst = toU64 imm) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jne dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jne_imm_spec dst imm vDst pc target
+  rwa [if_neg (by simp [h] : ¬ (vDst ≠ toU64 imm))] at base
+
+/-- `jne dst, imm`: TAKEN case. Given `vDst ≠ toU64 imm` the
+    conditional collapses to the jump target. -/
+theorem jne_imm_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst ≠ toU64 imm) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jne dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jne_imm_spec dst imm vDst pc target
+  rwa [if_pos h] at base
+
 /-- `jgt dst, imm, target`: unsigned jump-greater-than. -/
 theorem jgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     cuTripleWithin 1 0 pc (if vDst > toU64 imm then target else pc + 1)

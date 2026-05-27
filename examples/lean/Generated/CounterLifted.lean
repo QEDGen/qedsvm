@@ -70,7 +70,7 @@ theorem CounterLifted_lifted_spec
       (effectiveAddr baseAddr 0 ↦U64 wrapAdd oldMemD_off0 (toU64 1)) **
       (.r2 ↦ᵣ wrapAdd oldMemD_off0 (toU64 1)) **
       (.r0 ↦ᵣ toU64 0))
-      (fun rt => rt.containsRange (effectiveAddr baseAddr 0) 8 = true ∧
+      (fun rt => (rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 0) 8 = true) := by
   sl_block_auto <;> assumption
 
