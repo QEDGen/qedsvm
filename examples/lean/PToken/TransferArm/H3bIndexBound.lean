@@ -49,12 +49,12 @@ open Examples.PTokenTransferArmH3aAmountAlign (alignedAmount)
 def h3bErrPc : Nat := 100
 
 def h3bCr (base : Nat) : CodeReq :=
-  (((((CodeReq.singleton (base + 0) (.mov64 .r2 (.reg .r1))).union
-      (CodeReq.singleton (base + 1) (.add64 .r2 (.reg .r3)))).union
-      (CodeReq.singleton (base + 2) (.ldx .dword .r3 .r2 0x7a78))).union
-      (CodeReq.singleton (base + 3) (.jlt .r3 (.imm 9) h3bErrPc))).union
-      (CodeReq.singleton (base + 4) (.ldx .byte .r3 .r2 0x7a80))).union
-      (CodeReq.singleton (base + 5) (.jne .r3 (.imm 3) h3bErrPc))
+  cr![ base + 0 ↦ .mov64 .r2 (.reg .r1),
+       base + 1 ↦ .add64 .r2 (.reg .r3),
+       base + 2 ↦ .ldx .dword .r3 .r2 0x7a78,
+       base + 3 ↦ .jlt .r3 (.imm 9) h3bErrPc,
+       base + 4 ↦ .ldx .byte .r3 .r2 0x7a80,
+       base + 5 ↦ .jne .r3 (.imm 3) h3bErrPc ]
 
 theorem p_token_transfer_arm_h3b_spec
     (base : Nat)

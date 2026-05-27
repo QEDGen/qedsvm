@@ -58,19 +58,19 @@ def h4aTarget : Nat := 0x80
 def h4aErrPc : Nat := 0x500
 
 def h4aCr (base : Nat) (target : Nat) : CodeReq :=
-  ((((((((((((CodeReq.singleton (base + 0)  (.mov64 .r7 (.imm 4))).union
-              (CodeReq.singleton (base + 1)  (.ldx .dword .r0 .r1 0x80))).union
-              (CodeReq.singleton (base + 2)  (.jne .r0 (.reg .r5) h4aErrPc))).union
-              (CodeReq.singleton (base + 3)  (.ldx .dword .r5 .r1 0x5228))).union
-              (CodeReq.singleton (base + 4)  (.ldx .dword .r0 .r1 0x88))).union
-              (CodeReq.singleton (base + 5)  (.jne .r0 (.reg .r5) h4aErrPc))).union
-              (CodeReq.singleton (base + 6)  (.ldx .dword .r5 .r1 0x5230))).union
-              (CodeReq.singleton (base + 7)  (.ldx .dword .r0 .r1 0x90))).union
-              (CodeReq.singleton (base + 8)  (.jne .r0 (.reg .r5) h4aErrPc))).union
-              (CodeReq.singleton (base + 9)  (.ldx .dword .r5 .r1 0x5238))).union
-              (CodeReq.singleton (base + 10) (.ldx .dword .r0 .r1 0x98))).union
-              (CodeReq.singleton (base + 11) (.jne .r0 (.reg .r5) h4aErrPc))).union
-              (CodeReq.singleton (base + 12) (.jne .r4 (.imm 0x163) target))
+  cr![ base + 0  ↦ .mov64 .r7 (.imm 4),
+       base + 1  ↦ .ldx .dword .r0 .r1 0x80,
+       base + 2  ↦ .jne .r0 (.reg .r5) h4aErrPc,
+       base + 3  ↦ .ldx .dword .r5 .r1 0x5228,
+       base + 4  ↦ .ldx .dword .r0 .r1 0x88,
+       base + 5  ↦ .jne .r0 (.reg .r5) h4aErrPc,
+       base + 6  ↦ .ldx .dword .r5 .r1 0x5230,
+       base + 7  ↦ .ldx .dword .r0 .r1 0x90,
+       base + 8  ↦ .jne .r0 (.reg .r5) h4aErrPc,
+       base + 9  ↦ .ldx .dword .r5 .r1 0x5238,
+       base + 10 ↦ .ldx .dword .r0 .r1 0x98,
+       base + 11 ↦ .jne .r0 (.reg .r5) h4aErrPc,
+       base + 12 ↦ .jne .r4 (.imm 0x163) target ]
 
 theorem p_token_transfer_arm_h4a_spec
     (base : Nat) (target : Nat)

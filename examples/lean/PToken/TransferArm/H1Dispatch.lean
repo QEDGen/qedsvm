@@ -59,8 +59,8 @@ def dispatchTarget : Nat := 0x6f
     so the local PCs become `base + 0` and `base + 1`. The jeq target
     is supplied externally (not shifted by `base`). -/
 def transferArmDispatchCr (base : Nat) (target : Nat) : CodeReq :=
-  (CodeReq.singleton (base + 0) (.ldx .byte .r2 .r1 0)).union
-    (CodeReq.singleton (base + 1) (.jeq .r2 (.imm 3) target))
+  cr![ base + 0 ↦ .ldx .byte .r2 .r1 0,
+       base + 1 ↦ .jeq .r2 (.imm 3) target ]
 
 theorem p_token_transfer_arm_dispatch_spec
     (base : Nat) (target : Nat)

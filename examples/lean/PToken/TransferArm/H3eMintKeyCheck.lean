@@ -47,18 +47,18 @@ open Memory
 def h3eErrPc : Nat := 400
 
 def h3eCr (base : Nat) : CodeReq :=
-  (((((((((((CodeReq.singleton (base + 0)  (.ldx .dword .r5 .r1 0x2968)).union
-            (CodeReq.singleton (base + 1)  (.ldx .dword .r0 .r1 0x60))).union
-            (CodeReq.singleton (base + 2)  (.jne .r0 (.reg .r5) h3eErrPc))).union
-            (CodeReq.singleton (base + 3)  (.ldx .dword .r5 .r1 0x2970))).union
-            (CodeReq.singleton (base + 4)  (.ldx .dword .r0 .r1 0x68))).union
-            (CodeReq.singleton (base + 5)  (.jne .r0 (.reg .r5) h3eErrPc))).union
-            (CodeReq.singleton (base + 6)  (.ldx .dword .r5 .r1 0x2978))).union
-            (CodeReq.singleton (base + 7)  (.ldx .dword .r0 .r1 0x70))).union
-            (CodeReq.singleton (base + 8)  (.jne .r0 (.reg .r5) h3eErrPc))).union
-            (CodeReq.singleton (base + 9)  (.ldx .dword .r5 .r1 0x2980))).union
-            (CodeReq.singleton (base + 10) (.ldx .dword .r0 .r1 0x78))).union
-            (CodeReq.singleton (base + 11) (.jne .r0 (.reg .r5) h3eErrPc))
+  cr![ base + 0  ↦ .ldx .dword .r5 .r1 0x2968,
+       base + 1  ↦ .ldx .dword .r0 .r1 0x60,
+       base + 2  ↦ .jne .r0 (.reg .r5) h3eErrPc,
+       base + 3  ↦ .ldx .dword .r5 .r1 0x2970,
+       base + 4  ↦ .ldx .dword .r0 .r1 0x68,
+       base + 5  ↦ .jne .r0 (.reg .r5) h3eErrPc,
+       base + 6  ↦ .ldx .dword .r5 .r1 0x2978,
+       base + 7  ↦ .ldx .dword .r0 .r1 0x70,
+       base + 8  ↦ .jne .r0 (.reg .r5) h3eErrPc,
+       base + 9  ↦ .ldx .dword .r5 .r1 0x2980,
+       base + 10 ↦ .ldx .dword .r0 .r1 0x78,
+       base + 11 ↦ .jne .r0 (.reg .r5) h3eErrPc ]
 
 theorem p_token_transfer_arm_h3e_spec
     (base : Nat)

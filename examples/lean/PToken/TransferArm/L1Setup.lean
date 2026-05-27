@@ -56,13 +56,12 @@ open Memory
     `-0x828 = -2088` matches the disasm-to-lean rendering. -/
 def stackSlotOff : Int := -2088
 
-/-- The CodeReq for the 4-instruction Transfer-arm setup. Left-folded
-    `singleton.union` chain matching `Macros.lean`'s convention. -/
+/-- The CodeReq for the 4-instruction Transfer-arm setup. -/
 def transferArmSetupCr : CodeReq :=
-  (((CodeReq.singleton 0 (.mov64 .r1 (.imm 0))).union
-    (CodeReq.singleton 1 (.stx .dword .r10 stackSlotOff .r1))).union
-    (CodeReq.singleton 2 (.mov64 .r1 (.reg .r6)))).union
-    (CodeReq.singleton 3 (.mov64 .r2 (.imm 0)))
+  cr![ 0 ↦ .mov64 .r1 (.imm 0),
+       1 ↦ .stx .dword .r10 stackSlotOff .r1,
+       2 ↦ .mov64 .r1 (.reg .r6),
+       3 ↦ .mov64 .r2 (.imm 0) ]
 
 theorem p_token_transfer_arm_setup_spec
     (initR1 initR2 initR6 initR10 oldStackVal : Nat) :

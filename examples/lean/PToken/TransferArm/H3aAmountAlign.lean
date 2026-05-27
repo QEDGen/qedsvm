@@ -50,10 +50,10 @@ def alignedAmount (amount : Nat) : Nat :=
 
 /-- CodeReq for H3a's 4 instructions, base-shifted. -/
 def h3aCr (base : Nat) : CodeReq :=
-  (((CodeReq.singleton (base + 0) (.ldx .dword .r4 .r1 0x5268)).union
-    (CodeReq.singleton (base + 1) (.mov64 .r3 (.reg .r4)))).union
-    (CodeReq.singleton (base + 2) (.add64 .r3 (.imm 7)))).union
-    (CodeReq.singleton (base + 3) (.and64 .r3 (.imm (-8))))
+  cr![ base + 0 ↦ .ldx .dword .r4 .r1 0x5268,
+       base + 1 ↦ .mov64 .r3 (.reg .r4),
+       base + 2 ↦ .add64 .r3 (.imm 7),
+       base + 3 ↦ .and64 .r3 (.imm (-8)) ]
 
 theorem p_token_transfer_arm_h3a_spec
     (base : Nat)

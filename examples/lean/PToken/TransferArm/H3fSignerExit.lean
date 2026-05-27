@@ -47,9 +47,9 @@ open Memory
 def h3fTarget : Nat := 0x1d1
 
 def h3fCr (base : Nat) (target : Nat) : CodeReq :=
-  ((CodeReq.singleton (base + 0) (.ldx .dword .r5 .r1 0x5220)).union
-    (CodeReq.singleton (base + 1) (.ldx .byte .r0 .r1 0xa8))).union
-    (CodeReq.singleton (base + 2) (.jne .r0 (.imm 1) target))
+  cr![ base + 0 ↦ .ldx .dword .r5 .r1 0x5220,
+       base + 1 ↦ .ldx .byte .r0 .r1 0xa8,
+       base + 2 ↦ .jne .r0 (.imm 1) target ]
 
 theorem p_token_transfer_arm_h3f_spec
     (base : Nat) (target : Nat)

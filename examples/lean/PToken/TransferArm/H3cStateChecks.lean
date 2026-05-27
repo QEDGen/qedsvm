@@ -48,14 +48,14 @@ open Memory
 def h3cErrPc : Nat := 200
 
 def h3cCr (base : Nat) : CodeReq :=
-  (((((((CodeReq.singleton (base + 0) (.mov64 .r6 (.imm 3))).union
-        (CodeReq.singleton (base + 1) (.mov64 .r7 (.imm 0)))).union
-        (CodeReq.singleton (base + 2) (.ldx .byte .r3 .r1 0xcc))).union
-        (CodeReq.singleton (base + 3) (.jgt .r3 (.imm 2) h3cErrPc))).union
-        (CodeReq.singleton (base + 4) (.jeq .r3 (.imm 0) h3cErrPc))).union
-        (CodeReq.singleton (base + 5) (.ldx .byte .r5 .r1 0x29d4))).union
-        (CodeReq.singleton (base + 6) (.jgt .r5 (.imm 2) h3cErrPc))).union
-        (CodeReq.singleton (base + 7) (.jeq .r5 (.imm 0) h3cErrPc))
+  cr![ base + 0 ↦ .mov64 .r6 (.imm 3),
+       base + 1 ↦ .mov64 .r7 (.imm 0),
+       base + 2 ↦ .ldx .byte .r3 .r1 0xcc,
+       base + 3 ↦ .jgt .r3 (.imm 2) h3cErrPc,
+       base + 4 ↦ .jeq .r3 (.imm 0) h3cErrPc,
+       base + 5 ↦ .ldx .byte .r5 .r1 0x29d4,
+       base + 6 ↦ .jgt .r5 (.imm 2) h3cErrPc,
+       base + 7 ↦ .jeq .r5 (.imm 0) h3cErrPc ]
 
 theorem p_token_transfer_arm_h3c_spec
     (base : Nat)
