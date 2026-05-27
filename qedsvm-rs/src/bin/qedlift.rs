@@ -47,25 +47,38 @@ impl ContextObject for NoopCtx {
 }
 
 struct Args {
-    so:     PathBuf,
-    output: Option<PathBuf>,
-    module: Option<String>,
+    so:          PathBuf,
+    output:      Option<PathBuf>,
+    module:      Option<String>,
+    /// Discriminator value to target. When set, the walker resolves
+    /// each conditional jump on the discriminator register (the dst
+    /// of an `ldxb r?, [r1+0]` load) by taking the direction
+    /// consistent with `disc_byte == target_disc`. Each such jump
+    /// adds a path hypothesis to the theorem signature.
+    target_disc: Option<i64>,
 }
 
 fn parse_args() -> Result<Args, String> {
-    let mut so:     Option<PathBuf> = None;
-    let mut output: Option<PathBuf> = None;
-    let mut module: Option<String>  = None;
+    let mut so:          Option<PathBuf> = None;
+    let mut output:      Option<PathBuf> = None;
+    let mut module:      Option<String>  = None;
+    let mut target_disc: Option<i64>     = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--so"     => so     = Some(it.next().ok_or("--so needs a path")?.into()),
-            "--output" => output = Some(it.next().ok_or("--output needs a path")?.into()),
-            "--module" => module = Some(it.next().ok_or("--module needs a name")?),
-            other      => return Err(format!("unknown arg: {}", other)),
+            "--so"          => so          = Some(it.next().ok_or("--so needs a path")?.into()),
+            "--output"      => output      = Some(it.next().ok_or("--output needs a path")?.into()),
+            "--module"      => module      = Some(it.next().ok_or("--module needs a name")?),
+            "--target-disc" => target_disc = Some(
+                it.next().ok_or("--target-disc needs an integer")?
+                  .parse().map_err(|e| format!("--target-disc: {}", e))?),
+            other           => return Err(format!("unknown arg: {}", other)),
         }
     }
-    Ok(Args { so: so.ok_or("missing --so")?, output, module })
+    Ok(Args {
+        so: so.ok_or("missing --so")?,
+        output, module, target_disc,
+    })
 }
 
 /// Convert a `solana_sbpf::ebpf::Insn` at analysis PC `pc` to the
@@ -94,9 +107,9 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         ST_H_REG    => format!(".stx .halfword {} {} {}", reg(dst), off, reg(src)),
         ST_W_REG    => format!(".stx .word {} {} {}",     reg(dst), off, reg(src)),
         ST_DW_REG   => format!(".stx .dword {} {} {}",    reg(dst), off, reg(src)),
-        ADD64_IMM   => format!(".add64 {} (.imm {})",     reg(dst), imm),
-        SUB64_IMM   => format!(".sub64 {} (.imm {})",     reg(dst), imm),
-        MOV64_IMM   => format!(".mov64 {} (.imm {})",     reg(dst), imm),
+        ADD64_IMM   => format!(".add64 {} (.imm ({}))",     reg(dst), imm),
+        SUB64_IMM   => format!(".sub64 {} (.imm ({}))",     reg(dst), imm),
+        MOV64_IMM   => format!(".mov64 {} (.imm ({}))",     reg(dst), imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
@@ -105,22 +118,22 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         // `.jXX dst (.imm K) target_pc`. We resolve `target_pc` to the
         // absolute PC the jump lands at (caller-supplied).
         JEQ64_IMM | JEQ32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jeq {} (.imm {}) {}", reg(dst), imm, t)
+            let t = (pc as i64) + 1 + off; format!(".jeq {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JNE64_IMM | JNE32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jne {} (.imm {}) {}", reg(dst), imm, t)
+            let t = (pc as i64) + 1 + off; format!(".jne {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JGT64_IMM | JGT32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jgt {} (.imm {}) {}", reg(dst), imm, t)
+            let t = (pc as i64) + 1 + off; format!(".jgt {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JGE64_IMM | JGE32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jge {} (.imm {}) {}", reg(dst), imm, t)
+            let t = (pc as i64) + 1 + off; format!(".jge {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JLT64_IMM | JLT32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jlt {} (.imm {}) {}", reg(dst), imm, t)
+            let t = (pc as i64) + 1 + off; format!(".jlt {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JLE64_IMM | JLE32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jle {} (.imm {}) {}", reg(dst), imm, t)
+            let t = (pc as i64) + 1 + off; format!(".jle {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JA          => {
             let t = (pc as i64) + 1 + off; format!(".ja {}", t)
@@ -210,7 +223,11 @@ impl Expr {
     /// (parenthesised when the head isn't already atomic).
     fn atom_lean(&self) -> String {
         match self {
-            Expr::InitReg(_) | Expr::InitMem(_) | Expr::Const(_) => self.to_lean(),
+            Expr::InitReg(_) | Expr::InitMem(_) => self.to_lean(),
+            // Negative constants need parens (`-1` would otherwise
+            // parse as subtraction in `toU64 -1`).
+            Expr::Const(n) if *n < 0 => format!("({})", n),
+            Expr::Const(_) => self.to_lean(),
             _ => format!("({})", self.to_lean()),
         }
     }
@@ -334,6 +351,12 @@ struct SymState {
     /// set, the emission adds `r6..r10` and `callStackIs []` to the
     /// pre-condition (the atoms `call_local_spec` needs to compose).
     saw_call: bool,
+    /// rr clauses in walk order. Each memory load contributes
+    /// `containsRange`; each store contributes `containsWritable`.
+    /// Order matches the chain's left-fold ordering, so the emitted
+    /// goal rr structurally equals what `slBlockIter` produces.
+    /// Entries: (addr_base, off, width, is_writable).
+    rr_walk: Vec<(Expr, i64, Width, bool)>,
 }
 
 impl SymState {
@@ -379,8 +402,11 @@ impl SymState {
         };
         self.mem.push(cell);
         self.pre.push(Atom::Mem {
-            addr_base: base_expr, addr_off: off, width, value: v.clone(),
+            addr_base: base_expr.clone(), addr_off: off, width, value: v.clone(),
         });
+        // rr contribution: every load needs containsRange at the
+        // accessed cell.
+        self.rr_walk.push((base_expr, off, width, false));
         v
     }
     fn write_mem(&mut self, base: u8, off: i64, width: Width, value: Expr) {
@@ -394,6 +420,8 @@ impl SymState {
         if let Some(cell) = self.mem.iter_mut().find(|c| c.key() == key) {
             cell.value = value;
         }
+        // rr contribution: every store needs containsWritable.
+        self.rr_walk.push((base_expr, off, width, true));
     }
     fn next_fresh(&mut self) -> u32 { self.fresh += 1; self.fresh }
 }
@@ -415,17 +443,22 @@ struct BranchHyp {
     kind: BranchKind,
     dst_value: Expr,
     imm: i64,
+    /// `true` if the branch was taken on the walked path; `false`
+    /// if it was the fall-through. Determines the form of the path
+    /// hypothesis: jeq-taken means `vDst = toU64 imm`; jeq-not-taken
+    /// means `vDst ≠ toU64 imm`. jne is symmetric.
+    taken: bool,
     #[allow(dead_code)] target_pc: usize,
 }
 
 impl BranchHyp {
-    /// Render the hypothesis in the form needed for the theorem
-    /// signature, i.e. `<dst_value> ≠ toU64 <imm>` for a JeqImm whose
-    /// happy path is fall-through.
     fn lean_hyp(&self) -> String {
-        match self.kind {
-            BranchKind::JeqImm => format!("{} ≠ toU64 {}", self.dst_value.to_lean(), self.imm),
-            BranchKind::JneImm => format!("{} = toU64 {}", self.dst_value.to_lean(), self.imm),
+        let v = self.dst_value.to_lean();
+        match (self.kind.clone(), self.taken) {
+            (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, self.imm),
+            (BranchKind::JeqImm, true)  => format!("{} = toU64 {}", v, self.imm),
+            (BranchKind::JneImm, false) => format!("{} = toU64 {}", v, self.imm),
+            (BranchKind::JneImm, true)  => format!("{} ≠ toU64 {}", v, self.imm),
         }
     }
     fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
@@ -445,12 +478,18 @@ struct SpecCall {
 /// insn applies). Side conditions like `(by decide)` and value-bound
 /// hypotheses (`< 2^64`) are filled in based on the spec's signature.
 /// Returns `None` for opcodes not in the table (caller can fall back).
+/// `branch_taken` (when `Some`) tells the emitter which variant of
+/// the conditional-jump spec to use for the current insn:
+///   - `Some(true)`  → use `jXX_imm_taken_spec`     (post-PC = target)
+///   - `Some(false)` → use `jXX_imm_not_taken_spec` (post-PC = pc+1)
+///   - `None`        → not applicable (non-branch instruction)
 fn spec_call_for(
     state: &SymState,
     insn: &ebpf::Insn,
     pc: usize,
     call_target: Option<usize>,
     branch_hyp_name: Option<&str>,
+    branch_taken: Option<bool>,
 ) -> Option<SpecCall> {
     use ebpf::*;
     let dst = insn.dst;
@@ -476,6 +515,21 @@ fn spec_call_for(
         }
     };
     let have_line = match insn.opc {
+        LD_B_REG => {
+            // ldxb_spec dst src off vOldDst baseAddr v pc hne
+            // (no `< 2^64` bound — bytes always fit). The loaded
+            // byte name is `oldMemB_<fresh>`.
+            let v_name = format!("oldMemB_{}", state.fresh);
+            let v_old_dst = state.regs.get(&dst)
+                .map(|e| e.to_lean())
+                .unwrap_or_else(|| reg_initial_name(dst));
+            let base_addr = reg_val_lean(src);
+            format!(
+                "have {} := ldxb_spec {} {} {} ({}) ({}) {} {} (by decide)",
+                hyp_name, reg(dst), reg(src), off,
+                v_old_dst, base_addr, v_name, pc,
+            )
+        }
         LD_DW_REG => {
             // ldxdw_spec dst src off vOldDst baseAddr v pc hne hv
             // Spec_call_for runs BEFORE step()'s read_mem; predict
@@ -600,18 +654,28 @@ fn spec_call_for(
             let v_dst = reg_val_lean(dst);
             let target = (pc as i64) + 1 + off;
             let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jeq_imm_taken_spec"
+            } else {
+                "jeq_imm_not_taken_spec"
+            };
             format!(
-                "have {} := jeq_imm_not_taken_spec {} {} ({}) {} {} {}",
-                hyp_name, reg(dst), imm, v_dst, pc, target, h,
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
             )
         }
         JNE64_IMM | JNE32_IMM => {
             let v_dst = reg_val_lean(dst);
             let target = (pc as i64) + 1 + off;
             let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jne_imm_taken_spec"
+            } else {
+                "jne_imm_not_taken_spec"
+            };
             format!(
-                "have {} := jne_imm_not_taken_spec {} {} ({}) {} {} {}",
-                hyp_name, reg(dst), imm, v_dst, pc, target, h,
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
             )
         }
         JA => {
@@ -627,8 +691,11 @@ fn spec_call_for(
 /// the instruction was a recognised non-terminator; Ok(false) if it
 /// was `exit` (slice terminates); Err for opcodes the executor
 /// doesn't model yet. `pc` is the analysis-PC of `insn` (only used
-/// to resolve relative jump targets).
-fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>) -> Result<bool, String> {
+/// to resolve relative jump targets). `branch_taken` (when `Some`)
+/// records the walker's branch decision so the path hypothesis is
+/// the right shape (taken vs fall-through).
+fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
+        branch_taken: Option<bool>) -> Result<bool, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
     match insn.opc {
@@ -706,6 +773,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>) -> Result<bo
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JeqImm, dst_value: r, imm,
+                taken: branch_taken.unwrap_or(false),
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
         }
@@ -713,6 +781,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>) -> Result<bo
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneImm, dst_value: r, imm,
+                taken: branch_taken.unwrap_or(false),
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
         }
@@ -843,34 +912,24 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
 /// emit `rt.containsRange addr width = true` (and `containsWritable`
 /// for any atom we mutated).
 fn region_req(
-    pre: &[Atom],
+    _pre: &[Atom],
     state: &SymState,
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
     let mut clauses = Vec::new();
-    for atom in pre {
-        if let Atom::Mem { addr_base, addr_off, width, .. } = atom {
-            let width_bytes = match width {
-                Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
-            };
-            let addr_str = subst.get(&addr_base.to_lean())
-                .map(|p| p.clone())
-                .unwrap_or_else(|| addr_base.atom_lean());
-            let addr = format!("effectiveAddr {} {}", addr_str, addr_off);
-            clauses.push(format!("rt.containsRange ({}) {} = true", addr, width_bytes));
-            // Was it written to? Look up the cell by the same
-            // rendered-address key the mem map uses.
-            let key = (addr_base.to_lean(), *addr_off, *width as u8);
-            if let Some(cell) = state.mem.iter().find(|c| c.key() == key) {
-                let written = !matches!(cell.value, Expr::InitMem(_));
-                if written {
-                    clauses.push(format!(
-                        "rt.containsWritable ({}) {} = true",
-                        addr, width_bytes,
-                    ));
-                }
-            }
-        }
+    // Walk-order rr contributions: each load → containsRange; each
+    // store → containsWritable. Order matches what slBlockIter
+    // produces by left-folding per chain step.
+    for (addr_base, addr_off, width, writable) in &state.rr_walk {
+        let width_bytes = match width {
+            Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
+        };
+        let addr_str = subst.get(&addr_base.to_lean())
+            .map(|p| p.clone())
+            .unwrap_or_else(|| addr_base.atom_lean());
+        let addr = format!("effectiveAddr {} {}", addr_str, addr_off);
+        let kind = if *writable { "containsWritable" } else { "containsRange" };
+        clauses.push(format!("rt.{} ({}) {} = true", kind, addr, width_bytes));
     }
     if clauses.is_empty() {
         "True".to_string()
@@ -1040,7 +1099,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Emit a spec call for the nested exit (before
                     // popping the call stack so r10 etc. are still
                     // at their +0x1000-bumped values).
-                    if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None) {
+                    if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None, None) {
                         spec_calls.push(sc);
                     }
                     let (resume, saved_r10) = state.call_stack.pop().unwrap();
@@ -1053,28 +1112,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
 
             block_pcs.push(pc_iter);
-            // Snapshot pre-state so spec emission has access to
-            // register values BEFORE this insn applied.
             let call_target = resolve_call_target(&analysis, ins);
-            // Branch hypothesis name (if this is a conditional jump
-            // we're treating as fall-through). The index into
-            // branch_hyps is the count of branches seen so far.
+            // Branch hypothesis name (if this is a conditional jump).
+            // The index into branch_hyps is the count of branches
+            // seen so far.
             let branch_idx = state.branch_hyps.len();
             let branch_hyp = format!("h_branch{}", branch_idx);
-            let branch_hyp_for_call =
-                if matches!(ins.opc,
-                            ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
-                            ebpf::JNE64_IMM | ebpf::JNE32_IMM) {
-                    Some(branch_hyp.as_str())
-                } else { None };
-            if let Some(sc) = spec_call_for(&state, ins, pc_iter, call_target, branch_hyp_for_call) {
+            let is_cond_jump = matches!(ins.opc,
+                ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
+                ebpf::JNE64_IMM | ebpf::JNE32_IMM);
+            let branch_hyp_for_call = if is_cond_jump {
+                Some(branch_hyp.as_str())
+            } else { None };
+            // For conditional jumps and a target discriminator, decide
+            // the direction based on (opcode, imm, target_disc).
+            // Default (no target_disc): treat as fall-through.
+            let branch_taken: Option<bool> = match (ins.opc, args.target_disc) {
+                (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) => {
+                    Some(ins.imm == td)
+                }
+                (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => {
+                    Some(ins.imm != td)
+                }
+                _ if is_cond_jump => Some(false), // default: not-taken
+                _ => None,
+            };
+            if let Some(sc) = spec_call_for(&state, ins, pc_iter, call_target,
+                                            branch_hyp_for_call, branch_taken) {
                 spec_calls.push(sc);
             }
-            step(&mut state, ins, Some(pc_iter))?;
+            step(&mut state, ins, Some(pc_iter), branch_taken)?;
 
             // PC progression.
             match ins.opc {
                 ebpf::JA => {
+                    pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
+                }
+                ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
+                ebpf::JNE64_IMM | ebpf::JNE32_IMM
+                    if branch_taken == Some(true) => {
+                    // Take the branch: pc = pc + 1 + off
                     pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
                 }
                 ebpf::CALL_IMM => {
@@ -1212,13 +1289,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `< 2^64` residuals.
     let needs_assumption = !state.branch_hyps.is_empty()
                         || !state.u64_load_vars.is_empty();
-    // For call-containing programs (`sl_block_auto` diverges on the
-    // wrapAdd-shaped addresses these produce — see SL.lean's
-    // `[[sl-block-iter-perm-rewrite]]`), emit an explicit
-    // `sl_block_iter`-style proof with per-spec `have` lines plus
-    // `sl_rw_abs` to apply the address abstractions before
-    // composition. Mirror the `pda_n1_stack_macro_spec` workaround.
-    let tactic: String = if state.saw_call {
+    // Switch to explicit `sl_block_iter`-style proof when either:
+    //   * the walk crossed a `call_local` (sl_block_auto diverges on
+    //     wrapAdd-shaped addresses) — the `pda_n1_stack_macro_spec`
+    //     workaround pattern, or
+    //   * the walk took ANY conditional jump's "taken" branch —
+    //     SpecGen.lean's mkSpec only dispatches `_not_taken` for
+    //     jeq/jne; for taken arms we need the explicit spec call.
+    let any_taken = state.branch_hyps.iter().any(|b| b.taken);
+    let use_block_iter = state.saw_call || any_taken;
+    let tactic: String = if use_block_iter {
         let mut t = String::new();
         // Spec-call have lines (one per insn in walk order).
         for sc in &spec_calls {
@@ -1250,8 +1330,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tactic: &str = Box::leak(tactic.into_boxed_str());
 
     // Build the abstraction signature fragment (params + bridge
-    // equality hypotheses) for call-containing programs.
-    let abs_sig: String = if state.saw_call && !abstractions.is_empty() {
+    // equality hypotheses) for programs using sl_block_iter style.
+    let abs_sig: String = if use_block_iter && !abstractions.is_empty() {
         let mut s = String::new();
         for (param, _, _) in &abstractions {
             s.push_str(&format!("({} : Nat)\n    ", param));

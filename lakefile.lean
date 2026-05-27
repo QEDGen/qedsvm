@@ -91,6 +91,8 @@ lean_lib Examples where
     `Generated.ByteIncrementLifted,
     `Generated.CounterLifted,
     `Generated.GuardedCounterLifted,
-    `Generated.CounterWithHelperLifted
+    `Generated.CounterWithHelperLifted,
+    `Generated.TwoOpIncrementLifted,
+    `Generated.TwoOpDecrementLifted
   ]
   precompileModules := true

@@ -44,13 +44,13 @@ def GuardedCounterLiftedTextOffset : Nat := 0x100000120
 /-- Decoded form of the .text bytes. -/
 def GuardedCounterLiftedInsns : Array Insn := #[
   .ldx .dword .r2 .r1 0,
-  .jeq .r2 (.imm 0) 7,
+  .jeq .r2 (.imm (0)) 7,
   .ldx .dword .r3 .r1 8,
   .add64 .r3 (.reg .r2),
   .stx .dword .r1 8 .r3,
-  .mov64 .r0 (.imm 0),
+  .mov64 .r0 (.imm (0)),
   .ja 8,
-  .mov64 .r0 (.imm 1),
+  .mov64 .r0 (.imm (1)),
   .exit
 ]
 
@@ -72,11 +72,11 @@ theorem GuardedCounterLifted_lifted_spec
     (h_branch0 : oldMemD_0 ≠ toU64 0)
     : cuTripleWithinMem 7 0 0 8
       ((((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 0)).union
-        (CodeReq.singleton 1 (.jeq .r2 (.imm 0) 7))).union
+        (CodeReq.singleton 1 (.jeq .r2 (.imm (0)) 7))).union
         (CodeReq.singleton 2 (.ldx .dword .r3 .r1 8))).union
         (CodeReq.singleton 3 (.add64 .r3 (.reg .r2)))).union
         (CodeReq.singleton 4 (.stx .dword .r1 8 .r3))).union
-        (CodeReq.singleton 5 (.mov64 .r0 (.imm 0)))).union
+        (CodeReq.singleton 5 (.mov64 .r0 (.imm (0))))).union
         (CodeReq.singleton 6 (.ja 8))))
       ((.r1 ↦ᵣ baseAddr) **
       (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
