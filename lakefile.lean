@@ -86,6 +86,8 @@ lean_lib Examples where
     `PToken.TransferArm.H4aDestMintCheck,
     `PToken.TransferArm.H4bBalanceMutation,
     `PToken.TransferArm.FullHappyPath,
-    `PToken.MirRefines
+    `PToken.MirRefines,
+    -- Generated end-to-end lift demo (qedlift): .so → Lean module.
+    `Generated.ByteIncrementLifted
   ]
   precompileModules := true
