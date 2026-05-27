@@ -313,6 +313,28 @@ theorem jgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     (vDst > toU64 imm)
     (fun _ hdst => by simp only [step, resolveSrc, hdst])
 
+/-- `jgt dst, imm`: NOT taken case (fall-through). The exit PC
+    collapses to `pc + 1` under `¬ (vDst > toU64 imm)`. -/
+theorem jgt_imm_not_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : ¬ vDst > toU64 imm) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jgt dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jgt_imm_spec dst imm vDst pc target
+  rwa [if_neg h] at base
+
+/-- `jgt dst, imm`: TAKEN case. The exit PC collapses to `target`
+    under `vDst > toU64 imm`. -/
+theorem jgt_imm_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst > toU64 imm) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jgt dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jgt_imm_spec dst imm vDst pc target
+  rwa [if_pos h] at base
+
 /-- `jge dst, imm, target`: unsigned jump-greater-or-equal. -/
 theorem jge_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     cuTripleWithin 1 0 pc (if vDst ≥ toU64 imm then target else pc + 1)
