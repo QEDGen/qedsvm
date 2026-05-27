@@ -189,6 +189,9 @@ enum Expr {
     WrapAdd(Box<Expr>, Box<Expr>),
     /// `wrapSub a b` — 64-bit wrapping sub.
     WrapSub(Box<Expr>, Box<Expr>),
+    /// Plain `Nat.add a b`. Used for `call_local_spec`'s `r10 +
+    /// 0x1000` which uses Nat addition rather than `wrapAdd`.
+    NatAdd(Box<Expr>, Box<Expr>),
 }
 
 impl Expr {
@@ -200,6 +203,7 @@ impl Expr {
             Expr::Mod(e, m) => format!("{} % {}", e.atom_lean(), m),
             Expr::WrapAdd(a, b) => format!("wrapAdd {} {}", a.atom_lean(), b.atom_lean()),
             Expr::WrapSub(a, b) => format!("wrapSub {} {}", a.atom_lean(), b.atom_lean()),
+            Expr::NatAdd(a, b) => format!("{} + {}", a.atom_lean(), b.atom_lean()),
         }
     }
     /// Lean rendering suitable for use as a function argument
@@ -319,10 +323,13 @@ struct SymState {
     /// Conditional jumps encountered on the happy-path walk. Each one
     /// adds a path hypothesis to the theorem signature.
     branch_hyps: Vec<BranchHyp>,
-    /// Symbolic call stack — resume PCs pushed by `call_local`, popped
-    /// by the corresponding `exit`. Empty at the start of the walk
-    /// and empty when the walk terminates at the top-level `exit`.
-    call_stack: Vec<usize>,
+    /// Symbolic call stack — `(resume_pc, saved_r10)` pushed by
+    /// `call_local`, popped by the corresponding `exit`. Saving r10
+    /// lets `exit_pops` restore the exact pre-call r10 (rather than
+    /// computing a wrapSub that doesn't match the spec's post).
+    /// Empty at the start of the walk and empty when the walk
+    /// terminates at the top-level `exit`.
+    call_stack: Vec<(usize, Expr)>,
     /// True once the walk has seen at least one `call_local`. When
     /// set, the emission adds `r6..r10` and `callStackIs []` to the
     /// pre-condition (the atoms `call_local_spec` needs to compose).
@@ -422,6 +429,198 @@ impl BranchHyp {
         }
     }
     fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
+}
+
+/// A single emitted `have h_<pc> := <spec_name> <args>` line plus the
+/// hypothesis name. Used to build the `sl_block_iter` proof body for
+/// programs containing call_local (where `sl_block_auto` diverges).
+#[derive(Clone, Debug)]
+struct SpecCall {
+    hyp_name: String,
+    have_line: String,
+}
+
+/// Build the `have h_<pc> := <spec_name> <args>` line for one insn,
+/// using `state` as the pre-state (the symbolic values BEFORE the
+/// insn applies). Side conditions like `(by decide)` and value-bound
+/// hypotheses (`< 2^64`) are filled in based on the spec's signature.
+/// Returns `None` for opcodes not in the table (caller can fall back).
+fn spec_call_for(
+    state: &SymState,
+    insn: &ebpf::Insn,
+    pc: usize,
+    call_target: Option<usize>,
+    branch_hyp_name: Option<&str>,
+) -> Option<SpecCall> {
+    use ebpf::*;
+    let dst = insn.dst;
+    let src = insn.src;
+    let off = insn.off as i64;
+    let imm = insn.imm;
+    let hyp_name = format!("h_{}", pc);
+    let reg = |r: u8| -> String {
+        match r {
+            0 => ".r0".into(), 1 => ".r1".into(), 2 => ".r2".into(), 3 => ".r3".into(),
+            4 => ".r4".into(), 5 => ".r5".into(), 6 => ".r6".into(), 7 => ".r7".into(),
+            8 => ".r8".into(), 9 => ".r9".into(), 10 => ".r10".into(),
+            _ => ".r0".into(),
+        }
+    };
+    // Look up a register's current symbolic value as a Lean string.
+    // If the register hasn't been read yet, fall back to its initial-
+    // name convention (`baseAddr` for r1, `vR<N>Old` otherwise).
+    let reg_val_lean = |r: u8| -> String {
+        match state.regs.get(&r) {
+            Some(e) => e.to_lean(),
+            None    => reg_initial_name(r),
+        }
+    };
+    let have_line = match insn.opc {
+        LD_DW_REG => {
+            // ldxdw_spec dst src off vOldDst baseAddr v pc hne hv
+            // Spec_call_for runs BEFORE step()'s read_mem; predict
+            // the freshly-created mem variable name as `oldMemD_{N}`
+            // where N is the current `state.fresh` (the next index
+            // read_mem will allocate). The matching `< 2^64`
+            // hypothesis the theorem signature surfaces is named
+            // `h<var>_lt` (i.e., `holdMemD_<N>_lt`).
+            let v_name = format!("oldMemD_{}", state.fresh);
+            let v_old_dst = state.regs.get(&dst)
+                .map(|e| e.to_lean())
+                .unwrap_or_else(|| reg_initial_name(dst));
+            let base_addr = reg_val_lean(src);
+            format!(
+                "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) h{}_lt",
+                hyp_name, reg(dst), reg(src), off,
+                v_old_dst, base_addr, v_name, pc, v_name,
+            )
+        }
+        ST_DW_REG => {
+            // stxdw_spec baseReg valReg off baseAddr vSrc oldV pc
+            let base_addr = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            // The "old value" of the cell being overwritten. For our
+            // case it's the mem name (we read it via read_mem first).
+            // Walk state.mem for the matching cell.
+            let key_addr = base_addr.clone();
+            let old_v = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == key_addr
+                       && c.addr_off == off
+                       && c.width as u8 == Width::Dword as u8)
+                .map(|c| {
+                    // The cell's CURRENT value (post any prior stores).
+                    // For our use, we want the value BEFORE this store.
+                    // We approximate with the cell value if it's still
+                    // the InitMem name (no prior store). If it was
+                    // already overwritten (e.g. by a same-cell store),
+                    // emission would need more bookkeeping; for now
+                    // we use the InitMem fallback.
+                    c.value.to_lean()
+                })
+                .unwrap_or_else(|| "?oldV".into());
+            format!(
+                "have {} := stxdw_spec {} {} {} ({}) ({}) {} {}",
+                hyp_name, reg(dst), reg(src), off,
+                base_addr, v_src, old_v, pc,
+            )
+        }
+        ADD64_IMM => {
+            // add64_imm_spec dst imm vOld pc hne
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := add64_imm_spec {} {} ({}) {} (by decide)",
+                hyp_name, reg(dst), imm, v_old, pc,
+            )
+        }
+        ADD64_REG => {
+            // add64_reg_spec dst src vOld v pc hne
+            let v_old = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            format!(
+                "have {} := add64_reg_spec {} {} ({}) ({}) {} (by decide)",
+                hyp_name, reg(dst), reg(src), v_old, v_src, pc,
+            )
+        }
+        MOV64_IMM => {
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := mov64_imm_spec {} {} ({}) {} (by decide)",
+                hyp_name, reg(dst), imm, v_old, pc,
+            )
+        }
+        CALL_IMM => {
+            // call_local_spec target cs r6V r7V r8V r9V r10V pc
+            let target = call_target.unwrap_or(0);
+            let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
+            let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
+            let r10 = reg_val_lean(10);
+            format!(
+                "have {} := call_local_spec {} [] ({}) ({}) ({}) ({}) ({}) {}",
+                hyp_name, target, r6, r7, r8, r9, r10, pc,
+            )
+        }
+        EXIT => {
+            // exit_pops_spec frame cs r6Old r7Old r8Old r9Old r10Old pc.
+            // Construct `frame` explicitly as a CallFrame.mk with the
+            // values the matching call_local pushed (retPc + saved
+            // r6..r10 = pre-call register values). The `cs` rest of
+            // the call stack is `[]` for one-level calls; nested call
+            // sequences would need to thread it through the stack.
+            // r6..r10 at exit (the spec's r6Old..r10Old args) are the
+            // CURRENT register values — for ABI-respecting callees,
+            // r6..r9 are unchanged from pre-call and r10 is bumped by
+            // 0x1000.
+            let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
+            let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
+            let r10 = reg_val_lean(10);
+            // Top of the symbolic call stack carries the pushed
+            // frame's metadata (resume PC + saved r10). Saved r6..r9
+            // = the values at call time, which for ABI-respecting
+            // callees match the current r6..r9.
+            let (resume, saved_r10) = state.call_stack.last()
+                .map(|(r, s)| (*r, s.to_lean()))
+                .unwrap_or((0, "?savedR10".to_string()));
+            // Empty rest-of-stack — single-level calls only for now.
+            // A nested-call demo would need to thread `cs`.
+            // After `exit_pops_spec` is applied, the resulting triple
+            // has `frame.savedR6`, ..., `frame.savedR10` projections
+            // in its post. These reduce by iota to the corresponding
+            // CallFrame.mk field values, but `sl_block_iter`'s
+            // structural matching doesn't run iota. We `dsimp` the
+            // hypothesis to force the reduction before composition.
+            format!(
+                "have {0} := exit_pops_spec ⟨{1}, ({2}), ({3}), ({4}), ({5}), ({6})⟩ [] ({2}) ({3}) ({4}) ({5}) ({7}) {8}\n  \
+                 dsimp only at {0}",
+                hyp_name,
+                resume, r6, r7, r8, r9, saved_r10,
+                r10, pc,
+            )
+        }
+        JEQ64_IMM | JEQ32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            format!(
+                "have {} := jeq_imm_not_taken_spec {} {} ({}) {} {} {}",
+                hyp_name, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
+        JNE64_IMM | JNE32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            format!(
+                "have {} := jne_imm_not_taken_spec {} {} ({}) {} {} {}",
+                hyp_name, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
+        JA => {
+            let target = (pc as i64) + 1 + off;
+            format!("have {} := ja_spec {} {}", hyp_name, target, pc)
+        }
+        _ => return None,
+    };
+    Some(SpecCall { hyp_name, have_line })
 }
 
 /// Step one instruction's effect through `state`. Returns Ok(true) if
@@ -527,15 +726,18 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>) -> Result<bo
             // r6..r9 must be in scope (they're framed by call_local_spec).
             for r in 6..=9 { let _ = state.read_reg(r); }
             // r10 is bumped by 0x1000 (one Solana V0 stack frame).
+            // Use Nat.add (matching call_local_spec's `r10V + 0x1000`)
+            // rather than wrapAdd, so the chain composes cleanly.
             let r10_old = state.read_reg(10);
-            state.write_reg(10, Expr::WrapAdd(
-                Box::new(r10_old),
+            state.write_reg(10, Expr::NatAdd(
+                Box::new(r10_old.clone()),
                 Box::new(Expr::Const(0x1000)),
             ));
-            // Track the resume PC so the matching `exit` knows where
-            // to return. Stored separately from r10's symbolic walk.
+            // Track the resume PC + saved r10 so the matching `exit`
+            // can restore r10 to its exact pre-call symbolic value
+            // (matching exit_pops_spec's `frame.savedR10`).
             let resume = pc.map(|p| p + 1).unwrap_or(0);
-            state.call_stack.push(resume);
+            state.call_stack.push((resume, r10_old));
         }
         EXIT => {
             if state.call_stack.is_empty() {
@@ -565,11 +767,45 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>) -> Result<bo
 }
 
 /// Concatenate the pre-atom list into a Lean `**`-separated SL
-/// expression. Empty list renders as `emp`.
-fn atoms_to_lean(atoms: &[Atom]) -> String {
+/// expression. Empty list renders as `emp`. `subst` substitutes
+/// complex address-base expressions (matched on rendered form) with
+/// the abstracted parameter name.
+fn atoms_to_lean(
+    atoms: &[Atom],
+    subst: &std::collections::BTreeMap<String, String>,
+) -> String {
     if atoms.is_empty() { return "emp".to_string(); }
-    let parts: Vec<String> = atoms.iter().map(Atom::to_lean).collect();
+    let parts: Vec<String> = atoms.iter().map(|a| atom_to_lean_with_subst(a, subst)).collect();
     parts.join(" **\n      ")
+}
+
+/// Render one atom, substituting any matching addr_base expression
+/// with its abstracted parameter name.
+fn atom_to_lean_with_subst(
+    atom: &Atom,
+    subst: &std::collections::BTreeMap<String, String>,
+) -> String {
+    // Substitute the rendered form of a value-expression if it
+    // matches one of our abstraction's RHS; otherwise render as-is.
+    let sub = |e: &Expr| -> String {
+        let r = e.to_lean();
+        if let Some(p) = subst.get(&r) { p.clone() } else { r }
+    };
+    match atom {
+        Atom::Reg(r, v) => {
+            format!("(.{} ↦ᵣ {})", reg_lit(*r), sub(v))
+        }
+        Atom::Mem { addr_base, addr_off, width, value } => {
+            let rendered = addr_base.to_lean();
+            let addr_str = subst.get(&rendered)
+                .map(|p| p.clone())
+                .unwrap_or_else(|| addr_base.atom_lean());
+            format!(
+                "(effectiveAddr {} {} {} {})",
+                addr_str, addr_off, width.lean_arrow(), sub(value),
+            )
+        }
+    }
 }
 
 /// Build the postcondition atom list: same shape as pre, but each atom
@@ -606,14 +842,21 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
 /// Build the region-requirement clause: for each memory atom in pre,
 /// emit `rt.containsRange addr width = true` (and `containsWritable`
 /// for any atom we mutated).
-fn region_req(pre: &[Atom], state: &SymState) -> String {
+fn region_req(
+    pre: &[Atom],
+    state: &SymState,
+    subst: &std::collections::BTreeMap<String, String>,
+) -> String {
     let mut clauses = Vec::new();
     for atom in pre {
         if let Atom::Mem { addr_base, addr_off, width, .. } = atom {
             let width_bytes = match width {
                 Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
             };
-            let addr = format!("effectiveAddr {} {}", addr_base.atom_lean(), addr_off);
+            let addr_str = subst.get(&addr_base.to_lean())
+                .map(|p| p.clone())
+                .unwrap_or_else(|| addr_base.atom_lean());
+            let addr = format!("effectiveAddr {} {}", addr_str, addr_off);
             clauses.push(format!("rt.containsRange ({}) {} = true", addr, width_bytes));
             // Was it written to? Look up the cell by the same
             // rendered-address key the mem map uses.
@@ -760,6 +1003,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         module_name, module_name, module_name,
     ));
 
+    // Spec calls collected during the walk for the
+    // `sl_block_iter` proof emission (when needed).
+    let mut spec_calls: Vec<SpecCall> = Vec::new();
+
     // CFG-aware happy-path walk + symbolic execution in one pass.
     // PC progression follows the actual control flow:
     //   * straight-line opcode    → pc + 1
@@ -773,9 +1020,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the linker may place helper functions before the entrypoint).
     let mut block_pcs: Vec<usize> = Vec::new();
     let exit_pc: usize;
+    let entry_pc: usize = executable.get_entrypoint_instruction_offset();
     let mut state = SymState::default();
     {
-        let entry_pc = executable.get_entrypoint_instruction_offset();
         let mut pc_iter: usize = entry_pc;
         loop {
             if pc_iter >= insns.len() { exit_pc = pc_iter; break; }
@@ -790,21 +1037,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     break;
                 } else {
                     block_pcs.push(pc_iter);
-                    let resume = state.call_stack.pop().unwrap();
-                    // exit_pops_spec restores r10 to its pre-call value.
-                    // Undo the +0x1000 bump applied by the matching
-                    // call_local in step().
-                    let r10_cur = state.read_reg(10);
-                    state.write_reg(10, Expr::WrapSub(
-                        Box::new(r10_cur),
-                        Box::new(Expr::Const(0x1000)),
-                    ));
+                    // Emit a spec call for the nested exit (before
+                    // popping the call stack so r10 etc. are still
+                    // at their +0x1000-bumped values).
+                    if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None) {
+                        spec_calls.push(sc);
+                    }
+                    let (resume, saved_r10) = state.call_stack.pop().unwrap();
+                    // exit_pops_spec restores r10 to frame.savedR10
+                    // (the pre-call r10 we saved on the call_stack).
+                    state.write_reg(10, saved_r10);
                     pc_iter = resume;
                     continue;
                 }
             }
 
             block_pcs.push(pc_iter);
+            // Snapshot pre-state so spec emission has access to
+            // register values BEFORE this insn applied.
+            let call_target = resolve_call_target(&analysis, ins);
+            // Branch hypothesis name (if this is a conditional jump
+            // we're treating as fall-through). The index into
+            // branch_hyps is the count of branches seen so far.
+            let branch_idx = state.branch_hyps.len();
+            let branch_hyp = format!("h_branch{}", branch_idx);
+            let branch_hyp_for_call =
+                if matches!(ins.opc,
+                            ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
+                            ebpf::JNE64_IMM | ebpf::JNE32_IMM) {
+                    Some(branch_hyp.as_str())
+                } else { None };
+            if let Some(sc) = spec_call_for(&state, ins, pc_iter, call_target, branch_hyp_for_call) {
+                spec_calls.push(sc);
+            }
             step(&mut state, ins, Some(pc_iter))?;
 
             // PC progression.
@@ -859,7 +1124,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // above; `state` is populated and ready to snapshot.
     let pre  = state.pre.clone();
     let post = post_atoms(&pre, &state);
-    let rr   = region_req(&pre, &state);
+    // (rr computed after abs_subst is built — see below)
+
+    // Detect "complex" addresses in mem atoms — anything other than a
+    // bare `InitReg` base counts as complex (wrapAdd-shaped, etc.).
+    // Each unique complex address gets parameterised as an opaque Nat
+    // variable with a bridging equality, so the chain composes over
+    // clean atoms (see `pda_n1_stack_macro_spec` in
+    // SVM/SBPF/Macros.lean for the worked pattern).
+    let mut abstractions: Vec<(String, String, String)> = Vec::new();
+    // (param_name, bridge_hyp_name, raw_expression)
+    {
+        let mut seen: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for atom in &pre {
+            if let Atom::Mem { addr_base, .. } = atom {
+                if !matches!(addr_base, Expr::InitReg(_)) {
+                    let rendered = addr_base.to_lean();
+                    if !seen.contains_key(&rendered) {
+                        let idx = seen.len();
+                        seen.insert(rendered.clone(), idx);
+                        abstractions.push((
+                            format!("addr{}", idx),
+                            format!("h_addr{}", idx),
+                            rendered,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    // Substitution map: rendered raw expression → parameter name.
+    let abs_subst: std::collections::BTreeMap<String, String> =
+        abstractions.iter()
+            .map(|(p, _, e)| (e.clone(), p.clone()))
+            .collect();
+    let rr = region_req(&pre, &state, &abs_subst);
     // When the walk crossed a call_local, the chain's pre/post must
     // include `callStackIs []` as a framed atom — `call_local_spec`
     // takes a `callStackIs cs` in its pre, and the matching
@@ -912,43 +1212,77 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `< 2^64` residuals.
     let needs_assumption = !state.branch_hyps.is_empty()
                         || !state.u64_load_vars.is_empty();
-    // Call-containing chains: theorem statement is correct, but
-    // `sl_block_auto`'s composition pass hits a recursion depth
-    // problem (likely in slBlockIter's atom-permutation search,
-    // which has known scaling issues per the SL.lean comments —
-    // ~30s/iter at iter 5 of an 11-instruction macro). Emit `sorry`
-    // so the file type-checks; next iteration debugs slBlockIter.
+    // For call-containing programs (`sl_block_auto` diverges on the
+    // wrapAdd-shaped addresses these produce — see SL.lean's
+    // `[[sl-block-iter-perm-rewrite]]`), emit an explicit
+    // `sl_block_iter`-style proof with per-spec `have` lines plus
+    // `sl_rw_abs` to apply the address abstractions before
+    // composition. Mirror the `pda_n1_stack_macro_spec` workaround.
     let tactic: String = if state.saw_call {
-        "/- sl_block_auto diverges on call_local + exit_pops chains \
-         in the current slBlockIter implementation (atom-permutation \
-         search scaling, see SL.lean comments). Theorem statement is \
-         synthesised correctly. Next iteration: debug slBlockIter or \
-         use a dedicated call-composition lemma. -/\n  sorry".to_string()
+        let mut t = String::new();
+        // Spec-call have lines (one per insn in walk order).
+        for sc in &spec_calls {
+            t.push_str("  ");
+            t.push_str(&sc.have_line);
+            t.push('\n');
+        }
+        // sl_rw_abs to rewrite each spec's wrapAdd-shaped atoms to
+        // use the abstracted parameter, if any abstractions exist.
+        if !abstractions.is_empty() {
+            let abs_names = abstractions.iter()
+                .map(|(_, h, _)| h.clone()).collect::<Vec<_>>().join(", ");
+            let hyp_names = spec_calls.iter()
+                .map(|sc| sc.hyp_name.clone()).collect::<Vec<_>>().join(", ");
+            t.push_str(&format!(
+                "  sl_rw_abs [{}] at [{}]\n", abs_names, hyp_names,
+            ));
+        }
+        // Final composition.
+        let hyp_names = spec_calls.iter()
+            .map(|sc| sc.hyp_name.clone()).collect::<Vec<_>>().join(", ");
+        t.push_str(&format!("  sl_block_iter [{}]", hyp_names));
+        t
     } else if needs_assumption {
         "sl_block_auto <;> assumption".to_string()
     } else {
         "sl_block_auto".to_string()
     };
     let tactic: &str = Box::leak(tactic.into_boxed_str());
+
+    // Build the abstraction signature fragment (params + bridge
+    // equality hypotheses) for call-containing programs.
+    let abs_sig: String = if state.saw_call && !abstractions.is_empty() {
+        let mut s = String::new();
+        for (param, _, _) in &abstractions {
+            s.push_str(&format!("({} : Nat)\n    ", param));
+        }
+        for (param, h, expr) in &abstractions {
+            s.push_str(&format!("({} : {} = {})\n    ", h, param, expr));
+        }
+        s
+    } else {
+        String::new()
+    };
     let n = block_pcs.len();
 
     out.push_str(&format!(
         "open Memory in\n\
-         theorem {}_lifted_spec\n    {}{}{}: \
-         cuTripleWithinMem {} 0 0 {}\n      \
+         theorem {}_lifted_spec\n    {}{}{}{}: \
+         cuTripleWithinMem {} 0 {} {}\n      \
          ({})\n      \
          ({}{})\n      \
          ({}{})\n      \
-         (fun rt => {}) := by\n  \
+         (fun rt => {}) := by\n\
          {}\n\n",
         module_name,
         vars_sig,
+        abs_sig,
         u64_hyps,
         branch_hyps_sig,
-        n, exit_pc,
+        n, entry_pc, exit_pc,
         cr_lean,
-        atoms_to_lean(&pre),  cs_atom,
-        atoms_to_lean(&post), cs_atom,
+        atoms_to_lean(&pre,  &abs_subst),  cs_atom,
+        atoms_to_lean(&post, &abs_subst),  cs_atom,
         rr,
         tactic,
     ));
