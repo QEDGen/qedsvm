@@ -57,6 +57,45 @@ def union (cr1 cr2 : CodeReq) : CodeReq :=
 def Disjoint (cr1 cr2 : CodeReq) : Prop :=
   ∀ a, cr1 a = none ∨ cr2 a = none
 
+/-- Tail-recursive helper for `fromList`. Folds a list of `(pc, insn)`
+    pairs into a left-folded chain `acc ∪ s₁ ∪ s₂ ∪ …`. Kept as a
+    separate def so the structural shape of `fromList` matches the
+    hand-written `(((s₀.union s₁).union s₂).union s₃)` form that
+    `cuTripleWithin_seq`-driven proofs produce, preserving `isDefEq`
+    against the chain `sl_block_iter` builds. -/
+def fromListAux : CodeReq → List (Nat × Insn) → CodeReq
+  | acc, [] => acc
+  | acc, (a, i) :: rest => fromListAux (acc.union (singleton a i)) rest
+
+/-- Build a `CodeReq` from a list of `(pc, insn)` pairs. Produces the
+    same left-folded `singleton ∪ singleton ∪ …` shape as the
+    hand-written union chains in the arm files, so existing proofs that
+    `unfold` the resulting CR see the identical Expr structure.
+
+    Use the `cr![ pc₀ ↦ ins₀, pc₁ ↦ ins₁, … ]` notation for the
+    common literal-list form. -/
+def fromList : List (Nat × Insn) → CodeReq
+  | [] => empty
+  | (a, i) :: rest => fromListAux (singleton a i) rest
+
+/-! ### Reduction lemmas for `fromList`
+
+`fromList` reduces by `rfl` (it is a plain structural recursion via
+`fromListAux`). The lemmas below let `simp only [...]` drive the
+reduction in proofs that prefer named rewrites over `unfold`. -/
+
+theorem fromListAux_nil (acc : CodeReq) : fromListAux acc [] = acc := rfl
+
+theorem fromListAux_cons (acc : CodeReq) (a : Nat) (i : Insn)
+    (rest : List (Nat × Insn)) :
+    fromListAux acc ((a, i) :: rest) =
+      fromListAux (acc.union (singleton a i)) rest := rfl
+
+theorem fromList_nil : fromList [] = empty := rfl
+
+theorem fromList_cons (a : Nat) (i : Insn) (rest : List (Nat × Insn)) :
+    fromList ((a, i) :: rest) = fromListAux (singleton a i) rest := rfl
+
 theorem singleton_satisfied {cr : CodeReq} {fetch : Nat → Option Insn} {a : Nat} {i : Insn}
     (hcr : cr.SatisfiedBy fetch) (hpin : cr a = some i) : fetch a = some i :=
   hcr a i hpin
@@ -131,6 +170,82 @@ theorem SatisfiedBy_of_union_right {cr1 cr2 : CodeReq} {fetch : Nat → Option I
   · rw [hr] at hpin; nomatch hpin
 
 end CodeReq
+
+/-! ## `cr![ pc ↦ ins, … ]` builder notation
+
+Sugar for `CodeReq.fromList [(pc₀, ins₀), (pc₁, ins₁), …]`. The macro
+expands directly to a left-folded `singleton ∪ singleton ∪ …` chain,
+matching the structural shape of the hand-written CR definitions in
+the arm files (so `isDefEq` against `sl_block_iter`-built chains is
+preserved without any user-visible change to the proof scripts).
+
+Example:
+```
+def transferArmDispatchCr (base target : Nat) : CodeReq :=
+  cr![ base + 0 ↦ .ldx .byte .r2 .r1 0,
+       base + 1 ↦ .jeq .r2 (.imm 3) target ]
+```
+expands to
+```
+(CodeReq.singleton (base + 0) (.ldx .byte .r2 .r1 0)).union
+  (CodeReq.singleton (base + 1) (.jeq .r2 (.imm 3) target))
+```
+
+Empty list `cr![]` elaborates to `CodeReq.empty`. -/
+
+/-- Single item of a `cr!` list: `pc ↦ ins`. -/
+syntax crItem := term:65 " ↦ " term:65
+
+/-- `cr![ pc₀ ↦ ins₀, …, pcₙ ↦ insₙ ]` — left-folded union of
+    `CodeReq.singleton`s. See module doc above for the shape this
+    expands to. -/
+syntax (name := crListNotation) "cr![" crItem,* "]" : term
+
+open Lean in
+/-- Helper: extract `(pc, ins)` from one `crItem` syntax node. -/
+private def crItemParts : TSyntax `SVM.SBPF.crItem → MacroM (TSyntax `term × TSyntax `term)
+  | `(crItem| $pc ↦ $ins) => return (pc, ins)
+  | stx => Macro.throwErrorAt stx "cr!: expected `pc ↦ ins`"
+
+open Lean in
+macro_rules
+  | `(cr![ $items:crItem,* ]) => do
+    let items := items.getElems
+    if h : items.size = 0 then
+      `(CodeReq.empty)
+    else
+      let (pc0, ins0) ← crItemParts items[0]
+      let mut acc : TSyntax `term ← `(CodeReq.singleton $pc0 $ins0)
+      for hk : k in [1:items.size] do
+        let (pc, ins) ← crItemParts items[k]
+        acc ← `(($acc).union (CodeReq.singleton $pc $ins))
+      return acc
+
+/-- Sanity: `cr!` produces the exact left-folded shape of the
+    hand-written union chain. Both sides are `rfl`-equal Exprs. -/
+private example :
+    cr![ 0 ↦ (Insn.ldx .byte .r2 .r1 0),
+         1 ↦ (Insn.jeq .r2 (.imm 3) 7) ]
+    =
+    ((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
+       (CodeReq.singleton 1 (.jeq .r2 (.imm 3) 7))) := rfl
+
+/-- Sanity: `CodeReq.fromList` reduces by `rfl` to the same left-folded
+    chain. -/
+private example :
+    CodeReq.fromList [(0, Insn.ldx .byte .r2 .r1 0),
+                      (1, Insn.jeq .r2 (.imm 3) 7)]
+    =
+    ((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
+       (CodeReq.singleton 1 (.jeq .r2 (.imm 3) 7))) := rfl
+
+/-- Sanity: `cr!` agrees with `fromList` on the literal-list form. -/
+private example :
+    cr![ 0 ↦ (Insn.ldx .byte .r2 .r1 0),
+         1 ↦ (Insn.jeq .r2 (.imm 3) 7) ]
+    =
+    CodeReq.fromList [(0, .ldx .byte .r2 .r1 0),
+                      (1, .jeq .r2 (.imm 3) 7)] := rfl
 
 /-! ## Bounded CPS-style triple -/
 
