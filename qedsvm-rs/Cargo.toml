@@ -37,6 +37,15 @@ path = "src/bin/cli.rs"
 name = "disasm-to-lean"
 path = "src/bin/disasm_to_lean.rs"
 
+# qedrecover — load a Solana .so + an intent manifest, emit Lean
+# metadata (PC ranges, CFG, branch annotations, layout offsets) that
+# downstream Lean proofs consume. Feature-gated so the default build
+# doesn't pull in solana-sbpf.
+[[bin]]
+name = "qedrecover"
+path = "src/bin/qedrecover.rs"
+required-features = ["qedrecover"]
+
 [dependencies]
 # Pinned to agave master's published versions (see anza-xyz/agave Cargo.toml).
 # The whole point of these crates is to be Mollusk-shape-compatible:
@@ -67,6 +76,17 @@ mollusk-pubkey = { package = "solana-pubkey", version = "3.0", optional = true, 
 # in svm.rs (top-level dispatch) and by diff_mollusk.rs.
 solana-sdk-ids = "3.1.0"
 
+# qedrecover dep: ELF loader + static analysis (CFG, basic blocks).
+# Same version pulled in transitively by mollusk-svm at agave 4.0.
+# JIT disabled — analysis only.
+solana-sbpf = { version = "0.14.4", default-features = false, optional = true }
+# qedrecover deps: IDL parsing (serde) and overlay parsing (toml).
+# Codama IDLs are flat-enough JSON that hand-rolled serde structs
+# beat pulling in the full codama-nodes crate + its transitive set.
+serde       = { version = "1.0", features = ["derive"], optional = true }
+serde_json  = { version = "1.0", optional = true }
+toml        = { version = "0.8", optional = true }
+
 [dev-dependencies]
 # Round-trip oracle: agave's program-side deserializer (the one BPF
 # programs link to). If our serialized output deserializes back to the
@@ -91,6 +111,10 @@ rand = "0.8"
 
 [features]
 diff-mollusk = ["dep:mollusk-svm", "dep:mollusk-account", "dep:mollusk-pubkey"]
+
+# qedrecover binary deps. JIT disabled on solana-sbpf — we only
+# analyse, never execute.
+qedrecover = ["dep:solana-sbpf", "dep:serde", "dep:serde_json", "dep:toml"]
 
 # Side-by-side demo: runs incrementer + p-token Transfer through both
 # `qedsvm::Svm` and `mollusk_svm::Mollusk`, prints a comparison table.
