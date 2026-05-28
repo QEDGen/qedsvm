@@ -779,6 +779,187 @@ fn p_token_burn_matches_mollusk() {
     }
 }
 
+/// p-token `TransferChecked` (discriminant 12) — like Transfer but with
+/// a mint account and a decimals check. Accounts: [source(w), mint,
+/// destination(w), authority(signer)]. Same balance shift as Transfer
+/// (`src -= amount`, `dst += amount`) plus the decimals == mint.decimals
+/// guard. Completes the transfer family under trace guidance.
+#[test]
+fn p_token_transfer_checked_matches_mollusk() {
+    let program_id = pid(70);
+    let mint_key = pid(71);
+    let source_key = pid(72);
+    let dest_key = pid(73);
+    let authority = pid(74);
+    let mint_auth = pid(75);
+
+    const AMOUNT: u64 = 250;
+    const SOURCE_INITIAL: u64 = 1_000;
+    const DEST_INITIAL: u64 = 0;
+    const DECIMALS: u8 = 9;
+    const MINT_LAMPORTS: u64 = 2_000_000;
+    const ACCT_LAMPORTS: u64 = 2_039_280;
+
+    let mint_data = build_mint_account(&mint_auth, 1_000, DECIMALS);
+    let src_data = build_token_account(&mint_key, &authority, SOURCE_INITIAL);
+    let dst_data = build_token_account(&mint_key, &authority, DEST_INITIAL);
+
+    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    });
+    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    };
+    let auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+    let auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    // TransferChecked data: [12, amount_le_u64, decimals] = 10 bytes.
+    let mut ix_data = Vec::with_capacity(10);
+    ix_data.push(12);
+    ix_data.extend_from_slice(&AMOUNT.to_le_bytes());
+    ix_data.push(DECIMALS);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new_readonly(mint_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, mk_shared(ACCT_LAMPORTS, src_data.clone())),
+            (mint_key, mk_shared(MINT_LAMPORTS, mint_data.clone())),
+            (dest_key, mk_shared(ACCT_LAMPORTS, dst_data.clone())),
+            (authority, auth_shared),
+        ])
+        .expect("qedsvm runs p-token TransferChecked");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, mk_mollusk(ACCT_LAMPORTS, src_data.clone())),
+        (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
+        (dest_key, mk_mollusk(ACCT_LAMPORTS, dst_data.clone())),
+        (authority, auth_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on p-token TransferChecked, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on p-token TransferChecked, got {:?}", m_r.program_result);
+
+    assert_eq!(fs_r.resulting_accounts.len(), 4);
+    for i in 0..4 {
+        let (_, fa) = &fs_r.resulting_accounts[i];
+        let (_, ma) = &m_r.resulting_accounts[i];
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "p-token TransferChecked account[{i}] data diverged");
+    }
+}
+
+/// p-token `CloseAccount` (discriminant 9) — closes a zero-balance
+/// token account. Accounts: [account(w), destination(w), owner(signer)].
+/// Moves the account's lamports to destination and wipes the account.
+/// Different effect shape from the arithmetic arms (lamport move + data
+/// clear), exercising the immediate-store/zeroing path.
+#[test]
+fn p_token_close_account_matches_mollusk() {
+    let program_id = pid(80);
+    let mint_key = pid(81);
+    let acct_key = pid(82);
+    let dest_key = pid(83);
+    let owner = pid(84);
+
+    const ACCT_LAMPORTS: u64 = 2_039_280;
+    const DEST_LAMPORTS: u64 = 500_000;
+
+    // Account must have zero token balance to be closeable.
+    let acct_data = build_token_account(&mint_key, &owner, 0);
+
+    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    });
+    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    };
+    let dest_shared = AccountSharedData::from(Account {
+        lamports: DEST_LAMPORTS, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+    let dest_mollusk = mollusk_account::Account {
+        lamports: DEST_LAMPORTS, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+    let owner_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+    let owner_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+        data: vec![9],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (acct_key, mk_shared(ACCT_LAMPORTS, acct_data.clone())),
+            (dest_key, dest_shared),
+            (owner, owner_shared),
+        ])
+        .expect("qedsvm runs p-token CloseAccount");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, mk_mollusk(ACCT_LAMPORTS, acct_data.clone())),
+        (dest_key, dest_mollusk),
+        (owner, owner_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on p-token CloseAccount, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on p-token CloseAccount, got {:?}", m_r.program_result);
+}
+
 /// SPL Token `Transfer` (discriminant 3). Moves 250 lamports of a
 /// token from `source` to `destination`, both owned by the same
 /// authority. Real on-chain Token path — exercises the same .text

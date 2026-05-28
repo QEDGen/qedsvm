@@ -99,6 +99,7 @@ lean_lib Examples where
     -- that trace guidance sidesteps the static walker's phantom loop.
     `Generated.PTokenTransferTracedLifted,
     `Generated.PTokenMintToTracedLifted,
-    `Generated.PTokenBurnTracedLifted
+    `Generated.PTokenBurnTracedLifted,
+    `Generated.PTokenTransferCheckedTracedLifted
   ]
   precompileModules := true
