@@ -187,9 +187,13 @@ fn parse_args() -> Result<Args, String> {
 /// resolve the target PC; for `call_local`, `call_target` (when
 /// provided) is substituted as the resolved callee PC (because the
 /// raw immediate is a Murmur3 hash, not an offset).
-fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -> Result<String, String> {
+fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
+                     jump_target: Option<i64>) -> Result<String, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
+    // Logical jump target (slot→logical resolved by the caller). Falls
+    // back to the raw slot-relative sum for callers that don't resolve.
+    let jt = || jump_target.unwrap_or((pc as i64) + 1 + off);
     let reg = |n: u8| match n {
         0 => ".r0", 1 => ".r1", 2 => ".r2", 3 => ".r3",
         4 => ".r4", 5 => ".r5", 6 => ".r6", 7 => ".r7",
@@ -210,6 +214,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         MOV64_IMM   => format!(".mov64 {} (.imm ({}))",     reg(dst), imm),
         AND64_IMM   => format!(".and64 {} (.imm ({}))",     reg(dst), imm),
         LSH64_IMM   => format!(".lsh64 {} (.imm ({}))",     reg(dst), imm),
+        LD_DW_IMM   => format!(".lddw {} ({})",             reg(dst), imm),
         ST_B_IMM    => format!(".st .byte {} {} ({})",      reg(dst), off, imm),
         ST_W_IMM    => format!(".st .word {} {} ({})",      reg(dst), off, imm),
         ST_DW_IMM   => format!(".st .dword {} {} ({})",     reg(dst), off, imm),
@@ -221,43 +226,43 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         // `.jXX dst (.imm K) target_pc`. We resolve `target_pc` to the
         // absolute PC the jump lands at (caller-supplied).
         JEQ64_IMM | JEQ32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jeq {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jeq {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JNE64_IMM | JNE32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jne {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jne {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JGT64_IMM | JGT32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jgt {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jgt {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JGE64_IMM | JGE32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jge {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jge {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JLT64_IMM | JLT32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jlt {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jlt {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JLE64_IMM | JLE32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jle {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jle {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JA          => {
-            let t = (pc as i64) + 1 + off; format!(".ja {}", t)
+            let t = jt(); format!(".ja {}", t)
         }
         JSGT64_IMM | JSGT32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jsgt {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jsgt {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JSLE64_IMM | JSLE32_IMM => {
-            let t = (pc as i64) + 1 + off; format!(".jsle {} (.imm ({})) {}", reg(dst), imm, t)
+            let t = jt(); format!(".jsle {} (.imm ({})) {}", reg(dst), imm, t)
         }
         JEQ64_REG | JEQ32_REG => {
-            let t = (pc as i64) + 1 + off; format!(".jeq {} (.reg {}) {}", reg(dst), reg(src), t)
+            let t = jt(); format!(".jeq {} (.reg {}) {}", reg(dst), reg(src), t)
         }
         JNE64_REG | JNE32_REG => {
-            let t = (pc as i64) + 1 + off; format!(".jne {} (.reg {}) {}", reg(dst), reg(src), t)
+            let t = jt(); format!(".jne {} (.reg {}) {}", reg(dst), reg(src), t)
         }
         JLT64_REG | JLT32_REG => {
-            let t = (pc as i64) + 1 + off; format!(".jlt {} (.reg {}) {}", reg(dst), reg(src), t)
+            let t = jt(); format!(".jlt {} (.reg {}) {}", reg(dst), reg(src), t)
         }
         JSLE64_REG | JSLE32_REG => {
-            let t = (pc as i64) + 1 + off; format!(".jsle {} (.reg {}) {}", reg(dst), reg(src), t)
+            let t = jt(); format!(".jsle {} (.reg {}) {}", reg(dst), reg(src), t)
         }
         // call_local: the immediate is the Solana ABI Murmur3 hash
         // of the symbol, NOT a relative offset. Resolving the actual
@@ -278,7 +283,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
 /// (e.g. the raw "decoded insns" listing in the diagnostic dump).
 /// Renders call_local with a placeholder.
 fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, String> {
-    insn_to_lean_full(insn, pc, None)
+    insn_to_lean_full(insn, pc, None, None)
 }
 
 /// Resolve a CALL_IMM at `pc` to its callee PC. solana-sbpf encodes
@@ -673,11 +678,14 @@ fn spec_call_for(
     call_target: Option<usize>,
     branch_hyp_name: Option<&str>,
     branch_taken: Option<bool>,
+    jump_target: Option<i64>,
 ) -> Option<SpecCall> {
     use ebpf::*;
     let dst = insn.dst;
     let src = insn.src;
     let off = insn.off as i64;
+    // Logical jump target (slot→logical resolved by the caller).
+    let jt = jump_target.unwrap_or((pc as i64) + 1 + off);
     let imm = insn.imm;
     let hyp_name = format!("h_{}", pc);
     let reg = |r: u8| -> String {
@@ -849,6 +857,14 @@ fn spec_call_for(
                 hyp_name, reg(dst), imm, v_old, pc,
             )
         }
+        LD_DW_IMM => {
+            // lddw_spec dst imm vOld pc hne — same shape as mov64_imm.
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := lddw_spec {} {} ({}) {} (by decide)",
+                hyp_name, reg(dst), imm, v_old, pc,
+            )
+        }
         CALL_IMM => {
             // call_local_spec target cs r6V r7V r8V r9V r10V pc
             let target = call_target.unwrap_or(0);
@@ -899,7 +915,7 @@ fn spec_call_for(
         }
         JEQ64_IMM | JEQ32_IMM => {
             let v_dst = reg_val_lean(dst);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jeq_imm_taken_spec"
@@ -913,7 +929,7 @@ fn spec_call_for(
         }
         JNE64_IMM | JNE32_IMM => {
             let v_dst = reg_val_lean(dst);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jne_imm_taken_spec"
@@ -927,7 +943,7 @@ fn spec_call_for(
         }
         JGT64_IMM | JGT32_IMM => {
             let v_dst = reg_val_lean(dst);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jgt_imm_taken_spec"
@@ -941,7 +957,7 @@ fn spec_call_for(
         }
         JSGT64_IMM | JSGT32_IMM => {
             let v_dst = reg_val_lean(dst);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jsgt_imm_taken_spec"
@@ -955,7 +971,7 @@ fn spec_call_for(
         }
         JSLE64_IMM | JSLE32_IMM => {
             let v_dst = reg_val_lean(dst);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jsle_imm_taken_spec"
@@ -970,7 +986,7 @@ fn spec_call_for(
         JEQ64_REG | JEQ32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jeq_reg_taken_spec"
@@ -985,7 +1001,7 @@ fn spec_call_for(
         JNE64_REG | JNE32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jne_reg_taken_spec"
@@ -1000,7 +1016,7 @@ fn spec_call_for(
         JLT64_REG | JLT32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jlt_reg_taken_spec"
@@ -1015,7 +1031,7 @@ fn spec_call_for(
         JSLE64_REG | JSLE32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
             let spec = if branch_taken == Some(true) {
                 "jsle_reg_taken_spec"
@@ -1028,7 +1044,7 @@ fn spec_call_for(
             )
         }
         JA => {
-            let target = (pc as i64) + 1 + off;
+            let target = jt;
             format!("have {} := ja_spec {} {}", hyp_name, target, pc)
         }
         _ => return None,
@@ -1044,9 +1060,11 @@ fn spec_call_for(
 /// records the walker's branch decision so the path hypothesis is
 /// the right shape (taken vs fall-through).
 fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
-        branch_taken: Option<bool>) -> Result<bool, String> {
+        branch_taken: Option<bool>, jump_target: Option<i64>) -> Result<bool, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
+    // Logical jump target for path-hypothesis bookkeeping.
+    let jt = || jump_target.unwrap_or((pc.unwrap_or(0) as i64) + 1 + off) as usize;
     match insn.opc {
         LD_B_REG => {
             let raw = state.read_mem(src, off, Width::Byte);
@@ -1120,6 +1138,11 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         MOV64_IMM => {
             state.write_reg(dst, Expr::ToU64(Box::new(Expr::Const(imm))));
         }
+        LD_DW_IMM => {
+            // lddw is semantically mov64-from-immediate (the merged
+            // 64-bit value is already in `imm`).
+            state.write_reg(dst, Expr::ToU64(Box::new(Expr::Const(imm))));
+        }
         MOV64_REG => {
             let v = state.read_reg(src);
             state.write_reg(dst, v);
@@ -1144,7 +1167,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JeqImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JNE64_IMM | JNE32_IMM => {
@@ -1152,7 +1175,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JGT64_IMM | JGT32_IMM => {
@@ -1160,7 +1183,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JgtImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JSGT64_IMM | JSGT32_IMM => {
@@ -1168,7 +1191,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsgtImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JSLE64_IMM | JSLE32_IMM => {
@@ -1176,7 +1199,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JEQ64_REG | JEQ32_REG => {
@@ -1185,7 +1208,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JeqReg, dst_value: rd, src_value: Some(rs), imm: 0,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JNE64_REG | JNE32_REG => {
@@ -1194,7 +1217,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneReg, dst_value: rd, src_value: Some(rs), imm: 0,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JLT64_REG | JLT32_REG => {
@@ -1203,7 +1226,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JltReg, dst_value: rd, src_value: Some(rs), imm: 0,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JSLE64_REG | JSLE32_REG => {
@@ -1212,7 +1235,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleReg, dst_value: rd, src_value: Some(rs), imm: 0,
                 taken: branch_taken.unwrap_or(false),
-                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+                target_pc: jt(),
             });
         }
         JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
@@ -1393,6 +1416,41 @@ struct BinaryCtx {
     text_offset: u64,
     text_bytes:  Vec<u8>,
     insns:       Vec<ebpf::Insn>,
+    /// `logical_to_slot[i]` = the 8-byte slot index where logical
+    /// instruction `insns[i]` begins. lddw occupies 2 slots, so the
+    /// logical index and slot index diverge once any lddw appears.
+    logical_to_slot: Vec<usize>,
+    /// `slot_to_logical[s]` = the logical index of the instruction
+    /// occupying slot `s` (both slots of an lddw map to its logical
+    /// index). `None` for slots past the end. Mirror of the slotMap
+    /// in `SVM/SBPF/Decode.lean` pass 1 — needed because jump `off`
+    /// fields are slot-relative but our `insns`/CodeReq PCs are
+    /// logical indices.
+    slot_to_logical: Vec<Option<usize>>,
+}
+
+/// Resolve a slot-relative jump from logical PC `logical_pc` with raw
+/// offset `off` to the *logical* target PC. Mirrors how
+/// `Decode.decodeProgram` rewrites jump targets, so the rendered
+/// `.jXX ... target` matches what `native_decide` proves. Falls back
+/// to `logical_pc + 1 + off` when the maps don't cover the PC (e.g.
+/// the synthetic two_op fixture has no lddw, so slot == logical).
+fn resolve_jump_target(ctx: &BinaryCtx, logical_pc: usize, off: i64) -> i64 {
+    match ctx.logical_to_slot.get(logical_pc) {
+        Some(&slot) => {
+            let target_slot = slot as i64 + 1 + off;
+            if target_slot < 0 {
+                return target_slot; // out of range; render as-is to fail loudly
+            }
+            match ctx.slot_to_logical.get(target_slot as usize) {
+                Some(Some(logical)) => *logical as i64,
+                // Target slot is past the end (e.g. exit fall-off) or the
+                // middle of an lddw (malformed) — fall back to the raw sum.
+                _ => target_slot,
+            }
+        }
+        None => logical_pc as i64 + 1 + off,
+    }
 }
 
 fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> {
@@ -1404,14 +1462,30 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
         (o, b.to_vec())
     };
     let mut insns = Vec::new();
+    let mut logical_to_slot = Vec::new();
+    let mut slot_to_logical: Vec<Option<usize>> = Vec::new();
     let mut pc = 0;
     while pc * ebpf::INSN_SIZE < text_bytes.len() {
-        let insn = ebpf::get_insn(&text_bytes, pc);
+        let mut insn = ebpf::get_insn(&text_bytes, pc);
         let opc  = insn.opc;
+        // lddw spans 2 slots; `get_insn` only reads the low 32 bits of
+        // the immediate. Merge in the high half from the next slot so
+        // the rendered `.lddw dst imm` matches decodeProgram's output.
+        if opc == ebpf::LD_DW_IMM {
+            ebpf::augment_lddw_unchecked(&text_bytes, &mut insn);
+        }
+        let logical = insns.len();
+        logical_to_slot.push(pc);
+        let span = if opc == ebpf::LD_DW_IMM { 2 } else { 1 };
+        // Map every slot this instruction occupies back to its logical index.
+        for s in pc..pc + span {
+            while slot_to_logical.len() <= s { slot_to_logical.push(None); }
+            slot_to_logical[s] = Some(logical);
+        }
         insns.push(insn);
-        pc += if opc == ebpf::LD_DW_IMM { 2 } else { 1 };
+        pc += span;
     }
-    Ok(BinaryCtx { executable, text_offset, text_bytes, insns })
+    Ok(BinaryCtx { executable, text_offset, text_bytes, insns, logical_to_slot, slot_to_logical })
 }
 
 fn lift_one(
@@ -1511,7 +1585,8 @@ fn lift_one(
     let mut decode_skip_reason: Option<String> = None;
     for (i, insn) in insns.iter().enumerate() {
         let tgt = resolve_call_target(&analysis, insn);
-        match insn_to_lean_full(insn, i, tgt) {
+        let jtgt = Some(resolve_jump_target(ctx, i, insn.off as i64));
+        match insn_to_lean_full(insn, i, tgt, jtgt) {
             Ok(s)  => rendered_insns.push(s),
             Err(e) => { decode_skip_reason = Some(format!("pc={} opc=0x{:02x}: {}", i, insn.opc, e)); break; }
         }
@@ -1591,7 +1666,7 @@ fn lift_one(
                     // Emit a spec call for the nested exit (before
                     // popping the call stack so r10 etc. are still
                     // at their +0x1000-bumped values).
-                    if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None, None) {
+                    if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None, None, None) {
                         spec_calls.push(sc);
                     }
                     let (resume, saved_r10) = state.call_stack.pop().unwrap();
@@ -1646,16 +1721,20 @@ fn lift_one(
                 _ if is_cond_jump => Some(false), // default: not-taken
                 _ => None,
             };
+            // Resolve the slot-relative jump offset to a logical PC
+            // (handles lddw's 2-slot encoding). Shared by spec emission,
+            // step's path-hypothesis target, and the PC walk.
+            let jtgt = resolve_jump_target(ctx, pc_iter, ins.off as i64);
             if let Some(sc) = spec_call_for(&state, ins, pc_iter, call_target,
-                                            branch_hyp_for_call, branch_taken) {
+                                            branch_hyp_for_call, branch_taken, Some(jtgt)) {
                 spec_calls.push(sc);
             }
-            step(&mut state, ins, Some(pc_iter), branch_taken)?;
+            step(&mut state, ins, Some(pc_iter), branch_taken, Some(jtgt))?;
 
             // PC progression.
             match ins.opc {
                 ebpf::JA => {
-                    pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
+                    pc_iter = jtgt as usize;
                 }
                 ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
                 ebpf::JNE64_IMM | ebpf::JNE32_IMM |
@@ -1667,8 +1746,8 @@ fn lift_one(
                 ebpf::JLT64_REG | ebpf::JLT32_REG |
                 ebpf::JSLE64_REG | ebpf::JSLE32_REG
                     if branch_taken == Some(true) => {
-                    // Take the branch: pc = pc + 1 + off
-                    pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;
+                    // Take the branch to the resolved logical target.
+                    pc_iter = jtgt as usize;
                 }
                 ebpf::CALL_IMM => {
                     // The immediate is a Murmur3 hash; look up the
@@ -1698,7 +1777,8 @@ fn lift_one(
         s.push_str(&opens);
         for (i, &pc) in block_pcs.iter().enumerate() {
             let tgt = resolve_call_target(&analysis, &insns[pc]);
-            let lean_insn = insn_to_lean_full(&insns[pc], pc, tgt)?;
+            let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
+            let lean_insn = insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?;
             if i == 0 {
                 s.push_str(&format!("(CodeReq.singleton {} ({}))", pc, lean_insn));
             } else {
