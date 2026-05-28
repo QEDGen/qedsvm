@@ -2175,17 +2175,21 @@ fn lift_one(
                 "  sl_rw_abs [{}] at [{}]\n", abs_names, hyp_names,
             ));
         }
-        // Value abstraction: generalize complex scratch values to
-        // opaque vars so sl_block_iter threads them without whnf.
-        // `at *` abstracts the goal + every hypothesis uniformly, so
-        // the chain and goal stay consistent.
-        for (i, e) in value_gens.iter().enumerate() {
-            t.push_str(&format!("  generalize hgv{} : {} = vgv{} at *\n", i, e, i));
-        }
-        // Final composition.
+        // Final composition. Value abstraction rides along as the
+        // `generalizing [...]` clause on sl_block_iter — the tactic
+        // opaque-ifies each complex value (generalize … at *) before
+        // composing, so generated proofs are a single tactic call and
+        // the abstraction logic lives in the library, not here.
         let hyp_names = spec_calls.iter()
             .map(|sc| sc.hyp_name.clone()).collect::<Vec<_>>().join(", ");
-        t.push_str(&format!("  sl_block_iter [{}]", hyp_names));
+        if value_gens.is_empty() {
+            t.push_str(&format!("  sl_block_iter [{}]", hyp_names));
+        } else {
+            t.push_str(&format!(
+                "  sl_block_iter [{}] generalizing [{}]",
+                hyp_names, value_gens.join(", "),
+            ));
+        }
         t
     } else if needs_assumption {
         "sl_block_auto <;> assumption".to_string()
