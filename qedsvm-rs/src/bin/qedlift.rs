@@ -1417,17 +1417,70 @@ fn atoms_to_lean(
     parts.join(" **\n      ")
 }
 
+/// Fold abstraction expressions inside a rendered string, replacing
+/// each abstraction's RHS with its parameter name — including when it
+/// appears as a SUB-expression (e.g. `addr0` inside a discriminator
+/// value `(addr0 <<< …) …`). Longest-first so a parent is folded
+/// before its sub-terms. This mirrors what `sl_rw_abs` does to the
+/// proof chain, so goal atoms and chain atoms stay in the same form.
+fn fold_abstractions(
+    s: String,
+    subst: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let mut out = s;
+    let mut keys: Vec<&String> = subst.keys().collect();
+    keys.sort_by_key(|k| std::cmp::Reverse(k.len()));
+    for k in keys {
+        if let Some(p) = subst.get(k) {
+            out = replace_token(&out, k, p);
+        }
+    }
+    out
+}
+
+/// Word-boundary-aware string replace: substitutes `needle` with
+/// `repl` only at positions where the surrounding characters aren't
+/// alphanumerics/underscore. Without this, an abstraction whose
+/// rendered form is `toU64 3` would corrupt `toU64 32` into `addr02`.
+/// Lean identifiers and numerals are word-char runs, so a boundary
+/// check is enough to keep replacements at real sub-term edges.
+fn replace_token(haystack: &str, needle: &str, repl: &str) -> String {
+    if needle.is_empty() { return haystack.to_string(); }
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let hb = haystack.as_bytes();
+    let nb = needle.as_bytes();
+    let mut out = String::with_capacity(haystack.len());
+    let mut i = 0usize;
+    while i < hb.len() {
+        if hb[i..].starts_with(nb) {
+            let before_ok = i == 0 || !is_word(hb[i - 1]);
+            let after = i + nb.len();
+            let after_ok = after >= hb.len() || !is_word(hb[after]);
+            if before_ok && after_ok {
+                out.push_str(repl);
+                i = after;
+                continue;
+            }
+        }
+        // Advance one UTF-8 char (handles the `↦`/`%`/`<<<` etc.).
+        let ch = haystack[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 /// Render one atom, substituting any matching addr_base expression
 /// with its abstracted parameter name.
 fn atom_to_lean_with_subst(
     atom: &Atom,
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    // Substitute the rendered form of a value-expression if it
-    // matches one of our abstraction's RHS; otherwise render as-is.
+    // Substitute the rendered form of a value-expression, folding any
+    // abstraction (whole OR sub-expression) to its param so the goal
+    // matches the sl_rw_abs-folded chain.
     let sub = |e: &Expr| -> String {
-        let r = e.to_lean();
-        if let Some(p) = subst.get(&r) { p.clone() } else { r }
+        fold_abstractions(e.to_lean(), subst)
     };
     match atom {
         Atom::Reg(r, v) => {
@@ -2040,6 +2093,51 @@ fn lift_one(
     //     jeq/jne; for taken arms we need the explicit spec call.
     let any_taken = state.branch_hyps.iter().any(|b| b.taken);
     let use_block_iter = state.saw_call || any_taken;
+
+    // Value abstraction: complex bit-level *value* expressions
+    // (wrapAdd / shift / mod / and chains) carry no proof content of
+    // their own — the per-opcode spec already proved what each one
+    // computes. But `sl_block_iter` re-reduces them (whnf) at every
+    // chain step, which is the dominant cost on long arms (the
+    // discriminator-extraction value alone took transferChecked from
+    // 178ms to a >15min timeout). We `generalize` each such value to
+    // an opaque `vgvN` immediately before `sl_block_iter`, so the
+    // mechanical composition threads an opaque Nat instead of
+    // reducing arithmetic. The `generalize h : e = v` keeps the bridge
+    // `h` in scope (for the refinement layer) and leaves the THEOREM
+    // STATEMENT concrete — only the proof goal is abstracted.
+    //
+    // Skip values that are already address abstractions (folded via
+    // sl_rw_abs) and bare initials/constants (cheap, nothing to gain).
+    let value_gens: Vec<String> = if use_block_iter {
+        let is_complex = |e: &Expr| matches!(e,
+            Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::NatAdd(..) |
+            Expr::Mod(..) | Expr::AndU64Imm(..) | Expr::LshU64Imm(..) |
+            Expr::RshU64Imm(..) | Expr::StWordImm(..) | Expr::StDwordImm(..));
+        let mut seen = std::collections::BTreeSet::new();
+        let mut gens = Vec::new();
+        for atom in pre.iter().chain(post.iter()) {
+            let v = match atom { Atom::Reg(_, v) => v, Atom::Mem { value, .. } => value };
+            if is_complex(v) {
+                // Render with sub-expression abstractions folded, so the
+                // generalize target matches the (sl_rw_abs-folded) proof
+                // term — e.g. `(addr0 <<< …) …`, not addr0's expansion.
+                let r = fold_abstractions(v.to_lean(), &abs_subst);
+                // Not an address abstraction (those fold via sl_rw_abs).
+                if !abs_subst.contains_key(&r) && seen.insert(r.clone()) {
+                    gens.push(r);
+                }
+            }
+        }
+        // Outer (longer) expressions first: generalizing a parent
+        // before its sub-terms keeps the sub-terms from being
+        // clobbered into the parent's fresh var prematurely.
+        gens.sort_by_key(|e| std::cmp::Reverse(e.len()));
+        gens
+    } else {
+        Vec::new()
+    };
+
     let tactic: String = if use_block_iter {
         let mut t = String::new();
         // Spec-call have lines (one per insn in walk order).
@@ -2068,6 +2166,13 @@ fn lift_one(
             t.push_str(&format!(
                 "  sl_rw_abs [{}] at [{}]\n", abs_names, hyp_names,
             ));
+        }
+        // Value abstraction: generalize complex scratch values to
+        // opaque vars so sl_block_iter threads them without whnf.
+        // `at *` abstracts the goal + every hypothesis uniformly, so
+        // the chain and goal stay consistent.
+        for (i, e) in value_gens.iter().enumerate() {
+            t.push_str(&format!("  generalize hgv{} : {} = vgv{} at *\n", i, e, i));
         }
         // Final composition.
         let hyp_names = spec_calls.iter()
