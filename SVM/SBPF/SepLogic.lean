@@ -1542,4 +1542,19 @@ theorem memByteIs_eq_memBytesIs (a v : Nat) (hv : v < 256) :
          = (h = PartialState.singletonMemBytes a (PartialState.byteBA v)) from rfl,
       PartialState.singletonMem_eq_bytes a v hv]
 
+/-- Peel one byte off the front of a byte blob: `↦Bytes (byteBA v ++ rest)`
+    separates into the byte cell `a ↦ₘ v` (value `< 256`) and the tail
+    blob at `a + 1`. The workhorse for assembling a coarse `↦Bytes` field
+    from a lift's `ldxb`-read cells interleaved with framed gaps —
+    iterate it (+ `memBytesIs_append` for known-size gaps). -/
+theorem memBytesIs_cons_byte (a v : Nat) (rest : ByteArray) (hv : v < 256) :
+    ∀ h, memBytesIs a (PartialState.byteBA v ++ rest) h ↔
+         (memByteIs a v ** memBytesIs (a + 1) rest) h := by
+  intro h
+  have hsplit := memBytesIs_append a (PartialState.byteBA v) rest h
+  rw [PartialState.byteBA_size] at hsplit
+  rw [hsplit]
+  exact sepConj_iff_congr_left (memBytesIs (a + 1) rest)
+    (fun h => (memByteIs_eq_memBytesIs a v hv h).symm) h
+
 end SVM.SBPF
