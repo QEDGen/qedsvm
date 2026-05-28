@@ -575,7 +575,15 @@ impl SymState {
         let base_expr = self.read_reg(base);
         let key = (base_expr.to_lean(), off, width as u8);
         if let Some(cell) = self.mem.iter().find(|c| c.key() == key) {
-            return cell.value.clone();
+            let v = cell.value.clone();
+            // A re-read of an already-cached cell is still a load
+            // instruction: its spec contributes a `containsRange` to the
+            // sl_block_iter chain. Record it here too so the goal rr stays
+            // 1:1 with the walked load instructions (the fresh path below
+            // pushes the same clause). Without this, a cell read twice
+            // makes the chain rr out-count the goal rr.
+            self.rr_walk.push((base_expr, off, width, false));
+            return v;
         }
         // Fresh cell: name by (width, sequence index) since the
         // address expression itself may be complex (`wrapAdd baseAddr
@@ -765,10 +773,17 @@ fn spec_call_for(
     let have_line = match insn.opc {
         LD_B_REG => {
             // ldxb_spec dst src off vOldDst baseAddr v pc hne
-            // (no `< 2^64` bound — bytes always fit). The loaded
-            // byte name is `oldMemB_<fresh>`.
-            let v_name = format!("oldMemB_{}", state.fresh);
+            // (no `< 2^64` bound — bytes always fit). On a first access
+            // the loaded byte name is `oldMemB_<fresh>`; on a re-read of
+            // an already-accessed cell, reuse its existing value var
+            // (read_mem returns the same cell). Mirrors SymState::read_mem.
             let base_addr = reg_val_lean(src);
+            let v_name = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == base_addr
+                       && c.addr_off == off
+                       && c.width as u8 == Width::Byte as u8)
+                .map(|c| c.value.to_lean())
+                .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
             if dst == src {
                 // `ldxb r, [r]`: dst == src. The generic ldxb_spec would
                 // emit two `r ↦ᵣ` atoms (unsatisfiable). The same-register
@@ -796,8 +811,16 @@ fn spec_call_for(
             // read_mem will allocate). The matching `< 2^64`
             // hypothesis the theorem signature surfaces is named
             // `h<var>_lt` (i.e., `holdMemD_<N>_lt`).
-            let v_name = format!("oldMemD_{}", state.fresh);
             let base_addr = reg_val_lean(src);
+            // Re-read of an already-accessed cell reuses its existing
+            // value var (read_mem returns the same cell); only a first
+            // access allocates oldMemD_<fresh>. Mirrors SymState::read_mem.
+            let v_name = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == base_addr
+                       && c.addr_off == off
+                       && c.width as u8 == Width::Dword as u8)
+                .map(|c| c.value.to_lean())
+                .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
             if dst == src {
                 // `ldxdw r, [r]`: same-register variant (ldxdw_same_spec).
                 format!(
@@ -2218,8 +2241,14 @@ fn lift_one(
                 // generalize target matches the (sl_rw_abs-folded) proof
                 // term — e.g. `(addr0 <<< …) …`, not addr0's expansion.
                 let r = fold_abstractions(v.to_lean(), &abs_subst);
-                // Not an address abstraction (those fold via sl_rw_abs).
-                if !abs_subst.contains_key(&r) && seen.insert(r.clone()) {
+                // Skip address abstractions (handled by sl_rw_abs): both
+                // the expanded form (a map key) and — after folding — the
+                // bare param name (a map value, e.g. `addr5`). Generalizing
+                // an address base rewrites it everywhere, breaking the
+                // address matching in the post/rr.
+                let is_addr_abs = abs_subst.contains_key(&r)
+                    || abs_subst.values().any(|p| *p == r);
+                if !is_addr_abs && seen.insert(r.clone()) {
                     gens.push(r);
                 }
             }

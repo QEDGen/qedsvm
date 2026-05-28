@@ -94,8 +94,10 @@ lean_lib Examples where
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
     `Generated.TwoOpDecrementLifted,
-    -- Trace-guided lift: real p_token Transfer happy path, balance
-    -- debit/credit in the post (qedlift --trace).
-    `Generated.PTokenTransferTracedLifted
+    -- Trace-guided lifts: real p_token happy paths, balance/supply
+    -- mutation in the post (qedlift --trace). MintTo also demonstrates
+    -- that trace guidance sidesteps the static walker's phantom loop.
+    `Generated.PTokenTransferTracedLifted,
+    `Generated.PTokenMintToTracedLifted
   ]
   precompileModules := true
