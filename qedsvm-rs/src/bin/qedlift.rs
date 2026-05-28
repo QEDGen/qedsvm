@@ -62,6 +62,15 @@ struct Args {
     /// instruction names; the output directory is `--output-dir`.
     idl:         Option<PathBuf>,
     output_dir:  Option<PathBuf>,
+    /// Execution-trace file: one decimal logical PC per line, in the
+    /// order the instructions were executed on a concrete run (capture
+    /// via the Lean runner's `TRACE_STEPS`). When given, the walker
+    /// follows this exact path instead of its static branch policy —
+    /// branch directions and (for taken jumps) targets come from the
+    /// trace, so the lift covers the *real* happy path (e.g. the
+    /// balance debit/credit a static fall-through walk skips). Applies
+    /// to single-arm mode (`--so` without `--idl`).
+    trace:       Option<PathBuf>,
 }
 
 // -----------------------------------------------------------------------------
@@ -159,6 +168,7 @@ fn parse_args() -> Result<Args, String> {
     let mut target_disc: Option<i64>     = None;
     let mut idl:         Option<PathBuf> = None;
     let mut output_dir:  Option<PathBuf> = None;
+    let mut trace:       Option<PathBuf> = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -170,12 +180,13 @@ fn parse_args() -> Result<Args, String> {
                   .parse().map_err(|e| format!("--target-disc: {}", e))?),
             "--idl"         => idl         = Some(it.next().ok_or("--idl needs a path")?.into()),
             "--output-dir"  => output_dir  = Some(it.next().ok_or("--output-dir needs a path")?.into()),
+            "--trace"       => trace       = Some(it.next().ok_or("--trace needs a path")?.into()),
             other           => return Err(format!("unknown arg: {}", other)),
         }
     }
     Ok(Args {
         so: so.ok_or("missing --so")?,
-        output, module, target_disc, idl, output_dir,
+        output, module, target_disc, idl, output_dir, trace,
     })
 }
 
@@ -917,6 +928,15 @@ fn spec_call_for(
                 hyp_name, reg(dst), reg(src), v_old, v_src, pc,
             )
         }
+        SUB64_REG => {
+            // sub64_reg_spec dst src vOld v pc hne — same shape as add.
+            let v_old = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            format!(
+                "have {} := sub64_reg_spec {} {} ({}) ({}) {} (by decide)",
+                hyp_name, reg(dst), reg(src), v_old, v_src, pc,
+            )
+        }
         MOV64_REG => {
             // mov64_reg_spec dst src vOld v pc hne — register copy.
             let v_old = reg_val_lean(dst);
@@ -1630,6 +1650,28 @@ fn resolve_jump_target(ctx: &BinaryCtx, logical_pc: usize, off: i64) -> i64 {
     }
 }
 
+/// Parse an execution-trace file: one decimal logical PC per line, in
+/// execution order. Blank lines and `#`-prefixed comments are skipped.
+/// Captured from the Lean runner's `TRACE_STEPS` output (the `STEP
+/// pc=<hex>` lines, converted to decimal).
+fn load_trace(path: &Path) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)?;
+    let mut pcs = Vec::new();
+    for (lineno, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let pc: usize = line.parse().map_err(|e| {
+            format!("--trace {}: line {}: not a decimal PC ({:?}): {}",
+                    path.display(), lineno + 1, line, e)
+        })?;
+        pcs.push(pc);
+    }
+    if pcs.is_empty() {
+        return Err(format!("--trace {}: no PCs found", path.display()).into());
+    }
+    Ok(pcs)
+}
+
 fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(so_path)?;
     let loader = Arc::new(BuiltinProgram::new_mock());
@@ -1671,6 +1713,7 @@ fn lift_one(
     analysis:        &Analysis<'_>,
     target_disc:     Option<i64>,
     module_override: Option<String>,
+    trace:           Option<&[usize]>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
     let text_offset = ctx.text_offset;
@@ -1838,21 +1881,34 @@ fn lift_one(
     let entry_pc: usize = executable.get_entrypoint_instruction_offset();
     let mut state = SymState::default();
     {
-        let mut pc_iter: usize = entry_pc;
+        // In trace mode the walk follows the recorded PC sequence; `ti`
+        // is the cursor into it and `pc_iter` mirrors `trace[ti]`.
+        let mut ti: usize = 0;
+        let mut pc_iter: usize = match trace {
+            Some(t) => t[0], // load_trace guarantees non-empty
+            None     => entry_pc,
+        };
         // Safety cap on walk length. Without this, an unmodelled
         // back-branch (e.g. a copy loop whose conditional jump we
         // default to "not taken") can spin the walker forever. The
         // cap is high enough to permit deep dispatcher cascades
         // (SPL Token has 28 arms; 16 PCs/arm + 200 PCs/handler ≈ 700)
-        // but low enough to fail fast on a runaway.
-        const WALK_CAP: usize = 1024;
+        // but low enough to fail fast on a runaway. With a trace the
+        // bound is exactly the trace length (plus slack).
+        let walk_cap: usize = match trace { Some(t) => t.len() + 8, None => 1024 };
         let mut walk_steps: usize = 0;
         loop {
             walk_steps += 1;
-            if walk_steps > WALK_CAP {
+            if walk_steps > walk_cap {
                 return Err(format!(
                     "walker exceeded {} steps at pc={} (likely back-branch \
-                     defaulted to fall-through)", WALK_CAP, pc_iter).into());
+                     defaulted to fall-through)", walk_cap, pc_iter).into());
+            }
+            // Trace mode: the recorded sequence is authoritative for the
+            // current PC. When it's exhausted the walk is done.
+            if let Some(t) = trace {
+                if ti >= t.len() { exit_pc = pc_iter; break; }
+                pc_iter = t[ti];
             }
             if pc_iter >= insns.len() { exit_pc = pc_iter; break; }
             let ins = &insns[pc_iter];
@@ -1876,7 +1932,9 @@ fn lift_one(
                     // exit_pops_spec restores r10 to frame.savedR10
                     // (the pre-call r10 we saved on the call_stack).
                     state.write_reg(10, saved_r10);
-                    pc_iter = resume;
+                    // In trace mode the next PC comes from the trace (it
+                    // should equal `resume`); otherwise jump to resume.
+                    if trace.is_some() { ti += 1; } else { pc_iter = resume; }
                     continue;
                 }
             }
@@ -1903,40 +1961,69 @@ fn lift_one(
             let branch_hyp_for_call = if is_cond_jump {
                 Some(branch_hyp.as_str())
             } else { None };
-            // For conditional jumps and a target discriminator, decide
-            // the direction based on (opcode, imm, target_disc).
-            // Default (no target_disc): treat as fall-through.
-            let branch_taken: Option<bool> = match (ins.opc, target_disc) {
-                (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) => {
-                    Some(ins.imm == td)
-                }
-                (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => {
-                    Some(ins.imm != td)
-                }
-                // JGT-on-discriminator: with `--target-disc td`, the
-                // taken branch fires when the discriminator (the
-                // imm being compared) is strictly less than td. This
-                // matches `jgt dst, imm, target` semantics: "jump if
-                // r3 > imm". For dispatcher cascades that use the
-                // pattern `if (disc > N) goto upper_half`, td <= imm
-                // means we take the upper branch.
-                (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) => {
-                    Some(td > ins.imm)
-                }
-                _ if is_cond_jump => Some(false), // default: not-taken
-                _ => None,
-            };
             // Resolve the slot-relative jump offset to a logical PC
             // (handles lddw's 2-slot encoding). Shared by spec emission,
             // step's path-hypothesis target, and the PC walk.
             let jtgt = resolve_jump_target(ctx, pc_iter, ins.off as i64);
+            // Decide the branch direction.
+            //   * Trace mode: a conditional jump is "taken" iff the next
+            //     recorded PC is not the fall-through (pc+1). When taken,
+            //     that next PC must equal the resolved jump target — if
+            //     it doesn't, the trace and the decoder disagree (a bug),
+            //     so fail loudly rather than emit an unsound chain.
+            //   * Static mode: discriminator-driven where possible,
+            //     else fall-through. (No `--trace` supplied.)
+            let branch_taken: Option<bool> = if let Some(t) = trace {
+                if is_cond_jump {
+                    let next = t.get(ti + 1).copied();
+                    let taken = next != Some(pc_iter + 1);
+                    if taken {
+                        if let Some(n) = next {
+                            if n as i64 != jtgt {
+                                return Err(format!(
+                                    "trace/decoder mismatch at pc {}: trace goes to {} \
+                                     but the decoded jump target is {} (off={})",
+                                    pc_iter, n, jtgt, ins.off).into());
+                            }
+                        }
+                    }
+                    Some(taken)
+                } else { None }
+            } else {
+                match (ins.opc, target_disc) {
+                    (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) => {
+                        Some(ins.imm == td)
+                    }
+                    (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => {
+                        Some(ins.imm != td)
+                    }
+                    // JGT-on-discriminator: with `--target-disc td`, the
+                    // taken branch fires when the discriminator (the
+                    // imm being compared) is strictly less than td. This
+                    // matches `jgt dst, imm, target` semantics: "jump if
+                    // r3 > imm". For dispatcher cascades that use the
+                    // pattern `if (disc > N) goto upper_half`, td <= imm
+                    // means we take the upper branch.
+                    (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) => {
+                        Some(td > ins.imm)
+                    }
+                    _ if is_cond_jump => Some(false), // default: not-taken
+                    _ => None,
+                }
+            };
             if let Some(sc) = spec_call_for(&state, ins, pc_iter, call_target,
                                             branch_hyp_for_call, branch_taken, Some(jtgt)) {
                 spec_calls.push(sc);
             }
             step(&mut state, ins, Some(pc_iter), branch_taken, Some(jtgt))?;
 
-            // PC progression.
+            // PC progression. In trace mode the next PC is simply the
+            // next recorded entry (the loop top reloads `pc_iter` from
+            // it); we only advance the cursor here.
+            if trace.is_some() {
+                ti += 1;
+                continue;
+            }
             match ins.opc {
                 ebpf::JA => {
                     pc_iter = jtgt as usize;
@@ -2236,6 +2323,10 @@ fn lift_one(
         String::new()
     };
     let n = block_pcs.len();
+    // The triple's start PC is the first instruction actually walked.
+    // In static mode that's the entrypoint; in trace mode it's the
+    // trace's first PC. Falls back to `entry_pc` only for an empty walk.
+    let start_pc = block_pcs.first().copied().unwrap_or(entry_pc);
 
     out.push_str(&format!(
         "open Memory in\n\
@@ -2251,7 +2342,7 @@ fn lift_one(
         abs_sig,
         u64_hyps,
         branch_hyps_sig,
-        n, entry_pc, exit_pc,
+        n, start_pc, exit_pc,
         cr_lean,
         atoms_to_lean(&pre,  &abs_subst),  cs_atom,
         atoms_to_lean(&post, &abs_subst),  cs_atom,
@@ -2291,6 +2382,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = load_binary(&args.so)?;
     let analysis = Analysis::from_executable(&ctx.executable)?;
 
+    // Optional execution-trace oracle (single-arm mode). One decimal
+    // logical PC per line; blank lines and `#` comments are ignored.
+    let trace: Option<Vec<usize>> = match args.trace.as_ref() {
+        Some(p) => Some(load_trace(p)?),
+        None => None,
+    };
+
     // Batch mode: --idl <toml|json> + --output-dir <dir>.
     if let Some(idl_path) = args.idl.as_ref() {
         let output_dir = args.output_dir.as_ref()
@@ -2319,7 +2417,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // opcode (in either the .text renderer or the symbolic
             // executor) is reported and skipped, not fatal. This makes
             // the batch a coverage probe.
-            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone())) {
+            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None) {
                 Ok(result) => {
                     let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
                     if let Some(parent) = out_path.parent() {
@@ -2343,7 +2441,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Single-instruction mode (unchanged behaviour).
-    let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone())?;
+    let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone(),
+                          trace.as_deref())?;
     match args.output {
         Some(path) => {
             if let Some(parent) = path.parent() {

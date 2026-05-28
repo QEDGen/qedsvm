@@ -93,6 +93,9 @@ lean_lib Examples where
     `Generated.GuardedCounterLifted,
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
-    `Generated.TwoOpDecrementLifted
+    `Generated.TwoOpDecrementLifted,
+    -- Trace-guided lift: real p_token Transfer happy path, balance
+    -- debit/credit in the post (qedlift --trace).
+    `Generated.PTokenTransferTracedLifted
   ]
   precompileModules := true
