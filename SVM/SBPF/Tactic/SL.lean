@@ -1098,4 +1098,55 @@ elab_rules : tactic
             evalTactic (← `(tactic| rw [← $a:ident] at $h:ident))
           catch _ => pure ()
 
+/-! ## sl_reshape_pre / sl_reshape_post — permute a triple's pre/post
+
+`sl_reshape_pre [a₀, …, aₖ]` reshapes the pre of a `cuTripleWithin(Mem)`
+goal so the listed atoms come first and the rest become the trailing
+frame, via `buildPermuteIff` + `cuTripleWithin{,Mem}_reshape_pre`. The
+listed atoms must be a sub-multiset of the current pre (matched up to
+`isDefEq` + address normalization). No-op if already in order. This is
+the reusable permutation step for reshaping a lifted triple into a
+refinement's `setupPre ** field-atoms …` shape. -/
+
+open Lean Lean.Meta Lean.Elab.Tactic Lean.Elab.Term SLBlockIter in
+/-- Shared core: `argIdx = 5` reshapes the pre, `6` the post. -/
+private def slReshapeGoal (argIdx : Nat) (atoms : Array (TSyntax `term))
+    (memLemma nonMemLemma : Name) : TacticM Unit := withMainContext do
+  let g ← getMainGoal
+  let ty := (← instantiateMVars (← g.getType)).consumeMData
+  let isMem := ty.isAppOf ``SVM.SBPF.cuTripleWithinMem
+  unless isMem || ty.isAppOf ``SVM.SBPF.cuTripleWithin do
+    throwError "sl_reshape: goal is not a cuTripleWithin(Mem)"
+  let args := ty.getAppArgs
+  let cur := args[argIdx]!
+  let src := flattenSepConj cur
+  let tgt ← atoms.toList.mapM (fun s => elabTermAndSynthesize s.raw none)
+  match ← buildPermuteIff src tgt with
+  | none => throwError "sl_reshape: listed atoms are not a sub-multiset of the {if argIdx == 5 then "pre" else "post"}"
+  | some (none, _, _) => pure ()           -- already in order
+  | some (some iffFwd, frame, _) =>
+    -- iffFwd : ∀ h, cur h ↔ new h ; reshape lemma wants `new ↔ cur`.
+    let psType := Lean.mkConst ``SVM.SBPF.PartialState
+    let iffRev ← withLocalDeclD `h psType fun h => do
+      let applied ← mkAppM' iffFwd #[h]
+      let symmed ← mkAppM ``Iff.symm #[applied]
+      mkLambdaFVars #[h] symmed
+    let newAtom ← rebuildSepConj (tgt ++ frame)
+    let innerTy := mkAppN ty.getAppFn (args.set! argIdx newAtom)
+    let innerMVar ← mkFreshExprMVar innerTy
+    let lemmaName := if isMem then memLemma else nonMemLemma
+    let proof ← mkAppM lemmaName #[iffRev, innerMVar]
+    g.assign proof
+    replaceMainGoal [innerMVar.mvarId!]
+
+open Lean Lean.Elab.Tactic in
+elab "sl_reshape_pre" "[" atoms:term,* "]" : tactic =>
+  slReshapeGoal 5 atoms.getElems
+    ``SVM.SBPF.cuTripleWithinMem_reshape_pre ``SVM.SBPF.cuTripleWithin_reshape_pre
+
+open Lean Lean.Elab.Tactic in
+elab "sl_reshape_post" "[" atoms:term,* "]" : tactic =>
+  slReshapeGoal 6 atoms.getElems
+    ``SVM.SBPF.cuTripleWithinMem_reshape_post ``SVM.SBPF.cuTripleWithin_reshape_post
+
 end SVM.SBPF
