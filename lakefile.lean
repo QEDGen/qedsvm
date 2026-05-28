@@ -98,6 +98,7 @@ lean_lib Examples where
     -- mutation in the post (qedlift --trace). MintTo also demonstrates
     -- that trace guidance sidesteps the static walker's phantom loop.
     `Generated.PTokenTransferTracedLifted,
-    `Generated.PTokenMintToTracedLifted
+    `Generated.PTokenMintToTracedLifted,
+    `Generated.PTokenBurnTracedLifted
   ]
   precompileModules := true
