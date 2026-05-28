@@ -200,24 +200,28 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         8 => ".r8", 9 => ".r9", 10 => ".r10",
         _ => "?reg",
     };
+    // Offset rendered for Lean Insn syntax: negative offsets need
+    // parens (`.stx .dword .r10 -2072 .r0` would parse as
+    // `.r10 - 2072`). Same rationale as `lean_off`.
+    let offl = lean_off(off);
     Ok(match insn.opc {
-        LD_B_REG    => format!(".ldx .byte {} {} {}",     reg(dst), reg(src), off),
-        LD_H_REG    => format!(".ldx .halfword {} {} {}", reg(dst), reg(src), off),
-        LD_W_REG    => format!(".ldx .word {} {} {}",     reg(dst), reg(src), off),
-        LD_DW_REG   => format!(".ldx .dword {} {} {}",    reg(dst), reg(src), off),
-        ST_B_REG    => format!(".stx .byte {} {} {}",     reg(dst), off, reg(src)),
-        ST_H_REG    => format!(".stx .halfword {} {} {}", reg(dst), off, reg(src)),
-        ST_W_REG    => format!(".stx .word {} {} {}",     reg(dst), off, reg(src)),
-        ST_DW_REG   => format!(".stx .dword {} {} {}",    reg(dst), off, reg(src)),
+        LD_B_REG    => format!(".ldx .byte {} {} {}",     reg(dst), reg(src), offl),
+        LD_H_REG    => format!(".ldx .halfword {} {} {}", reg(dst), reg(src), offl),
+        LD_W_REG    => format!(".ldx .word {} {} {}",     reg(dst), reg(src), offl),
+        LD_DW_REG   => format!(".ldx .dword {} {} {}",    reg(dst), reg(src), offl),
+        ST_B_REG    => format!(".stx .byte {} {} {}",     reg(dst), offl, reg(src)),
+        ST_H_REG    => format!(".stx .halfword {} {} {}", reg(dst), offl, reg(src)),
+        ST_W_REG    => format!(".stx .word {} {} {}",     reg(dst), offl, reg(src)),
+        ST_DW_REG   => format!(".stx .dword {} {} {}",    reg(dst), offl, reg(src)),
         ADD64_IMM   => format!(".add64 {} (.imm ({}))",     reg(dst), imm),
         SUB64_IMM   => format!(".sub64 {} (.imm ({}))",     reg(dst), imm),
         MOV64_IMM   => format!(".mov64 {} (.imm ({}))",     reg(dst), imm),
         AND64_IMM   => format!(".and64 {} (.imm ({}))",     reg(dst), imm),
         LSH64_IMM   => format!(".lsh64 {} (.imm ({}))",     reg(dst), imm),
         LD_DW_IMM   => format!(".lddw {} ({})",             reg(dst), imm),
-        ST_B_IMM    => format!(".st .byte {} {} ({})",      reg(dst), off, imm),
-        ST_W_IMM    => format!(".st .word {} {} ({})",      reg(dst), off, imm),
-        ST_DW_IMM   => format!(".st .dword {} {} ({})",     reg(dst), off, imm),
+        ST_B_IMM    => format!(".st .byte {} {} ({})",      reg(dst), offl, imm),
+        ST_W_IMM    => format!(".st .word {} {} ({})",      reg(dst), offl, imm),
+        ST_DW_IMM   => format!(".st .dword {} {} ({})",     reg(dst), offl, imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
@@ -712,9 +716,15 @@ fn spec_call_for(
     let dst = insn.dst;
     let src = insn.src;
     let off = insn.off as i64;
+    // Offset as a spec argument: parenthesise negatives so
+    // `ldxb_same_spec .r10 -8 …` doesn't parse as `.r10 - 8`.
+    let offl = lean_off(off);
     // Logical jump target (slot→logical resolved by the caller).
     let jt = jump_target.unwrap_or((pc as i64) + 1 + off);
-    let imm = insn.imm;
+    // `imm` is only ever a spec argument here (never arithmetic), so
+    // render it parenthesised-when-negative: `and64_imm_spec .r1 -8`
+    // would otherwise parse as `(and64_imm_spec .r1) - 8`.
+    let imm = lean_off(insn.imm);
     let hyp_name = format!("h_{}", pc);
     let reg = |r: u8| -> String {
         match r {
@@ -746,7 +756,7 @@ fn spec_call_for(
                 // spec owns one register atom; baseAddr IS the dst's old value.
                 format!(
                     "have {} := ldxb_same_spec {} {} ({}) {} {} (by decide)",
-                    hyp_name, reg(dst), off, base_addr, v_name, pc,
+                    hyp_name, reg(dst), offl, base_addr, v_name, pc,
                 )
             } else {
                 let v_old_dst = state.regs.get(&dst)
@@ -754,7 +764,7 @@ fn spec_call_for(
                     .unwrap_or_else(|| reg_initial_name(dst));
                 format!(
                     "have {} := ldxb_spec {} {} {} ({}) ({}) {} {} (by decide)",
-                    hyp_name, reg(dst), reg(src), off,
+                    hyp_name, reg(dst), reg(src), offl,
                     v_old_dst, base_addr, v_name, pc,
                 )
             }
@@ -773,7 +783,7 @@ fn spec_call_for(
                 // `ldxdw r, [r]`: same-register variant (ldxdw_same_spec).
                 format!(
                     "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) h{}_lt",
-                    hyp_name, reg(dst), off, base_addr, v_name, pc, v_name,
+                    hyp_name, reg(dst), offl, base_addr, v_name, pc, v_name,
                 )
             } else {
                 let v_old_dst = state.regs.get(&dst)
@@ -781,7 +791,7 @@ fn spec_call_for(
                     .unwrap_or_else(|| reg_initial_name(dst));
                 format!(
                     "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) h{}_lt",
-                    hyp_name, reg(dst), reg(src), off,
+                    hyp_name, reg(dst), reg(src), offl,
                     v_old_dst, base_addr, v_name, pc, v_name,
                 )
             }
@@ -811,7 +821,7 @@ fn spec_call_for(
                 .unwrap_or_else(|| "?oldV".into());
             format!(
                 "have {} := stxdw_spec {} {} {} ({}) ({}) {} {}",
-                hyp_name, reg(dst), reg(src), off,
+                hyp_name, reg(dst), reg(src), offl,
                 base_addr, v_src, old_v, pc,
             )
         }
@@ -862,7 +872,7 @@ fn spec_call_for(
                 .unwrap_or_else(|| "?oldByte".into());
             format!(
                 "have {} := stb_spec {} {} {} ({}) ({}) {}",
-                hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
             )
         }
         ST_W_IMM => {
@@ -877,7 +887,7 @@ fn spec_call_for(
                 .unwrap_or_else(|| "?oldWord".into());
             format!(
                 "have {} := stw_spec {} {} {} ({}) ({}) {}",
-                hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
             )
         }
         ST_DW_IMM => {
@@ -892,7 +902,7 @@ fn spec_call_for(
                 .unwrap_or_else(|| "?oldDword".into());
             format!(
                 "have {} := stdw_spec {} {} {} ({}) ({}) {}",
-                hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
             )
         }
         ADD64_REG => {
