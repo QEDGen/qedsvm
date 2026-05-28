@@ -116,4 +116,44 @@ theorem dst_account
   intro h
   exact dst_rest_split base b108 g3 g4 hg3 h108 h
 
+/-! ## Assertion-equality forms — for `rw` in the refinement wiring
+
+`src_account`/`dst_account` are pointwise iffs; the refinement recipe
+`rw`s them to expand the codec atoms in the goal, so we lift each to an
+`Assertion` equality via `funext`+`propext`. The wiring is then:
+`unfold AsmRefinesTokenTransfer; rw [src_account_eq, dst_account_eq …];
+have framed := cuTripleWithinMem_frame_right F hF lift; sl_exact framed`. -/
+
+theorem src_account_eq
+    (base c0 c1 c2 c3 o0 o1 o2 o3 amount b72 b108 b109 : Nat)
+    (g1 g2 : ByteArray) (hg1 : g1.size = 35)
+    (h72 : b72 < 256) (h108 : b108 < 256) (h109 : b109 < 256) :
+    tokenAcctBalanceOf base
+      { mint := ⟨c0, c1, c2, c3⟩, owner := ⟨o0, o1, o2, o3⟩, amount := amount,
+        rest := PartialState.byteBA b72 ++ (g1 ++
+          (PartialState.byteBA b108 ++ (PartialState.byteBA b109 ++ g2))) }
+      = ( pubkeyIs base ⟨c0, c1, c2, c3⟩ **
+          pubkeyIs (base + 32) ⟨o0, o1, o2, o3⟩ **
+          memU64Is (base + 64) amount **
+          ( memByteIs (base + 72) b72 ** memBytesIs (base + 73) g1 **
+            memByteIs (base + 108) b108 ** memByteIs (base + 109) b109 **
+            memBytesIs (base + 110) g2 ) ) := by
+  funext h
+  exact propext (src_account base c0 c1 c2 c3 o0 o1 o2 o3 amount b72 b108 b109
+    g1 g2 hg1 h72 h108 h109 h)
+
+theorem dst_account_eq
+    (base c0 c1 c2 c3 o0 o1 o2 o3 amount b108 : Nat)
+    (g3 g4 : ByteArray) (hg3 : g3.size = 36) (h108 : b108 < 256) :
+    tokenAcctBalanceOf base
+      { mint := ⟨c0, c1, c2, c3⟩, owner := ⟨o0, o1, o2, o3⟩, amount := amount,
+        rest := g3 ++ (PartialState.byteBA b108 ++ g4) }
+      = ( pubkeyIs base ⟨c0, c1, c2, c3⟩ **
+          pubkeyIs (base + 32) ⟨o0, o1, o2, o3⟩ **
+          memU64Is (base + 64) amount **
+          ( memBytesIs (base + 72) g3 ** memByteIs (base + 108) b108 **
+            memBytesIs (base + 109) g4 ) ) := by
+  funext h
+  exact propext (dst_account base c0 c1 c2 c3 o0 o1 o2 o3 amount b108 g3 g4 hg3 h108 h)
+
 end Examples.PTokenTransferAggregation
