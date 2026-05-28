@@ -212,6 +212,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         LSH64_IMM   => format!(".lsh64 {} (.imm ({}))",     reg(dst), imm),
         ST_B_IMM    => format!(".st .byte {} {} ({})",      reg(dst), off, imm),
         ST_W_IMM    => format!(".st .word {} {} ({})",      reg(dst), off, imm),
+        ST_DW_IMM   => format!(".st .dword {} {} ({})",     reg(dst), off, imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
@@ -337,6 +338,9 @@ enum Expr {
     /// Rendered to match `stw_spec`'s post exactly (the machine's
     /// `writeByWidth` truncates to 32 bits).
     StWordImm(i64),
+    /// `toU64 imm % 2 ^ (8 * 8)` — the dword value `st .dword` writes.
+    /// Matches `stdw_spec`'s post.
+    StDwordImm(i64),
 }
 
 impl Expr {
@@ -361,6 +365,10 @@ impl Expr {
             Expr::StWordImm(imm) => {
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
                 format!("toU64 {} % 2 ^ (4 * 8)", imm_lean)
+            }
+            Expr::StDwordImm(imm) => {
+                let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
+                format!("toU64 {} % 2 ^ (8 * 8)", imm_lean)
             }
         }
     }
@@ -810,6 +818,21 @@ fn spec_call_for(
                 hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
             )
         }
+        ST_DW_IMM => {
+            // stdw_spec baseReg off imm baseAddr oldDwordVal pc
+            let base_addr = reg_val_lean(dst);
+            let key_addr = base_addr.clone();
+            let old_v = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == key_addr
+                       && c.addr_off == off
+                       && c.width as u8 == Width::Dword as u8)
+                .map(|c| c.value.to_lean())
+                .unwrap_or_else(|| "?oldDword".into());
+            format!(
+                "have {} := stdw_spec {} {} {} ({}) ({}) {}",
+                hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
+            )
+        }
         ADD64_REG => {
             // add64_reg_spec dst src vOld v pc hne
             let v_old = reg_val_lean(dst);
@@ -1082,6 +1105,10 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         ST_W_IMM => {
             // Write a constant word (toU64 imm % 2^32) at [dst + off].
             state.write_mem(dst, off, Width::Word, Expr::StWordImm(imm));
+        }
+        ST_DW_IMM => {
+            // Write a constant dword (toU64 imm % 2^64) at [dst + off].
+            state.write_mem(dst, off, Width::Dword, Expr::StDwordImm(imm));
         }
         SUB64_IMM => {
             let cur = state.read_reg(dst);
