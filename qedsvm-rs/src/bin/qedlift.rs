@@ -243,6 +243,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         JLE64_IMM | JLE32_IMM => {
             let t = jt(); format!(".jle {} (.imm ({})) {}", reg(dst), imm, t)
         }
+        RSH64_IMM   => format!(".rsh64 {} (.imm ({}))",     reg(dst), imm),
         JA          => {
             let t = jt(); format!(".ja {}", t)
         }
@@ -346,6 +347,9 @@ enum Expr {
     /// `toU64 imm % 2 ^ (8 * 8)` — the dword value `st .dword` writes.
     /// Matches `stdw_spec`'s post.
     StDwordImm(i64),
+    /// `a >>> (toU64 imm % 64)` — output of `rsh64_imm_spec`. No
+    /// `% U64_MODULUS` wrapper (a right shift never grows the value).
+    RshU64Imm(Box<Expr>, i64),
 }
 
 impl Expr {
@@ -374,6 +378,10 @@ impl Expr {
             Expr::StDwordImm(imm) => {
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
                 format!("toU64 {} % 2 ^ (8 * 8)", imm_lean)
+            }
+            Expr::RshU64Imm(a, imm) => {
+                let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
+                format!("{} >>> (toU64 {} % 64)", a.atom_lean(), imm_lean)
             }
         }
     }
@@ -595,7 +603,7 @@ fn w_short(w: Width) -> &'static str {
 /// these on its own.
 #[derive(Clone, Debug)]
 enum BranchKind {
-    JeqImm, JneImm, JgtImm, JsgtImm, JsleImm,
+    JeqImm, JneImm, JgtImm, JsgtImm, JsleImm, JltImm, JleImm,
     JeqReg, JneReg, JltReg, JsleReg,
 }
 
@@ -636,6 +644,11 @@ impl BranchHyp {
             // `jsle` is signed ≤ (imm form).
             (BranchKind::JsleImm, false) => format!("¬ toSigned64 {} ≤ toSigned64 (toU64 {})", v, self.imm),
             (BranchKind::JsleImm, true)  => format!("toSigned64 {} ≤ toSigned64 (toU64 {})", v, self.imm),
+            // `jlt`/`jle` are unsigned < / ≤ (imm form).
+            (BranchKind::JltImm, false) => format!("¬ {} < toU64 {}", v, self.imm),
+            (BranchKind::JltImm, true)  => format!("{} < toU64 {}", v, self.imm),
+            (BranchKind::JleImm, false) => format!("¬ {} ≤ toU64 {}", v, self.imm),
+            (BranchKind::JleImm, true)  => format!("{} ≤ toU64 {}", v, self.imm),
             // Register-form jumps compare two registers directly.
             (BranchKind::JeqReg, false) => format!("{} ≠ {}", v, s),
             (BranchKind::JeqReg, true)  => format!("{} = {}", v, s),
@@ -790,6 +803,14 @@ fn spec_call_for(
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := lsh64_imm_spec {} {} ({}) {} (by decide)",
+                hyp_name, reg(dst), imm, v_old, pc,
+            )
+        }
+        RSH64_IMM => {
+            // rsh64_imm_spec dst imm vOld pc hne
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := rsh64_imm_spec {} {} ({}) {} (by decide)",
                 hyp_name, reg(dst), imm, v_old, pc,
             )
         }
@@ -983,6 +1004,34 @@ fn spec_call_for(
                 hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
             )
         }
+        JLT64_IMM | JLT32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = jt;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jlt_imm_taken_spec"
+            } else {
+                "jlt_imm_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
+        JLE64_IMM | JLE32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = jt;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jle_imm_taken_spec"
+            } else {
+                "jle_imm_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
         JEQ64_REG | JEQ32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
@@ -1115,6 +1164,10 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let cur = state.read_reg(dst);
             state.write_reg(dst, Expr::LshU64Imm(Box::new(cur), imm));
         }
+        RSH64_IMM => {
+            let cur = state.read_reg(dst);
+            state.write_reg(dst, Expr::RshU64Imm(Box::new(cur), imm));
+        }
         ST_B_IMM => {
             // Write a constant byte (toU64 imm % 256) at [dst + off].
             state.write_mem(dst, off, Width::Byte,
@@ -1198,6 +1251,22 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleImm, dst_value: r, src_value: None, imm,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: jt(),
+            });
+        }
+        JLT64_IMM | JLT32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JltImm, dst_value: r, src_value: None, imm,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: jt(),
+            });
+        }
+        JLE64_IMM | JLE32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JleImm, dst_value: r, src_value: None, imm,
                 taken: branch_taken.unwrap_or(false),
                 target_pc: jt(),
             });
@@ -1691,6 +1760,8 @@ fn lift_one(
                 ebpf::JGT64_IMM | ebpf::JGT32_IMM |
                 ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
                 ebpf::JSLE64_IMM | ebpf::JSLE32_IMM |
+                ebpf::JLT64_IMM | ebpf::JLT32_IMM |
+                ebpf::JLE64_IMM | ebpf::JLE32_IMM |
                 ebpf::JEQ64_REG | ebpf::JEQ32_REG |
                 ebpf::JNE64_REG | ebpf::JNE32_REG |
                 ebpf::JLT64_REG | ebpf::JLT32_REG |
@@ -1741,6 +1812,8 @@ fn lift_one(
                 ebpf::JGT64_IMM | ebpf::JGT32_IMM |
                 ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
                 ebpf::JSLE64_IMM | ebpf::JSLE32_IMM |
+                ebpf::JLT64_IMM | ebpf::JLT32_IMM |
+                ebpf::JLE64_IMM | ebpf::JLE32_IMM |
                 ebpf::JEQ64_REG | ebpf::JEQ32_REG |
                 ebpf::JNE64_REG | ebpf::JNE32_REG |
                 ebpf::JLT64_REG | ebpf::JLT32_REG |

@@ -353,6 +353,26 @@ theorem jlt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     (vDst < toU64 imm)
     (fun _ hdst => by simp only [step, resolveSrc, hdst])
 
+/-- `jlt dst, imm`: NOT taken (fall-through). -/
+theorem jlt_imm_not_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : ¬ vDst < toU64 imm) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jlt dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jlt_imm_spec dst imm vDst pc target
+  rwa [if_neg h] at base
+
+/-- `jlt dst, imm`: TAKEN. -/
+theorem jlt_imm_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst < toU64 imm) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jlt dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jlt_imm_spec dst imm vDst pc target
+  rwa [if_pos h] at base
+
 /-- `jle dst, imm, target`: unsigned jump-less-or-equal. -/
 theorem jle_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     cuTripleWithin 1 0 pc (if vDst ≤ toU64 imm then target else pc + 1)
@@ -361,6 +381,26 @@ theorem jle_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
   cuTripleWithin_1reg_cjump dst vDst pc target (.jle dst (.imm imm) target)
     (vDst ≤ toU64 imm)
     (fun _ hdst => by simp only [step, resolveSrc, hdst])
+
+/-- `jle dst, imm`: NOT taken (fall-through). -/
+theorem jle_imm_not_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : ¬ vDst ≤ toU64 imm) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jle dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jle_imm_spec dst imm vDst pc target
+  rwa [if_neg h] at base
+
+/-- `jle dst, imm`: TAKEN. -/
+theorem jle_imm_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst ≤ toU64 imm) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jle dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jle_imm_spec dst imm vDst pc target
+  rwa [if_pos h] at base
 
 /-- `jsgt dst, imm, target`: signed jump-greater-than. -/
 theorem jsgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
