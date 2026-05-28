@@ -706,5 +706,275 @@ theorem stxw_spec
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
 
+/-! ## Memory stores from immediates — word-width helper + `st .word`
+
+Two-resource pattern: owns one base register and one `↦U32` cell.
+Mirror of `cuTripleWithinMem_store_imm_byte_via_reg_addr` at word
+width — the `↦U32` atom decomposes into 4 byte cells, so the mem
+frame is 5-way (4 in-range + outside) like `stxw_spec`. No value
+register (the value is the instruction's immediate field). -/
+
+/-- Generic word-store triple from an immediate value. The new value's
+    low 4 bytes overwrite `[baseReg + off .. +3]`; everything else is
+    framed. No `< 2^32` hypothesis is needed: `writeU32` and
+    `singletonMemU32` both truncate to the same 4 little-endian bytes. -/
+theorem cuTripleWithinMem_store_imm_word_via_reg_addr
+    (baseReg : Reg) (off : Int)
+    (baseAddr oldWordVal newWordVal : Nat) (pc : Nat) (insn : Insn)
+    (h_step : ∀ s : State,
+        s.regs.get baseReg = baseAddr →
+        s.regions.containsWritable (effectiveAddr baseAddr off) 4 = true →
+        step insn s =
+          { s with mem := Memory.writeU32 s.mem (effectiveAddr baseAddr off) newWordVal,
+                   pc := s.pc + 1 }) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc insn)
+      ((baseReg ↦ᵣ baseAddr) **
+        (effectiveAddr baseAddr off ↦U32 oldWordVal))
+      ((baseReg ↦ᵣ baseAddr) **
+        (effectiveAddr baseAddr off ↦U32 newWordVal))
+      (fun rt => rt.containsWritable (effectiveAddr baseAddr off) 4 = true) := by
+  intro R hRfree fetch hcr s hPR hpc hex h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_base, h_mem, hd_base_mem, hu_base_mem, h_base_pred, h_mem_pred⟩ := h_P_sat
+  rw [h_base_pred] at hu_base_mem hd_base_mem
+  rw [h_mem_pred] at hu_base_mem hd_base_mem
+  clear h_base_pred h_mem_pred h_base h_mem
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have h_P_regs_base : h_P.regs baseReg = some baseAddr := by
+    rw [← hu_base_mem]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_mem_0 : h_P.mem (effectiveAddr baseAddr off) = some (oldWordVal % 256) := by
+    rw [← hu_base_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact PartialState.singletonMemU32_mem_0 _ _
+  have h_P_mem_1 :
+      h_P.mem (effectiveAddr baseAddr off + 1) = some (oldWordVal / 0x100 % 256) := by
+    rw [← hu_base_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact PartialState.singletonMemU32_mem_1 _ _
+  have h_P_mem_2 :
+      h_P.mem (effectiveAddr baseAddr off + 2) = some (oldWordVal / 0x10000 % 256) := by
+    rw [← hu_base_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact PartialState.singletonMemU32_mem_2 _ _
+  have h_P_mem_3 :
+      h_P.mem (effectiveAddr baseAddr off + 3) = some (oldWordVal / 0x1000000 % 256) := by
+    rw [← hu_base_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact PartialState.singletonMemU32_mem_3 _ _
+  have hp_regs_base : hp.regs baseReg = some baseAddr := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_base
+  have hs_regs_base : s.regs.get baseReg = baseAddr :=
+    hcr_regs baseReg baseAddr hp_regs_base
+  have hfetch : fetch s.pc = some insn := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hexec : executeFn fetch s 1 =
+      { s with mem := Memory.writeU32 s.mem (effectiveAddr baseAddr off) newWordVal,
+               pc := s.pc + 1 } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_zero,
+        h_step s hs_regs_base h_region]
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have h_R_no_base : h_R.regs baseReg = none := by
+    rcases hd_PR_regs baseReg with hl | hr
+    · rw [h_P_regs_base] at hl; nomatch hl
+    · exact hr
+  have h_R_no_mem (a val : Nat) (h_P_at : h_P.mem a = some val) :
+      h_R.mem a = none := by
+    rcases hd_PR_mem a with hl | hr
+    · rw [h_P_at] at hl; nomatch hl
+    · exact hr
+  have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
+  · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
+  · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]
+    refine ⟨_, ?_,
+            (PartialState.singletonReg baseReg baseAddr).union
+              (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal),
+            h_R, ?_, rfl,
+            ⟨PartialState.singletonReg baseReg baseAddr,
+             PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal,
+             ?_, rfl, rfl, rfl⟩,
+            h_R_sat⟩
+    -- (a) Compat of the new witness with the post state.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r vr hvr
+        show s.regs.get r = vr
+        by_cases hrbase : r = baseReg
+        · rw [hrbase] at hvr
+          have h_inner :
+              ((PartialState.singletonReg baseReg baseAddr).union
+                (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).regs
+                  baseReg = some baseAddr :=
+            PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+          rw [PartialState.union_regs_of_left_some h_inner] at hvr
+          have : vr = baseAddr := (Option.some.inj hvr).symm
+          rw [hrbase, this]; exact hs_regs_base
+        · have h_outer_none :
+              ((PartialState.singletonReg baseReg baseAddr).union
+                (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).regs r
+              = none := by
+            rw [PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hrbase)]
+            exact PartialState.singletonMemU32_regs r
+          rw [PartialState.union_regs_of_left_none h_outer_none] at hvr
+          apply hcr_regs r vr
+          have h_P_none : h_P.regs r = none := by
+            rw [← hu_base_mem]
+            rw [PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hrbase)]
+            exact PartialState.singletonMemU32_regs r
+          rw [← hu_PR]
+          rw [PartialState.union_regs_of_left_none h_P_none]
+          exact hvr
+      · intro a vm hvm
+        show (Memory.writeU32 s.mem (effectiveAddr baseAddr off) newWordVal) a = vm
+        by_cases ha0 : a = effectiveAddr baseAddr off
+        · rw [ha0] at hvm ⊢
+          have h_inner :
+              ((PartialState.singletonReg baseReg baseAddr).union
+                (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).mem
+                  (effectiveAddr baseAddr off) = some (newWordVal % 256) := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact PartialState.singletonMemU32_mem_0 _ _
+          rw [PartialState.union_mem_of_left_some h_inner] at hvm
+          have : vm = newWordVal % 256 := (Option.some.inj hvm).symm
+          rw [this]; exact Memory.writeU32_read_at_0 _ _ _
+        · by_cases ha1 : a = effectiveAddr baseAddr off + 1
+          · rw [ha1] at hvm ⊢
+            have h_inner :
+                ((PartialState.singletonReg baseReg baseAddr).union
+                  (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).mem
+                    (effectiveAddr baseAddr off + 1) = some (newWordVal / 0x100 % 256) := by
+              rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+              exact PartialState.singletonMemU32_mem_1 _ _
+            rw [PartialState.union_mem_of_left_some h_inner] at hvm
+            have : vm = newWordVal / 0x100 % 256 := (Option.some.inj hvm).symm
+            rw [this]; exact Memory.writeU32_read_at_1 _ _ _
+          · by_cases ha2 : a = effectiveAddr baseAddr off + 2
+            · rw [ha2] at hvm ⊢
+              have h_inner :
+                  ((PartialState.singletonReg baseReg baseAddr).union
+                    (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).mem
+                      (effectiveAddr baseAddr off + 2) = some (newWordVal / 0x10000 % 256) := by
+                rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+                exact PartialState.singletonMemU32_mem_2 _ _
+              rw [PartialState.union_mem_of_left_some h_inner] at hvm
+              have : vm = newWordVal / 0x10000 % 256 := (Option.some.inj hvm).symm
+              rw [this]; exact Memory.writeU32_read_at_2 _ _ _
+            · by_cases ha3 : a = effectiveAddr baseAddr off + 3
+              · rw [ha3] at hvm ⊢
+                have h_inner :
+                    ((PartialState.singletonReg baseReg baseAddr).union
+                      (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).mem
+                        (effectiveAddr baseAddr off + 3) = some (newWordVal / 0x1000000 % 256) := by
+                  rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+                  exact PartialState.singletonMemU32_mem_3 _ _
+                rw [PartialState.union_mem_of_left_some h_inner] at hvm
+                have : vm = newWordVal / 0x1000000 % 256 := (Option.some.inj hvm).symm
+                rw [this]; exact Memory.writeU32_read_at_3 _ _ _
+              · have h_outer_none :
+                    ((PartialState.singletonReg baseReg baseAddr).union
+                      (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).mem a
+                    = none := by
+                  rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+                  exact PartialState.singletonMemU32_mem_outside _ _ a (by omega)
+                rw [PartialState.union_mem_of_left_none h_outer_none] at hvm
+                rw [Memory.writeU32_read_other s.mem _ _ a ha0 ha1 ha2 ha3]
+                apply hcm_mem a vm
+                have h_P_none : h_P.mem a = none := by
+                  rw [← hu_base_mem,
+                      PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+                  exact PartialState.singletonMemU32_mem_outside _ _ a (by omega)
+                rw [← hu_PR]
+                rw [PartialState.union_mem_of_left_none h_P_none]
+                exact hvm
+      · intro vp hvp
+        have h_outer_pc :
+            ((PartialState.singletonReg baseReg baseAddr).union
+              (PartialState.singletonMemU32 (effectiveAddr baseAddr off) newWordVal)).pc = none := by
+          rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+          exact PartialState.singletonMemU32_pc
+        rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
+        rw [h_R_no_pc] at hvp
+        nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+      · intro cs hva
+        first
+        | exact hcompat.callStack cs hva
+        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.callStack cs
+             (by rw [
+                    ← hu_PR,
+                    ← hu_base_mem,
+                    PartialState.union_callStack_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.callStack cs (by rw [← hu_PR]; exact hva))
+    -- (b) Outer disjointness: new witness ⊥ h_R.
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
+      · intro r
+        by_cases hrbase : r = baseReg
+        · rw [hrbase]; right; exact h_R_no_base
+        · left
+          rw [PartialState.union_regs_of_left_none
+              (PartialState.singletonReg_regs_other hrbase)]
+          exact PartialState.singletonMemU32_regs r
+      · intro a
+        by_cases ha0 : a = effectiveAddr baseAddr off
+        · rw [ha0]; right; exact h_R_no_mem _ _ h_P_mem_0
+        · by_cases ha1 : a = effectiveAddr baseAddr off + 1
+          · rw [ha1]; right; exact h_R_no_mem _ _ h_P_mem_1
+          · by_cases ha2 : a = effectiveAddr baseAddr off + 2
+            · rw [ha2]; right; exact h_R_no_mem _ _ h_P_mem_2
+            · by_cases ha3 : a = effectiveAddr baseAddr off + 3
+              · rw [ha3]; right; exact h_R_no_mem _ _ h_P_mem_3
+              · left
+                rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+                exact PartialState.singletonMemU32_mem_outside _ _ a (by omega)
+      · left
+        rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+        exact PartialState.singletonMemU32_pc
+    -- (c) Inner disjointness: singletonReg ⊥ singletonMemU32.
+    · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
+      · right; exact PartialState.singletonMemU32_regs r
+      · left; exact PartialState.singletonReg_mem a
+      · left; exact PartialState.singletonReg_pc
+
+/-- `st .word baseReg off imm`: store word `(imm & 0xffffffff)` at
+    `[baseReg + off]`. The stored value is `toU64 imm` truncated to
+    32 bits (`% 2^(4*8)`), matching the machine's `writeByWidth`.
+    Derived from the immediate-store helper. -/
+theorem stw_spec
+    (baseReg : Reg) (off : Int) (imm : Int)
+    (baseAddr oldWordVal : Nat) (pc : Nat) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.st .word baseReg off imm))
+      ((baseReg ↦ᵣ baseAddr) **
+        (effectiveAddr baseAddr off ↦U32 oldWordVal))
+      ((baseReg ↦ᵣ baseAddr) **
+        (effectiveAddr baseAddr off ↦U32 (toU64 imm % 2 ^ (4 * 8))))
+      (fun rt => rt.containsWritable (effectiveAddr baseAddr off) 4 = true) :=
+  cuTripleWithinMem_store_imm_word_via_reg_addr baseReg off
+    baseAddr oldWordVal (toU64 imm % 2 ^ (4 * 8)) pc (.st .word baseReg off imm)
+    (fun _ hbase hreg => by
+      simp only [step, hbase, Width.bytes, if_pos hreg, Memory.writeByWidth])
 
 end SVM.SBPF

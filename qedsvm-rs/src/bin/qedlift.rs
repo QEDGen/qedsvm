@@ -211,6 +211,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         AND64_IMM   => format!(".and64 {} (.imm ({}))",     reg(dst), imm),
         LSH64_IMM   => format!(".lsh64 {} (.imm ({}))",     reg(dst), imm),
         ST_B_IMM    => format!(".st .byte {} {} ({})",      reg(dst), off, imm),
+        ST_W_IMM    => format!(".st .word {} {} ({})",      reg(dst), off, imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
@@ -332,6 +333,10 @@ enum Expr {
     /// `lsh64_imm_spec` (logical left shift by immediate, modulo 64,
     /// truncated to 64 bits).
     LshU64Imm(Box<Expr>, i64),
+    /// `toU64 imm % 2 ^ (4 * 8)` — the word value `st .word` writes.
+    /// Rendered to match `stw_spec`'s post exactly (the machine's
+    /// `writeByWidth` truncates to 32 bits).
+    StWordImm(i64),
 }
 
 impl Expr {
@@ -352,6 +357,10 @@ impl Expr {
             Expr::LshU64Imm(a, imm) => {
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
                 format!("({} <<< (toU64 {} % 64)) % U64_MODULUS", a.atom_lean(), imm_lean)
+            }
+            Expr::StWordImm(imm) => {
+                let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
+                format!("toU64 {} % 2 ^ (4 * 8)", imm_lean)
             }
         }
     }
@@ -786,6 +795,21 @@ fn spec_call_for(
                 hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
             )
         }
+        ST_W_IMM => {
+            // stw_spec baseReg off imm baseAddr oldWordVal pc
+            let base_addr = reg_val_lean(dst);
+            let key_addr = base_addr.clone();
+            let old_v = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == key_addr
+                       && c.addr_off == off
+                       && c.width as u8 == Width::Word as u8)
+                .map(|c| c.value.to_lean())
+                .unwrap_or_else(|| "?oldWord".into());
+            format!(
+                "have {} := stw_spec {} {} {} ({}) ({}) {}",
+                hyp_name, reg(dst), off, imm, base_addr, old_v, pc,
+            )
+        }
         ADD64_REG => {
             // add64_reg_spec dst src vOld v pc hne
             let v_old = reg_val_lean(dst);
@@ -1054,6 +1078,10 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             // Write a constant byte (toU64 imm % 256) at [dst + off].
             state.write_mem(dst, off, Width::Byte,
                 Expr::Mod(Box::new(Expr::ToU64(Box::new(Expr::Const(imm)))), 256));
+        }
+        ST_W_IMM => {
+            // Write a constant word (toU64 imm % 2^32) at [dst + off].
+            state.write_mem(dst, off, Width::Word, Expr::StWordImm(imm));
         }
         SUB64_IMM => {
             let cur = state.read_reg(dst);
