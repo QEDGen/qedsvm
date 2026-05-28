@@ -365,6 +365,10 @@ enum Expr {
     /// `a >>> (toU64 imm % 64)` — output of `rsh64_imm_spec`. No
     /// `% U64_MODULUS` wrapper (a right shift never grows the value).
     RshU64Imm(Box<Expr>, i64),
+    /// Render-only: ordinary Nat subtraction `a - b`. Used by the
+    /// balance-correctness corollary to expose a `wrapSub a b` debit in
+    /// clean form (justified by `wrapSub_of_le` under a funds guard).
+    CleanSub(Box<Expr>, Box<Expr>),
 }
 
 impl Expr {
@@ -398,6 +402,7 @@ impl Expr {
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
                 format!("{} >>> (toU64 {} % 64)", a.atom_lean(), imm_lean)
             }
+            Expr::CleanSub(a, b) => format!("{} - {}", a.atom_lean(), b.atom_lean()),
         }
     }
     /// Lean rendering suitable for use as a function argument
@@ -2397,6 +2402,98 @@ fn lift_one(
         rr,
         tactic,
     ));
+
+    // ── Balance-correctness corollary ──────────────────────────────
+    // Re-expose `wrapSub`/`wrapAdd` balance shifts in the post as
+    // ordinary Nat arithmetic (`a - b` / `a + b`), justified by
+    // `wrapSub_of_le` / `wrapAdd_of_lt` under explicit funds /
+    // no-overflow guards. This lifts the bit-level triple to the
+    // domain-meaningful claim "the handler debits/credits the balance
+    // cell by exactly the amount." Only memory cells whose value wraps
+    // two LOADED values (`InitMem`) qualify — register/address
+    // arithmetic (`r8 ↦ wrapAdd addrN k`) is excluded by that filter.
+    enum Shift { Sub(Expr, Expr), Add(Expr, Expr) }
+    let is_initmem = |e: &Expr| matches!(e, Expr::InitMem(_));
+    let mut shifts: Vec<Shift> = Vec::new();
+    let mut post_clean: Vec<Atom> = Vec::with_capacity(post.len());
+    for atom in &post {
+        if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+            if let Expr::WrapSub(a, b) = value {
+                if is_initmem(a) && is_initmem(b) {
+                    shifts.push(Shift::Sub((**a).clone(), (**b).clone()));
+                    post_clean.push(Atom::Mem { addr_base: addr_base.clone(),
+                        addr_off: *addr_off, width: *width,
+                        value: Expr::CleanSub(a.clone(), b.clone()) });
+                    continue;
+                }
+            }
+            if let Expr::WrapAdd(a, b) = value {
+                if is_initmem(a) && is_initmem(b) {
+                    shifts.push(Shift::Add((**a).clone(), (**b).clone()));
+                    post_clean.push(Atom::Mem { addr_base: addr_base.clone(),
+                        addr_off: *addr_off, width: *width,
+                        value: Expr::NatAdd(a.clone(), b.clone()) });
+                    continue;
+                }
+            }
+        }
+        post_clean.push(atom.clone());
+    }
+
+    if !shifts.is_empty() {
+        // Ordered param-name list to re-apply the main spec, mirroring
+        // the signature: vars, then (abstraction params, abstraction
+        // hyps), u64 bound hyps, branch hyps.
+        let mut names: Vec<String> = vars.clone();
+        if use_block_iter && !abstractions.is_empty() {
+            for (p, _, _) in &abstractions { names.push(p.clone()); }
+            for (_, h, _) in &abstractions { names.push(h.clone()); }
+        }
+        for v in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
+        for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
+
+        let mut extra_hyps = String::new();
+        let mut rw_terms: Vec<String> = Vec::new();
+        for (k, sh) in shifts.iter().enumerate() {
+            match sh {
+                Shift::Sub(a, b) => {
+                    let al = fold_abstractions(a.to_lean(), &abs_subst);
+                    let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                    extra_hyps.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
+                    extra_hyps.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
+                    rw_terms.push(format!("← wrapSub_of_le h_funds{} h_src_lt{}", k, k));
+                }
+                Shift::Add(a, b) => {
+                    let al = fold_abstractions(a.to_lean(), &abs_subst);
+                    let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                    extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
+                    rw_terms.push(format!("← wrapAdd_of_lt h_noovf{}", k));
+                }
+            }
+        }
+
+        out.push_str(&format!(
+            "open Memory in\n\
+             theorem {}_balance_correct\n    {}{}{}{}{}: \
+             cuTripleWithinMem {} 0 {} {}\n      \
+             ({})\n      \
+             ({}{})\n      \
+             ({}{})\n      \
+             (fun rt => {}) := by\n  \
+             have h := {}_lifted_spec {}\n  \
+             rw [{}]\n  \
+             exact h\n\n",
+            module_name,
+            vars_sig, abs_sig, u64_hyps, branch_hyps_sig, extra_hyps,
+            n, start_pc, exit_pc,
+            cr_lean,
+            atoms_to_lean(&pre, &abs_subst), cs_atom,
+            atoms_to_lean(&post_clean, &abs_subst), cs_atom,
+            rr,
+            module_name, names.join(" "),
+            rw_terms.join(", "),
+        ));
+    }
 
     out.push_str(&format!("end Examples.Lifted.{}\n", module_name));
 

@@ -515,4 +515,367 @@ theorem PTokenMintTo_lifted_spec
   sl_rw_abs [h_addr4, h_addr6, h_addr5, h_addr1, h_addr0, h_addr2, h_addr3, h_addr7] at [h_198, h_199, h_304, h_305, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_322, h_3361, h_3362, h_3363, h_3364, h_3453, h_3454, h_3585, h_3586, h_3587, h_3588, h_3589, h_3590, h_3591, h_3592, h_3593, h_3594, h_3595, h_326, h_327, h_328, h_329, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_340, h_3543, h_3654, h_3655, h_3656, h_3657, h_3658, h_3659, h_3660, h_3661, h_3662, h_3663, h_3664, h_3665, h_3666, h_3667, h_3668, h_3669, h_3670, h_3671, h_3672, h_3673, h_3674, h_3675, h_3676, h_3677, h_3678, h_3679, h_3680, h_3681, h_3682, h_3683, h_3684, h_3685, h_3686, h_3687, h_3688, h_3689, h_3690, h_3691, h_3692, h_3693, h_3694, h_3695, h_3696, h_3697, h_3698, h_3699, h_3700, h_3701, h_3702, h_3703, h_3704, h_3705, h_3706, h_3707, h_4743, h_4744, h_4745, h_4746, h_4747, h_4748, h_4749, h_4750, h_4751, h_4752, h_4753, h_4754, h_4755, h_4756, h_4757, h_4758, h_4759]
   sl_block_iter [h_198, h_199, h_304, h_305, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_322, h_3361, h_3362, h_3363, h_3364, h_3453, h_3454, h_3585, h_3586, h_3587, h_3588, h_3589, h_3590, h_3591, h_3592, h_3593, h_3594, h_3595, h_326, h_327, h_328, h_329, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_340, h_3543, h_3654, h_3655, h_3656, h_3657, h_3658, h_3659, h_3660, h_3661, h_3662, h_3663, h_3664, h_3665, h_3666, h_3667, h_3668, h_3669, h_3670, h_3671, h_3672, h_3673, h_3674, h_3675, h_3676, h_3677, h_3678, h_3679, h_3680, h_3681, h_3682, h_3683, h_3684, h_3685, h_3686, h_3687, h_3688, h_3689, h_3690, h_3691, h_3692, h_3693, h_3694, h_3695, h_3696, h_3697, h_3698, h_3699, h_3700, h_3701, h_3702, h_3703, h_3704, h_3705, h_3706, h_3707, h_4743, h_4744, h_4745, h_4746, h_4747, h_4748, h_4749, h_4750, h_4751, h_4752, h_4753, h_4754, h_4755, h_4756, h_4757, h_4758, h_4759] generalizing [((toU64 0) &&& toU64 1) % U64_MODULUS, wrapAdd oldMemD_40 oldMemD_36, wrapAdd oldMemD_39 oldMemD_36]
 
+open Memory in
+theorem PTokenMintTo_balance_correct
+    (baseAddr oldMemB_0 vR2Old oldMemD_1 vR0Old oldMemD_2 vR7Old vR10Old oldMemD_3 vR3Old oldMemB_4 oldMemD_5 oldMemD_6 oldMemB_7 oldMemD_8 oldMemD_9 vR4Old oldMemD_10 vR9Old oldMemB_11 vR5Old vR8Old vR6Old oldMemD_12 oldMemD_13 oldMemB_14 oldMemB_15 oldMemD_16 oldMemD_17 oldMemD_18 oldMemD_19 oldMemD_20 oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemB_25 oldMemB_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemD_37 oldMemB_38 oldMemD_39 oldMemD_40 : Nat)
+    (addr0 : Nat)
+    (addr1 : Nat)
+    (addr2 : Nat)
+    (addr3 : Nat)
+    (addr4 : Nat)
+    (addr5 : Nat)
+    (addr6 : Nat)
+    (addr7 : Nat)
+    (h_addr0 : addr0 = ((wrapAdd (wrapAdd baseAddr oldMemD_1) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS)
+    (h_addr1 : addr1 = wrapAdd vR10Old (toU64 (-2072)))
+    (h_addr2 : addr2 = ((wrapAdd (wrapAdd (addr0) oldMemD_6) (toU64 10343)) &&& toU64 (-8)) % U64_MODULUS)
+    (h_addr3 : addr3 = ((wrapAdd (wrapAdd (addr2) oldMemD_9) (toU64 10343)) &&& toU64 (-8)) % U64_MODULUS)
+    (h_addr4 : addr4 = oldMemD_12)
+    (h_addr5 : addr5 = wrapAdd baseAddr (toU64 8))
+    (h_addr6 : addr6 = oldMemD_27)
+    (h_addr7 : addr7 = wrapAdd (addr3) (toU64 9))
+    (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
+    (holdMemD_2_lt : oldMemD_2 < 2 ^ 64)
+    (holdMemD_3_lt : oldMemD_3 < 2 ^ 64)
+    (holdMemD_5_lt : oldMemD_5 < 2 ^ 64)
+    (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
+    (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
+    (holdMemD_9_lt : oldMemD_9 < 2 ^ 64)
+    (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
+    (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
+    (holdMemD_13_lt : oldMemD_13 < 2 ^ 64)
+    (holdMemD_16_lt : oldMemD_16 < 2 ^ 64)
+    (holdMemD_17_lt : oldMemD_17 < 2 ^ 64)
+    (holdMemD_18_lt : oldMemD_18 < 2 ^ 64)
+    (holdMemD_19_lt : oldMemD_19 < 2 ^ 64)
+    (holdMemD_20_lt : oldMemD_20 < 2 ^ 64)
+    (holdMemD_21_lt : oldMemD_21 < 2 ^ 64)
+    (holdMemD_22_lt : oldMemD_22 < 2 ^ 64)
+    (holdMemD_23_lt : oldMemD_23 < 2 ^ 64)
+    (holdMemD_24_lt : oldMemD_24 < 2 ^ 64)
+    (holdMemD_27_lt : oldMemD_27 < 2 ^ 64)
+    (holdMemD_28_lt : oldMemD_28 < 2 ^ 64)
+    (holdMemD_29_lt : oldMemD_29 < 2 ^ 64)
+    (holdMemD_30_lt : oldMemD_30 < 2 ^ 64)
+    (holdMemD_31_lt : oldMemD_31 < 2 ^ 64)
+    (holdMemD_32_lt : oldMemD_32 < 2 ^ 64)
+    (holdMemD_33_lt : oldMemD_33 < 2 ^ 64)
+    (holdMemD_34_lt : oldMemD_34 < 2 ^ 64)
+    (holdMemD_35_lt : oldMemD_35 < 2 ^ 64)
+    (holdMemD_36_lt : oldMemD_36 < 2 ^ 64)
+    (holdMemD_37_lt : oldMemD_37 < 2 ^ 64)
+    (holdMemD_39_lt : oldMemD_39 < 2 ^ 64)
+    (holdMemD_40_lt : oldMemD_40 < 2 ^ 64)
+    (h_branch0 : oldMemB_0 % 256 = toU64 3)
+    (h_branch1 : oldMemD_1 ≠ toU64 165)
+    (h_branch2 : oldMemD_2 ≠ toU64 0)
+    (h_branch3 : oldMemD_2 ≠ toU64 1)
+    (h_branch4 : oldMemD_2 ≠ toU64 2)
+    (h_branch5 : oldMemD_2 < toU64 6)
+    (h_branch6 : ¬ toSigned64 oldMemD_2 ≤ toSigned64 (toU64 2))
+    (h_branch7 : oldMemD_2 = toU64 3)
+    (h_branch8 : oldMemB_4 % 256 = toU64 255)
+    (h_branch9 : oldMemB_7 % 256 = toU64 255)
+    (h_branch10 : oldMemD_10 ≠ toU64 0)
+    (h_branch11 : oldMemB_11 % 256 ≠ toU64 255)
+    (h_branch12 : ¬ toSigned64 (oldMemB_11 % 256) > toSigned64 (toU64 11))
+    (h_branch13 : toSigned64 (oldMemB_11 % 256) > toSigned64 (toU64 6))
+    (h_branch14 : oldMemB_11 % 256 = toU64 7)
+    (h_branch15 : ¬ wrapAdd oldMemD_10 (toU64 (-1)) < toU64 8)
+    (h_branch16 : ¬ oldMemD_2 < toU64 3)
+    (h_branch17 : oldMemD_13 = toU64 165)
+    (h_branch18 : ¬ oldMemB_14 % 256 > toU64 2)
+    (h_branch19 : oldMemB_14 % 256 ≠ toU64 2)
+    (h_branch20 : oldMemB_14 % 256 ≠ toU64 0)
+    (h_branch21 : oldMemB_15 % 256 ≠ toU64 1)
+    (h_branch22 : oldMemD_17 = oldMemD_16)
+    (h_branch23 : oldMemD_19 = oldMemD_18)
+    (h_branch24 : oldMemD_21 = oldMemD_20)
+    (h_branch25 : oldMemD_23 = oldMemD_22)
+    (h_branch26 : oldMemD_24 = toU64 82)
+    (h_branch27 : oldMemB_25 % 256 = toU64 1)
+    (h_branch28 : oldMemB_26 % 256 = toU64 1)
+    (h_branch29 : oldMemD_29 = oldMemD_28)
+    (h_branch30 : oldMemD_31 = oldMemD_30)
+    (h_branch31 : oldMemD_33 = oldMemD_32)
+    (h_branch32 : oldMemD_35 = oldMemD_34)
+    (h_branch33 : oldMemD_37 ≠ toU64 355)
+    (h_branch34 : oldMemB_38 % 256 ≠ toU64 0)
+    (h_branch35 : oldMemD_36 ≠ toU64 0)
+    (h_branch36 : ¬ wrapAdd oldMemD_39 oldMemD_36 < oldMemD_39)
+    (h_branch37 : ((toU64 0) &&& toU64 1) % U64_MODULUS = toU64 0)
+    (h_noovf0 : oldMemD_39 + oldMemD_36 < 2 ^ 64)
+    (h_noovf1 : oldMemD_40 + oldMemD_36 < 2 ^ 64)
+    : cuTripleWithinMem 119 0 198 3542
+      ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((CodeReq.singleton 198 (.ldx .byte .r2 .r1 0)).union
+        (CodeReq.singleton 199 (.jeq .r2 (.imm (3)) 304))).union
+        (CodeReq.singleton 304 (.ldx .dword .r2 .r1 88))).union
+        (CodeReq.singleton 305 (.jne .r2 (.imm (165)) 312))).union
+        (CodeReq.singleton 312 (.mov64 .r0 (.reg .r1)))).union
+        (CodeReq.singleton 313 (.add64 .r0 (.imm (8))))).union
+        (CodeReq.singleton 314 (.ldx .dword .r7 .r1 0))).union
+        (CodeReq.singleton 315 (.jeq .r7 (.imm (0)) 418))).union
+        (CodeReq.singleton 316 (.stx .dword .r10 (-2072) .r0))).union
+        (CodeReq.singleton 317 (.ldx .dword .r2 .r1 88))).union
+        (CodeReq.singleton 318 (.add64 .r1 (.reg .r2)))).union
+        (CodeReq.singleton 319 (.add64 .r1 (.imm (10351))))).union
+        (CodeReq.singleton 320 (.and64 .r1 (.imm (-8))))).union
+        (CodeReq.singleton 321 (.jeq .r7 (.imm (1)) 330))).union
+        (CodeReq.singleton 322 (.jne .r7 (.imm (2)) 3361))).union
+        (CodeReq.singleton 3361 (.mov64 .r2 (.reg .r10)))).union
+        (CodeReq.singleton 3362 (.add64 .r2 (.imm (-2072))))).union
+        (CodeReq.singleton 3363 (.mov64 .r3 (.reg .r7)))).union
+        (CodeReq.singleton 3364 (.jlt .r7 (.imm (6)) 3453))).union
+        (CodeReq.singleton 3453 (.jsle .r3 (.imm (2)) 3578))).union
+        (CodeReq.singleton 3454 (.jeq .r3 (.imm (3)) 3585))).union
+        (CodeReq.singleton 3585 (.ldx .byte .r3 .r1 0))).union
+        (CodeReq.singleton 3586 (.jne .r3 (.imm (255)) 5265))).union
+        (CodeReq.singleton 3587 (.stx .dword .r2 8 .r1))).union
+        (CodeReq.singleton 3588 (.ldx .dword .r3 .r1 80))).union
+        (CodeReq.singleton 3589 (.add64 .r1 (.reg .r3)))).union
+        (CodeReq.singleton 3590 (.add64 .r1 (.imm (10343))))).union
+        (CodeReq.singleton 3591 (.and64 .r1 (.imm (-8))))).union
+        (CodeReq.singleton 3592 (.ldx .byte .r3 .r1 0))).union
+        (CodeReq.singleton 3593 (.jne .r3 (.imm (255)) 5274))).union
+        (CodeReq.singleton 3594 (.stx .dword .r2 16 .r1))).union
+        (CodeReq.singleton 3595 (.ja 326))).union
+        (CodeReq.singleton 326 (.ldx .dword .r2 .r1 80))).union
+        (CodeReq.singleton 327 (.add64 .r1 (.reg .r2)))).union
+        (CodeReq.singleton 328 (.add64 .r1 (.imm (10343))))).union
+        (CodeReq.singleton 329 (.and64 .r1 (.imm (-8))))).union
+        (CodeReq.singleton 330 (.mov64 .r4 (.reg .r0)))).union
+        (CodeReq.singleton 331 (.mov64 .r0 (.reg .r1)))).union
+        (CodeReq.singleton 332 (.ldx .dword .r9 .r0 0))).union
+        (CodeReq.singleton 333 (.jeq .r9 (.imm (0)) 420))).union
+        (CodeReq.singleton 334 (.ldx .byte .r5 .r0 8))).union
+        (CodeReq.singleton 335 (.jeq .r5 (.imm (255)) 423))).union
+        (CodeReq.singleton 336 (.add64 .r9 (.imm (-1))))).union
+        (CodeReq.singleton 337 (.mov64 .r8 (.reg .r0)))).union
+        (CodeReq.singleton 338 (.add64 .r8 (.imm (9))))).union
+        (CodeReq.singleton 339 (.jsgt .r5 (.imm (11)) 3474))).union
+        (CodeReq.singleton 340 (.jsgt .r5 (.imm (6)) 3543))).union
+        (CodeReq.singleton 3543 (.jeq .r5 (.imm (7)) 3654))).union
+        (CodeReq.singleton 3654 (.jlt .r9 (.imm (8)) 3944))).union
+        (CodeReq.singleton 3655 (.jlt .r7 (.imm (3)) 3947))).union
+        (CodeReq.singleton 3656 (.mov64 .r6 (.imm (3))))).union
+        (CodeReq.singleton 3657 (.mov64 .r9 (.imm (0))))).union
+        (CodeReq.singleton 3658 (.ldx .dword .r3 .r10 (-2064)))).union
+        (CodeReq.singleton 3659 (.ldx .dword .r1 .r3 80))).union
+        (CodeReq.singleton 3660 (.jne .r1 (.imm (165)) 3536))).union
+        (CodeReq.singleton 3661 (.ldx .byte .r1 .r3 196))).union
+        (CodeReq.singleton 3662 (.jgt .r1 (.imm (2)) 3536))).union
+        (CodeReq.singleton 3663 (.jeq .r1 (.imm (2)) 3974))).union
+        (CodeReq.singleton 3664 (.jeq .r1 (.imm (0)) 4916))).union
+        (CodeReq.singleton 3665 (.mov64 .r6 (.imm (0))))).union
+        (CodeReq.singleton 3666 (.ldx .byte .r1 .r3 197))).union
+        (CodeReq.singleton 3667 (.jeq .r1 (.imm (1)) 5361))).union
+        (CodeReq.singleton 3668 (.mov64 .r9 (.imm (3))))).union
+        (CodeReq.singleton 3669 (.ldx .dword .r1 .r3 88))).union
+        (CodeReq.singleton 3670 (.ldx .dword .r2 .r4 8))).union
+        (CodeReq.singleton 3671 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3672 (.ldx .dword .r1 .r3 96))).union
+        (CodeReq.singleton 3673 (.ldx .dword .r2 .r4 16))).union
+        (CodeReq.singleton 3674 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3675 (.mov64 .r0 (.reg .r7)))).union
+        (CodeReq.singleton 3676 (.ldx .dword .r1 .r3 104))).union
+        (CodeReq.singleton 3677 (.ldx .dword .r2 .r4 24))).union
+        (CodeReq.singleton 3678 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3679 (.ldx .dword .r1 .r3 112))).union
+        (CodeReq.singleton 3680 (.mov64 .r7 (.reg .r4)))).union
+        (CodeReq.singleton 3681 (.ldx .dword .r2 .r4 32))).union
+        (CodeReq.singleton 3682 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3683 (.mov64 .r9 (.imm (0))))).union
+        (CodeReq.singleton 3684 (.mov64 .r4 (.reg .r7)))).union
+        (CodeReq.singleton 3685 (.ldx .dword .r1 .r4 80))).union
+        (CodeReq.singleton 3686 (.jne .r1 (.imm (82)) 4800))).union
+        (CodeReq.singleton 3687 (.ldx .byte .r1 .r4 133))).union
+        (CodeReq.singleton 3688 (.jne .r1 (.imm (1)) 4799))).union
+        (CodeReq.singleton 3689 (.ldx .byte .r1 .r4 88))).union
+        (CodeReq.singleton 3690 (.jne .r1 (.imm (1)) 4911))).union
+        (CodeReq.singleton 3691 (.mov64 .r9 (.imm (4))))).union
+        (CodeReq.singleton 3692 (.ldx .dword .r5 .r10 (-2056)))).union
+        (CodeReq.singleton 3693 (.ldx .dword .r1 .r5 8))).union
+        (CodeReq.singleton 3694 (.ldx .dword .r2 .r4 92))).union
+        (CodeReq.singleton 3695 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3696 (.ldx .dword .r1 .r5 16))).union
+        (CodeReq.singleton 3697 (.ldx .dword .r2 .r4 100))).union
+        (CodeReq.singleton 3698 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3699 (.ldx .dword .r1 .r5 24))).union
+        (CodeReq.singleton 3700 (.ldx .dword .r2 .r4 108))).union
+        (CodeReq.singleton 3701 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3702 (.ldx .dword .r1 .r5 32))).union
+        (CodeReq.singleton 3703 (.ldx .dword .r2 .r4 116))).union
+        (CodeReq.singleton 3704 (.jne .r2 (.reg .r1) 3536))).union
+        (CodeReq.singleton 3705 (.ldx .dword .r4 .r8 0))).union
+        (CodeReq.singleton 3706 (.ldx .dword .r1 .r5 80))).union
+        (CodeReq.singleton 3707 (.jne .r1 (.imm (355)) 4743))).union
+        (CodeReq.singleton 4743 (.ldx .byte .r1 .r5 1))).union
+        (CodeReq.singleton 4744 (.jeq .r1 (.imm (0)) 6337))).union
+        (CodeReq.singleton 4745 (.jeq .r4 (.imm (0)) 4760))).union
+        (CodeReq.singleton 4746 (.ldx .dword .r5 .r7 124))).union
+        (CodeReq.singleton 4747 (.mov64 .r1 (.reg .r5)))).union
+        (CodeReq.singleton 4748 (.add64 .r1 (.reg .r4)))).union
+        (CodeReq.singleton 4749 (.mov64 .r2 (.imm (1))))).union
+        (CodeReq.singleton 4750 (.jlt .r1 (.reg .r5) 4752))).union
+        (CodeReq.singleton 4751 (.mov64 .r2 (.imm (0))))).union
+        (CodeReq.singleton 4752 (.and64 .r2 (.imm (1))))).union
+        (CodeReq.singleton 4753 (.jne .r2 (.imm (0)) 4771))).union
+        (CodeReq.singleton 4754 (.stx .dword .r7 124 .r1))).union
+        (CodeReq.singleton 4755 (.ldx .dword .r1 .r3 152))).union
+        (CodeReq.singleton 4756 (.add64 .r1 (.reg .r4)))).union
+        (CodeReq.singleton 4757 (.stx .dword .r3 152 .r1))).union
+        (CodeReq.singleton 4758 (.mov64 .r0 (.imm (0))))).union
+        (CodeReq.singleton 4759 (.ja 3542))))
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (.r0 ↦ᵣ vR0Old) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_2) **
+      (.r7 ↦ᵣ vR7Old) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 oldMemD_3) **
+      (.r3 ↦ᵣ vR3Old) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_4) **
+      (effectiveAddr addr1 8 ↦U64 oldMemD_5) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_6) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_7) **
+      (effectiveAddr addr1 16 ↦U64 oldMemD_8) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_9) **
+      (.r4 ↦ᵣ vR4Old) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_10) **
+      (.r9 ↦ᵣ vR9Old) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_11) **
+      (.r5 ↦ᵣ vR5Old) **
+      (.r8 ↦ᵣ vR8Old) **
+      (.r6 ↦ᵣ vR6Old) **
+      (effectiveAddr vR10Old (-2064) ↦U64 addr4) **
+      (effectiveAddr addr4 80 ↦U64 oldMemD_13) **
+      (effectiveAddr addr4 196 ↦ₘ oldMemB_14) **
+      (effectiveAddr addr4 197 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr4 88 ↦U64 oldMemD_16) **
+      (effectiveAddr addr5 8 ↦U64 oldMemD_17) **
+      (effectiveAddr addr4 96 ↦U64 oldMemD_18) **
+      (effectiveAddr addr5 16 ↦U64 oldMemD_19) **
+      (effectiveAddr addr4 104 ↦U64 oldMemD_20) **
+      (effectiveAddr addr5 24 ↦U64 oldMemD_21) **
+      (effectiveAddr addr4 112 ↦U64 oldMemD_22) **
+      (effectiveAddr addr5 32 ↦U64 oldMemD_23) **
+      (effectiveAddr addr5 80 ↦U64 oldMemD_24) **
+      (effectiveAddr addr5 133 ↦ₘ oldMemB_25) **
+      (effectiveAddr addr5 88 ↦ₘ oldMemB_26) **
+      (effectiveAddr vR10Old (-2056) ↦U64 addr6) **
+      (effectiveAddr addr6 8 ↦U64 oldMemD_28) **
+      (effectiveAddr addr5 92 ↦U64 oldMemD_29) **
+      (effectiveAddr addr6 16 ↦U64 oldMemD_30) **
+      (effectiveAddr addr5 100 ↦U64 oldMemD_31) **
+      (effectiveAddr addr6 24 ↦U64 oldMemD_32) **
+      (effectiveAddr addr5 108 ↦U64 oldMemD_33) **
+      (effectiveAddr addr6 32 ↦U64 oldMemD_34) **
+      (effectiveAddr addr5 116 ↦U64 oldMemD_35) **
+      (effectiveAddr addr7 0 ↦U64 oldMemD_36) **
+      (effectiveAddr addr6 80 ↦U64 oldMemD_37) **
+      (effectiveAddr addr6 1 ↦ₘ oldMemB_38) **
+      (effectiveAddr addr5 124 ↦U64 oldMemD_39) **
+      (effectiveAddr addr4 152 ↦U64 oldMemD_40))
+      ((.r1 ↦ᵣ wrapAdd oldMemD_40 oldMemD_36) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ ((toU64 0) &&& toU64 1) % U64_MODULUS) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (.r0 ↦ᵣ toU64 0) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_2) **
+      (.r7 ↦ᵣ addr5) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 addr5) **
+      (.r3 ↦ᵣ addr4) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_4) **
+      (effectiveAddr addr1 8 ↦U64 addr0) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_6) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_7) **
+      (effectiveAddr addr1 16 ↦U64 addr2) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_9) **
+      (.r4 ↦ᵣ oldMemD_36) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_10) **
+      (.r9 ↦ᵣ toU64 4) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_11) **
+      (.r5 ↦ᵣ oldMemD_39) **
+      (.r8 ↦ᵣ addr7) **
+      (.r6 ↦ᵣ toU64 0) **
+      (effectiveAddr vR10Old (-2064) ↦U64 addr4) **
+      (effectiveAddr addr4 80 ↦U64 oldMemD_13) **
+      (effectiveAddr addr4 196 ↦ₘ oldMemB_14) **
+      (effectiveAddr addr4 197 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr4 88 ↦U64 oldMemD_16) **
+      (effectiveAddr addr5 8 ↦U64 oldMemD_17) **
+      (effectiveAddr addr4 96 ↦U64 oldMemD_18) **
+      (effectiveAddr addr5 16 ↦U64 oldMemD_19) **
+      (effectiveAddr addr4 104 ↦U64 oldMemD_20) **
+      (effectiveAddr addr5 24 ↦U64 oldMemD_21) **
+      (effectiveAddr addr4 112 ↦U64 oldMemD_22) **
+      (effectiveAddr addr5 32 ↦U64 oldMemD_23) **
+      (effectiveAddr addr5 80 ↦U64 oldMemD_24) **
+      (effectiveAddr addr5 133 ↦ₘ oldMemB_25) **
+      (effectiveAddr addr5 88 ↦ₘ oldMemB_26) **
+      (effectiveAddr vR10Old (-2056) ↦U64 addr6) **
+      (effectiveAddr addr6 8 ↦U64 oldMemD_28) **
+      (effectiveAddr addr5 92 ↦U64 oldMemD_29) **
+      (effectiveAddr addr6 16 ↦U64 oldMemD_30) **
+      (effectiveAddr addr5 100 ↦U64 oldMemD_31) **
+      (effectiveAddr addr6 24 ↦U64 oldMemD_32) **
+      (effectiveAddr addr5 108 ↦U64 oldMemD_33) **
+      (effectiveAddr addr6 32 ↦U64 oldMemD_34) **
+      (effectiveAddr addr5 116 ↦U64 oldMemD_35) **
+      (effectiveAddr addr7 0 ↦U64 oldMemD_36) **
+      (effectiveAddr addr6 80 ↦U64 oldMemD_37) **
+      (effectiveAddr addr6 1 ↦ₘ oldMemB_38) **
+      (effectiveAddr addr5 124 ↦U64 oldMemD_39 + oldMemD_36) **
+      (effectiveAddr addr4 152 ↦U64 oldMemD_40 + oldMemD_36))
+      (fun rt => (((((((((((((((((((((((((((((((((((((((((((rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr vR10Old (-2072)) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr0 0) 1 = true) ∧
+                  rt.containsWritable (effectiveAddr addr1 8) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr0 80) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr2 0) 1 = true) ∧
+                  rt.containsWritable (effectiveAddr addr1 16) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr2 80) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr3 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr3 8) 1 = true) ∧
+                  rt.containsRange (effectiveAddr vR10Old (-2064)) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 80) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 196) 1 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 197) 1 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 88) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 8) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 96) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 16) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 104) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 24) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 112) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 32) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 80) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 133) 1 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 88) 1 = true) ∧
+                  rt.containsRange (effectiveAddr vR10Old (-2056)) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr6 8) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 92) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr6 16) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 100) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr6 24) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 108) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr6 32) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 116) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr7 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr6 80) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr6 1) 1 = true) ∧
+                  rt.containsRange (effectiveAddr addr5 124) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr addr5 124) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr4 152) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr addr4 152) 8 = true) := by
+  have h := PTokenMintTo_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 vR0Old oldMemD_2 vR7Old vR10Old oldMemD_3 vR3Old oldMemB_4 oldMemD_5 oldMemD_6 oldMemB_7 oldMemD_8 oldMemD_9 vR4Old oldMemD_10 vR9Old oldMemB_11 vR5Old vR8Old vR6Old oldMemD_12 oldMemD_13 oldMemB_14 oldMemB_15 oldMemD_16 oldMemD_17 oldMemD_18 oldMemD_19 oldMemD_20 oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemB_25 oldMemB_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemD_37 oldMemB_38 oldMemD_39 oldMemD_40 addr0 addr1 addr2 addr3 addr4 addr5 addr6 addr7 h_addr0 h_addr1 h_addr2 h_addr3 h_addr4 h_addr5 h_addr6 h_addr7 holdMemD_1_lt holdMemD_2_lt holdMemD_3_lt holdMemD_5_lt holdMemD_6_lt holdMemD_8_lt holdMemD_9_lt holdMemD_10_lt holdMemD_12_lt holdMemD_13_lt holdMemD_16_lt holdMemD_17_lt holdMemD_18_lt holdMemD_19_lt holdMemD_20_lt holdMemD_21_lt holdMemD_22_lt holdMemD_23_lt holdMemD_24_lt holdMemD_27_lt holdMemD_28_lt holdMemD_29_lt holdMemD_30_lt holdMemD_31_lt holdMemD_32_lt holdMemD_33_lt holdMemD_34_lt holdMemD_35_lt holdMemD_36_lt holdMemD_37_lt holdMemD_39_lt holdMemD_40_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 h_branch35 h_branch36 h_branch37
+  rw [← wrapAdd_of_lt h_noovf0, ← wrapAdd_of_lt h_noovf1]
+  exact h
+
 end Examples.Lifted.PTokenMintTo
