@@ -1051,6 +1051,60 @@ theorem singletonMemBytes_union_adj (addr : Nat) (bs1 bs2 : ByteArray) :
       · rw [singletonMemBytes_mem_outside (addr + bs1.size) bs2 a (by omega),
             singletonMemBytes_mem_outside addr (bs1 ++ bs2) a (by omega)]
 
+/-- The 8-byte little-endian encoding of `v`'s low 64 bits. Byte `k` is
+    `v / 256^k % 256`, matching `singletonMemU64`'s layout. -/
+def u64LE (v : Nat) : ByteArray :=
+  ⟨#[(v % 256).toUInt8, (v / 0x100 % 256).toUInt8, (v / 0x10000 % 256).toUInt8,
+      (v / 0x1000000 % 256).toUInt8, (v / 0x100000000 % 256).toUInt8,
+      (v / 0x10000000000 % 256).toUInt8, (v / 0x1000000000000 % 256).toUInt8,
+      (v / 0x100000000000000 % 256).toUInt8]⟩
+
+@[simp] theorem u64LE_size (v : Nat) : (u64LE v).size = 8 := rfl
+
+/-- A `singletonMemU64` cell is the byte-blob of its 8-byte LE encoding.
+    The state-level core of the `↦U64`↔`↦Bytes` bridge: lets a
+    dword-load cell fold into a coarse field via the blob split/join. -/
+theorem singletonMemU64_eq_bytes (a v : Nat) :
+    singletonMemU64 a v = singletonMemBytes a (u64LE v) := by
+  show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
+  rw [PartialState.mk.injEq]
+  refine ⟨rfl, ?_, rfl, rfl, rfl⟩
+  funext x
+  by_cases hx : a ≤ x ∧ x < a + 8
+  · obtain ⟨hlo, hhi⟩ := hx
+    obtain ⟨k, hk, rfl⟩ : ∃ k, k < 8 ∧ x = a + k := ⟨x - a, by omega, by omega⟩
+    show (singletonMemU64 a v).mem (a + k) = (singletonMemBytes a (u64LE v)).mem (a + k)
+    rw [singletonMemBytes_mem_at a (u64LE v) k (by rw [u64LE_size]; exact hk)]
+    rcases k with _|_|_|_|_|_|_|_|k
+    · rw [Nat.add_zero, singletonMemU64_mem_0]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU64_mem_1]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU64_mem_2]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU64_mem_3]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU64_mem_4]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU64_mem_5]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU64_mem_6]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU64_mem_7]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · exact absurd hk (by omega)
+  · show (singletonMemU64 a v).mem x = (singletonMemBytes a (u64LE v)).mem x
+    rw [singletonMemU64_mem_outside a v x (by omega),
+        singletonMemBytes_mem_outside a (u64LE v) x (by rw [u64LE_size]; omega)]
+
 end PartialState
 
 /-! ## Assertions -/
@@ -1438,5 +1492,17 @@ theorem memBytesIs_append (addr : Nat) (bs1 bs2 : ByteArray) :
   · rintro ⟨h1, h2, _, hu, h1eq, h2eq⟩
     show h = PartialState.singletonMemBytes addr (bs1 ++ bs2)
     rw [← hu, h1eq, h2eq, PartialState.singletonMemBytes_union_adj]
+
+/-- SL-level bridge: a `↦U64` cell equals the `↦Bytes` blob of its
+    8-byte little-endian encoding. Composed with `memBytesIs_append`,
+    this folds a lift's dword-load cells into a coarse `↦Bytes`/`↦Pubkey`
+    account field. -/
+theorem memU64Is_eq_memBytesIs (a v : Nat) :
+    ∀ h, memU64Is a v h ↔ memBytesIs a (PartialState.u64LE v) h := by
+  intro h
+  rw [show memU64Is a v h = (h = PartialState.singletonMemU64 a v) from rfl,
+      show memBytesIs a (PartialState.u64LE v) h
+         = (h = PartialState.singletonMemBytes a (PartialState.u64LE v)) from rfl,
+      PartialState.singletonMemU64_eq_bytes]
 
 end SVM.SBPF
