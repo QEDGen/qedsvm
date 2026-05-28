@@ -182,6 +182,24 @@ def ERR_ACCESS_VIOLATION : Nat := 0xFFFFFFFFFFFFFFFC
 @[simp] def wrapMul (a b : Nat) : Nat := (a * b) % U64_MODULUS
 @[simp] def wrapNeg (a : Nat) : Nat := (U64_MODULUS - a % U64_MODULUS) % U64_MODULUS
 
+/-- When the sum fits in 64 bits, `wrapAdd` is ordinary addition. Used
+    to expose a lifted credit (`dst := wrapAdd dst amount`) as the clean
+    `dst + amount` once a no-overflow guard is supplied. -/
+theorem wrapAdd_of_lt {a b : Nat} (h : a + b < 2 ^ 64) : wrapAdd a b = a + b := by
+  simp only [wrapAdd, U64_MODULUS]
+  exact Nat.mod_eq_of_lt h
+
+/-- When the subtrahend doesn't exceed the minuend (no underflow) and
+    the minuend fits in 64 bits, `wrapSub` is ordinary subtraction. Used
+    to expose a lifted debit (`src := wrapSub src amount`) as the clean
+    `src - amount` once a sufficient-funds guard is supplied. -/
+theorem wrapSub_of_le {a b : Nat} (hle : b ≤ a) (ha : a < 2 ^ 64) :
+    wrapSub a b = a - b := by
+  simp only [wrapSub, U64_MODULUS]
+  rw [Nat.mod_eq_of_lt (show b < 2 ^ 64 by omega),
+      show a + 2 ^ 64 - b = (a - b) + 2 ^ 64 by omega, Nat.add_mod_right]
+  exact Nat.mod_eq_of_lt (by omega)
+
 /-- 32-bit modulus for 32-bit ALU operations -/
 def U32_MODULUS : Nat := 2 ^ 32
 
