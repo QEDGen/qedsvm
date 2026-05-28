@@ -1149,4 +1149,54 @@ elab "sl_reshape_post" "[" atoms:term,* "]" : tactic =>
   slReshapeGoal 6 atoms.getElems
     ``SVM.SBPF.cuTripleWithinMem_reshape_post ``SVM.SBPF.cuTripleWithin_reshape_post
 
+/-! ## sl_exact — close a triple goal from a permutation-equal hypothesis
+
+`sl_exact h` closes a `cuTripleWithin(Mem)` goal using `h : cuTripleWithin(Mem)`
+with the same N/M/pc/cr/rr whose pre and post are the goal's pre/post up
+to sep-conj permutation AND re-bracketing. This is what makes refinement
+wiring ergonomic: after expanding the codec atoms, the goal's pre/post
+are permutations of a framed lift triple's, and `sl_exact` matches them
+(handling the non-right-folded `P ** F` bracketing `frame_right` produces). -/
+
+open Lean Lean.Meta Lean.Elab.Tactic Lean.Elab.Term SLBlockIter in
+/-- Pointwise iff `∀ s, A s ↔ B s` when `A`, `B` are the same atom
+    multiset, composing `A ↔ rebuild(flatten A) ↔ rebuild(flatten B) ↔ B`
+    (right-fold normalization on each side + the bubble-sort permutation). -/
+private def buildMatchIff (A B : Expr) : MetaM Expr := do
+  let fa := flattenSepConj A
+  let fb := flattenSepConj B
+  let permOpt ← match ← buildPermuteIff fa fb with
+    | none => throwError m!"sl_exact: pre/post atoms are not a permutation"
+    | some (permIff?, frame, _) =>
+      unless frame.isEmpty do
+        throwError m!"sl_exact: hypothesis has extra atoms not in the goal"
+      pure permIff?   -- rebuild(fa) ↔ rebuild(fb), or none if equal
+  let aRf ← buildRightFoldIff A   -- A ↔ rebuild(fa), or none
+  let bRf ← buildRightFoldIff B   -- B ↔ rebuild(fb), or none
+  -- Compose A ↔ rebuild(fa) ↔ rebuild(fb) ↔ B (skipping the `none` refls;
+  -- the final piece needs rebuild(fb) ↔ B = symm bRf).
+  let pieces : List Expr := (aRf.toList) ++ permOpt.toList ++
+    (← bRf.toList.mapM (fun e => mkAppM ``SVM.SBPF.sepConj_iff_symm_pw #[e]))
+  match pieces with
+  | [] => mkAppM ``SVM.SBPF.sepConj_iff_refl #[A]
+  | p :: ps => ps.foldlM (fun acc e => mkAppM ``SVM.SBPF.sepConj_iff_trans_pw #[acc, e]) p
+
+open Lean Lean.Meta Lean.Elab.Tactic Lean.Elab.Term SLBlockIter in
+elab "sl_exact " ht:term : tactic => withMainContext do
+  let h ← elabTermAndSynthesize ht none
+  let g ← getMainGoal
+  let goalTy := (← instantiateMVars (← g.getType)).consumeMData
+  let hTy := (← instantiateMVars (← inferType h)).consumeMData
+  let isMem := goalTy.isAppOf ``SVM.SBPF.cuTripleWithinMem
+  unless isMem || goalTy.isAppOf ``SVM.SBPF.cuTripleWithin do
+    throwError "sl_exact: goal is not a cuTripleWithin(Mem)"
+  let gArgs := goalTy.getAppArgs
+  let hArgs := hTy.getAppArgs
+  let iffPre ← buildMatchIff hArgs[5]! gArgs[5]!   -- hPre ↔ goalPre
+  let iffPost ← buildMatchIff hArgs[6]! gArgs[6]!  -- hPost ↔ goalPost
+  -- reshape h's post then pre to the goal's, then it IS the goal.
+  let h1 ← reshapeChainPost h isMem iffPost
+  let h2 ← reshapeChainPre h1 isMem iffPre
+  g.assign h2
+
 end SVM.SBPF
