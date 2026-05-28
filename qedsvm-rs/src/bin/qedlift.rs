@@ -808,17 +808,12 @@ fn spec_call_for(
                 .find(|c| c.addr_base.to_lean() == key_addr
                        && c.addr_off == off
                        && c.width as u8 == Width::Dword as u8)
-                .map(|c| {
-                    // The cell's CURRENT value (post any prior stores).
-                    // For our use, we want the value BEFORE this store.
-                    // We approximate with the cell value if it's still
-                    // the InitMem name (no prior store). If it was
-                    // already overwritten (e.g. by a same-cell store),
-                    // emission would need more bookkeeping; for now
-                    // we use the InitMem fallback.
-                    c.value.to_lean()
-                })
-                .unwrap_or_else(|| "?oldV".into());
+                .map(|c| c.value.to_lean())
+                // Cell not yet in state.mem → this store is the FIRST
+                // access to it. step()'s write_mem will call read_mem,
+                // allocating `oldMemD_{fresh}`. Predict that name (same
+                // as the load specs) instead of an unresolved `?oldV`.
+                .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
             format!(
                 "have {} := stxdw_spec {} {} {} ({}) ({}) {} {}",
                 hyp_name, reg(dst), reg(src), offl,
@@ -869,7 +864,7 @@ fn spec_call_for(
                        && c.addr_off == off
                        && c.width as u8 == Width::Byte as u8)
                 .map(|c| c.value.to_lean())
-                .unwrap_or_else(|| "?oldByte".into());
+                .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
             format!(
                 "have {} := stb_spec {} {} {} ({}) ({}) {}",
                 hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
@@ -884,7 +879,7 @@ fn spec_call_for(
                        && c.addr_off == off
                        && c.width as u8 == Width::Word as u8)
                 .map(|c| c.value.to_lean())
-                .unwrap_or_else(|| "?oldWord".into());
+                .unwrap_or_else(|| format!("oldMemW_{}", state.fresh));
             format!(
                 "have {} := stw_spec {} {} {} ({}) ({}) {}",
                 hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
@@ -899,7 +894,7 @@ fn spec_call_for(
                        && c.addr_off == off
                        && c.width as u8 == Width::Dword as u8)
                 .map(|c| c.value.to_lean())
-                .unwrap_or_else(|| "?oldDword".into());
+                .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
             format!(
                 "have {} := stdw_spec {} {} {} ({}) ({}) {}",
                 hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
