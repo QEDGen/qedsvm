@@ -1105,6 +1105,31 @@ theorem singletonMemU64_eq_bytes (a v : Nat) :
     rw [singletonMemU64_mem_outside a v x (by omega),
         singletonMemBytes_mem_outside a (u64LE v) x (by rw [u64LE_size]; omega)]
 
+/-- One-byte `ByteArray` holding `v`'s low byte. -/
+def byteBA (v : Nat) : ByteArray := ⟨#[v.toUInt8]⟩
+
+@[simp] theorem byteBA_size (v : Nat) : (byteBA v).size = 1 := rfl
+
+/-- A single byte cell (value `< 256`) is the one-byte blob. The leaf
+    for folding a lift's `ldxb`-read cells into a coarse field. -/
+theorem singletonMem_eq_bytes (a v : Nat) (hv : v < 256) :
+    singletonMem a v = singletonMemBytes a (byteBA v) := by
+  show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
+  rw [PartialState.mk.injEq]
+  refine ⟨rfl, ?_, rfl, rfl, rfl⟩
+  funext x
+  by_cases hx : x = a
+  · subst hx
+    show (singletonMem x v).mem x = (singletonMemBytes x (byteBA v)).mem x
+    have hb := singletonMemBytes_mem_at x (byteBA v) 0 (by rw [byteBA_size]; omega)
+    rw [Nat.add_zero] at hb
+    rw [singletonMem_mem_self, hb]
+    congr 1
+    exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+  · show (singletonMem a v).mem x = (singletonMemBytes a (byteBA v)).mem x
+    rw [singletonMem_mem_other hx,
+        singletonMemBytes_mem_outside a (byteBA v) x (by rw [byteBA_size]; omega)]
+
 end PartialState
 
 /-! ## Assertions -/
@@ -1504,5 +1529,17 @@ theorem memU64Is_eq_memBytesIs (a v : Nat) :
       show memBytesIs a (PartialState.u64LE v) h
          = (h = PartialState.singletonMemBytes a (PartialState.u64LE v)) from rfl,
       PartialState.singletonMemU64_eq_bytes]
+
+/-- SL-level bridge: a single byte cell `↦ₘ` (value `< 256`) equals the
+    `↦Bytes` blob of its one-byte encoding. Composed with
+    `memBytesIs_append`, folds a lift's `ldxb`-read byte cells into a
+    coarse `↦Bytes` field. -/
+theorem memByteIs_eq_memBytesIs (a v : Nat) (hv : v < 256) :
+    ∀ h, memByteIs a v h ↔ memBytesIs a (PartialState.byteBA v) h := by
+  intro h
+  rw [show memByteIs a v h = (h = PartialState.singletonMem a v) from rfl,
+      show memBytesIs a (PartialState.byteBA v) h
+         = (h = PartialState.singletonMemBytes a (PartialState.byteBA v)) from rfl,
+      PartialState.singletonMem_eq_bytes a v hv]
 
 end SVM.SBPF
