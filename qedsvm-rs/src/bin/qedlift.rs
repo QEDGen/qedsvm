@@ -423,6 +423,14 @@ impl Width {
     }
 }
 
+/// Render a memory offset for `effectiveAddr base off`. Negative
+/// offsets MUST be parenthesised: `effectiveAddr b -8` parses as
+/// `(effectiveAddr b) - 8` (an `HSub (Int → Nat) Nat` type error,
+/// since `effectiveAddr b` is partially applied).
+fn lean_off(off: i64) -> String {
+    if off < 0 { format!("({})", off) } else { format!("{}", off) }
+}
+
 /// One precondition atom: a register binding or a memory cell binding.
 #[derive(Clone, Debug)]
 enum Atom {
@@ -437,7 +445,7 @@ impl Atom {
             Atom::Mem { addr_base, addr_off, width, value } => format!(
                 "(effectiveAddr {} {} {} {})",
                 addr_base.atom_lean(),
-                addr_off,
+                lean_off(*addr_off),
                 width.lean_arrow(),
                 value.to_lean(),
             ),
@@ -1427,7 +1435,7 @@ fn atom_to_lean_with_subst(
                 .unwrap_or_else(|| addr_base.atom_lean());
             format!(
                 "(effectiveAddr {} {} {} {})",
-                addr_str, addr_off, width.lean_arrow(), sub(value),
+                addr_str, lean_off(*addr_off), width.lean_arrow(), sub(value),
             )
         }
     }
@@ -1483,7 +1491,7 @@ fn region_req(
         let addr_str = subst.get(&addr_base.to_lean())
             .map(|p| p.clone())
             .unwrap_or_else(|| addr_base.atom_lean());
-        let addr = format!("effectiveAddr {} {}", addr_str, addr_off);
+        let addr = format!("effectiveAddr {} {}", addr_str, lean_off(*addr_off));
         let kind = if *writable { "containsWritable" } else { "containsRange" };
         clauses.push(format!("rt.{} ({}) {} = true", kind, addr, width_bytes));
     }
