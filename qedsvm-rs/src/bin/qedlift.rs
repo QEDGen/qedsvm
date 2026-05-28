@@ -1962,6 +1962,25 @@ fn lift_one(
                 }
             }
 
+            // Syscall detection (trace mode): a `call_imm` whose next
+            // executed PC is the fall-through (pc+1) is a host syscall
+            // (e.g. `sol_memset_`), not an internal `call_local` — the
+            // host runs it and returns to pc+1 without pushing a BPF
+            // frame. We model only local calls (`call_local_spec`), so
+            // emitting that here would mis-pair with a later exit. Fail
+            // clearly: this arm needs a syscall-effect spec.
+            if ins.opc == ebpf::CALL_IMM {
+                if let Some(t) = trace {
+                    if t.get(ti + 1).copied() == Some(pc_iter + 1) {
+                        return Err(format!(
+                            "call_imm at pc {} is a syscall (trace returns to {} \
+                             without a frame push); syscall-effect specs are not yet \
+                             modelled. This arm needs one (e.g. sol_memset_).",
+                            pc_iter, pc_iter + 1).into());
+                    }
+                }
+            }
+
             block_pcs.push(pc_iter);
             let call_target = resolve_call_target(&analysis, ins);
             // Branch hypothesis name (if this is a conditional jump).
