@@ -974,6 +974,83 @@ theorem Disjoint_symm_of_union_right {h1 h2 h3 : PartialState}
     (hd : h1.Disjoint (h2.union h3)) : h1.Disjoint h3 :=
   (Disjoint_of_union_right hd.symm).symm
 
+/-! ## Byte-blob split/join — fine↔coarse field aggregation
+
+These relate a single `singletonMemBytes` blob to the union of two
+adjacent blobs, the foundation for reshaping a lift's scattered
+byte/dword cells into the coarse `↦Bytes`/`↦Pubkey` account-field
+atoms a `tokenAcctBalance` refinement needs. -/
+
+/-- `get!` agrees with the bounds-checked `getElem` in range. -/
+private theorem ba_get!_eq (a : ByteArray) (i : Nat) (h : i < a.size) :
+    a.get! i = a[i] := by
+  rw [ByteArray.getElem_eq_getElem_data]
+  show a.data[i]! = a.data[i]
+  exact getElem!_pos a.data i h
+
+/-- Two adjacent byte blobs `[addr, addr+|bs1|)` and `[addr+|bs1|, …)`
+    own disjoint memory. -/
+theorem singletonMemBytes_disjoint_adj (addr : Nat) (bs1 bs2 : ByteArray) :
+    (singletonMemBytes addr bs1).Disjoint (singletonMemBytes (addr + bs1.size) bs2) where
+  regs := fun _ => Or.inl rfl
+  mem := fun a => by
+    by_cases h : a < addr + bs1.size
+    · right; exact singletonMemBytes_mem_outside (addr + bs1.size) bs2 a (Or.inl h)
+    · left;  exact singletonMemBytes_mem_outside addr bs1 a (Or.inr (by omega))
+  pc := Or.inl rfl
+  returnData := Or.inl rfl
+  callStack := Or.inl rfl
+
+/-- The union of two adjacent byte blobs is the blob over the
+    concatenated `ByteArray`. The join half of the split/join pair. -/
+theorem singletonMemBytes_union_adj (addr : Nat) (bs1 bs2 : ByteArray) :
+    (singletonMemBytes addr bs1).union (singletonMemBytes (addr + bs1.size) bs2)
+      = singletonMemBytes addr (bs1 ++ bs2) := by
+  have hsz : (bs1 ++ bs2).size = bs1.size + bs2.size := ByteArray.size_append
+  show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
+  simp only [PartialState.mk.injEq]
+  refine ⟨rfl, ?_, rfl, rfl, rfl⟩
+  · funext a
+    show ((singletonMemBytes addr bs1).union
+            (singletonMemBytes (addr + bs1.size) bs2)).mem a
+        = (singletonMemBytes addr (bs1 ++ bs2)).mem a
+    by_cases h1 : addr ≤ a ∧ a < addr + bs1.size
+    · obtain ⟨hlo, hhi⟩ := h1
+      have hi  : a - addr < bs1.size := by omega
+      have hi2 : a - addr < (bs1 ++ bs2).size := by omega
+      have hL : (singletonMemBytes addr bs1).mem a = some (bs1.get! (a - addr)).toNat := by
+        have h := singletonMemBytes_mem_at addr bs1 (a - addr) hi
+        rwa [show addr + (a - addr) = a from by omega] at h
+      have hR : (singletonMemBytes addr (bs1 ++ bs2)).mem a
+              = some ((bs1 ++ bs2).get! (a - addr)).toNat := by
+        have h := singletonMemBytes_mem_at addr (bs1 ++ bs2) (a - addr) hi2
+        rwa [show addr + (a - addr) = a from by omega] at h
+      rw [union_mem_of_left_some hL, hR]
+      congr 2
+      rw [ba_get!_eq _ _ hi2, ba_get!_eq _ _ hi, ByteArray.getElem_append_left hi]
+    · rw [union_mem_of_left_none
+            (singletonMemBytes_mem_outside addr bs1 a (by omega))]
+      by_cases h2 : addr + bs1.size ≤ a ∧ a < addr + bs1.size + bs2.size
+      · obtain ⟨hlo, hhi⟩ := h2
+        have hi  : a - (addr + bs1.size) < bs2.size := by omega
+        have hi2 : a - addr < (bs1 ++ bs2).size := by omega
+        have hge : bs1.size ≤ a - addr := by omega
+        have hL : (singletonMemBytes (addr + bs1.size) bs2).mem a
+                = some (bs2.get! (a - (addr + bs1.size))).toNat := by
+          have h := singletonMemBytes_mem_at (addr + bs1.size) bs2 (a - (addr + bs1.size)) hi
+          rwa [show (addr + bs1.size) + (a - (addr + bs1.size)) = a from by omega] at h
+        have hR : (singletonMemBytes addr (bs1 ++ bs2)).mem a
+                = some ((bs1 ++ bs2).get! (a - addr)).toNat := by
+          have h := singletonMemBytes_mem_at addr (bs1 ++ bs2) (a - addr) hi2
+          rwa [show addr + (a - addr) = a from by omega] at h
+        rw [hL, hR]
+        congr 2
+        rw [ba_get!_eq _ _ hi2, ba_get!_eq _ _ hi,
+            ByteArray.getElem_append_right hge]
+        simp only [Nat.sub_sub]
+      · rw [singletonMemBytes_mem_outside (addr + bs1.size) bs2 a (by omega),
+            singletonMemBytes_mem_outside addr (bs1 ++ bs2) a (by omega)]
+
 end PartialState
 
 /-! ## Assertions -/
@@ -1343,5 +1420,23 @@ theorem pcFree_sepConj {P Q : Assertion} (hP : P.pcFree) (hQ : Q.pcFree) :
   rintro h ⟨h1, h2, _, hu, hP1, hQ2⟩
   rw [← hu, PartialState.union_pc_of_left_none (hP _ hP1)]
   exact hQ _ hQ2
+
+/-- SL-level split/join for the byte-blob atom: a `↦Bytes` over a
+    concatenation separates into the two adjacent sub-blobs. The
+    reusable bridge from a lift's fine-grained cells to the coarse
+    `↦Bytes`/`↦Pubkey` account-field atoms of `tokenAcctBalance`. -/
+theorem memBytesIs_append (addr : Nat) (bs1 bs2 : ByteArray) :
+    ∀ h, memBytesIs addr (bs1 ++ bs2) h ↔
+         (memBytesIs addr bs1 ** memBytesIs (addr + bs1.size) bs2) h := by
+  intro h
+  constructor
+  · intro hh
+    exact ⟨PartialState.singletonMemBytes addr bs1,
+           PartialState.singletonMemBytes (addr + bs1.size) bs2,
+           PartialState.singletonMemBytes_disjoint_adj addr bs1 bs2,
+           (PartialState.singletonMemBytes_union_adj addr bs1 bs2).trans hh.symm, rfl, rfl⟩
+  · rintro ⟨h1, h2, _, hu, h1eq, h2eq⟩
+    show h = PartialState.singletonMemBytes addr (bs1 ++ bs2)
+    rw [← hu, h1eq, h2eq, PartialState.singletonMemBytes_union_adj]
 
 end SVM.SBPF
