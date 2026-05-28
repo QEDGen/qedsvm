@@ -369,6 +369,187 @@ theorem ldxb_spec
       simp only [step, hsrc, Width.bytes, if_pos hreg,
                  Memory.readByWidth, Memory.readU8, hmem])
 
+/-- `ldx .byte r r off`: same-register variant — load a byte at `[r + off]`
+    into `r`. `step` reads `r` as the base address before writing the loaded
+    byte, so dst = src is well-defined. Owns one register atom (`r ↦ᵣ baseAddr`)
+    plus the byte cell; the post overwrites `r` with `byteVal % 256`. The
+    generic `ldxb_spec` can't cover this — it splits dst and src into two
+    register atoms, which collapse to a duplicate (unsatisfiable) `r` atom
+    when dst = src (e.g. the `ldxb r2, [r2]` pointer-deref at p_token's
+    initializeMint entry). -/
+theorem ldxb_same_spec
+    (r : Reg) (off : Int) (baseAddr byteVal : Nat) (pc : Nat)
+    (hne : r ≠ .r10) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.ldx .byte r r off))
+      ((r ↦ᵣ baseAddr) ** (effectiveAddr baseAddr off ↦ₘ byteVal))
+      ((r ↦ᵣ (byteVal % 256)) ** (effectiveAddr baseAddr off ↦ₘ byteVal))
+      (fun rt => rt.containsRange (effectiveAddr baseAddr off) 1 = true) := by
+  intro R hRfree fetch hcr s hPR hpc hex h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_reg, h_mem, hd_reg_mem, hu_reg_mem, h_reg_pred, h_mem_pred⟩ := h_P_sat
+  rw [h_reg_pred] at hu_reg_mem hd_reg_mem
+  rw [h_mem_pred] at hu_reg_mem hd_reg_mem
+  clear h_reg_pred h_mem_pred h_reg h_mem
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have h_P_regs_r : h_P.regs r = some baseAddr := by
+    rw [← hu_reg_mem]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_mem_0 : h_P.mem (effectiveAddr baseAddr off) = some byteVal := by
+    rw [← hu_reg_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact PartialState.singletonMem_mem_self
+  have hp_regs_r : hp.regs r = some baseAddr := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r
+  have hp_mem_0 : hp.mem (effectiveAddr baseAddr off) = some byteVal := by
+    rw [← hu_PR]; exact PartialState.union_mem_of_left_some h_P_mem_0
+  have hs_regs_r : s.regs.get r = baseAddr := hcr_regs r baseAddr hp_regs_r
+  have hs_mem_0 : s.mem (effectiveAddr baseAddr off) = byteVal := hcm_mem _ _ hp_mem_0
+  have hfetch : fetch s.pc = some (.ldx .byte r r off) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hexec : executeFn fetch s 1 =
+      { s with regs := s.regs.set r (byteVal % 256), pc := s.pc + 1 } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_zero]
+    simp only [step, hs_regs_r, Width.bytes, if_pos h_region,
+               Memory.readByWidth, Memory.readU8, hs_mem_0]
+  have hd_PR_regs := hd_PR.regs
+  have hd_PR_mem := hd_PR.mem
+  have h_R_no_r : h_R.regs r = none := by
+    rcases hd_PR_regs r with hl | hr
+    · rw [h_P_regs_r] at hl; nomatch hl
+    · exact hr
+  have h_R_no_mem_0 : h_R.mem (effectiveAddr baseAddr off) = none := by
+    rcases hd_PR_mem (effectiveAddr baseAddr off) with hl | hr
+    · rw [h_P_mem_0] at hl; nomatch hl
+    · exact hr
+  have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
+  · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
+  · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]
+    refine ⟨_, ?_,
+            (PartialState.singletonReg r (byteVal % 256)).union
+              (PartialState.singletonMem (effectiveAddr baseAddr off) byteVal),
+            h_R, ?_, rfl,
+            ⟨PartialState.singletonReg r (byteVal % 256),
+             PartialState.singletonMem (effectiveAddr baseAddr off) byteVal,
+             ?_, rfl, rfl, rfl⟩,
+            h_R_sat⟩
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro rr vr hvr
+        show (s.regs.set r (byteVal % 256)).get rr = vr
+        by_cases hrr : rr = r
+        · rw [hrr] at hvr
+          have h_inner :
+              ((PartialState.singletonReg r (byteVal % 256)).union
+                (PartialState.singletonMem (effectiveAddr baseAddr off) byteVal)).regs r
+              = some (byteVal % 256) :=
+            PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+          rw [PartialState.union_regs_of_left_some h_inner] at hvr
+          have : vr = byteVal % 256 := (Option.some.inj hvr).symm
+          rw [hrr, this]
+          exact RegFile.get_set_self _ _ _ hne
+        · rw [RegFile.get_set_diff _ _ _ _ hrr]
+          have h_outer_none :
+              ((PartialState.singletonReg r (byteVal % 256)).union
+                (PartialState.singletonMem (effectiveAddr baseAddr off) byteVal)).regs rr
+              = none := by
+            rw [PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hrr)]
+            exact PartialState.singletonMem_regs rr
+          rw [PartialState.union_regs_of_left_none h_outer_none] at hvr
+          apply hcr_regs rr vr
+          have h_P_none : h_P.regs rr = none := by
+            rw [← hu_reg_mem]
+            rw [PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hrr)]
+            exact PartialState.singletonMem_regs rr
+          rw [← hu_PR]
+          rw [PartialState.union_regs_of_left_none h_P_none]
+          exact hvr
+      · intro a vm hvm
+        show s.mem a = vm
+        by_cases ha0 : a = effectiveAddr baseAddr off
+        · rw [ha0] at hvm ⊢
+          have h_inner :
+              ((PartialState.singletonReg r (byteVal % 256)).union
+                (PartialState.singletonMem (effectiveAddr baseAddr off) byteVal)).mem
+                  (effectiveAddr baseAddr off) = some byteVal := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact PartialState.singletonMem_mem_self
+          rw [PartialState.union_mem_of_left_some h_inner] at hvm
+          have : vm = byteVal := (Option.some.inj hvm).symm
+          rw [this]; exact hs_mem_0
+        · have h_outer_none :
+              ((PartialState.singletonReg r (byteVal % 256)).union
+                (PartialState.singletonMem (effectiveAddr baseAddr off) byteVal)).mem a
+              = none := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact PartialState.singletonMem_mem_other ha0
+          rw [PartialState.union_mem_of_left_none h_outer_none] at hvm
+          apply hcm_mem a vm
+          have h_P_none : h_P.mem a = none := by
+            rw [← hu_reg_mem]
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact PartialState.singletonMem_mem_other ha0
+          rw [← hu_PR]
+          rw [PartialState.union_mem_of_left_none h_P_none]
+          exact hvm
+      · intro vp hvp
+        have h_outer_pc :
+            ((PartialState.singletonReg r (byteVal % 256)).union
+              (PartialState.singletonMem (effectiveAddr baseAddr off) byteVal)).pc = none := by
+          rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+          exact PartialState.singletonMem_pc
+        rw [PartialState.union_pc_of_left_none h_outer_pc] at hvp
+        rw [h_R_no_pc] at hvp
+        nomatch hvp
+      · intro rd hva
+        first
+        | exact hcompat.returnData rd hva
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd
+             (by rw [← hu_PR, ← hu_reg_mem,
+                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+      · intro cs hva
+        first
+        | exact hcompat.callStack cs hva
+        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.callStack cs
+             (by rw [← hu_PR, ← hu_reg_mem,
+                    PartialState.union_callStack_of_left_none (by first | rfl | simp)]
+                 exact hva))
+        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
+           exact hcompat.callStack cs (by rw [← hu_PR]; exact hva))
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
+      · intro rr
+        by_cases hrr : rr = r
+        · rw [hrr]; right; exact h_R_no_r
+        · left
+          rw [PartialState.union_regs_of_left_none
+              (PartialState.singletonReg_regs_other hrr)]
+          exact PartialState.singletonMem_regs rr
+      · intro a
+        by_cases ha0 : a = effectiveAddr baseAddr off
+        · rw [ha0]; right; exact h_R_no_mem_0
+        · left
+          rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+          exact PartialState.singletonMem_mem_other ha0
+      · left
+        rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+        exact PartialState.singletonMem_pc
+    · refine ⟨fun rr => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
+      · right; exact PartialState.singletonMem_regs rr
+      · left; exact PartialState.singletonReg_mem a
+      · left; exact PartialState.singletonReg_pc
+
 /-! ## Memory stores — byte-width helper + `stx .byte`
 
 The byte-store SL pattern: instruction reads two registers (base
