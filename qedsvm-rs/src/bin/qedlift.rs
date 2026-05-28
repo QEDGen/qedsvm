@@ -2051,7 +2051,17 @@ fn lift_one(
         // sl_rw_abs to rewrite each spec's wrapAdd-shaped atoms to
         // use the abstracted parameter, if any abstractions exist.
         if !abstractions.is_empty() {
-            let abs_names = abstractions.iter()
+            // Apply innermost-first (shortest raw expression first).
+            // sl_rw_abs is a single forward pass, and an outer
+            // abstraction's (folded) bridge RHS references inner
+            // params — so the inner folds must land in the term before
+            // the outer `rw [← h_addrN]` can match. Sorting by raw expr
+            // length ascending gives a valid inner→outer topological
+            // order (a sub-term is always strictly shorter).
+            let mut ordered: Vec<&(String, String, String)> =
+                abstractions.iter().collect();
+            ordered.sort_by_key(|(_, _, e)| e.len());
+            let abs_names = ordered.iter()
                 .map(|(_, h, _)| h.clone()).collect::<Vec<_>>().join(", ");
             let hyp_names = spec_calls.iter()
                 .map(|sc| sc.hyp_name.clone()).collect::<Vec<_>>().join(", ");
