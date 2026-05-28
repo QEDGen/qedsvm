@@ -2071,6 +2071,29 @@ fn lift_one(
     };
     let tactic: &str = Box::leak(tactic.into_boxed_str());
 
+    // Fold nested abstractions inside each bridge RHS. A bridge's RHS
+    // may contain another abstraction's full expression as a sub-term
+    // (e.g. addr3 = `wrapAdd <all of addr0> (toU64 8)`). `sl_rw_abs`
+    // folds inner abstractions first; once addr0's expansion becomes
+    // `addr0`, the outer bridge's LHS pattern (written with addr0
+    // expanded) no longer matches and the fold gets stuck. Rewriting
+    // each RHS to reference the inner *param* keeps folding consistent
+    // inner→outer. Longest-expression-first avoids partial overlaps;
+    // only strictly-shorter exprs are folded (never self, never a
+    // same-length sibling).
+    let folded_rhs: Vec<String> = abstractions.iter().map(|(_, _, expr)| {
+        let mut inner: Vec<(&String, &String)> = abstractions.iter()
+            .filter(|(_, _, e)| e.len() < expr.len())
+            .map(|(p, _, e)| (e, p))
+            .collect();
+        inner.sort_by_key(|(e, _)| std::cmp::Reverse(e.len()));
+        let mut out = expr.clone();
+        for (e, p) in inner {
+            out = out.replace(e.as_str(), p.as_str());
+        }
+        out
+    }).collect();
+
     // Build the abstraction signature fragment (params + bridge
     // equality hypotheses) for programs using sl_block_iter style.
     let abs_sig: String = if use_block_iter && !abstractions.is_empty() {
@@ -2078,8 +2101,8 @@ fn lift_one(
         for (param, _, _) in &abstractions {
             s.push_str(&format!("({} : Nat)\n    ", param));
         }
-        for (param, h, expr) in &abstractions {
-            s.push_str(&format!("({} : {} = {})\n    ", h, param, expr));
+        for (i, (param, h, _)) in abstractions.iter().enumerate() {
+            s.push_str(&format!("({} : {} = {})\n    ", h, param, folded_rhs[i]));
         }
         s
     } else {
