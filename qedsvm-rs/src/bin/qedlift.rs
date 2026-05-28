@@ -627,6 +627,13 @@ impl BranchHyp {
     fn lean_hyp(&self) -> String {
         let v = self.dst_value.to_lean();
         let s = self.src_value.as_ref().map(|e| e.to_lean()).unwrap_or_default();
+        // Parenthesised forms for use under `toSigned64`, which is a
+        // prefix application and would otherwise grab only the head of
+        // a compound expr (e.g. `toSigned64 wrapAdd a b` misparses as
+        // `(toSigned64 wrapAdd) a b`). Unsigned comparisons don't need
+        // this — infix `<`/`>`/`≤`/`=` bind looser than application.
+        let va = self.dst_value.atom_lean();
+        let sa = self.src_value.as_ref().map(|e| e.atom_lean()).unwrap_or_default();
         match (self.kind.clone(), self.taken) {
             (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, self.imm),
             (BranchKind::JeqImm, true)  => format!("{} = toU64 {}", v, self.imm),
@@ -639,11 +646,11 @@ impl BranchHyp {
             (BranchKind::JgtImm, true)  => format!("{} > toU64 {}", v, self.imm),
             // `jsgt` is signed >. Lean spec compares
             // `toSigned64 vDst > toSigned64 (toU64 imm)`.
-            (BranchKind::JsgtImm, false) => format!("¬ toSigned64 {} > toSigned64 (toU64 {})", v, self.imm),
-            (BranchKind::JsgtImm, true)  => format!("toSigned64 {} > toSigned64 (toU64 {})", v, self.imm),
+            (BranchKind::JsgtImm, false) => format!("¬ toSigned64 {} > toSigned64 (toU64 {})", va, self.imm),
+            (BranchKind::JsgtImm, true)  => format!("toSigned64 {} > toSigned64 (toU64 {})", va, self.imm),
             // `jsle` is signed ≤ (imm form).
-            (BranchKind::JsleImm, false) => format!("¬ toSigned64 {} ≤ toSigned64 (toU64 {})", v, self.imm),
-            (BranchKind::JsleImm, true)  => format!("toSigned64 {} ≤ toSigned64 (toU64 {})", v, self.imm),
+            (BranchKind::JsleImm, false) => format!("¬ toSigned64 {} ≤ toSigned64 (toU64 {})", va, self.imm),
+            (BranchKind::JsleImm, true)  => format!("toSigned64 {} ≤ toSigned64 (toU64 {})", va, self.imm),
             // `jlt`/`jle` are unsigned < / ≤ (imm form).
             (BranchKind::JltImm, false) => format!("¬ {} < toU64 {}", v, self.imm),
             (BranchKind::JltImm, true)  => format!("{} < toU64 {}", v, self.imm),
@@ -658,8 +665,8 @@ impl BranchHyp {
             (BranchKind::JltReg, true)  => format!("{} < {}", v, s),
             // `jsle` is signed ≤. Lean spec compares
             // `toSigned64 vDst ≤ toSigned64 vSrc`.
-            (BranchKind::JsleReg, false) => format!("¬ toSigned64 {} ≤ toSigned64 {}", v, s),
-            (BranchKind::JsleReg, true)  => format!("toSigned64 {} ≤ toSigned64 {}", v, s),
+            (BranchKind::JsleReg, false) => format!("¬ toSigned64 {} ≤ toSigned64 {}", va, sa),
+            (BranchKind::JsleReg, true)  => format!("toSigned64 {} ≤ toSigned64 {}", va, sa),
         }
     }
     fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
