@@ -242,6 +242,9 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         JSGT64_IMM | JSGT32_IMM => {
             let t = (pc as i64) + 1 + off; format!(".jsgt {} (.imm ({})) {}", reg(dst), imm, t)
         }
+        JSLE64_IMM | JSLE32_IMM => {
+            let t = (pc as i64) + 1 + off; format!(".jsle {} (.imm ({})) {}", reg(dst), imm, t)
+        }
         JEQ64_REG | JEQ32_REG => {
             let t = (pc as i64) + 1 + off; format!(".jeq {} (.reg {}) {}", reg(dst), reg(src), t)
         }
@@ -250,6 +253,9 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>) -
         }
         JLT64_REG | JLT32_REG => {
             let t = (pc as i64) + 1 + off; format!(".jlt {} (.reg {}) {}", reg(dst), reg(src), t)
+        }
+        JSLE64_REG | JSLE32_REG => {
+            let t = (pc as i64) + 1 + off; format!(".jsle {} (.reg {}) {}", reg(dst), reg(src), t)
         }
         // call_local: the immediate is the Solana ABI Murmur3 hash
         // of the symbol, NOT a relative offset. Resolving the actual
@@ -567,8 +573,8 @@ fn w_short(w: Width) -> &'static str {
 /// these on its own.
 #[derive(Clone, Debug)]
 enum BranchKind {
-    JeqImm, JneImm, JgtImm, JsgtImm,
-    JeqReg, JneReg, JltReg,
+    JeqImm, JneImm, JgtImm, JsgtImm, JsleImm,
+    JeqReg, JneReg, JltReg, JsleReg,
 }
 
 #[derive(Clone, Debug)]
@@ -605,6 +611,9 @@ impl BranchHyp {
             // `toSigned64 vDst > toSigned64 (toU64 imm)`.
             (BranchKind::JsgtImm, false) => format!("¬ toSigned64 {} > toSigned64 (toU64 {})", v, self.imm),
             (BranchKind::JsgtImm, true)  => format!("toSigned64 {} > toSigned64 (toU64 {})", v, self.imm),
+            // `jsle` is signed ≤ (imm form).
+            (BranchKind::JsleImm, false) => format!("¬ toSigned64 {} ≤ toSigned64 (toU64 {})", v, self.imm),
+            (BranchKind::JsleImm, true)  => format!("toSigned64 {} ≤ toSigned64 (toU64 {})", v, self.imm),
             // Register-form jumps compare two registers directly.
             (BranchKind::JeqReg, false) => format!("{} ≠ {}", v, s),
             (BranchKind::JeqReg, true)  => format!("{} = {}", v, s),
@@ -612,6 +621,10 @@ impl BranchHyp {
             (BranchKind::JneReg, true)  => format!("{} ≠ {}", v, s),
             (BranchKind::JltReg, false) => format!("¬ {} < {}", v, s),
             (BranchKind::JltReg, true)  => format!("{} < {}", v, s),
+            // `jsle` is signed ≤. Lean spec compares
+            // `toSigned64 vDst ≤ toSigned64 vSrc`.
+            (BranchKind::JsleReg, false) => format!("¬ toSigned64 {} ≤ toSigned64 {}", v, s),
+            (BranchKind::JsleReg, true)  => format!("toSigned64 {} ≤ toSigned64 {}", v, s),
         }
     }
     fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
@@ -893,6 +906,20 @@ fn spec_call_for(
                 hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
             )
         }
+        JSLE64_IMM | JSLE32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jsle_imm_taken_spec"
+            } else {
+                "jsle_imm_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
         JEQ64_REG | JEQ32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
@@ -932,6 +959,21 @@ fn spec_call_for(
                 "jlt_reg_taken_spec"
             } else {
                 "jlt_reg_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} {} {}",
+                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+            )
+        }
+        JSLE64_REG | JSLE32_REG => {
+            let v_dst = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let target = (pc as i64) + 1 + off;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jsle_reg_taken_spec"
+            } else {
+                "jsle_reg_not_taken_spec"
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} {} {}",
@@ -1074,6 +1116,14 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
         }
+        JSLE64_IMM | JSLE32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JsleImm, dst_value: r, src_value: None, imm,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
         JEQ64_REG | JEQ32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
@@ -1097,6 +1147,15 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JltReg, dst_value: rd, src_value: Some(rs), imm: 0,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
+            });
+        }
+        JSLE64_REG | JSLE32_REG => {
+            let rd = state.read_reg(dst);
+            let rs = state.read_reg(src);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JsleReg, dst_value: rd, src_value: Some(rs), imm: 0,
                 taken: branch_taken.unwrap_or(false),
                 target_pc: ((pc.unwrap_or(0) as i64) + 1 + off) as usize,
             });
@@ -1501,9 +1560,11 @@ fn lift_one(
                 ebpf::JNE64_IMM | ebpf::JNE32_IMM |
                 ebpf::JGT64_IMM | ebpf::JGT32_IMM |
                 ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
+                ebpf::JSLE64_IMM | ebpf::JSLE32_IMM |
                 ebpf::JEQ64_REG | ebpf::JEQ32_REG |
                 ebpf::JNE64_REG | ebpf::JNE32_REG |
-                ebpf::JLT64_REG | ebpf::JLT32_REG);
+                ebpf::JLT64_REG | ebpf::JLT32_REG |
+                ebpf::JSLE64_REG | ebpf::JSLE32_REG);
             let branch_hyp_for_call = if is_cond_jump {
                 Some(branch_hyp.as_str())
             } else { None };
@@ -1545,9 +1606,11 @@ fn lift_one(
                 ebpf::JNE64_IMM | ebpf::JNE32_IMM |
                 ebpf::JGT64_IMM | ebpf::JGT32_IMM |
                 ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
+                ebpf::JSLE64_IMM | ebpf::JSLE32_IMM |
                 ebpf::JEQ64_REG | ebpf::JEQ32_REG |
                 ebpf::JNE64_REG | ebpf::JNE32_REG |
-                ebpf::JLT64_REG | ebpf::JLT32_REG
+                ebpf::JLT64_REG | ebpf::JLT32_REG |
+                ebpf::JSLE64_REG | ebpf::JSLE32_REG
                     if branch_taken == Some(true) => {
                     // Take the branch: pc = pc + 1 + off
                     pc_iter = ((pc_iter as i64) + 1 + (ins.off as i64)) as usize;

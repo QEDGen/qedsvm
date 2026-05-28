@@ -422,6 +422,26 @@ theorem jsle_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     (toSigned64 vDst ≤ toSigned64 (toU64 imm))
     (fun _ hdst => by simp only [step, resolveSrc, hdst])
 
+/-- `jsle dst, imm`: NOT taken (signed imm form). -/
+theorem jsle_imm_not_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : ¬ toSigned64 vDst ≤ toSigned64 (toU64 imm)) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jsle dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jsle_imm_spec dst imm vDst pc target
+  rwa [if_neg h] at base
+
+/-- `jsle dst, imm`: TAKEN (signed imm form). -/
+theorem jsle_imm_taken_spec
+    (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : toSigned64 vDst ≤ toSigned64 (toU64 imm)) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jsle dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jsle_imm_spec dst imm vDst pc target
+  rwa [if_pos h] at base
+
 /-- `jset dst, imm, target`: jump if any bit-mask bit is set. -/
 theorem jset_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     cuTripleWithin 1 0 pc
@@ -630,6 +650,28 @@ theorem jsle_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
   cuTripleWithin_2reg_cjump dst src vDst vSrc pc target
     (.jsle dst (.reg src) target) (toSigned64 vDst ≤ toSigned64 vSrc)
     (fun _ hdst hsrc => by simp only [step, resolveSrc, hdst, hsrc])
+
+/-- `jsle dst, src`: NOT taken (signed, reg form). -/
+theorem jsle_reg_not_taken_spec
+    (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : ¬ toSigned64 vDst ≤ toSigned64 vSrc) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jsle dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jsle_reg_spec dst src vDst vSrc pc target
+  rwa [if_neg h] at base
+
+/-- `jsle dst, src`: TAKEN (signed, reg form). -/
+theorem jsle_reg_taken_spec
+    (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : toSigned64 vDst ≤ toSigned64 vSrc) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jsle dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jsle_reg_spec dst src vDst vSrc pc target
+  rwa [if_pos h] at base
 
 /-- `jset dst, src, target`: jump if any bit-mask bit is set.
     `simp only [..., hdst, hsrc]` instead of `rw`: the `Decidable (_ ≠ 0)`
