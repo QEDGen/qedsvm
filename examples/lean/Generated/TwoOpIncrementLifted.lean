@@ -99,8 +99,6 @@ theorem TwoOpIncrement_lifted_spec
   have h_6 := add64_reg_spec .r2 .r3 (oldMemD_0) (oldMemB_1 % 256) 6 (by decide)
   have h_7 := stxdw_spec .r1 .r2 1 (baseAddr) (wrapAdd oldMemD_0 (oldMemB_1 % 256)) oldMemD_0 7
   have h_8 := mov64_imm_spec .r0 0 (vR0Old) 8 (by decide)
-  generalize hgv0 : wrapAdd oldMemD_0 (oldMemB_1 % 256) = vgv0 at *
-  generalize hgv1 : oldMemB_1 % 256 = vgv1 at *
-  sl_block_iter [h_0, h_1, h_2, h_6, h_7, h_8]
+  sl_block_iter [h_0, h_1, h_2, h_6, h_7, h_8] generalizing [wrapAdd oldMemD_0 (oldMemB_1 % 256), oldMemB_1 % 256]
 
 end Examples.Lifted.TwoOpIncrement

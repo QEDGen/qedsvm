@@ -887,14 +887,35 @@ def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
 
 end SLBlockIter
 
-syntax "sl_block_iter" "[" term,* "]" : tactic
+/-- `sl_block_iter [h₁, …]` composes the per-instruction specs into the
+goal triple. The optional `generalizing [e₁, …]` clause abstracts each
+listed value expression to a fresh opaque variable (`generalize … at *`)
+BEFORE composition — complex bit-level values (wrapAdd/shift/mod chains)
+carry no proof content of their own (the per-opcode spec already proved
+what each computes), so threading them as opaque Nats keeps the
+mechanical composition from re-reducing arithmetic via `whnf` at every
+step. This is the dominant cost on long arms; abstracting it took
+`PTokenTransferChecked` from a >15-minute timeout to closing. The
+theorem statement is unaffected (generalize only touches the proof
+goal); the bridge `e = v` stays in scope for the refinement layer. -/
+syntax "sl_block_iter" "[" term,* "]" (" generalizing" " [" term,* "]")? : tactic
 
 open Lean Lean.Elab.Tactic in
 elab_rules : tactic
-  | `(tactic| sl_block_iter [$hs,*]) => withMainContext do
-      let hExprs ← hs.getElems.toList.mapM
-        (fun h => Lean.Elab.Term.elabTermAndSynthesize h.raw none)
-      SLBlockIter.slBlockIter hExprs
+  | `(tactic| sl_block_iter [$hs,*] $[generalizing [$gs,*]]?) => withMainContext do
+      -- Value-abstraction pre-pass: opaque-ify each listed value at the
+      -- goal and every hypothesis (so the chain and goal stay aligned).
+      if let some gs := gs then
+        for g in gs.getElems do
+          let v := mkIdent (← mkFreshUserName `vgen)
+          let h := mkIdent (← mkFreshUserName `hgen)
+          evalTactic (← `(tactic| generalize $h : $g = $v at *))
+      -- Re-enter context (generalize rewrote the have-hypotheses) and
+      -- compose. The have names are stable across generalize.
+      withMainContext do
+        let hExprs ← hs.getElems.toList.mapM
+          (fun h => Lean.Elab.Term.elabTermAndSynthesize h.raw none)
+        SLBlockIter.slBlockIter hExprs
 
 /-! ## sl_branch — branch + join + post-distribute combinator
 
