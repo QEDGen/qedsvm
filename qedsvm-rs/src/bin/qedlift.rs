@@ -724,15 +724,25 @@ fn spec_call_for(
             // (no `< 2^64` bound — bytes always fit). The loaded
             // byte name is `oldMemB_<fresh>`.
             let v_name = format!("oldMemB_{}", state.fresh);
-            let v_old_dst = state.regs.get(&dst)
-                .map(|e| e.to_lean())
-                .unwrap_or_else(|| reg_initial_name(dst));
             let base_addr = reg_val_lean(src);
-            format!(
-                "have {} := ldxb_spec {} {} {} ({}) ({}) {} {} (by decide)",
-                hyp_name, reg(dst), reg(src), off,
-                v_old_dst, base_addr, v_name, pc,
-            )
+            if dst == src {
+                // `ldxb r, [r]`: dst == src. The generic ldxb_spec would
+                // emit two `r ↦ᵣ` atoms (unsatisfiable). The same-register
+                // spec owns one register atom; baseAddr IS the dst's old value.
+                format!(
+                    "have {} := ldxb_same_spec {} {} ({}) {} {} (by decide)",
+                    hyp_name, reg(dst), off, base_addr, v_name, pc,
+                )
+            } else {
+                let v_old_dst = state.regs.get(&dst)
+                    .map(|e| e.to_lean())
+                    .unwrap_or_else(|| reg_initial_name(dst));
+                format!(
+                    "have {} := ldxb_spec {} {} {} ({}) ({}) {} {} (by decide)",
+                    hyp_name, reg(dst), reg(src), off,
+                    v_old_dst, base_addr, v_name, pc,
+                )
+            }
         }
         LD_DW_REG => {
             // ldxdw_spec dst src off vOldDst baseAddr v pc hne hv
@@ -743,15 +753,23 @@ fn spec_call_for(
             // hypothesis the theorem signature surfaces is named
             // `h<var>_lt` (i.e., `holdMemD_<N>_lt`).
             let v_name = format!("oldMemD_{}", state.fresh);
-            let v_old_dst = state.regs.get(&dst)
-                .map(|e| e.to_lean())
-                .unwrap_or_else(|| reg_initial_name(dst));
             let base_addr = reg_val_lean(src);
-            format!(
-                "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) h{}_lt",
-                hyp_name, reg(dst), reg(src), off,
-                v_old_dst, base_addr, v_name, pc, v_name,
-            )
+            if dst == src {
+                // `ldxdw r, [r]`: same-register variant (ldxdw_same_spec).
+                format!(
+                    "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) h{}_lt",
+                    hyp_name, reg(dst), off, base_addr, v_name, pc, v_name,
+                )
+            } else {
+                let v_old_dst = state.regs.get(&dst)
+                    .map(|e| e.to_lean())
+                    .unwrap_or_else(|| reg_initial_name(dst));
+                format!(
+                    "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) h{}_lt",
+                    hyp_name, reg(dst), reg(src), off,
+                    v_old_dst, base_addr, v_name, pc, v_name,
+                )
+            }
         }
         ST_DW_REG => {
             // stxdw_spec baseReg valReg off baseAddr vSrc oldV pc
@@ -868,6 +886,15 @@ fn spec_call_for(
             let v_src = reg_val_lean(src);
             format!(
                 "have {} := add64_reg_spec {} {} ({}) ({}) {} (by decide)",
+                hyp_name, reg(dst), reg(src), v_old, v_src, pc,
+            )
+        }
+        MOV64_REG => {
+            // mov64_reg_spec dst src vOld v pc hne — register copy.
+            let v_old = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            format!(
+                "have {} := mov64_reg_spec {} {} ({}) ({}) {} (by decide)",
                 hyp_name, reg(dst), reg(src), v_old, v_src, pc,
             )
         }
@@ -1623,19 +1650,41 @@ fn lift_one(
     out.push_str("set_option maxHeartbeats 4000000\n\n");
     out.push_str(&format!("namespace Examples.Lifted.{}\n\n", module_name));
 
-    // The bytes.
     out.push_str("open SVM.SBPF\n\n");
-    out.push_str("/-- `.text` bytes extracted from the .so by qedlift. -/\n");
-    out.push_str(&format!("def {}Bytes : ByteArray := ⟨#[\n", module_name));
-    for (i, byte) in text_bytes.iter().enumerate() {
-        if i % 8 == 0 { out.push_str("  "); }
-        out.push_str(&format!("0x{:02x}", byte));
-        if i + 1 < text_bytes.len() { out.push_str(", "); }
-        if i % 8 == 7 || i + 1 == text_bytes.len() { out.push('\n'); }
+
+    // The byte embedding + decode bridge (`*Bytes`, `*Insns`,
+    // `*_decodes`) is a sanity check that the .so bytes decode to the
+    // expected insns. It is NOT load-bearing for the Hoare triple,
+    // whose `CodeReq` is built from walked-PC singletons. For large
+    // binaries the full `.text` as a ByteArray literal blows
+    // `maxRecDepth` during elaboration / `native_decide`, so we skip
+    // the whole bridge above a threshold. two_op (40 bytes) keeps it;
+    // p_token (~96KB) drops it.
+    const DECODE_BRIDGE_MAX_BYTES: usize = 4096;
+    let emit_decode_bridge = text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES;
+
+    if emit_decode_bridge {
+        out.push_str("/-- `.text` bytes extracted from the .so by qedlift. -/\n");
+        out.push_str(&format!("def {}Bytes : ByteArray := ⟨#[\n", module_name));
+        for (i, byte) in text_bytes.iter().enumerate() {
+            if i % 8 == 0 { out.push_str("  "); }
+            out.push_str(&format!("0x{:02x}", byte));
+            if i + 1 < text_bytes.len() { out.push_str(", "); }
+            if i % 8 == 7 || i + 1 == text_bytes.len() { out.push('\n'); }
+        }
+        out.push_str("]⟩\n\n");
+        out.push_str(&format!("/-- Text section file-offset: 0x{:x}. -/\n", text_offset));
+        out.push_str(&format!("def {}TextOffset : Nat := 0x{:x}\n\n", module_name, text_offset));
+    } else {
+        out.push_str(&format!(
+            "-- NOTE: `{}Bytes` + `{}Insns` + `{}_decodes` omitted — the .text\n\
+             -- is {} bytes, which blows `maxRecDepth` as a ByteArray literal.\n\
+             -- The byte→insn decode bridge isn't load-bearing for the Hoare\n\
+             -- triple below (its `CodeReq` references walked-PC singletons,\n\
+             -- not the full `.text`).\n\n",
+            module_name, module_name, module_name, text_bytes.len(),
+        ));
     }
-    out.push_str("]⟩\n\n");
-    out.push_str(&format!("/-- Text section file-offset: 0x{:x}. -/\n", text_offset));
-    out.push_str(&format!("def {}TextOffset : Nat := 0x{:x}\n\n", module_name, text_offset));
 
     // The decoded insns.
     // Try to render the full decoded `.text` as an `Array Insn`. This
@@ -1652,15 +1701,19 @@ fn lift_one(
     // arm uses `jgt_reg`).
     let mut rendered_insns: Vec<String> = Vec::with_capacity(insns.len());
     let mut decode_skip_reason: Option<String> = None;
-    for (i, insn) in insns.iter().enumerate() {
-        let tgt = resolve_call_target(&analysis, insn);
-        let jtgt = Some(resolve_jump_target(ctx, i, insn.off as i64));
-        match insn_to_lean_full(insn, i, tgt, jtgt) {
-            Ok(s)  => rendered_insns.push(s),
-            Err(e) => { decode_skip_reason = Some(format!("pc={} opc=0x{:02x}: {}", i, insn.opc, e)); break; }
+    if emit_decode_bridge {
+        for (i, insn) in insns.iter().enumerate() {
+            let tgt = resolve_call_target(&analysis, insn);
+            let jtgt = Some(resolve_jump_target(ctx, i, insn.off as i64));
+            match insn_to_lean_full(insn, i, tgt, jtgt) {
+                Ok(s)  => rendered_insns.push(s),
+                Err(e) => { decode_skip_reason = Some(format!("pc={} opc=0x{:02x}: {}", i, insn.opc, e)); break; }
+            }
         }
     }
-    if let Some(reason) = decode_skip_reason {
+    if !emit_decode_bridge {
+        // Bridge already noted above; emit nothing here.
+    } else if let Some(reason) = decode_skip_reason {
         out.push_str(&format!(
             "-- NOTE: `{}Insns` + `{}_decodes` omitted — `.text` contains an\n\
              -- opcode the renderer doesn't model yet ({}). The Hoare\n\
