@@ -594,6 +594,14 @@ impl SymState {
         // load still needs the cell to be present in the pre-state).
         if !self.mem.iter().any(|c| c.key() == key) {
             let _ = self.read_mem(base, off, width);
+            // `read_mem` materialised the cell AND pushed a
+            // `containsRange` rr_walk entry — but this access is a
+            // STORE. Its region requirement is the `containsWritable`
+            // pushed below (which implies readability), and the chain's
+            // rr has exactly one clause per memory instruction. Drop the
+            // read's spurious entry so the goal rr stays 1:1 with the
+            // walked memory instructions (matching sl_block_iter).
+            self.rr_walk.pop();
         }
         if let Some(cell) = self.mem.iter_mut().find(|c| c.key() == key) {
             cell.value = value;
