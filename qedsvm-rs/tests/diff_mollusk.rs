@@ -686,6 +686,99 @@ fn p_token_mint_to_matches_mollusk() {
     }
 }
 
+/// p-token `Burn` (discriminant 8) — burns 250 tokens from an account.
+/// Accounts: [account(w), mint(w), owner(signer)]. The debit complement
+/// to MintTo: `account.amount -= amount` and `mint.supply -= amount`.
+/// Also routes through the shared account-parsing region that caps the
+/// static walker — another phantom-loop arm trace guidance handles.
+#[test]
+fn p_token_burn_matches_mollusk() {
+    let program_id = pid(60);
+    let mint_key = pid(61);
+    let acct_key = pid(62);
+    let owner = pid(63);
+    let mint_auth = pid(64);
+
+    const BURN_AMOUNT: u64 = 250;
+    const ACCT_INITIAL: u64 = 1_000;
+    const SUPPLY_INITIAL: u64 = 1_000;
+    const MINT_LAMPORTS: u64 = 2_000_000;
+    const ACCT_LAMPORTS: u64 = 2_039_280;
+
+    let mint_data = build_mint_account(&mint_auth, SUPPLY_INITIAL, 9);
+    let acct_data = build_token_account(&mint_key, &owner, ACCT_INITIAL);
+
+    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    });
+    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    };
+    let owner_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+    let owner_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    // Burn instruction data: [8, amount_le_u64] = 9 bytes.
+    let mut ix_data = Vec::with_capacity(9);
+    ix_data.push(8);
+    ix_data.extend_from_slice(&BURN_AMOUNT.to_le_bytes());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new(mint_key, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (acct_key, mk_shared(ACCT_LAMPORTS, acct_data.clone())),
+            (mint_key, mk_shared(MINT_LAMPORTS, mint_data.clone())),
+            (owner, owner_shared),
+        ])
+        .expect("qedsvm runs p-token Burn");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, mk_mollusk(ACCT_LAMPORTS, acct_data.clone())),
+        (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
+        (owner, owner_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on p-token Burn, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on p-token Burn, got {:?}", m_r.program_result);
+
+    assert_eq!(fs_r.resulting_accounts.len(), 3);
+    for i in 0..3 {
+        let (_, fa) = &fs_r.resulting_accounts[i];
+        let (_, ma) = &m_r.resulting_accounts[i];
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "p-token Burn account[{i}] data diverged");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "p-token Burn account[{i}] lamports diverged");
+    }
+}
+
 /// SPL Token `Transfer` (discriminant 3). Moves 250 lamports of a
 /// token from `source` to `destination`, both owned by the same
 /// authority. Real on-chain Token path — exercises the same .text
