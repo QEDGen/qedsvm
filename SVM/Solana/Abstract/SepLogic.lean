@@ -192,7 +192,7 @@ abbrev AbsAssertion := PartialAbstractState → Prop
 def sepConj (P Q : AbsAssertion) : AbsAssertion :=
   fun h => ∃ h1 h2, h1.Disjoint h2 ∧ h1.union h2 = h ∧ P h1 ∧ Q h2
 
-@[inherit_doc] infixr:35 " ** " => sepConj
+@[inherit_doc] scoped infixr:35 " ** " => sepConj
 
 /-- The empty assertion: holds only on the empty partial abstract state. -/
 def emp : AbsAssertion := fun h => h = PartialAbstractState.empty
