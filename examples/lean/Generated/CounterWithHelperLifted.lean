@@ -111,10 +111,56 @@ theorem CounterWithHelperLifted_lifted_spec
   have h_0 := ldxdw_spec .r3 .r1 0 (vR3Old) (wrapAdd baseAddr (toU64 8)) oldMemD_1 0 (by decide) holdMemD_1_lt
   have h_1 := add64_reg_spec .r3 .r2 (oldMemD_1) (oldMemD_0) 1 (by decide)
   have h_2 := stxdw_spec .r1 .r3 0 (wrapAdd baseAddr (toU64 8)) (wrapAdd oldMemD_1 oldMemD_0) oldMemD_1 2
-  have h_3 := exit_pops_spec ⟨7, (vR6Old), (vR7Old), (vR8Old), (vR9Old), (vR10Old)⟩ [] (vR6Old) (vR7Old) (vR8Old) (vR9Old) (vR10Old + 4096) 3
+  have h_3 := exit_pops_spec ⟨6 + 1, (vR6Old), (vR7Old), (vR8Old), (vR9Old), (vR10Old)⟩ [] (vR6Old) (vR7Old) (vR8Old) (vR9Old) (vR10Old + 4096) 3
   dsimp only at h_3
   have h_7 := mov64_imm_spec .r0 0 (vR0Old) 7 (by decide)
   sl_rw_abs [h_addr0] at [h_4, h_5, h_6, h_0, h_1, h_2, h_3, h_7]
-  sl_block_iter [h_4, h_5, h_6, h_0, h_1, h_2, h_3, h_7]
+  sl_block_iter [h_4, h_5, h_6, h_0, h_1, h_2, h_3, h_7] generalizing [wrapAdd oldMemD_1 oldMemD_0]
+
+open Memory in
+theorem CounterWithHelperLifted_balance_correct
+    (baseAddr oldMemD_0 vR2Old vR6Old vR7Old vR8Old vR9Old vR10Old oldMemD_1 vR3Old vR0Old : Nat)
+    (addr0 : Nat)
+    (h_addr0 : addr0 = wrapAdd baseAddr (toU64 8))
+    (holdMemD_0_lt : oldMemD_0 < 2 ^ 64)
+    (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
+    (h_noovf0 : oldMemD_1 + oldMemD_0 < 2 ^ 64)
+    : cuTripleWithinMem 8 0 4 8
+      (((((((((CodeReq.singleton 4 (.ldx .dword .r2 .r1 0)).union
+        (CodeReq.singleton 5 (.add64 .r1 (.imm (8))))).union
+        (CodeReq.singleton 6 (.call_local 0))).union
+        (CodeReq.singleton 0 (.ldx .dword .r3 .r1 0))).union
+        (CodeReq.singleton 1 (.add64 .r3 (.reg .r2)))).union
+        (CodeReq.singleton 2 (.stx .dword .r1 0 .r3))).union
+        (CodeReq.singleton 3 (.exit))).union
+        (CodeReq.singleton 7 (.mov64 .r0 (.imm (0))))))
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (.r6 ↦ᵣ vR6Old) **
+      (.r7 ↦ᵣ vR7Old) **
+      (.r8 ↦ᵣ vR8Old) **
+      (.r9 ↦ᵣ vR9Old) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr addr0 0 ↦U64 oldMemD_1) **
+      (.r3 ↦ᵣ vR3Old) **
+      (.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      ((.r1 ↦ᵣ addr0) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
+      (.r2 ↦ᵣ oldMemD_0) **
+      (.r6 ↦ᵣ vR6Old) **
+      (.r7 ↦ᵣ vR7Old) **
+      (.r8 ↦ᵣ vR8Old) **
+      (.r9 ↦ᵣ vR9Old) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr addr0 0 ↦U64 oldMemD_1 + oldMemD_0) **
+      (.r3 ↦ᵣ wrapAdd oldMemD_1 oldMemD_0) **
+      (.r0 ↦ᵣ toU64 0) ** callStackIs [])
+      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr addr0 0) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr addr0 0) 8 = true) := by
+  have h := CounterWithHelperLifted_lifted_spec baseAddr oldMemD_0 vR2Old vR6Old vR7Old vR8Old vR9Old vR10Old oldMemD_1 vR3Old vR0Old addr0 h_addr0 holdMemD_0_lt holdMemD_1_lt
+  rw [← wrapAdd_of_lt h_noovf0]
+  exact h
 
 end Examples.Lifted.CounterWithHelperLifted
