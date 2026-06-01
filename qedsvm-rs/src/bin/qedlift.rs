@@ -403,6 +403,21 @@ fn resolve_call_target_logical(
     }
 }
 
+/// Render a symbolic call stack as a Lean `List CallFrame` literal,
+/// newest-frame first (matching `call_local_spec`'s `frame :: cs` post).
+/// Each frame is `⟨<callpc> + 1, r6, r7, r8, r9, r10⟩` (retPc kept as the
+/// unreduced `pc + 1` the spec pushes, + the call-time saved registers).
+/// Used to thread the rest-of-stack `cs` through nested call/return.
+fn render_callstack(frames: &[(usize, [Expr; 5])]) -> String {
+    if frames.is_empty() { return "[]".to_string(); }
+    let items: Vec<String> = frames.iter().rev().map(|(cp, regs)| {
+        format!("⟨{} + 1, {}, {}, {}, {}, {}⟩", cp,
+            regs[0].atom_lean(), regs[1].atom_lean(), regs[2].atom_lean(),
+            regs[3].atom_lean(), regs[4].atom_lean())
+    }).collect();
+    format!("[{}]", items.join(", "))
+}
+
 // -----------------------------------------------------------------------------
 // Symbolic executor — phase 2 of the lift
 // -----------------------------------------------------------------------------
@@ -1323,58 +1338,50 @@ fn spec_call_for(
             )
         }
         CALL_IMM => {
-            // call_local_spec target cs r6V r7V r8V r9V r10V pc
+            // call_local_spec target cs r6V r7V r8V r9V r10V pc.
+            // `cs` is the CURRENT call stack (the frames already pushed) —
+            // empty for a top-level call, [outer…] for a nested one. The
+            // push of this frame happens in step(), so `state.call_stack`
+            // here is exactly the pre-call stack = `cs`.
             let target = call_target.unwrap_or(0);
             let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
             let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
             let r10 = reg_val_lean(10);
+            let cs = render_callstack(&state.call_stack);
             format!(
-                "have {} := call_local_spec {} [] ({}) ({}) ({}) ({}) ({}) {}",
-                hyp_name, target, r6, r7, r8, r9, r10, pc,
+                "have {} := call_local_spec {} {} ({}) ({}) ({}) ({}) ({}) {}",
+                hyp_name, target, cs, r6, r7, r8, r9, r10, pc,
             )
         }
         EXIT => {
             // exit_pops_spec frame cs r6Old r7Old r8Old r9Old r10Old pc.
-            // Construct `frame` explicitly as a CallFrame.mk with the
-            // values the matching call_local pushed (retPc + saved
-            // r6..r10 = pre-call register values). The `cs` rest of
-            // the call stack is `[]` for one-level calls; nested call
-            // sequences would need to thread it through the stack.
-            // r6..r10 at exit (the spec's r6Old..r10Old args) are the
-            // CURRENT register values — for ABI-respecting callees,
-            // r6..r9 are unchanged from pre-call and r10 is bumped by
-            // 0x1000.
-            // The spec's explicit `r6Old..r10Old` args are the CURRENT
-            // (exit-time) register values — what the `r ↦ᵣ` atoms hold in
-            // the exit_pops PRE, before it restores them.
+            // The explicit `r6Old..r10Old` args are the CURRENT (exit-time)
+            // register values — what the `r ↦ᵣ` atoms hold in the
+            // exit_pops PRE, before it restores them.
             let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
             let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
             let r10 = reg_val_lean(10);
-            // The `frame` (savedR6..savedR10) must equal what the matching
-            // `call_local` pushed — the CALL-TIME r6..r10 snapshot on the
-            // call stack — NOT the current values (a callee may clobber
-            // r6..r9). Only r10 happened to coincide before this fix.
-            let (resume, saved) = state.call_stack.last()
-                .map(|(r, s)| (*r, s.clone()))
-                .unwrap_or((0, [Expr::InitReg("?".into()), Expr::InitReg("?".into()),
-                                Expr::InitReg("?".into()), Expr::InitReg("?".into()),
-                                Expr::InitReg("?".into())]));
-            let (sv6, sv7, sv8, sv9, saved_r10) = (
-                saved[0].to_lean(), saved[1].to_lean(), saved[2].to_lean(),
-                saved[3].to_lean(), saved[4].to_lean());
-            // Empty rest-of-stack — single-level calls only for now.
-            // A nested-call demo would need to thread `cs`.
-            // After `exit_pops_spec` is applied, the resulting triple
-            // has `frame.savedR6`, ..., `frame.savedR10` projections
-            // in its post. These reduce by iota to the corresponding
-            // CallFrame.mk field values, but `sl_block_iter`'s
-            // structural matching doesn't run iota. We `dsimp` the
-            // hypothesis to force the reduction before composition.
+            // `frame` = the top of the call stack (the frame this exit
+            // pops): retPc = `<callpc> + 1` and savedR6..savedR10 = the
+            // CALL-TIME snapshot (NOT current — a callee may clobber
+            // r6..r9). `cs` = the REST of the stack below it (empty for a
+            // top-level call, [outer…] for a nested one).
+            let n = state.call_stack.len();
+            let (call_pc, saved) = state.call_stack.last()
+                .map(|(p, s)| (*p, s.clone()))
+                .unwrap_or((0, std::array::from_fn(|_| Expr::InitReg("?".into()))));
+            let (sv6, sv7, sv8, sv9, sv10) = (
+                saved[0].atom_lean(), saved[1].atom_lean(), saved[2].atom_lean(),
+                saved[3].atom_lean(), saved[4].atom_lean());
+            let cs = render_callstack(&state.call_stack[..n.saturating_sub(1)]);
+            // exit_pops' post projects `frame.savedR6..savedR10`, which
+            // reduce by iota to the `⟨…⟩` fields — but sl_block_iter's
+            // structural match doesn't run iota, so `dsimp` forces it.
             format!(
-                "have {0} := exit_pops_spec ⟨{1}, ({2}), ({3}), ({4}), ({5}), ({6})⟩ [] ({7}) ({8}) ({9}) ({10}) ({11}) {12}\n  \
+                "have {0} := exit_pops_spec ⟨{1} + 1, ({2}), ({3}), ({4}), ({5}), ({6})⟩ {7} ({8}) ({9}) ({10}) ({11}) ({12}) {13}\n  \
                  dsimp only at {0}",
                 hyp_name,
-                resume, sv6, sv7, sv8, sv9, saved_r10,
+                call_pc, sv6, sv7, sv8, sv9, sv10, cs,
                 r6, r7, r8, r9, r10, pc,
             )
         }
@@ -1982,8 +1989,11 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 Box::new(r10_old.clone()),
                 Box::new(Expr::Const(0x1000)),
             ));
-            let resume = pc.map(|p| p + 1).unwrap_or(0);
-            state.call_stack.push((resume, [r6, r7, r8, r9, r10_old]));
+            // Store the CALL pc (not pc+1): the frame's retPc renders as
+            // `<callpc> + 1` to match what `call_local_spec` pushes (Lean
+            // keeps it unreduced); the walk's resume PC is callpc + 1.
+            let call_pc = pc.unwrap_or(0);
+            state.call_stack.push((call_pc, [r6, r7, r8, r9, r10_old]));
         }
         EXIT => {
             if state.call_stack.is_empty() {
@@ -3079,7 +3089,7 @@ fn lift_one(
                     if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None, None, None) {
                         spec_calls.push(sc);
                     }
-                    let (resume, saved) = state.call_stack.pop().unwrap();
+                    let (call_pc, saved) = state.call_stack.pop().unwrap();
                     // exit_pops_spec restores r6..r10 to the saved frame
                     // (the pre-call values). Mirror that in the symbolic
                     // state so the post matches — a callee that clobbered
@@ -3088,8 +3098,8 @@ fn lift_one(
                         state.write_reg(r, saved[i].clone());
                     }
                     // In trace mode the next PC comes from the trace (it
-                    // should equal `resume`); otherwise jump to resume.
-                    if trace.is_some() { ti += 1; } else { pc_iter = resume; }
+                    // should equal the return PC); otherwise jump to callpc+1.
+                    if trace.is_some() { ti += 1; } else { pc_iter = call_pc + 1; }
                     continue;
                 }
             }
