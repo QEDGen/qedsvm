@@ -272,6 +272,12 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
             let t = jt(); format!(".jle {} (.imm ({})) {}", reg(dst), imm, t)
         }
         RSH64_IMM   => format!(".rsh64 {} (.imm ({}))",     reg(dst), imm),
+        OR64_IMM    => format!(".or64 {} (.imm ({}))",      reg(dst), imm),
+        XOR64_IMM   => format!(".xor64 {} (.imm ({}))",     reg(dst), imm),
+        MUL64_IMM   => format!(".mul64 {} (.imm ({}))",     reg(dst), imm),
+        DIV64_IMM   => format!(".div64 {} (.imm ({}))",     reg(dst), imm),
+        MOD64_IMM   => format!(".mod64 {} (.imm ({}))",     reg(dst), imm),
+        NEG64       => format!(".neg64 {}",                 reg(dst)),
         JA          => {
             let t = jt(); format!(".ja {}", t)
         }
@@ -977,6 +983,37 @@ fn spec_call_for(
                 hyp_name, reg(dst), imm, v_old, pc,
             )
         }
+        // Bitwise/mul imm-form ALU: `<op>_imm_spec dst imm vOld pc hne`.
+        OR64_IMM | XOR64_IMM | MUL64_IMM => {
+            let v_old = reg_val_lean(dst);
+            let spec = match insn.opc {
+                OR64_IMM => "or64_imm_spec", XOR64_IMM => "xor64_imm_spec",
+                MUL64_IMM => "mul64_imm_spec", _ => unreachable!(),
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} (by decide)",
+                hyp_name, spec, reg(dst), imm, v_old, pc,
+            )
+        }
+        // Div/mod imm-form: extra `hnz : toU64 imm ≠ 0` — the immediate is
+        // a concrete literal, so `(by decide)` discharges it (and fails
+        // loudly on a literal `div r, 0`).
+        DIV64_IMM | MOD64_IMM => {
+            let v_old = reg_val_lean(dst);
+            let spec = if insn.opc == DIV64_IMM { "div64_imm_spec" } else { "mod64_imm_spec" };
+            format!(
+                "have {} := {} {} {} ({}) {} (by decide) (by decide)",
+                hyp_name, spec, reg(dst), imm, v_old, pc,
+            )
+        }
+        NEG64 => {
+            // neg64_spec dst vOld pc hne (no operand).
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := neg64_spec {} ({}) {} (by decide)",
+                hyp_name, reg(dst), v_old, pc,
+            )
+        }
         ST_B_IMM => {
             // stb_spec baseReg off imm baseAddr oldByteVal pc
             let base_addr = reg_val_lean(dst);
@@ -1454,6 +1491,22 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 XOR64_REG => format!("({} ^^^ {}) % U64_MODULUS", a, b),
                 LSH64_REG => format!("({} <<< ({} % 64)) % U64_MODULUS", a, b),
                 RSH64_REG => format!("{} >>> ({} % 64)", a, b),
+                _ => unreachable!(),
+            };
+            state.write_reg(dst, Expr::Raw(r));
+        }
+        // Bitwise/mul/div/mod/neg imm-form ALU — render as the matching
+        // `*_imm_spec` / `neg64_spec` post.
+        OR64_IMM | XOR64_IMM | MUL64_IMM | DIV64_IMM | MOD64_IMM | NEG64 => {
+            let a = state.read_reg(dst).atom_lean();
+            let i = lean_off(imm);
+            let r = match insn.opc {
+                OR64_IMM  => format!("({} ||| toU64 {}) % U64_MODULUS", a, i),
+                XOR64_IMM => format!("({} ^^^ toU64 {}) % U64_MODULUS", a, i),
+                MUL64_IMM => format!("wrapMul {} (toU64 {})", a, i),
+                DIV64_IMM => format!("({} / toU64 {}) % U64_MODULUS", a, i),
+                MOD64_IMM => format!("{} % toU64 {}", a, i),
+                NEG64     => format!("wrapNeg {}", a),
                 _ => unreachable!(),
             };
             state.write_reg(dst, Expr::Raw(r));
