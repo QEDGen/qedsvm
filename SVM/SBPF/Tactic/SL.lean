@@ -699,6 +699,84 @@ def dischargeGoals (mvars : List MVarId) (tac : TSyntax `tactic)
       catch e =>
         throwError m!"sl_block_iter: {label} failed on residual subgoal:\n  {← instantiateMVars (← mvarId.getType)}\n  {e.toMessageData}"
 
+/-- Build a proof of `F.pcFree` directly, in one structural pass over the
+    `sepConj` tree — dispatching each leaf atom on its head constant to
+    the matching `pcFree_<atom>` lemma (which takes the atom's own args).
+    Replaces the `sl_pcfree` tactic's per-atom `first | exact …`
+    backtracking (10 elaboration attempts × every atom × every growing
+    frame = O(n²) and the dominant `sl_block_iter` cost); this is a
+    single `mkAppM` per node, no backtracking, no tactic-framework
+    overhead. -/
+partial def provePcFree (f : Expr) : MetaM Expr := do
+  let f := f.consumeMData
+  match f.getAppFn.constName? with
+  | some c =>
+    if c == ``SVM.SBPF.sepConj then
+      let args := f.getAppArgs
+      let a := args[args.size - 2]!
+      let b := args[args.size - 1]!
+      mkAppM ``SVM.SBPF.pcFree_sepConj #[← provePcFree a, ← provePcFree b]
+    else
+      -- Leaf atom `SVM.SBPF.<atom>`: apply `SVM.SBPF.pcFree_<atom>` to
+      -- the atom's explicit args (e.g. regIs r v → pcFree_regIs r v).
+      let lemmaName := Name.str c.getPrefix ("pcFree_" ++ c.getString!)
+      mkAppM lemmaName f.getAppArgs
+  | none => throwError m!"provePcFree: not an assertion atom:\n  {f}"
+
+/-- Fast bulk discharge of the `F.pcFree` frame side-goals via
+    `provePcFree`. Falls back to the `sl_pcfree` tactic on any atom shape
+    `provePcFree` doesn't recognise. -/
+def dischargePcFree (mvars : List MVarId) : TacticM Unit := do
+  for mvarId in mvars do
+    if !(← mvarId.isAssigned) then
+      let ty := (← instantiateMVars (← mvarId.getType)).consumeMData
+      match ty with
+      | .app _ f =>
+        try mvarId.assign (← provePcFree f)
+        catch _ => setGoals [mvarId]; evalTactic (← `(tactic| sl_pcfree))
+      | _ => setGoals [mvarId]; evalTactic (← `(tactic| sl_pcfree))
+
+/-- Build a proof of `cr1.Disjoint cr2` directly, recursing over the
+    `union`/`singleton` tree (`Disjoint_union_{left,right}` for unions,
+    `singleton_disjoint_singleton` + a `decide` of `pc₁ ≠ pc₂` at the
+    leaves). Replaces `sl_disjoint_codereq`'s `first | …` backtracking
+    (O(k) per goal × n growing goals = O(n²), the dominant cost once
+    pcFree is fast). -/
+partial def proveDisjoint (a b : Expr) : MetaM Expr := do
+  let a := a.consumeMData; let b := b.consumeMData
+  match a.getAppFn.constName? with
+  | some ``SVM.SBPF.CodeReq.union =>
+    let aa := a.getAppArgs
+    mkAppM ``SVM.SBPF.CodeReq.Disjoint_union_left
+      #[← proveDisjoint aa[aa.size - 2]! b, ← proveDisjoint aa[aa.size - 1]! b]
+  | some ``SVM.SBPF.CodeReq.singleton =>
+    match b.getAppFn.constName? with
+    | some ``SVM.SBPF.CodeReq.union =>
+      let bb := b.getAppArgs
+      mkAppM ``SVM.SBPF.CodeReq.Disjoint_union_right
+        #[← proveDisjoint a bb[bb.size - 2]!, ← proveDisjoint a bb[bb.size - 1]!]
+    | some ``SVM.SBPF.CodeReq.singleton =>
+      let aa := a.getAppArgs; let bb := b.getAppArgs
+      let ne ← mkAppM ``Ne #[aa[aa.size - 2]!, bb[bb.size - 2]!]
+      mkAppM ``SVM.SBPF.CodeReq.singleton_disjoint_singleton
+        #[aa[aa.size - 1]!, bb[bb.size - 1]!, ← mkDecideProof ne]
+    | _ => throwError m!"proveDisjoint: rhs not a CodeReq union/singleton:\n  {b}"
+  | _ => throwError m!"proveDisjoint: lhs not a CodeReq union/singleton:\n  {a}"
+
+/-- Fast bulk discharge of the `cr1.Disjoint cr2` side-goals via
+    `proveDisjoint`; falls back to `sl_disjoint_codereq` on shapes it
+    doesn't recognise. -/
+def dischargeDisjoint (mvars : List MVarId) : TacticM Unit := do
+  for mvarId in mvars do
+    if !(← mvarId.isAssigned) then
+      let ty := (← instantiateMVars (← mvarId.getType)).consumeMData
+      let args := ty.getAppArgs
+      if ty.isAppOf ``SVM.SBPF.CodeReq.Disjoint && args.size ≥ 2 then
+        try mvarId.assign (← proveDisjoint args[args.size - 2]! args[args.size - 1]!)
+        catch _ => setGoals [mvarId]; evalTactic (← `(tactic| sl_disjoint_codereq))
+      else
+        setGoals [mvarId]; evalTactic (← `(tactic| sl_disjoint_codereq))
+
 /-- Right-normalize the `pre` and `post` of a triple expression so both
     become `rebuildSepConj (flatten _)`. Applied after each frame
     application to keep intermediate chain states in a canonical right-
@@ -885,8 +963,8 @@ def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
   goal.assign bridged
   let pcfrees := (← pcfreeGoals.get).reverse
   let disjs := (← disjGoals.get).reverse
-  dischargeGoals pcfrees (← `(tactic| sl_pcfree)) "sl_pcfree"
-  dischargeGoals disjs (← `(tactic| sl_disjoint_codereq)) "sl_disjoint_codereq"
+  dischargePcFree pcfrees
+  dischargeDisjoint disjs
   setGoals []
 
 /-- Build the pointwise-iff type `∀ h, lhs h ↔ rhs h` from two `Assertion`s

@@ -111,6 +111,11 @@ lean_lib Examples where
     -- CloseAccount: first arm whose happy path crosses a host syscall
     -- (`sol_memset_` zeroing the account data). qedlift threads it via
     -- `call_sol_memset_spec` (a `↦Bytes` blob + surfaced CU/size hyps).
-    `Generated.PTokenCloseAccountTracedLifted
+    `Generated.PTokenCloseAccountTracedLifted,
+    -- InitializeMint2: crosses sol_get_sysvar + 7 nested call_locals +
+    -- spilled registers + the densest ALU/jump mix. First lift to
+    -- exercise the full call_local machinery; builds after the
+    -- sl_block_iter discharge perf fix (O(n²) → O(n)).
+    `Generated.PTokenInitializeMint2TracedLifted
   ]
   precompileModules := true
