@@ -1,6 +1,15 @@
 # Mint intrinsic design (MintTo / Burn refinement)
 
-Design draft for review — **no proofs written yet**. Goal: close
+**STATUS: SHIPPED (2026-06-01).** All decisions below were implemented as
+written (second heap, `Mint = preAuth/supply/rest`, `tokenMintTo`/`tokenBurn`,
+the codec + aggregation). Both `MintToRefinement.lean` and `BurnRefinement.lean`
+close; full build green. Burn's account reuses Transfer's `src_account_eq`; its
+mint reads only supply + is_init, so it uses a leaner `mint_supply_eq` (opaque
+preAuth) rather than the full `mint_account_eq`. The "abstracted bases" risk
+noted at the end resolved cleanly — the codec-fold simp + per-atom bridge needed
+no changes.
+
+Original design draft (kept for reference): Goal: close
 `PTokenMintTo` and `PTokenBurn` against new abstract intrinsics, the same way
 Transfer / TransferChecked close against `tokenTransfer`.
 
