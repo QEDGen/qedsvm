@@ -62,33 +62,68 @@ def withAmount (t : TokenAccount) (a : Nat) : TokenAccount :=
 
 end TokenAccount
 
+/-! ## Mint — decoded SPL Token mint account
+
+The byte-level codec lives in `SVM.Solana.MintAccountCodec` as
+`mintAcctSupply`; this record is the abstract-side counterpart. Only
+`supply` is mutated by MintTo/Burn; `preAuth` (the 36-byte
+`COption<Pubkey>` mint_authority) and `rest` (the 38-byte
+decimals/is_initialized/freeze_authority tail) flow through opaque.
+`supply` sits at byte offset 36, after `preAuth`, so it can't be a
+single trailing field the way `TokenAccount.rest` is. -/
+
+structure Mint where
+  preAuth : ByteArray
+  supply  : Nat
+  rest    : ByteArray
+  deriving Inhabited
+
+namespace Mint
+
+/-- Adjust the `supply` field, preserving everything else. -/
+def withSupply (m : Mint) (s : Nat) : Mint :=
+  { m with supply := s }
+
+@[simp] theorem withSupply_supply (m : Mint) (s : Nat) :
+    (m.withSupply s).supply = s := rfl
+@[simp] theorem withSupply_preAuth (m : Mint) (s : Nat) :
+    (m.withSupply s).preAuth = m.preAuth := rfl
+@[simp] theorem withSupply_rest (m : Mint) (s : Nat) :
+    (m.withSupply s).rest = m.rest := rfl
+
+end Mint
+
 /-! ## AbstractState — the partial heap of decoded accounts
 
-Single field today; grows as later pilots demand new resources
-(`signers : Finset Pubkey`, `ixData : ByteArray`, `returnData`,
-`cuRemaining`, `cpiLog`). -/
+Two resource maps today: `accounts` (token accounts) and `mints` (mint
+accounts). Grows as later pilots demand new resources (`signers`,
+`ixData`, `returnData`, `cuRemaining`, `cpiLog`). -/
 
 structure AbstractState where
   accounts : Pubkey → Option TokenAccount
+  mints    : Pubkey → Option Mint
   deriving Inhabited
 
 namespace AbstractState
 
 /-- The empty abstract state owns no accounts. -/
 def empty : AbstractState :=
-  { accounts := fun _ => none }
+  { accounts := fun _ => none, mints := fun _ => none }
 
 @[simp] theorem empty_accounts (k : Pubkey) :
     empty.accounts k = none := rfl
+
+@[simp] theorem empty_mints (k : Pubkey) :
+    empty.mints k = none := rfl
 
 /-- Read the account at `key`, if any. Definitionally equal to
     `s.accounts key`; the named accessor is useful for `simp` rewriting. -/
 @[inline] def get (s : AbstractState) (key : Pubkey) : Option TokenAccount :=
   s.accounts key
 
-/-- Install `t` at `key`, leaving every other key unchanged. -/
+/-- Install `t` at `key`, leaving every other key (and all mints) unchanged. -/
 def set (s : AbstractState) (key : Pubkey) (t : TokenAccount) : AbstractState :=
-  { accounts := fun k => if k = key then some t else s.accounts k }
+  { s with accounts := fun k => if k = key then some t else s.accounts k }
 
 @[simp] theorem set_get_eq (s : AbstractState) (key : Pubkey) (t : TokenAccount) :
     (s.set key t).get key = some t := by
@@ -130,6 +165,63 @@ def update (s : AbstractState) (key : Pubkey) (f : TokenAccount → TokenAccount
   unfold update
   cases hk : s.get key with
   | some t => exact set_get_of_ne s (f t) h
+  | none   => rfl
+
+/-- Setting a token account leaves the mint heap unchanged. -/
+@[simp] theorem set_mints (s : AbstractState) (key : Pubkey) (t : TokenAccount) :
+    (s.set key t).mints = s.mints := rfl
+
+/-! ### Mint heap accessors (mirror the token-account ones) -/
+
+/-- Read the mint at `key`, if any. -/
+@[inline] def getMint (s : AbstractState) (key : Pubkey) : Option Mint :=
+  s.mints key
+
+/-- Install mint `m` at `key`, leaving every other key (and all token
+    accounts) unchanged. -/
+def setMint (s : AbstractState) (key : Pubkey) (m : Mint) : AbstractState :=
+  { s with mints := fun k => if k = key then some m else s.mints k }
+
+@[simp] theorem setMint_getMint_eq (s : AbstractState) (key : Pubkey) (m : Mint) :
+    (s.setMint key m).getMint key = some m := by
+  unfold setMint getMint; simp
+
+@[simp] theorem setMint_getMint_of_ne (s : AbstractState) {key key' : Pubkey}
+    (m : Mint) (h : key' ≠ key) :
+    (s.setMint key m).getMint key' = s.getMint key' := by
+  unfold setMint getMint; simp [h]
+
+@[simp] theorem setMint_mints_eq (s : AbstractState) (key : Pubkey) (m : Mint) :
+    (s.setMint key m).mints key = some m := by
+  unfold setMint; simp
+
+@[simp] theorem setMint_mints_of_ne (s : AbstractState) {key key' : Pubkey}
+    (m : Mint) (h : key' ≠ key) :
+    (s.setMint key m).mints key' = s.mints key' := by
+  unfold setMint; simp [h]
+
+/-- Setting a mint leaves the token-account heap unchanged. -/
+@[simp] theorem setMint_accounts (s : AbstractState) (key : Pubkey) (m : Mint) :
+    (s.setMint key m).accounts = s.accounts := rfl
+
+/-- Apply `f` to the mint at `key`, if it exists. No-op if absent. -/
+def updateMint (s : AbstractState) (key : Pubkey) (f : Mint → Mint) :
+    AbstractState :=
+  match s.getMint key with
+  | some m => s.setMint key (f m)
+  | none   => s
+
+@[simp] theorem updateMint_getMint_eq (s : AbstractState) (key : Pubkey)
+    (f : Mint → Mint) (m : Mint) (h : s.getMint key = some m) :
+    (s.updateMint key f).getMint key = some (f m) := by
+  unfold updateMint; rw [h]; exact setMint_getMint_eq s key (f m)
+
+@[simp] theorem updateMint_getMint_of_ne (s : AbstractState) {key key' : Pubkey}
+    (f : Mint → Mint) (h : key' ≠ key) :
+    (s.updateMint key f).getMint key' = s.getMint key' := by
+  unfold updateMint
+  cases hk : s.getMint key with
+  | some m => exact setMint_getMint_of_ne s (f m) h
   | none   => rfl
 
 end AbstractState

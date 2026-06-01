@@ -41,22 +41,28 @@ open SVM.Pubkey
     `none` means we don't own that account. -/
 structure PartialAbstractState where
   accounts : Pubkey → Option TokenAccount
+  mints    : Pubkey → Option Mint
   deriving Inhabited
 
 namespace PartialAbstractState
 
 /-- The empty partial state owns no accounts. -/
 def empty : PartialAbstractState :=
-  { accounts := fun _ => none }
+  { accounts := fun _ => none, mints := fun _ => none }
 
-/-- Partial state owning exactly the account at `key` with contents `t`. -/
+/-- Partial state owning exactly the token account at `key` with contents `t`. -/
 def singletonAccount (key : Pubkey) (t : TokenAccount) : PartialAbstractState :=
-  { accounts := fun k => if k = key then some t else none }
+  { accounts := fun k => if k = key then some t else none, mints := fun _ => none }
+
+/-- Partial state owning exactly the mint at `key` with contents `m`. -/
+def singletonMint (key : Pubkey) (m : Mint) : PartialAbstractState :=
+  { accounts := fun _ => none, mints := fun k => if k = key then some m else none }
 
 /-- Two partial states are disjoint if they never both own the same
-    account. Single-resource version: one clause for `accounts`. -/
+    account or the same mint. One clause per resource. -/
 structure Disjoint (h1 h2 : PartialAbstractState) : Prop where
   accounts : ∀ k, h1.accounts k = none ∨ h2.accounts k = none
+  mints    : ∀ k, h1.mints k = none ∨ h2.mints k = none
 
 /-- Left-biased union of two partial states. -/
 def union (h1 h2 : PartialAbstractState) : PartialAbstractState where
@@ -64,17 +70,23 @@ def union (h1 h2 : PartialAbstractState) : PartialAbstractState where
     match h1.accounts k with
     | some t => some t
     | none   => h2.accounts k
+  mints := fun k =>
+    match h1.mints k with
+    | some m => some m
+    | none   => h2.mints k
 
 /-- A partial state is compatible with a full `AbstractState` if every
-    owned account agrees with the full state. -/
+    owned account/mint agrees with the full state. -/
 structure CompatibleWith (h : PartialAbstractState) (s : AbstractState) : Prop where
   accounts : ∀ k t, h.accounts k = some t → s.accounts k = some t
+  mints    : ∀ k m, h.mints k = some m → s.mints k = some m
 
 /-! ## Disjoint lemmas -/
 
 theorem Disjoint.symm {h1 h2 : PartialAbstractState} (hd : h1.Disjoint h2) :
     h2.Disjoint h1 :=
-  { accounts := fun k => (hd.accounts k).symm }
+  { accounts := fun k => (hd.accounts k).symm,
+    mints    := fun k => (hd.mints k).symm }
 
 /-! ## Singleton projection lemmas -/
 
@@ -87,8 +99,26 @@ theorem Disjoint.symm {h1 h2 : PartialAbstractState} (hd : h1.Disjoint h2) :
     (singletonAccount key t).accounts key' = none := by
   unfold singletonAccount; simp [h]
 
+@[simp] theorem singletonAccount_mints {key : Pubkey} {t : TokenAccount} (k : Pubkey) :
+    (singletonAccount key t).mints k = none := rfl
+
+@[simp] theorem singletonMint_mints_self {key : Pubkey} {m : Mint} :
+    (singletonMint key m).mints key = some m := by
+  unfold singletonMint; simp
+
+@[simp] theorem singletonMint_mints_other
+    {key key' : Pubkey} {m : Mint} (h : key' ≠ key) :
+    (singletonMint key m).mints key' = none := by
+  unfold singletonMint; simp [h]
+
+@[simp] theorem singletonMint_accounts {key : Pubkey} {m : Mint} (k : Pubkey) :
+    (singletonMint key m).accounts k = none := rfl
+
 @[simp] theorem empty_accounts (k : Pubkey) :
     empty.accounts k = none := rfl
+
+@[simp] theorem empty_mints (k : Pubkey) :
+    empty.mints k = none := rfl
 
 /-! ## Union lemmas -/
 
@@ -119,37 +149,73 @@ theorem union_accounts_eq_none_iff {h1 h2 : PartialAbstractState} {k : Pubkey} :
   · cases h2.accounts k <;> simp
   · simp
 
+/-! ### Mint-clause union lemmas (mirror the account-clause ones) -/
+
+@[simp] theorem union_mints_eq_match (h1 h2 : PartialAbstractState) :
+    ∀ k, (h1.union h2).mints k =
+      (match h1.mints k with | some m => some m | none => h2.mints k) :=
+  fun _ => rfl
+
+theorem union_mints_of_left_none {h1 h2 : PartialAbstractState} {k : Pubkey}
+    (h : h1.mints k = none) : (h1.union h2).mints k = h2.mints k := by
+  show (match h1.mints k with | some m => some m | none => h2.mints k) =
+       h2.mints k
+  rw [h]
+
+theorem union_mints_of_left_some {h1 h2 : PartialAbstractState}
+    {k : Pubkey} {m : Mint}
+    (h : h1.mints k = some m) : (h1.union h2).mints k = some m := by
+  show (match h1.mints k with | some m => some m | none => h2.mints k) =
+       some m
+  rw [h]
+
+theorem union_mints_eq_none_iff {h1 h2 : PartialAbstractState} {k : Pubkey} :
+    (h1.union h2).mints k = none ↔
+      h1.mints k = none ∧ h2.mints k = none := by
+  show (match h1.mints k with | some m => some m | none => h2.mints k) =
+       none ↔ _
+  cases h1.mints k
+  · cases h2.mints k <;> simp
+  · simp
+
 theorem union_empty_left {h : PartialAbstractState} : empty.union h = h := by
   cases h; rfl
 
 theorem union_empty_right {h : PartialAbstractState} : h.union empty = h := by
-  obtain ⟨accs⟩ := h
-  show PartialAbstractState.mk _ = _
+  obtain ⟨accs, mnts⟩ := h
+  show PartialAbstractState.mk _ _ = _
   simp only [PartialAbstractState.mk.injEq]
-  funext k; cases accs k <;> rfl
+  refine ⟨?_, ?_⟩ <;> · funext k; first | cases accs k <;> rfl | cases mnts k <;> rfl
 
 theorem union_comm_of_disjoint {h1 h2 : PartialAbstractState}
     (hd : h1.Disjoint h2) : h1.union h2 = h2.union h1 := by
-  show PartialAbstractState.mk _ = PartialAbstractState.mk _
+  show PartialAbstractState.mk _ _ = PartialAbstractState.mk _ _
   simp only [PartialAbstractState.mk.injEq]
-  funext k
-  rcases hd.accounts k with h | h
-  · rw [h]; cases h2.accounts k <;> rfl
-  · rw [h]; cases h1.accounts k <;> rfl
+  refine ⟨?_, ?_⟩
+  · funext k
+    rcases hd.accounts k with h | h
+    · rw [h]; cases h2.accounts k <;> rfl
+    · rw [h]; cases h1.accounts k <;> rfl
+  · funext k
+    rcases hd.mints k with h | h
+    · rw [h]; cases h2.mints k <;> rfl
+    · rw [h]; cases h1.mints k <;> rfl
 
 theorem union_assoc {h1 h2 h3 : PartialAbstractState} :
     h1.union (h2.union h3) = (h1.union h2).union h3 := by
-  obtain ⟨a1⟩ := h1
-  obtain ⟨a2⟩ := h2
-  obtain ⟨a3⟩ := h3
-  show PartialAbstractState.mk _ = PartialAbstractState.mk _
+  obtain ⟨a1, m1⟩ := h1
+  obtain ⟨a2, m2⟩ := h2
+  obtain ⟨a3, m3⟩ := h3
+  show PartialAbstractState.mk _ _ = PartialAbstractState.mk _ _
   simp only [PartialAbstractState.mk.injEq, union]
-  funext k; cases a1 k <;> cases a2 k <;> cases a3 k <;> rfl
+  refine ⟨?_, ?_⟩
+  · funext k; cases a1 k <;> cases a2 k <;> cases a3 k <;> rfl
+  · funext k; cases m1 k <;> cases m2 k <;> cases m3 k <;> rfl
 
 /-! ## Empty-disjointness -/
 
 theorem Disjoint_empty_left {h : PartialAbstractState} : empty.Disjoint h :=
-  { accounts := fun _ => Or.inl rfl }
+  { accounts := fun _ => Or.inl rfl, mints := fun _ => Or.inl rfl }
 
 theorem Disjoint_empty_right {h : PartialAbstractState} : h.Disjoint empty :=
   Disjoint_empty_left.symm
@@ -162,12 +228,20 @@ theorem Disjoint_of_union_left {h1 h2 h3 : PartialAbstractState}
     rcases hd.accounts k with hl | hl
     · left; exact (union_accounts_eq_none_iff.mp hl).1
     · right; exact hl
+  mints := fun k => by
+    rcases hd.mints k with hl | hl
+    · left; exact (union_mints_eq_none_iff.mp hl).1
+    · right; exact hl
 
 theorem Disjoint_of_union_right {h1 h2 h3 : PartialAbstractState}
     (hd : (h1.union h2).Disjoint h3) : h2.Disjoint h3 where
   accounts := fun k => by
     rcases hd.accounts k with hl | hl
     · left; exact (union_accounts_eq_none_iff.mp hl).2
+    · right; exact hl
+  mints := fun k => by
+    rcases hd.mints k with hl | hl
+    · left; exact (union_mints_eq_none_iff.mp hl).2
     · right; exact hl
 
 theorem Disjoint_union_of_both {h1 h2 h3 : PartialAbstractState}
@@ -176,6 +250,12 @@ theorem Disjoint_union_of_both {h1 h2 h3 : PartialAbstractState}
   accounts := fun k => by
     rcases hd1.accounts k with hl | hl <;> rcases hd2.accounts k with hl' | hl'
     · left; exact union_accounts_eq_none_iff.mpr ⟨hl, hl'⟩
+    · right; exact hl'
+    · right; exact hl
+    · right; exact hl
+  mints := fun k => by
+    rcases hd1.mints k with hl | hl <;> rcases hd2.mints k with hl' | hl'
+    · left; exact union_mints_eq_none_iff.mpr ⟨hl, hl'⟩
     · right; exact hl'
     · right; exact hl
     · right; exact hl
@@ -202,6 +282,12 @@ def accountIs (key : Pubkey) (t : TokenAccount) : AbsAssertion :=
   fun h => h = PartialAbstractState.singletonAccount key t
 
 @[inherit_doc] notation:50 k " ↦ₐ " t => accountIs k t
+
+/-- Mint at `key` holds the decoded record `m`, and that's all we own. -/
+def mintIs (key : Pubkey) (m : Mint) : AbsAssertion :=
+  fun h => h = PartialAbstractState.singletonMint key m
+
+@[inherit_doc] notation:50 k " ↦ₘ " m => mintIs k m
 
 /-! ## Structural lemmas for `**` -/
 
@@ -268,6 +354,28 @@ theorem singletonAccount_Disjoint_of_ne
     · subst hk1
       right; exact PartialAbstractState.singletonAccount_accounts_other h
     · left; exact PartialAbstractState.singletonAccount_accounts_other hk1
+  mints := fun _ => Or.inl (PartialAbstractState.singletonAccount_mints _)
+
+/-- Two singleton-mint atoms with distinct keys are disjoint. -/
+theorem singletonMint_Disjoint_of_ne
+    {k1 k2 : Pubkey} (m1 m2 : Mint) (h : k1 ≠ k2) :
+    (PartialAbstractState.singletonMint k1 m1).Disjoint
+      (PartialAbstractState.singletonMint k2 m2) where
+  accounts := fun _ => Or.inl (PartialAbstractState.singletonMint_accounts _)
+  mints := fun k => by
+    by_cases hk1 : k = k1
+    · subst hk1
+      right; exact PartialAbstractState.singletonMint_mints_other h
+    · left; exact PartialAbstractState.singletonMint_mints_other hk1
+
+/-- A token-account atom and a mint atom are always disjoint (different
+    resource clauses), even at the same key. -/
+theorem singletonAccount_Disjoint_singletonMint
+    {k1 k2 : Pubkey} (t : TokenAccount) (m : Mint) :
+    (PartialAbstractState.singletonAccount k1 t).Disjoint
+      (PartialAbstractState.singletonMint k2 m) where
+  accounts := fun _ => Or.inr (PartialAbstractState.singletonMint_accounts _)
+  mints := fun _ => Or.inl (PartialAbstractState.singletonAccount_mints _)
 
 /-! ## holdsFor — bridge from AbsAssertion to full AbstractState -/
 
