@@ -278,6 +278,28 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         DIV64_IMM   => format!(".div64 {} (.imm ({}))",     reg(dst), imm),
         MOD64_IMM   => format!(".mod64 {} (.imm ({}))",     reg(dst), imm),
         NEG64       => format!(".neg64 {}",                 reg(dst)),
+        // 32-bit ALU family.
+        ADD32_IMM   => format!(".add32 {} (.imm ({}))",    reg(dst), imm),
+        SUB32_IMM   => format!(".sub32 {} (.imm ({}))",    reg(dst), imm),
+        MUL32_IMM   => format!(".mul32 {} (.imm ({}))",    reg(dst), imm),
+        DIV32_IMM   => format!(".div32 {} (.imm ({}))",    reg(dst), imm),
+        MOD32_IMM   => format!(".mod32 {} (.imm ({}))",    reg(dst), imm),
+        OR32_IMM    => format!(".or32 {} (.imm ({}))",     reg(dst), imm),
+        AND32_IMM   => format!(".and32 {} (.imm ({}))",    reg(dst), imm),
+        XOR32_IMM   => format!(".xor32 {} (.imm ({}))",    reg(dst), imm),
+        LSH32_IMM   => format!(".lsh32 {} (.imm ({}))",    reg(dst), imm),
+        RSH32_IMM   => format!(".rsh32 {} (.imm ({}))",    reg(dst), imm),
+        MOV32_IMM   => format!(".mov32 {} (.imm ({}))",    reg(dst), imm),
+        NEG32       => format!(".neg32 {}",                reg(dst)),
+        ADD32_REG   => format!(".add32 {} (.reg {})",      reg(dst), reg(src)),
+        SUB32_REG   => format!(".sub32 {} (.reg {})",      reg(dst), reg(src)),
+        MUL32_REG   => format!(".mul32 {} (.reg {})",      reg(dst), reg(src)),
+        OR32_REG    => format!(".or32 {} (.reg {})",       reg(dst), reg(src)),
+        AND32_REG   => format!(".and32 {} (.reg {})",      reg(dst), reg(src)),
+        XOR32_REG   => format!(".xor32 {} (.reg {})",      reg(dst), reg(src)),
+        LSH32_REG   => format!(".lsh32 {} (.reg {})",      reg(dst), reg(src)),
+        RSH32_REG   => format!(".rsh32 {} (.reg {})",      reg(dst), reg(src)),
+        MOV32_REG   => format!(".mov32 {} (.reg {})",      reg(dst), reg(src)),
         JA          => {
             let t = jt(); format!(".ja {}", t)
         }
@@ -1050,6 +1072,55 @@ fn spec_call_for(
                 hyp_name, reg(dst), v_old, pc,
             )
         }
+        // 32-bit imm ALU: `<op>32_imm_spec dst imm vOld pc hne`.
+        ADD32_IMM | SUB32_IMM | MUL32_IMM | OR32_IMM | AND32_IMM | XOR32_IMM
+        | LSH32_IMM | RSH32_IMM | MOV32_IMM => {
+            let v_old = reg_val_lean(dst);
+            let spec = match insn.opc {
+                ADD32_IMM => "add32_imm_spec", SUB32_IMM => "sub32_imm_spec",
+                MUL32_IMM => "mul32_imm_spec", OR32_IMM => "or32_imm_spec",
+                AND32_IMM => "and32_imm_spec", XOR32_IMM => "xor32_imm_spec",
+                LSH32_IMM => "lsh32_imm_spec", RSH32_IMM => "rsh32_imm_spec",
+                MOV32_IMM => "mov32_imm_spec", _ => unreachable!(),
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} (by decide)",
+                hyp_name, spec, reg(dst), imm, v_old, pc,
+            )
+        }
+        // 32-bit div/mod imm: extra `toU64 imm % U32_MODULUS ≠ 0` (literal → decide).
+        DIV32_IMM | MOD32_IMM => {
+            let v_old = reg_val_lean(dst);
+            let spec = if insn.opc == DIV32_IMM { "div32_imm_spec" } else { "mod32_imm_spec" };
+            format!(
+                "have {} := {} {} {} ({}) {} (by decide) (by decide)",
+                hyp_name, spec, reg(dst), imm, v_old, pc,
+            )
+        }
+        NEG32 => {
+            let v_old = reg_val_lean(dst);
+            format!(
+                "have {} := neg32_spec {} ({}) {} (by decide)",
+                hyp_name, reg(dst), v_old, pc,
+            )
+        }
+        // 32-bit reg ALU: `<op>32_reg_spec dst src vOld v pc hne`.
+        ADD32_REG | SUB32_REG | MUL32_REG | OR32_REG | AND32_REG | XOR32_REG
+        | LSH32_REG | RSH32_REG | MOV32_REG => {
+            let v_old = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let spec = match insn.opc {
+                ADD32_REG => "add32_reg_spec", SUB32_REG => "sub32_reg_spec",
+                MUL32_REG => "mul32_reg_spec", OR32_REG => "or32_reg_spec",
+                AND32_REG => "and32_reg_spec", XOR32_REG => "xor32_reg_spec",
+                LSH32_REG => "lsh32_reg_spec", RSH32_REG => "rsh32_reg_spec",
+                MOV32_REG => "mov32_reg_spec", _ => unreachable!(),
+            };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} (by decide)",
+                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc,
+            )
+        }
         ST_B_IMM => {
             // stb_spec baseReg off imm baseAddr oldByteVal pc
             let base_addr = reg_val_lean(dst);
@@ -1565,6 +1636,47 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 DIV64_IMM => format!("({} / toU64 {}) % U64_MODULUS", a, i),
                 MOD64_IMM => format!("{} % toU64 {}", a, i),
                 NEG64     => format!("wrapNeg {}", a),
+                _ => unreachable!(),
+            };
+            state.write_reg(dst, Expr::Raw(r));
+        }
+        // 32-bit imm ALU — render as the matching `*32_imm_spec` post.
+        ADD32_IMM | SUB32_IMM | MUL32_IMM | OR32_IMM | AND32_IMM | XOR32_IMM
+        | LSH32_IMM | RSH32_IMM | MOV32_IMM | DIV32_IMM | MOD32_IMM | NEG32 => {
+            let a = state.read_reg(dst).atom_lean();
+            let i = lean_off(imm);
+            let r = match insn.opc {
+                ADD32_IMM => format!("wrapAdd32 {} (toU64 {})", a, i),
+                SUB32_IMM => format!("wrapSub32 {} (toU64 {})", a, i),
+                MUL32_IMM => format!("wrapMul32 {} (toU64 {})", a, i),
+                OR32_IMM  => format!("({} ||| toU64 {}) % U32_MODULUS", a, i),
+                AND32_IMM => format!("({} &&& toU64 {}) % U32_MODULUS", a, i),
+                XOR32_IMM => format!("({} ^^^ toU64 {}) % U32_MODULUS", a, i),
+                LSH32_IMM => format!("({} <<< (toU64 {} % 32)) % U32_MODULUS", a, i),
+                RSH32_IMM => format!("({} % U32_MODULUS) >>> (toU64 {} % 32)", a, i),
+                MOV32_IMM => format!("toU64 {} % U32_MODULUS", i),
+                DIV32_IMM => format!("({} % U32_MODULUS / (toU64 {} % U32_MODULUS)) % U32_MODULUS", a, i),
+                MOD32_IMM => format!("{} % U32_MODULUS % (toU64 {} % U32_MODULUS)", a, i),
+                NEG32     => format!("wrapNeg32 {}", a),
+                _ => unreachable!(),
+            };
+            state.write_reg(dst, Expr::Raw(r));
+        }
+        // 32-bit reg ALU — render as the matching `*32_reg_spec` post.
+        ADD32_REG | SUB32_REG | MUL32_REG | OR32_REG | AND32_REG | XOR32_REG
+        | LSH32_REG | RSH32_REG | MOV32_REG => {
+            let a = state.read_reg(dst).atom_lean();
+            let b = state.read_reg(src).atom_lean();
+            let r = match insn.opc {
+                ADD32_REG => format!("wrapAdd32 {} {}", a, b),
+                SUB32_REG => format!("wrapSub32 {} {}", a, b),
+                MUL32_REG => format!("wrapMul32 {} {}", a, b),
+                OR32_REG  => format!("({} ||| {}) % U32_MODULUS", a, b),
+                AND32_REG => format!("({} &&& {}) % U32_MODULUS", a, b),
+                XOR32_REG => format!("({} ^^^ {}) % U32_MODULUS", a, b),
+                LSH32_REG => format!("({} <<< ({} % 32)) % U32_MODULUS", a, b),
+                RSH32_REG => format!("({} % U32_MODULUS) >>> ({} % 32)", a, b),
+                MOV32_REG => format!("{} % U32_MODULUS", b),
                 _ => unreachable!(),
             };
             state.write_reg(dst, Expr::Raw(r));
