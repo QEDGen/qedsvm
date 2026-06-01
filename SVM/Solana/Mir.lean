@@ -61,6 +61,14 @@ inductive MirStmt where
       *not* enforced — matches the on-chain semantics of SPL Token's
       unchecked Transfer. -/
   | tokenTransfer (src dst : Pubkey) (amount : Nat)
+  /-- Mint `amount` new units into token account `dest`, increasing the
+      mint's `supply` and `dest`'s `amount` by `amount`. Errors on a
+      missing mint/dest or u64 overflow of either field. -/
+  | tokenMintTo (mint dest : Pubkey) (amount : Nat)
+  /-- Burn `amount` units held by token account `account`, decreasing
+      `account`'s `amount` and the `mint`'s `supply` by `amount`. Errors
+      on a missing account/mint or insufficient account funds. -/
+  | tokenBurn (account mint : Pubkey) (amount : Nat)
   deriving Inhabited
 
 /-! ## runStep — operational semantics for one MIR statement -/
@@ -83,6 +91,28 @@ def runStep (stmt : MirStmt) (s : AbstractState) :
       else
         let s1 := s.set src (tSrc.withAmount (tSrc.amount - amount))
         let s2 := s1.set dst (tDst.withAmount (tDst.amount + amount))
+        .ok s2
+  | .tokenMintTo mint dest amount =>
+    match s.getMint mint, s.get dest with
+    | none,      _         => .error (.accountMissing mint)
+    | some _,    none      => .error (.accountMissing dest)
+    | some m,    some tDst =>
+      if m.supply + amount ≥ 2 ^ 64 then .error (.overflow mint)
+      else if tDst.amount + amount ≥ 2 ^ 64 then .error (.overflow dest)
+      else
+        let s1 := s.setMint mint (m.withSupply (m.supply + amount))
+        let s2 := s1.set dest (tDst.withAmount (tDst.amount + amount))
+        .ok s2
+  | .tokenBurn account mint amount =>
+    match s.get account, s.getMint mint with
+    | none,      _         => .error (.accountMissing account)
+    | some _,    none      => .error (.accountMissing mint)
+    | some tAcc, some m    =>
+      if amount > tAcc.amount then
+        .error (.insufficientFunds account tAcc.amount amount)
+      else
+        let s1 := s.set account (tAcc.withAmount (tAcc.amount - amount))
+        let s2 := s1.setMint mint (m.withSupply (m.supply - amount))
         .ok s2
 
 /-! ## runMir — sequence of statements

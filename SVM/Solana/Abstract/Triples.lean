@@ -89,37 +89,188 @@ theorem tokenTransfer_spec
             (PartialAbstractState.singletonAccount dst
               (tDst.withAmount (tDst.amount + amount))), ?_, ?_⟩
     · -- CompatibleWith the post-state: every owned key matches.
-      constructor
-      intro k t hk
-      by_cases h_k_src : k = src
-      · subst h_k_src
-        rw [PartialAbstractState.union_accounts_of_left_some
-              PartialAbstractState.singletonAccount_accounts_self] at hk
-        have h_eq : t = tSrc.withAmount (tSrc.amount - amount) := by
-          injection hk with h; exact h.symm
-        subst h_eq
-        rw [AbstractState.set_accounts_of_ne _ _ h_ne,
-            AbstractState.set_accounts_eq]
-      · by_cases h_k_dst : k = dst
-        · subst h_k_dst
-          rw [PartialAbstractState.union_accounts_of_left_none
-                (PartialAbstractState.singletonAccount_accounts_other (Ne.symm h_ne)),
-              PartialAbstractState.singletonAccount_accounts_self] at hk
-          have h_eq : t = tDst.withAmount (tDst.amount + amount) := by
+      refine ⟨fun k t hk => ?_, fun k m hk => ?_⟩
+      · -- accounts clause
+        by_cases h_k_src : k = src
+        · subst h_k_src
+          rw [PartialAbstractState.union_accounts_of_left_some
+                PartialAbstractState.singletonAccount_accounts_self] at hk
+          have h_eq : t = tSrc.withAmount (tSrc.amount - amount) := by
             injection hk with h; exact h.symm
           subst h_eq
-          rw [AbstractState.set_accounts_eq]
-        · exfalso
-          rw [PartialAbstractState.union_accounts_of_left_none
-                (PartialAbstractState.singletonAccount_accounts_other h_k_src),
-              PartialAbstractState.singletonAccount_accounts_other h_k_dst] at hk
-          cases hk
+          rw [AbstractState.set_accounts_of_ne _ _ h_ne,
+              AbstractState.set_accounts_eq]
+        · by_cases h_k_dst : k = dst
+          · subst h_k_dst
+            rw [PartialAbstractState.union_accounts_of_left_none
+                  (PartialAbstractState.singletonAccount_accounts_other (Ne.symm h_ne)),
+                PartialAbstractState.singletonAccount_accounts_self] at hk
+            have h_eq : t = tDst.withAmount (tDst.amount + amount) := by
+              injection hk with h; exact h.symm
+            subst h_eq
+            rw [AbstractState.set_accounts_eq]
+          · exfalso
+            rw [PartialAbstractState.union_accounts_of_left_none
+                  (PartialAbstractState.singletonAccount_accounts_other h_k_src),
+                PartialAbstractState.singletonAccount_accounts_other h_k_dst] at hk
+            cases hk
+      · -- mints clause: the post partial state (two token singletons) owns no mints.
+        rw [PartialAbstractState.union_mints_of_left_none
+              (PartialAbstractState.singletonAccount_mints k),
+            PartialAbstractState.singletonAccount_mints] at hk
+        exact absurd hk (by simp)
     · -- The assertion holds on the constructed partial state.
       refine ⟨PartialAbstractState.singletonAccount src
                 (tSrc.withAmount (tSrc.amount - amount)),
               PartialAbstractState.singletonAccount dst
                 (tDst.withAmount (tDst.amount + amount)),
               singletonAccount_Disjoint_of_ne _ _ h_ne,
+              rfl, rfl, rfl⟩
+
+/-! ## tokenMintTo spec -/
+
+/-- The abstract spec for `tokenMintTo mint dest amount`: the mint's
+    `supply` and the destination's `amount` each increase by `amount`;
+    `preAuth`/`rest` and `mint`/`owner`/`rest` flow through. Preconditions
+    rule out u64 overflow of either field. -/
+theorem tokenMintTo_spec
+    (mint dest : Pubkey) (m : Mint) (tDest : TokenAccount) (amount : Nat)
+    (h_noOvSupply : m.supply + amount < 2 ^ 64)
+    (h_noOvDest   : tDest.amount + amount < 2 ^ 64) :
+    absTriple [.tokenMintTo mint dest amount]
+      ((mint ↦ₘ m) ** (dest ↦ₐ tDest))
+      ((mint ↦ₘ m.withSupply (m.supply + amount)) **
+       (dest ↦ₐ tDest.withAmount (tDest.amount + amount))) := by
+  intro s hP
+  obtain ⟨_, hC, h1, h2, hDisj, hUnion, hP1, hP2⟩ := hP
+  subst hP1; subst hP2
+  have h_s_mint : s.mints mint = some m := by
+    refine hC.mints mint m ?_
+    rw [← hUnion]
+    exact PartialAbstractState.union_mints_of_left_some
+      PartialAbstractState.singletonMint_mints_self
+  have h_s_dest : s.accounts dest = some tDest := by
+    refine hC.accounts dest tDest ?_
+    rw [← hUnion,
+        PartialAbstractState.union_accounts_of_left_none
+          (PartialAbstractState.singletonMint_accounts dest)]
+    exact PartialAbstractState.singletonAccount_accounts_self
+  have h_getMint : s.getMint mint = some m := h_s_mint
+  have h_get_dest : s.get dest = some tDest := h_s_dest
+  refine ⟨(s.setMint mint (m.withSupply (m.supply + amount))).set
+            dest (tDest.withAmount (tDest.amount + amount)), ?_, ?_⟩
+  · rw [runMir_singleton]
+    simp only [runStep, h_getMint, h_get_dest,
+               if_neg (Nat.not_le.mpr h_noOvSupply),
+               if_neg (Nat.not_le.mpr h_noOvDest)]
+  · refine ⟨(PartialAbstractState.singletonMint mint
+              (m.withSupply (m.supply + amount))).union
+            (PartialAbstractState.singletonAccount dest
+              (tDest.withAmount (tDest.amount + amount))), ?_, ?_⟩
+    · refine ⟨fun k t hk => ?_, fun k mm hk => ?_⟩
+      · -- accounts clause: only `dest` is owned (the mint singleton owns no accounts).
+        rw [PartialAbstractState.union_accounts_of_left_none
+              (PartialAbstractState.singletonMint_accounts k)] at hk
+        by_cases h_k_dest : k = dest
+        · subst h_k_dest
+          rw [PartialAbstractState.singletonAccount_accounts_self] at hk
+          have h_eq : t = tDest.withAmount (tDest.amount + amount) := by
+            injection hk with h; exact h.symm
+          subst h_eq
+          rw [AbstractState.set_accounts_eq]
+        · exfalso
+          rw [PartialAbstractState.singletonAccount_accounts_other h_k_dest] at hk
+          cases hk
+      · -- mints clause: only `mint` is owned (left singleton).
+        by_cases h_k_mint : k = mint
+        · subst h_k_mint
+          rw [PartialAbstractState.union_mints_of_left_some
+                PartialAbstractState.singletonMint_mints_self] at hk
+          have h_eq : mm = m.withSupply (m.supply + amount) := by
+            injection hk with h; exact h.symm
+          subst h_eq
+          rw [AbstractState.set_mints, AbstractState.setMint_mints_eq]
+        · exfalso
+          rw [PartialAbstractState.union_mints_of_left_none
+                (PartialAbstractState.singletonMint_mints_other h_k_mint),
+              PartialAbstractState.singletonAccount_mints] at hk
+          cases hk
+    · refine ⟨PartialAbstractState.singletonMint mint
+                (m.withSupply (m.supply + amount)),
+              PartialAbstractState.singletonAccount dest
+                (tDest.withAmount (tDest.amount + amount)),
+              (singletonAccount_Disjoint_singletonMint _ _).symm,
+              rfl, rfl, rfl⟩
+
+/-! ## tokenBurn spec -/
+
+/-- The abstract spec for `tokenBurn account mint amount`: the account's
+    `amount` and the mint's `supply` each decrease by `amount`.
+    Precondition `h_funds` rules out an under-funded burn. -/
+theorem tokenBurn_spec
+    (account mint : Pubkey) (tAcc : TokenAccount) (m : Mint) (amount : Nat)
+    (h_funds : amount ≤ tAcc.amount) :
+    absTriple [.tokenBurn account mint amount]
+      ((account ↦ₐ tAcc) ** (mint ↦ₘ m))
+      ((account ↦ₐ tAcc.withAmount (tAcc.amount - amount)) **
+       (mint ↦ₘ m.withSupply (m.supply - amount))) := by
+  intro s hP
+  obtain ⟨_, hC, h1, h2, hDisj, hUnion, hP1, hP2⟩ := hP
+  subst hP1; subst hP2
+  have h_s_acc : s.accounts account = some tAcc := by
+    refine hC.accounts account tAcc ?_
+    rw [← hUnion]
+    exact PartialAbstractState.union_accounts_of_left_some
+      PartialAbstractState.singletonAccount_accounts_self
+  have h_s_mint : s.mints mint = some m := by
+    refine hC.mints mint m ?_
+    rw [← hUnion,
+        PartialAbstractState.union_mints_of_left_none
+          (PartialAbstractState.singletonAccount_mints mint)]
+    exact PartialAbstractState.singletonMint_mints_self
+  have h_get_acc : s.get account = some tAcc := h_s_acc
+  have h_getMint : s.getMint mint = some m := h_s_mint
+  refine ⟨(s.set account (tAcc.withAmount (tAcc.amount - amount))).setMint
+            mint (m.withSupply (m.supply - amount)), ?_, ?_⟩
+  · rw [runMir_singleton]
+    simp only [runStep, h_get_acc, h_getMint, if_neg (Nat.not_lt.mpr h_funds)]
+  · refine ⟨(PartialAbstractState.singletonAccount account
+              (tAcc.withAmount (tAcc.amount - amount))).union
+            (PartialAbstractState.singletonMint mint
+              (m.withSupply (m.supply - amount))), ?_, ?_⟩
+    · refine ⟨fun k t hk => ?_, fun k mm hk => ?_⟩
+      · -- accounts clause: only `account` is owned (left singleton).
+        by_cases h_k_acc : k = account
+        · subst h_k_acc
+          rw [PartialAbstractState.union_accounts_of_left_some
+                PartialAbstractState.singletonAccount_accounts_self] at hk
+          have h_eq : t = tAcc.withAmount (tAcc.amount - amount) := by
+            injection hk with h; exact h.symm
+          subst h_eq
+          rw [AbstractState.setMint_accounts, AbstractState.set_accounts_eq]
+        · exfalso
+          rw [PartialAbstractState.union_accounts_of_left_none
+                (PartialAbstractState.singletonAccount_accounts_other h_k_acc),
+              PartialAbstractState.singletonMint_accounts] at hk
+          cases hk
+      · -- mints clause: only `mint` is owned (right singleton).
+        rw [PartialAbstractState.union_mints_of_left_none
+              (PartialAbstractState.singletonAccount_mints k)] at hk
+        by_cases h_k_mint : k = mint
+        · subst h_k_mint
+          rw [PartialAbstractState.singletonMint_mints_self] at hk
+          have h_eq : mm = m.withSupply (m.supply - amount) := by
+            injection hk with h; exact h.symm
+          subst h_eq
+          rw [AbstractState.setMint_mints_eq]
+        · exfalso
+          rw [PartialAbstractState.singletonMint_mints_other h_k_mint] at hk
+          cases hk
+    · refine ⟨PartialAbstractState.singletonAccount account
+                (tAcc.withAmount (tAcc.amount - amount)),
+              PartialAbstractState.singletonMint mint
+                (m.withSupply (m.supply - amount)),
+              singletonAccount_Disjoint_singletonMint _ _,
               rfl, rfl, rfl⟩
 
 end SVM.Solana.Abstract

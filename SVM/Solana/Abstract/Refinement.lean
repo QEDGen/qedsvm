@@ -32,6 +32,7 @@
 import SVM.Solana.Mir
 import SVM.Solana.Abstract.Triples
 import SVM.Solana.TokenAccountCodec
+import SVM.Solana.MintAccountCodec
 import SVM.SBPF.CPSSpec
 
 namespace SVM.Solana.Abstract
@@ -121,6 +122,111 @@ theorem tokenTransferRefinement_intro
     TokenTransferRefinement src dst tSrc tDst amount
       cr nSteps nCu entry exit rr srcAddr dstAddr setupPre setupPost where
   abs_spec := tokenTransfer_spec src dst tSrc tDst amount h_funds h_noOverflow
+  asm_spec := h_asm
+
+/-! ## tokenMintTo
+
+A bytecode-level refinement of `tokenMintTo` is an asm Hoare triple
+whose pre/post own a `mintSupplyOf` atom (the mint, supply mutated) and
+a `tokenAcctBalanceOf` atom (the destination, amount mutated), each
+shifted up by `amount`. -/
+
+/-- Asm-side obligation for a `tokenMintTo` refinement. -/
+def AsmRefinesTokenMintTo
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop)
+    (mintAddr destAddr : Nat)
+    (m : Mint) (tDest : TokenAccount) (amount : Nat)
+    (setupPre setupPost : Assertion) : Prop :=
+  cuTripleWithinMem nSteps nCu entry exit cr
+    (setupPre **
+     mintSupplyOf mintAddr m **
+     tokenAcctBalanceOf destAddr tDest)
+    (setupPost **
+     mintSupplyOf mintAddr (m.withSupply (m.supply + amount)) **
+     tokenAcctBalanceOf destAddr (tDest.withAmount (tDest.amount + amount)))
+    rr
+
+/-- Refinement pair for a `tokenMintTo` intrinsic. -/
+structure TokenMintToRefinement
+    (mint dest : Pubkey)
+    (m : Mint) (tDest : TokenAccount) (amount : Nat)
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop) (mintAddr destAddr : Nat)
+    (setupPre setupPost : Assertion) : Prop where
+  abs_spec : absTriple [.tokenMintTo mint dest amount]
+               ((mint ↦ₘ m) ** (dest ↦ₐ tDest))
+               ((mint ↦ₘ m.withSupply (m.supply + amount)) **
+                (dest ↦ₐ tDest.withAmount (tDest.amount + amount)))
+  asm_spec : AsmRefinesTokenMintTo cr nSteps nCu entry exit rr
+              mintAddr destAddr m tDest amount setupPre setupPost
+
+/-- Constructor: package both halves into a `TokenMintToRefinement`.
+    The abstract half is discharged via `tokenMintTo_spec`. -/
+theorem tokenMintToRefinement_intro
+    (mint dest : Pubkey)
+    (m : Mint) (tDest : TokenAccount) (amount : Nat)
+    (h_noOvSupply : m.supply + amount < 2 ^ 64)
+    (h_noOvDest   : tDest.amount + amount < 2 ^ 64)
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop) (mintAddr destAddr : Nat)
+    (setupPre setupPost : Assertion)
+    (h_asm : AsmRefinesTokenMintTo cr nSteps nCu entry exit rr
+              mintAddr destAddr m tDest amount setupPre setupPost) :
+    TokenMintToRefinement mint dest m tDest amount
+      cr nSteps nCu entry exit rr mintAddr destAddr setupPre setupPost where
+  abs_spec := tokenMintTo_spec mint dest m tDest amount h_noOvSupply h_noOvDest
+  asm_spec := h_asm
+
+/-! ## tokenBurn
+
+A bytecode-level refinement of `tokenBurn`: the source token account's
+`amount` and the mint's `supply` each decrease by `amount`. -/
+
+/-- Asm-side obligation for a `tokenBurn` refinement. -/
+def AsmRefinesTokenBurn
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop)
+    (accountAddr mintAddr : Nat)
+    (tAcc : TokenAccount) (m : Mint) (amount : Nat)
+    (setupPre setupPost : Assertion) : Prop :=
+  cuTripleWithinMem nSteps nCu entry exit cr
+    (setupPre **
+     tokenAcctBalanceOf accountAddr tAcc **
+     mintSupplyOf mintAddr m)
+    (setupPost **
+     tokenAcctBalanceOf accountAddr (tAcc.withAmount (tAcc.amount - amount)) **
+     mintSupplyOf mintAddr (m.withSupply (m.supply - amount)))
+    rr
+
+/-- Refinement pair for a `tokenBurn` intrinsic. -/
+structure TokenBurnRefinement
+    (account mint : Pubkey)
+    (tAcc : TokenAccount) (m : Mint) (amount : Nat)
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop) (accountAddr mintAddr : Nat)
+    (setupPre setupPost : Assertion) : Prop where
+  abs_spec : absTriple [.tokenBurn account mint amount]
+               ((account ↦ₐ tAcc) ** (mint ↦ₘ m))
+               ((account ↦ₐ tAcc.withAmount (tAcc.amount - amount)) **
+                (mint ↦ₘ m.withSupply (m.supply - amount)))
+  asm_spec : AsmRefinesTokenBurn cr nSteps nCu entry exit rr
+              accountAddr mintAddr tAcc m amount setupPre setupPost
+
+/-- Constructor: package both halves into a `TokenBurnRefinement`.
+    The abstract half is discharged via `tokenBurn_spec`. -/
+theorem tokenBurnRefinement_intro
+    (account mint : Pubkey)
+    (tAcc : TokenAccount) (m : Mint) (amount : Nat)
+    (h_funds : amount ≤ tAcc.amount)
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop) (accountAddr mintAddr : Nat)
+    (setupPre setupPost : Assertion)
+    (h_asm : AsmRefinesTokenBurn cr nSteps nCu entry exit rr
+              accountAddr mintAddr tAcc m amount setupPre setupPost) :
+    TokenBurnRefinement account mint tAcc m amount
+      cr nSteps nCu entry exit rr accountAddr mintAddr setupPre setupPost where
+  abs_spec := tokenBurn_spec account mint tAcc m amount h_funds
   asm_spec := h_asm
 
 end SVM.Solana.Abstract
