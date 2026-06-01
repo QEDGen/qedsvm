@@ -228,22 +228,26 @@ partial def buildRightFoldIff (e : Expr) : MetaM (Option Expr) := do
     | some iff_R =>
       return some (← mkAppM ``SVM.SBPF.sepConj_iff_congr_right #[L, iff_R])
   else
-    -- L = (A ** L_rest); pull A out via sepConj_assoc, recurse on
-    -- `(L_rest ** R)`. Termination: each level reduces the depth of
-    -- the leftmost atom by 1.
+    -- L = (A ** L_rest); pull A out via sepConj_assoc, then recurse on the
+    -- *whole* reassociated form `A ** (L_rest ** R)`. Recursing on the whole
+    -- (rather than just `L_rest ** R` under a `congr_right A`) is what flattens
+    -- a *compound* head `A` — e.g. the codec's expanded pubkey group
+    -- `(c0 ** c1 ** c2 ** c3)` sitting as the head of `group ** rest`. Treating
+    -- such an `A` atomically left it nested, diverging from `flattenSepConj`'s
+    -- full flatten. Termination: each `assoc` lifts the leftmost atom one level,
+    -- strictly reducing the left-spine `sepConj` depth.
     let L_args := L.getAppArgs
     let A := L_args[0]!
     let L_rest := L_args[1]!
     let assocIff ← mkAppOptM ``SVM.SBPF.sepConj_assoc
       #[some A, some L_rest, some R]
-    let innerExpr ← mkAppM ``SVM.SBPF.sepConj #[L_rest, R]
-    match ← buildRightFoldIff innerExpr with
+    let newExpr ← mkAppM ``SVM.SBPF.sepConj #[A, ← mkAppM ``SVM.SBPF.sepConj #[L_rest, R]]
+    match ← buildRightFoldIff newExpr with
     | none =>
-      -- inner is right-folded; assocIff suffices.
+      -- `A ** (L_rest ** R)` is already right-folded; assocIff suffices.
       return some assocIff
     | some inner =>
-      let liftedIff ← mkAppM ``SVM.SBPF.sepConj_iff_congr_right #[A, inner]
-      let combined ← mkAppM ``SVM.SBPF.sepConj_iff_trans_pw #[assocIff, liftedIff]
+      let combined ← mkAppM ``SVM.SBPF.sepConj_iff_trans_pw #[assocIff, inner]
       return some combined
 
 /-! ## Pointwise-iff permutation construction
@@ -885,6 +889,51 @@ def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
   dischargeGoals disjs (← `(tactic| sl_disjoint_codereq)) "sl_disjoint_codereq"
   setGoals []
 
+/-- Build the pointwise-iff type `∀ h, lhs h ↔ rhs h` from two `Assertion`s
+    (`Assertion = PartialState → Prop`). -/
+def mkPwIffType (lhs rhs : Expr) : MetaM Expr := do
+  let dom ← match ← whnf (← inferType lhs) with
+    | .forallE _ d _ _ => pure d
+    | _ => throwError "mkPwIffType: assertion is not a pi type"
+  withLocalDeclD `h dom fun h => do
+    let body ← mkAppM ``Iff #[mkApp lhs h, mkApp rhs h]
+    mkForallFVars #[h] body
+
+/-- Bridge two pointwise-defeq, equal-length atom lists with a pointwise iff
+    `∀ h, rebuild(as) h ↔ rebuild(bs) h`, ascribing each atom pair's defeq in
+    isolation. This is the workhorse behind `sl_exact` matching atoms that are
+    defeq but not syntactically equal (e.g. the lift's `effectiveAddr baseAddr
+    160` vs an aggregation rewrite's `baseAddr + 160`): composing the match iff
+    through one side then the other forces the kernel into a *single* `isDefEq`
+    over the whole ~50-atom sepConj, which it bails on (returning a spurious type
+    mismatch) at that scale even though every leaf is defeq. Hinting each pair
+    separately keeps every `isDefEq` single-atom and cheap. Returns `none` when
+    `as` and `bs` are already syntactically identical. -/
+partial def buildDefeqBridge : List Expr → List Expr → MetaM (Option Expr)
+  | [], [] => return none
+  | [a], [b] =>
+    if a == b then return none
+    else do
+      let refl ← mkAppOptM ``SVM.SBPF.sepConj_iff_refl #[some a]
+      return some (← mkExpectedTypeHint refl (← mkPwIffType a b))
+  | a :: as, b :: bs => do
+    let ra ← rebuildSepConj (a :: as)
+    let rb ← rebuildSepConj (b :: bs)
+    match ← buildDefeqBridge as bs with
+    | none =>
+      -- Tails syntactically identical; only the head may differ.
+      if a == b then return none
+      else do
+        let refl ← mkAppOptM ``SVM.SBPF.sepConj_iff_refl #[some ra]
+        return some (← mkExpectedTypeHint refl (← mkPwIffType ra rb))
+    | some tail =>
+      -- `congr_right` keeps the head fixed: (a ** rebuild as) ↔ (a ** rebuild bs).
+      -- Ascribe the head a → b afterward (a single-atom defeq check).
+      let cr ← mkAppM ``SVM.SBPF.sepConj_iff_congr_right #[a, tail]
+      if a == b then return some cr
+      else return some (← mkExpectedTypeHint cr (← mkPwIffType ra rb))
+  | _, _ => throwError "buildDefeqBridge: atom lists differ in length"
+
 end SLBlockIter
 
 /-- `sl_block_iter [h₁, …]` composes the per-instruction specs into the
@@ -1170,12 +1219,20 @@ private def buildMatchIff (A B : Expr) : MetaM Expr := do
     | some (permIff?, frame, _) =>
       unless frame.isEmpty do
         throwError m!"sl_exact: hypothesis has extra atoms not in the goal"
-      pure permIff?   -- rebuild(fa) ↔ rebuild(fb), or none if equal
+      pure permIff?   -- rebuild(fa) ↔ rebuild(faPermuted), or none if equal
+  -- `faPermuted` = `fa`'s atoms reordered into `fb`'s order (the endpoint of
+  -- `permOpt`). Its atoms are `A`'s representations, which may be defeq-but-not-
+  -- syntactically-equal to `fb`'s (e.g. `effectiveAddr base 160` vs `base+160`).
+  let faPermuted ← match ← bubbleSortToPrefix fa fb with
+    | some (_, final) => pure (final.take fb.length)
+    | none => throwError m!"sl_exact: pre/post atoms are not a permutation"
   let aRf ← buildRightFoldIff A   -- A ↔ rebuild(fa), or none
   let bRf ← buildRightFoldIff B   -- B ↔ rebuild(fb), or none
-  -- Compose A ↔ rebuild(fa) ↔ rebuild(fb) ↔ B (skipping the `none` refls;
-  -- the final piece needs rebuild(fb) ↔ B = symm bRf).
-  let pieces : List Expr := (aRf.toList) ++ permOpt.toList ++
+  -- rebuild(faPermuted) ↔ rebuild(fb): per-atom defeq bridge, `none` if equal.
+  let bridge? ← buildDefeqBridge faPermuted fb
+  -- Compose A ↔ rebuild(fa) ↔ rebuild(faPermuted) ↔ rebuild(fb) ↔ B (skipping
+  -- the `none` refls; the final piece needs rebuild(fb) ↔ B = symm bRf).
+  let pieces : List Expr := (aRf.toList) ++ permOpt.toList ++ bridge?.toList ++
     (← bRf.toList.mapM (fun e => mkAppM ``SVM.SBPF.sepConj_iff_symm_pw #[e]))
   match pieces with
   | [] => mkAppM ``SVM.SBPF.sepConj_iff_refl #[A]
