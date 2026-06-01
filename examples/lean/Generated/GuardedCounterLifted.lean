@@ -95,4 +95,38 @@ theorem GuardedCounterLifted_lifted_spec
                   rt.containsWritable (effectiveAddr baseAddr 8) 8 = true) := by
 sl_block_auto <;> assumption
 
+open Memory in
+theorem GuardedCounterLifted_balance_correct
+    (baseAddr oldMemD_0 vR2Old oldMemD_1 vR3Old vR0Old : Nat)
+    (holdMemD_0_lt : oldMemD_0 < 2 ^ 64)
+    (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
+    (h_branch0 : oldMemD_0 ≠ toU64 0)
+    (h_noovf0 : oldMemD_1 + oldMemD_0 < 2 ^ 64)
+    : cuTripleWithinMem 7 0 0 8
+      ((((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 0)).union
+        (CodeReq.singleton 1 (.jeq .r2 (.imm (0)) 7))).union
+        (CodeReq.singleton 2 (.ldx .dword .r3 .r1 8))).union
+        (CodeReq.singleton 3 (.add64 .r3 (.reg .r2)))).union
+        (CodeReq.singleton 4 (.stx .dword .r1 8 .r3))).union
+        (CodeReq.singleton 5 (.mov64 .r0 (.imm (0))))).union
+        (CodeReq.singleton 6 (.ja 8))))
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 8 ↦U64 oldMemD_1) **
+      (.r3 ↦ᵣ vR3Old) **
+      (.r0 ↦ᵣ vR0Old))
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
+      (.r2 ↦ᵣ oldMemD_0) **
+      (effectiveAddr baseAddr 8 ↦U64 oldMemD_1 + oldMemD_0) **
+      (.r3 ↦ᵣ wrapAdd oldMemD_1 oldMemD_0) **
+      (.r0 ↦ᵣ toU64 0))
+      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 8) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr baseAddr 8) 8 = true) := by
+  have h := GuardedCounterLifted_lifted_spec baseAddr oldMemD_0 vR2Old oldMemD_1 vR3Old vR0Old holdMemD_0_lt holdMemD_1_lt h_branch0
+  rw [← wrapAdd_of_lt h_noovf0]
+  exact h
+
 end Examples.Lifted.GuardedCounterLifted
