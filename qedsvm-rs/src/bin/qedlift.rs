@@ -300,6 +300,10 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         LSH32_REG   => format!(".lsh32 {} (.reg {})",      reg(dst), reg(src)),
         RSH32_REG   => format!(".rsh32 {} (.reg {})",      reg(dst), reg(src)),
         MOV32_REG   => format!(".mov32 {} (.reg {})",      reg(dst), reg(src)),
+        ARSH64_IMM  => format!(".arsh64 {} (.imm ({}))",   reg(dst), imm),
+        ARSH64_REG  => format!(".arsh64 {} (.reg {})",     reg(dst), reg(src)),
+        ARSH32_IMM  => format!(".arsh32 {} (.imm ({}))",   reg(dst), imm),
+        ARSH32_REG  => format!(".arsh32 {} (.reg {})",     reg(dst), reg(src)),
         JA          => {
             let t = jt(); format!(".ja {}", t)
         }
@@ -557,6 +561,31 @@ impl Width {
 /// since `effectiveAddr b` is partially applied).
 fn lean_off(off: i64) -> String {
     if off < 0 { format!("({})", off) } else { format!("{}", off) }
+}
+
+/// Render `arsh{32,64}`'s post — the arithmetic-shift-right
+/// `let shift … if sign-bit then logical-shift else fill-high-bits`
+/// expression — as a parenthesised Lean term, matching
+/// `arsh{32,64}_{imm,reg}_spec` exactly (used as an `Expr::Raw`). `vold`
+/// is the dst's prior value (already atom-rendered); `shift_src` is the
+/// shift amount (`toU64 <imm>` or the src reg value). Parens are
+/// included because `↦ᵣ` can't take a bare `let`.
+fn arsh_render(vold: &str, shift_src: &str, bits: u32) -> String {
+    let m = if bits == 64 { "U64_MODULUS" } else { "U32_MODULUS" };
+    if bits == 64 {
+        format!("(let shift := {s} % 64; if {v} < {m} / 2 then {v} >>> shift \
+                 else (let shifted := {v} >>> shift; \
+                 let highBits := ({m} - 1) - ({m} / (2 ^ shift) - 1); \
+                 (shifted ||| highBits) % {m}))",
+                s = shift_src, v = vold, m = m)
+    } else {
+        format!("(let shift := {s} % 32; let a := {v} % {m}; \
+                 if a < {m} / 2 then a >>> shift \
+                 else (let shifted := a >>> shift; \
+                 let highBits := ({m} - 1) - ({m} / (2 ^ shift) - 1); \
+                 (shifted ||| highBits) % {m}))",
+                s = shift_src, v = vold, m = m)
+    }
 }
 
 /// Contents of a variable-length byte blob (`↦Bytes`). Pre-state is a
@@ -1231,6 +1260,24 @@ fn spec_call_for(
                 hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc,
             )
         }
+        // arsh (arithmetic shift right), imm + reg, 32 + 64-bit.
+        ARSH64_IMM | ARSH32_IMM => {
+            let v_old = reg_val_lean(dst);
+            let spec = if insn.opc == ARSH64_IMM { "arsh64_imm_spec" } else { "arsh32_imm_spec" };
+            format!(
+                "have {} := {} {} {} ({}) {} (by decide)",
+                hyp_name, spec, reg(dst), imm, v_old, pc,
+            )
+        }
+        ARSH64_REG | ARSH32_REG => {
+            let v_old = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let spec = if insn.opc == ARSH64_REG { "arsh64_reg_spec" } else { "arsh32_reg_spec" };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} (by decide)",
+                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc,
+            )
+        }
         ST_B_IMM => {
             // stb_spec baseReg off imm baseAddr oldByteVal pc
             let base_addr = reg_val_lean(dst);
@@ -1788,6 +1835,18 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 _ => unreachable!(),
             };
             state.write_reg(dst, Expr::Raw(r));
+        }
+        // arsh (arithmetic shift right) — let/if/else post via arsh_render.
+        ARSH64_IMM | ARSH32_IMM => {
+            let a = state.read_reg(dst).atom_lean();
+            let bits = if insn.opc == ARSH64_IMM { 64 } else { 32 };
+            state.write_reg(dst, Expr::Raw(arsh_render(&a, &format!("toU64 {}", lean_off(imm)), bits)));
+        }
+        ARSH64_REG | ARSH32_REG => {
+            let a = state.read_reg(dst).atom_lean();
+            let b = state.read_reg(src).atom_lean();
+            let bits = if insn.opc == ARSH64_REG { 64 } else { 32 };
+            state.write_reg(dst, Expr::Raw(arsh_render(&a, &b, bits)));
         }
         // 32-bit reg ALU — render as the matching `*32_reg_spec` post.
         ADD32_REG | SUB32_REG | MUL32_REG | OR32_REG | AND32_REG | XOR32_REG
