@@ -532,11 +532,11 @@ def extractFrame (state target : Expr) : MetaM FrameResult := do
     -/
 def buildFramedStep (info : StepInfo) (fr : FrameResult)
     (pcfreeGoals : IO.Ref (List MVarId)) :
-    MetaM (Expr × Expr × Bool) := do
+    MetaM (Expr × Bool) := do
   let h := info.hyp
   let isMem := info.isMem
   match fr with
-  | .noFrame => return (h, info.post, isMem)
+  | .noFrame => return (h, isMem)
   | .right F =>
     let pcfreeType ← mkAppOptM ``SVM.SBPF.Assertion.pcFree #[some F]
     let hF ← mkFreshExprMVar pcfreeType
@@ -557,8 +557,7 @@ def buildFramedStep (info : StepInfo) (fr : FrameResult)
         mkAppOptM ``SVM.SBPF.cuTripleWithin_frame_right
           #[some F, some hF, some N, some M, some pc1, some pc2, some cr,
             some P, some Q, some h]
-    let newPost ← mkAppOptM ``SVM.SBPF.sepConj #[some info.post, some F]
-    return (framed, newPost, isMem)
+    return (framed, isMem)
   | .left F =>
     let pcfreeType ← mkAppOptM ``SVM.SBPF.Assertion.pcFree #[some F]
     let hF ← mkFreshExprMVar pcfreeType
@@ -577,8 +576,7 @@ def buildFramedStep (info : StepInfo) (fr : FrameResult)
         mkAppOptM ``SVM.SBPF.cuTripleWithin_frame_left
           #[some F, some hF, some N, some M, some pc1, some pc2, some cr,
             some P, some Q, some h]
-    let newPost ← mkAppOptM ``SVM.SBPF.sepConj #[some F, some info.post]
-    return (framed, newPost, isMem)
+    return (framed, isMem)
   | .reshape .. =>
     throwError "sl_block_iter.buildFramedStep: .reshape should be lowered to .right / .noFrame before this call"
 
@@ -897,7 +895,7 @@ def buildChainExpr (startState : Expr) (hExprs : List Expr)
         | none =>
           pure (newFrameResult, true)
       | other => pure (other, false)
-    let (framed, _newPost, framedIsMem) ←
+    let (framed, framedIsMem) ←
       buildFramedStep info lowFr pcfreeGoals
     let framedNorm ← rightNormalizeChain framed framedIsMem
     let chainExpr' : Expr ← match chain with
