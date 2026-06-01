@@ -593,10 +593,10 @@ fn arsh_render(vold: &str, shift_src: &str, bits: u32) -> String {
 /// a closed-form payload (`Replicate`, for `sol_memset_`).
 #[derive(Clone, Debug)]
 enum BytesVal {
-    /// Fresh symbolic byte-array variable (the unknown pre-state of a
-    /// memset'd region). `size` is its length as a Nat expression
-    /// (the syscall's `r3` count), surfaced as a theorem hypothesis.
-    Sym { name: String, size: Expr },
+    /// Fresh symbolic byte-array variable name (the unknown pre-state of
+    /// a memset'd region). Its `.size = <r3>` bound is surfaced as a
+    /// theorem hypothesis via `SymState.memset_blobs`, not stored here.
+    Sym(String),
     /// `replicateByte (fill % 256).toUInt8 count` — the post-state a
     /// `sol_memset_(dst, fill, count)` leaves at `dst`.
     Replicate { fill: Expr, count: Expr },
@@ -605,7 +605,7 @@ enum BytesVal {
 impl BytesVal {
     fn to_lean(&self) -> String {
         match self {
-            BytesVal::Sym { name, .. } => name.clone(),
+            BytesVal::Sym(name) => name.clone(),
             BytesVal::Replicate { fill, count } => format!(
                 "replicateByte ({} % 256).toUInt8 {}",
                 fill.atom_lean(), count.atom_lean(),
@@ -2220,7 +2220,7 @@ fn emit_sol_memset(
     let size_rendered = r3v.atom_lean();
     state.pre.push(Atom::Bytes {
         addr: r1v.clone(),
-        value: BytesVal::Sym { name: bs_name.clone(), size: r3v.clone() },
+        value: BytesVal::Sym(bs_name.clone()),
     });
     state.memset_blobs.push((bs_name.clone(), size_rendered));
     state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_memset"));

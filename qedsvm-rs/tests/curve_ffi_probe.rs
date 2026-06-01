@@ -7,7 +7,7 @@
 //! our engine alone so we can isolate the curve25519 FFI without any
 //! mollusk noise.
 
-use qedsvm::{ProgramResult, Svm};
+use qedsvm::Svm;
 use solana_instruction::Instruction;
 use solana_pubkey::Pubkey;
 
