@@ -242,6 +242,12 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         ST_DW_IMM   => format!(".st .dword {} {} ({})",     reg(dst), offl, imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
         SUB64_REG   => format!(".sub64 {} (.reg {})",     reg(dst), reg(src)),
+        MUL64_REG   => format!(".mul64 {} (.reg {})",     reg(dst), reg(src)),
+        OR64_REG    => format!(".or64 {} (.reg {})",      reg(dst), reg(src)),
+        AND64_REG   => format!(".and64 {} (.reg {})",     reg(dst), reg(src)),
+        XOR64_REG   => format!(".xor64 {} (.reg {})",     reg(dst), reg(src)),
+        LSH64_REG   => format!(".lsh64 {} (.reg {})",     reg(dst), reg(src)),
+        RSH64_REG   => format!(".rsh64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
         EXIT        => ".exit".to_string(),
         // Conditional jumps with immediate operand. Lean syntax is
@@ -275,6 +281,9 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         JSLE64_IMM | JSLE32_IMM => {
             let t = jt(); format!(".jsle {} (.imm ({})) {}", reg(dst), imm, t)
         }
+        JSLT64_IMM | JSLT32_IMM => {
+            let t = jt(); format!(".jslt {} (.imm ({})) {}", reg(dst), imm, t)
+        }
         JEQ64_REG | JEQ32_REG => {
             let t = jt(); format!(".jeq {} (.reg {}) {}", reg(dst), reg(src), t)
         }
@@ -286,6 +295,15 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         }
         JSLE64_REG | JSLE32_REG => {
             let t = jt(); format!(".jsle {} (.reg {}) {}", reg(dst), reg(src), t)
+        }
+        JGT64_REG | JGT32_REG => {
+            let t = jt(); format!(".jgt {} (.reg {}) {}", reg(dst), reg(src), t)
+        }
+        JLE64_REG | JLE32_REG => {
+            let t = jt(); format!(".jle {} (.reg {}) {}", reg(dst), reg(src), t)
+        }
+        JSGE64_REG | JSGE32_REG => {
+            let t = jt(); format!(".jsge {} (.reg {}) {}", reg(dst), reg(src), t)
         }
         // call_local: the immediate is the Solana ABI Murmur3 hash
         // of the symbol, NOT a relative offset. Resolving the actual
@@ -351,6 +369,8 @@ enum Expr {
     WrapAdd(Box<Expr>, Box<Expr>),
     /// `wrapSub a b` — 64-bit wrapping sub.
     WrapSub(Box<Expr>, Box<Expr>),
+    /// `wrapMul a b` — 64-bit wrapping multiply.
+    WrapMul(Box<Expr>, Box<Expr>),
     /// Plain `Nat.add a b`. Used for `call_local_spec`'s `r10 +
     /// 0x1000` which uses Nat addition rather than `wrapAdd`.
     NatAdd(Box<Expr>, Box<Expr>),
@@ -376,17 +396,26 @@ enum Expr {
     /// balance-correctness corollary to expose a `wrapSub a b` debit in
     /// clean form (justified by `wrapSub_of_le` under a funds guard).
     CleanSub(Box<Expr>, Box<Expr>),
+    /// Pre-rendered Lean term for an ALU result whose shape doesn't
+    /// warrant a bespoke variant (the long tail: or/xor/div/mod/neg,
+    /// reg-form shifts, 32-bit ops). The string is exactly what the
+    /// corresponding `*_spec` writes in its post. Opaque to the
+    /// balance-corollary pattern match (which only tracks wrapAdd /
+    /// wrapSub), and always parenthesised as a function argument.
+    Raw(String),
 }
 
 impl Expr {
     fn to_lean(&self) -> String {
         match self {
+            Expr::Raw(s) => s.clone(),
             Expr::InitReg(n) | Expr::InitMem(n) => n.clone(),
             Expr::Const(n) => format!("{}", n),
             Expr::ToU64(e) => format!("toU64 {}", e.atom_lean()),
             Expr::Mod(e, m) => format!("{} % {}", e.atom_lean(), m),
             Expr::WrapAdd(a, b) => format!("wrapAdd {} {}", a.atom_lean(), b.atom_lean()),
             Expr::WrapSub(a, b) => format!("wrapSub {} {}", a.atom_lean(), b.atom_lean()),
+            Expr::WrapMul(a, b) => format!("wrapMul {} {}", a.atom_lean(), b.atom_lean()),
             Expr::NatAdd(a, b) => format!("{} + {}", a.atom_lean(), b.atom_lean()),
             Expr::AndU64Imm(a, imm) => {
                 // Render exactly as `and64_imm_spec` writes its post.
@@ -416,6 +445,7 @@ impl Expr {
     /// (parenthesised when the head isn't already atomic).
     fn atom_lean(&self) -> String {
         match self {
+            Expr::Raw(s) => format!("({})", s),
             Expr::InitReg(_) | Expr::InitMem(_) => self.to_lean(),
             // Negative constants need parens (`-1` would otherwise
             // parse as subtraction in `toU64 -1`).
@@ -578,11 +608,13 @@ struct SymState {
     /// `Syscall` constructor (e.g. `.sol_memset`). The CodeReq builder
     /// renders these as `.call <ctor>` rather than `.call_local`.
     syscall_pcs: std::collections::BTreeMap<usize, &'static str>,
-    /// One entry per memory syscall whose CU cost is surfaced as a
-    /// theorem hypothesis: `(nCu_var, hCu_hyp)`. The model's
-    /// `syscallCu` is data-dependent (∝ r3), so an honest upper bound
-    /// is an assumption, not something the lift can discharge.
-    syscall_cu_vars: Vec<(String, String)>,
+    /// One entry per syscall whose CU cost is surfaced as a theorem
+    /// hypothesis: `(nCu_var, hCu_hyp, syscall_ctor)`. The model's
+    /// `syscallCu` is data-dependent (∝ r3 for mem ops), so an honest
+    /// upper bound is an assumption, not something the lift can
+    /// discharge. `syscall_ctor` (e.g. `.sol_memset`) names the
+    /// syscall in the `hCu` hypothesis's `step (.call …)` term.
+    syscall_cu_vars: Vec<(String, String, &'static str)>,
     /// One entry per memset byte-blob: `(bytes_sym, size_rendered)`.
     /// Surfaced as a `ByteArray` param + a `.size = <count>` hypothesis
     /// in the theorem signature (the spec's `hbs` obligation).
@@ -682,8 +714,8 @@ fn w_short(w: Width) -> &'static str {
 /// these on its own.
 #[derive(Clone, Debug)]
 enum BranchKind {
-    JeqImm, JneImm, JgtImm, JsgtImm, JsleImm, JltImm, JleImm,
-    JeqReg, JneReg, JltReg, JsleReg,
+    JeqImm, JneImm, JgtImm, JsgtImm, JsleImm, JltImm, JleImm, JsltImm,
+    JeqReg, JneReg, JltReg, JsleReg, JgtReg, JleReg, JsgeReg,
 }
 
 #[derive(Clone, Debug)]
@@ -735,6 +767,9 @@ impl BranchHyp {
             (BranchKind::JltImm, true)  => format!("{} < toU64 {}", v, self.imm),
             (BranchKind::JleImm, false) => format!("¬ {} ≤ toU64 {}", v, self.imm),
             (BranchKind::JleImm, true)  => format!("{} ≤ toU64 {}", v, self.imm),
+            // `jslt` is signed < (imm form).
+            (BranchKind::JsltImm, false) => format!("¬ toSigned64 {} < toSigned64 (toU64 {})", va, self.imm),
+            (BranchKind::JsltImm, true)  => format!("toSigned64 {} < toSigned64 (toU64 {})", va, self.imm),
             // Register-form jumps compare two registers directly.
             (BranchKind::JeqReg, false) => format!("{} ≠ {}", v, s),
             (BranchKind::JeqReg, true)  => format!("{} = {}", v, s),
@@ -742,6 +777,14 @@ impl BranchHyp {
             (BranchKind::JneReg, true)  => format!("{} ≠ {}", v, s),
             (BranchKind::JltReg, false) => format!("¬ {} < {}", v, s),
             (BranchKind::JltReg, true)  => format!("{} < {}", v, s),
+            // `jgt`/`jle` are unsigned > / ≤ (reg form).
+            (BranchKind::JgtReg, false) => format!("¬ {} > {}", v, s),
+            (BranchKind::JgtReg, true)  => format!("{} > {}", v, s),
+            (BranchKind::JleReg, false) => format!("¬ {} ≤ {}", v, s),
+            (BranchKind::JleReg, true)  => format!("{} ≤ {}", v, s),
+            // `jsge` is signed ≥ (reg form).
+            (BranchKind::JsgeReg, false) => format!("¬ toSigned64 {} ≥ toSigned64 {}", va, sa),
+            (BranchKind::JsgeReg, true)  => format!("toSigned64 {} ≥ toSigned64 {}", va, sa),
             // `jsle` is signed ≤. Lean spec compares
             // `toSigned64 vDst ≤ toSigned64 vSrc`.
             (BranchKind::JsleReg, false) => format!("¬ toSigned64 {} ≤ toSigned64 {}", va, sa),
@@ -1000,6 +1043,22 @@ fn spec_call_for(
                 hyp_name, reg(dst), reg(src), v_old, v_src, pc,
             )
         }
+        // Wrapping/bitwise reg-form ALU ops. All share the spec shape
+        // `<op>_reg_spec dst src vOld v pc hne` (hne : dst ≠ .r10).
+        MUL64_REG | OR64_REG | AND64_REG | XOR64_REG | LSH64_REG | RSH64_REG => {
+            let v_old = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let spec = match insn.opc {
+                MUL64_REG => "mul64_reg_spec", OR64_REG  => "or64_reg_spec",
+                AND64_REG => "and64_reg_spec", XOR64_REG => "xor64_reg_spec",
+                LSH64_REG => "lsh64_reg_spec", RSH64_REG => "rsh64_reg_spec",
+                _ => unreachable!(),
+            };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} (by decide)",
+                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc,
+            )
+        }
         MOV64_REG => {
             // mov64_reg_spec dst src vOld v pc hne — register copy.
             let v_old = reg_val_lean(dst);
@@ -1170,6 +1229,20 @@ fn spec_call_for(
                 hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
             )
         }
+        JSLT64_IMM | JSLT32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let target = jt;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let spec = if branch_taken == Some(true) {
+                "jslt_imm_taken_spec"
+            } else {
+                "jslt_imm_not_taken_spec"
+            };
+            format!(
+                "have {} := {} {} {} ({}) {} {} {}",
+                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+            )
+        }
         JEQ64_REG | JEQ32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
@@ -1228,6 +1301,23 @@ fn spec_call_for(
             format!(
                 "have {} := {} {} {} ({}) ({}) {} {} {}",
                 hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+            )
+        }
+        JGT64_REG | JGT32_REG | JLE64_REG | JLE32_REG | JSGE64_REG | JSGE32_REG => {
+            let v_dst = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let target = jt;
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            let stem = match insn.opc {
+                JGT64_REG | JGT32_REG => "jgt_reg",
+                JLE64_REG | JLE32_REG => "jle_reg",
+                JSGE64_REG | JSGE32_REG => "jsge_reg",
+                _ => unreachable!(),
+            };
+            let suffix = if branch_taken == Some(true) { "taken_spec" } else { "not_taken_spec" };
+            format!(
+                "have {} := {}_{} {} {} ({}) ({}) {} {} {}",
+                hyp_name, stem, suffix, reg(dst), reg(src), v_dst, v_src, pc, target, h,
             )
         }
         JA => {
@@ -1348,6 +1438,26 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let b = state.read_reg(src);
             state.write_reg(dst, Expr::WrapSub(Box::new(a), Box::new(b)));
         }
+        MUL64_REG => {
+            let a = state.read_reg(dst);
+            let b = state.read_reg(src);
+            state.write_reg(dst, Expr::WrapMul(Box::new(a), Box::new(b)));
+        }
+        // Bitwise / shift reg-form ALU: render the result exactly as the
+        // matching `*_reg_spec` writes its post (an `Expr::Raw` blob).
+        OR64_REG | AND64_REG | XOR64_REG | LSH64_REG | RSH64_REG => {
+            let a = state.read_reg(dst).atom_lean();
+            let b = state.read_reg(src).atom_lean();
+            let r = match insn.opc {
+                OR64_REG  => format!("({} ||| {}) % U64_MODULUS", a, b),
+                AND64_REG => format!("({} &&& {}) % U64_MODULUS", a, b),
+                XOR64_REG => format!("({} ^^^ {}) % U64_MODULUS", a, b),
+                LSH64_REG => format!("({} <<< ({} % 64)) % U64_MODULUS", a, b),
+                RSH64_REG => format!("{} >>> ({} % 64)", a, b),
+                _ => unreachable!(),
+            };
+            state.write_reg(dst, Expr::Raw(r));
+        }
         // Conditional jumps on an immediate. Modelled as "happy path
         // = fall-through" by default (the common shape for guard
         // checks at function start). Records a path hypothesis the
@@ -1409,6 +1519,14 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 target_pc: jt(),
             });
         }
+        JSLT64_IMM | JSLT32_IMM => {
+            let r = state.read_reg(dst);
+            state.branch_hyps.push(BranchHyp {
+                kind: BranchKind::JsltImm, dst_value: r, src_value: None, imm,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: jt(),
+            });
+        }
         JEQ64_REG | JEQ32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
@@ -1441,6 +1559,21 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleReg, dst_value: rd, src_value: Some(rs), imm: 0,
+                taken: branch_taken.unwrap_or(false),
+                target_pc: jt(),
+            });
+        }
+        JGT64_REG | JGT32_REG | JLE64_REG | JLE32_REG | JSGE64_REG | JSGE32_REG => {
+            let rd = state.read_reg(dst);
+            let rs = state.read_reg(src);
+            let kind = match insn.opc {
+                JGT64_REG | JGT32_REG => BranchKind::JgtReg,
+                JLE64_REG | JLE32_REG => BranchKind::JleReg,
+                JSGE64_REG | JSGE32_REG => BranchKind::JsgeReg,
+                _ => unreachable!(),
+            };
+            state.branch_hyps.push(BranchHyp {
+                kind, dst_value: rd, src_value: Some(rs), imm: 0,
                 taken: branch_taken.unwrap_or(false),
                 target_pc: jt(),
             });
@@ -1637,7 +1770,7 @@ fn emit_sol_memset(
         value: BytesVal::Sym { name: bs_name.clone(), size: r3v.clone() },
     });
     state.memset_blobs.push((bs_name.clone(), size_rendered));
-    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone()));
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_memset"));
     state.syscall_pcs.insert(pc, ".sol_memset");
 
     // Post effect: `r0 := 0`; the blob becomes `replicateByte (r2V%256) r3V`.
@@ -1655,6 +1788,33 @@ fn emit_sol_memset(
         r0 = r0v.atom_lean(), r1 = r1v.atom_lean(),
         r2 = r2v.atom_lean(), r3 = r3v.atom_lean(),
         ncu = ncu_name, bs = bs_name, hbs = bs_sz, hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
+    block_pcs.push(pc);
+}
+
+/// Emit the lift artifacts for a `sol_get_sysvar` host syscall at logical
+/// PC `pc`. The model's generic accessor (`Misc.execGetSysvar`) only sets
+/// `r0 := 0` — no memory effect, no output buffer — so this is the
+/// simplest syscall shape: a single `r0` atom, the `nCu`/`hCu` CU
+/// assumption surfaced as a hypothesis (as for memset), and nothing else.
+fn emit_sol_get_sysvar(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) {
+    let r0v = state.read_reg(0);
+    let idx = state.fresh; state.fresh += 1;
+    let ncu_name = format!("nCuGetSysvar{}", idx);
+    let hcu_name = format!("hCuGetSysvar{}", idx);
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_get_sysvar"));
+    state.syscall_pcs.insert(pc, ".sol_get_sysvar");
+    state.write_reg(0, Expr::Const(0));
+    // call_sol_get_sysvar_spec r0Old pc nCu hCu
+    let have_line = format!(
+        "have h_{pc} := call_sol_get_sysvar_spec {r0} {pc} {ncu} {hcu}",
+        pc = pc, r0 = r0v.atom_lean(), ncu = ncu_name, hcu = hcu_name,
     );
     spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
     block_pcs.push(pc);
@@ -2555,18 +2715,25 @@ fn lift_one(
             if ins.opc == ebpf::CALL_IMM {
                 if let Some(t) = trace {
                     if t.get(ti + 1).copied() == Some(pc_iter + 1) {
-                        if ins.imm as u32 == ebpf::hash_symbol_name(b"sol_memset_") {
+                        let imm = ins.imm as u32;
+                        if imm == ebpf::hash_symbol_name(b"sol_memset_") {
                             emit_sol_memset(&mut state, &mut spec_calls,
                                             &mut block_pcs, pc_iter);
+                            ti += 1;
+                            continue;
+                        }
+                        if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
+                            emit_sol_get_sysvar(&mut state, &mut spec_calls,
+                                                &mut block_pcs, pc_iter);
                             ti += 1;
                             continue;
                         }
                         return Err(format!(
                             "call_imm at pc {} is a syscall (trace returns to {} \
                              without a frame push) with imm hash 0x{:08x}, but only \
-                             sol_memset_ is modelled so far. This arm needs a \
-                             syscall-effect spec for that hash.",
-                            pc_iter, pc_iter + 1, ins.imm as u32).into());
+                             sol_memset_ / sol_get_sysvar are modelled so far. This \
+                             arm needs a syscall-effect spec for that hash.",
+                            pc_iter, pc_iter + 1, imm).into());
                     }
                 }
             }
@@ -2586,10 +2753,14 @@ fn lift_one(
                 ebpf::JSLE64_IMM | ebpf::JSLE32_IMM |
                 ebpf::JLT64_IMM | ebpf::JLT32_IMM |
                 ebpf::JLE64_IMM | ebpf::JLE32_IMM |
+                ebpf::JSLT64_IMM | ebpf::JSLT32_IMM |
                 ebpf::JEQ64_REG | ebpf::JEQ32_REG |
                 ebpf::JNE64_REG | ebpf::JNE32_REG |
                 ebpf::JLT64_REG | ebpf::JLT32_REG |
-                ebpf::JSLE64_REG | ebpf::JSLE32_REG);
+                ebpf::JSLE64_REG | ebpf::JSLE32_REG |
+                ebpf::JGT64_REG | ebpf::JGT32_REG |
+                ebpf::JLE64_REG | ebpf::JLE32_REG |
+                ebpf::JSGE64_REG | ebpf::JSGE32_REG);
             let branch_hyp_for_call = if is_cond_jump {
                 Some(branch_hyp.as_str())
             } else { None };
@@ -2825,12 +2996,12 @@ fn lift_one(
         syscall_sig.push_str(&format!("({} : ByteArray)\n    ", bs));
         syscall_sig.push_str(&format!("(h{}_sz : {}.size = {})\n    ", bs, bs, size));
     }
-    for (ncu, hcu) in &state.syscall_cu_vars {
+    for (ncu, hcu, ctor) in &state.syscall_cu_vars {
         syscall_sig.push_str(&format!("({} : Nat)\n    ", ncu));
         syscall_sig.push_str(&format!(
-            "({} : ∀ s : State, (step (.call .sol_memset) s).cuConsumed \
+            "({} : ∀ s : State, (step (.call {}) s).cuConsumed \
              ≤ s.cuConsumed + {})\n    ",
-            hcu, ncu,
+            hcu, ctor, ncu,
         ));
     }
     // The triple's CU bound `M`: 0 for syscall-free arms, else the sum
@@ -2840,7 +3011,7 @@ fn lift_one(
     let m_bound: String = if state.syscall_cu_vars.is_empty() {
         "0".to_string()
     } else {
-        state.syscall_cu_vars.iter().map(|(n, _)| n.clone())
+        state.syscall_cu_vars.iter().map(|(n, _, _)| n.clone())
             .collect::<Vec<_>>().join(" + ")
     };
     // `sl_block_auto` now dispatches conditional jumps to their
@@ -2878,9 +3049,10 @@ fn lift_one(
     // sl_rw_abs) and bare initials/constants (cheap, nothing to gain).
     let value_gens: Vec<String> = if use_block_iter {
         let is_complex = |e: &Expr| matches!(e,
-            Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::NatAdd(..) |
+            Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::WrapMul(..) | Expr::NatAdd(..) |
             Expr::Mod(..) | Expr::AndU64Imm(..) | Expr::LshU64Imm(..) |
-            Expr::RshU64Imm(..) | Expr::StWordImm(..) | Expr::StDwordImm(..));
+            Expr::RshU64Imm(..) | Expr::StWordImm(..) | Expr::StDwordImm(..) |
+            Expr::Raw(..));
         let mut seen = std::collections::BTreeSet::new();
         let mut gens = Vec::new();
         for atom in pre.iter().chain(post.iter()) {
@@ -3091,7 +3263,7 @@ fn lift_one(
             names.push(bs.clone());
             names.push(format!("h{}_sz", bs));
         }
-        for (ncu, hcu) in &state.syscall_cu_vars {
+        for (ncu, hcu, _) in &state.syscall_cu_vars {
             names.push(ncu.clone());
             names.push(hcu.clone());
         }
