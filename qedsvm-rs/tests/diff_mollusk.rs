@@ -960,6 +960,70 @@ fn p_token_close_account_matches_mollusk() {
         "mollusk: expected Success on p-token CloseAccount, got {:?}", m_r.program_result);
 }
 
+/// p-token `InitializeMint2` (discriminant 20) — initializes a mint,
+/// taking decimals + mint authority + optional freeze authority from
+/// instruction data (no rent sysvar, unlike InitializeMint). Single
+/// account: [mint(w)]. The handler `sol_memcpy_`'s the 32-byte mint
+/// authority from the input region into the mint's authority field —
+/// the first p-token happy path that crosses `sol_memcpy_` (the
+/// syscall-verification target for qedlift's copy-spec wiring).
+#[test]
+fn p_token_initialize_mint2_matches_mollusk() {
+    let program_id = pid(90);
+    let mint_key = pid(91);
+    let mint_authority = pid(94);
+
+    // The mint being initialized starts uninitialized (all-zero data,
+    // 82 bytes, owned by the token program, rent-exempt).
+    const MINT_LAMPORTS: u64 = 1_461_600;
+    let mint_data = vec![0u8; MINT_LEN];
+
+    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    });
+    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
+        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
+    };
+
+    // Instruction data: [20, decimals(u8), mintAuthority(32),
+    // freezeAuthority option tag(0 = None)].
+    let mut data = vec![20u8, 6u8];
+    data.extend_from_slice(mint_authority.as_ref());
+    data.push(0); // freeze authority: None
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(mint_key, false)],
+        data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (mint_key, mk_shared(MINT_LAMPORTS, mint_data.clone())),
+        ])
+        .expect("qedsvm runs p-token InitializeMint2");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on p-token InitializeMint2, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on p-token InitializeMint2, got {:?}", m_r.program_result);
+}
+
 /// SPL Token `Transfer` (discriminant 3). Moves 250 lamports of a
 /// token from `source` to `destination`, both owned by the same
 /// authority. Real on-chain Token path — exercises the same .text
