@@ -791,4 +791,104 @@ theorem jslt_imm_taken_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Na
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
   have base := jslt_imm_spec dst imm vDst pc target; rwa [if_pos h] at base
 
+/-! ### Second buildout batch: jge / jsgt-reg / jslt-reg / jsge-imm / jset -/
+
+theorem jge_imm_not_taken_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : ¬ vDst ≥ toU64 imm) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jge dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jge_imm_spec dst imm vDst pc target; rwa [if_neg h] at base
+
+theorem jge_imm_taken_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst ≥ toU64 imm) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jge dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jge_imm_spec dst imm vDst pc target; rwa [if_pos h] at base
+
+theorem jge_reg_not_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : ¬ vDst ≥ vSrc) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jge dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jge_reg_spec dst src vDst vSrc pc target; rwa [if_neg h] at base
+
+theorem jge_reg_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : vDst ≥ vSrc) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jge dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jge_reg_spec dst src vDst vSrc pc target; rwa [if_pos h] at base
+
+theorem jsgt_reg_not_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : ¬ toSigned64 vDst > toSigned64 vSrc) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jsgt dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jsgt_reg_spec dst src vDst vSrc pc target; rwa [if_neg h] at base
+
+theorem jsgt_reg_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : toSigned64 vDst > toSigned64 vSrc) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jsgt dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jsgt_reg_spec dst src vDst vSrc pc target; rwa [if_pos h] at base
+
+theorem jslt_reg_not_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : ¬ toSigned64 vDst < toSigned64 vSrc) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jslt dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jslt_reg_spec dst src vDst vSrc pc target; rwa [if_neg h] at base
+
+theorem jslt_reg_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : toSigned64 vDst < toSigned64 vSrc) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jslt dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jslt_reg_spec dst src vDst vSrc pc target; rwa [if_pos h] at base
+
+theorem jsge_imm_not_taken_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : ¬ toSigned64 vDst ≥ toSigned64 (toU64 imm)) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jsge dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jsge_imm_spec dst imm vDst pc target; rwa [if_neg h] at base
+
+theorem jsge_imm_taken_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : toSigned64 vDst ≥ toSigned64 (toU64 imm)) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jsge dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jsge_imm_spec dst imm vDst pc target; rwa [if_pos h] at base
+
+theorem jset_imm_not_taken_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : ¬ vDst &&& toU64 imm ≠ 0) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jset dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jset_imm_spec dst imm vDst pc target; rwa [if_neg h] at base
+
+theorem jset_imm_taken_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
+    (h : vDst &&& toU64 imm ≠ 0) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jset dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jset_imm_spec dst imm vDst pc target; rwa [if_pos h] at base
+
+theorem jset_reg_not_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : ¬ vDst &&& vSrc ≠ 0) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jset dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jset_reg_spec dst src vDst vSrc pc target; rwa [if_neg h] at base
+
+theorem jset_reg_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
+    (h : vDst &&& vSrc ≠ 0) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jset dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jset_reg_spec dst src vDst vSrc pc target; rwa [if_pos h] at base
+
 end SVM.SBPF
