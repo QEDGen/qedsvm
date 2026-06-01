@@ -58,10 +58,7 @@ theorem PTokenBurn_lifted_spec
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
     (holdMemD_3_lt : oldMemD_3 < 2 ^ 64)
     (holdMemD_4_lt : oldMemD_4 < 2 ^ 64)
-    (holdMemD_5_lt : oldMemD_5 < 2 ^ 64)
-    (holdMemD_7_lt : oldMemD_7 < 2 ^ 64)
     (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
-    (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
     (holdMemD_11_lt : oldMemD_11 < 2 ^ 64)
     (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
     (holdMemD_14_lt : oldMemD_14 < 2 ^ 64)
@@ -75,12 +72,9 @@ theorem PTokenBurn_lifted_spec
     (holdMemD_25_lt : oldMemD_25 < 2 ^ 64)
     (holdMemD_26_lt : oldMemD_26 < 2 ^ 64)
     (holdMemD_27_lt : oldMemD_27 < 2 ^ 64)
-    (holdMemD_28_lt : oldMemD_28 < 2 ^ 64)
     (holdMemD_29_lt : oldMemD_29 < 2 ^ 64)
     (holdMemD_30_lt : oldMemD_30 < 2 ^ 64)
     (holdMemD_31_lt : oldMemD_31 < 2 ^ 64)
-    (holdMemD_32_lt : oldMemD_32 < 2 ^ 64)
-    (holdMemD_33_lt : oldMemD_33 < 2 ^ 64)
     (holdMemD_34_lt : oldMemD_34 < 2 ^ 64)
     (holdMemD_36_lt : oldMemD_36 < 2 ^ 64)
     (holdMemD_37_lt : oldMemD_37 < 2 ^ 64)
@@ -584,10 +578,7 @@ theorem PTokenBurn_balance_correct
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
     (holdMemD_3_lt : oldMemD_3 < 2 ^ 64)
     (holdMemD_4_lt : oldMemD_4 < 2 ^ 64)
-    (holdMemD_5_lt : oldMemD_5 < 2 ^ 64)
-    (holdMemD_7_lt : oldMemD_7 < 2 ^ 64)
     (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
-    (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
     (holdMemD_11_lt : oldMemD_11 < 2 ^ 64)
     (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
     (holdMemD_14_lt : oldMemD_14 < 2 ^ 64)
@@ -601,12 +592,9 @@ theorem PTokenBurn_balance_correct
     (holdMemD_25_lt : oldMemD_25 < 2 ^ 64)
     (holdMemD_26_lt : oldMemD_26 < 2 ^ 64)
     (holdMemD_27_lt : oldMemD_27 < 2 ^ 64)
-    (holdMemD_28_lt : oldMemD_28 < 2 ^ 64)
     (holdMemD_29_lt : oldMemD_29 < 2 ^ 64)
     (holdMemD_30_lt : oldMemD_30 < 2 ^ 64)
     (holdMemD_31_lt : oldMemD_31 < 2 ^ 64)
-    (holdMemD_32_lt : oldMemD_32 < 2 ^ 64)
-    (holdMemD_33_lt : oldMemD_33 < 2 ^ 64)
     (holdMemD_34_lt : oldMemD_34 < 2 ^ 64)
     (holdMemD_36_lt : oldMemD_36 < 2 ^ 64)
     (holdMemD_37_lt : oldMemD_37 < 2 ^ 64)
@@ -959,7 +947,7 @@ theorem PTokenBurn_balance_correct
                   rt.containsWritable (effectiveAddr addr4 152) 8 = true) ∧
                   rt.containsRange (effectiveAddr addr5 124) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr5 124) 8 = true) := by
-  have h := PTokenBurn_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 vR0Old oldMemD_4 vR7Old vR10Old oldMemD_5 vR3Old oldMemB_6 oldMemD_7 oldMemD_8 oldMemB_9 oldMemD_10 oldMemD_11 vR4Old oldMemD_12 vR9Old oldMemB_13 vR5Old vR8Old vR6Old oldMemD_14 oldMemB_15 oldMemD_16 oldMemD_17 oldMemB_18 oldMemB_19 oldMemD_20 oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemB_35 oldMemD_36 oldMemD_37 oldMemD_38 oldMemD_39 oldMemD_40 oldMemD_41 oldMemD_42 oldMemD_43 oldMemB_44 oldMemD_45 addr0 addr1 addr2 addr3 addr4 addr5 addr6 addr7 h_addr0 h_addr1 h_addr2 h_addr3 h_addr4 h_addr5 h_addr6 h_addr7 holdMemD_1_lt holdMemD_3_lt holdMemD_4_lt holdMemD_5_lt holdMemD_7_lt holdMemD_8_lt holdMemD_10_lt holdMemD_11_lt holdMemD_12_lt holdMemD_14_lt holdMemD_16_lt holdMemD_17_lt holdMemD_20_lt holdMemD_21_lt holdMemD_22_lt holdMemD_23_lt holdMemD_24_lt holdMemD_25_lt holdMemD_26_lt holdMemD_27_lt holdMemD_28_lt holdMemD_29_lt holdMemD_30_lt holdMemD_31_lt holdMemD_32_lt holdMemD_33_lt holdMemD_34_lt holdMemD_36_lt holdMemD_37_lt holdMemD_38_lt holdMemD_39_lt holdMemD_40_lt holdMemD_41_lt holdMemD_42_lt holdMemD_43_lt holdMemD_45_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 h_branch35 h_branch36 h_branch37 h_branch38 h_branch39 h_branch40 h_branch41
+  have h := PTokenBurn_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 vR0Old oldMemD_4 vR7Old vR10Old oldMemD_5 vR3Old oldMemB_6 oldMemD_7 oldMemD_8 oldMemB_9 oldMemD_10 oldMemD_11 vR4Old oldMemD_12 vR9Old oldMemB_13 vR5Old vR8Old vR6Old oldMemD_14 oldMemB_15 oldMemD_16 oldMemD_17 oldMemB_18 oldMemB_19 oldMemD_20 oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemB_35 oldMemD_36 oldMemD_37 oldMemD_38 oldMemD_39 oldMemD_40 oldMemD_41 oldMemD_42 oldMemD_43 oldMemB_44 oldMemD_45 addr0 addr1 addr2 addr3 addr4 addr5 addr6 addr7 h_addr0 h_addr1 h_addr2 h_addr3 h_addr4 h_addr5 h_addr6 h_addr7 holdMemD_1_lt holdMemD_3_lt holdMemD_4_lt holdMemD_8_lt holdMemD_11_lt holdMemD_12_lt holdMemD_14_lt holdMemD_16_lt holdMemD_17_lt holdMemD_20_lt holdMemD_21_lt holdMemD_22_lt holdMemD_23_lt holdMemD_24_lt holdMemD_25_lt holdMemD_26_lt holdMemD_27_lt holdMemD_29_lt holdMemD_30_lt holdMemD_31_lt holdMemD_34_lt holdMemD_36_lt holdMemD_37_lt holdMemD_38_lt holdMemD_39_lt holdMemD_40_lt holdMemD_41_lt holdMemD_42_lt holdMemD_43_lt holdMemD_45_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 h_branch35 h_branch36 h_branch37 h_branch38 h_branch39 h_branch40 h_branch41
   rw [← wrapSub_of_le h_funds0 h_src_lt0, ← wrapSub_of_le h_funds1 h_src_lt1]
   exact h
 

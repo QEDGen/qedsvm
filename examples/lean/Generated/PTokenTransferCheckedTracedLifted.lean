@@ -58,7 +58,6 @@ theorem PTokenTransferChecked_lifted_spec
     (holdMemD_15_lt : oldMemD_15 < 2 ^ 64)
     (holdMemD_16_lt : oldMemD_16 < 2 ^ 64)
     (holdMemD_17_lt : oldMemD_17 < 2 ^ 64)
-    (holdMemD_18_lt : oldMemD_18 < 2 ^ 64)
     (holdMemD_19_lt : oldMemD_19 < 2 ^ 64)
     (holdMemD_20_lt : oldMemD_20 < 2 ^ 64)
     (holdMemD_21_lt : oldMemD_21 < 2 ^ 64)
@@ -497,7 +496,6 @@ theorem PTokenTransferChecked_balance_correct
     (holdMemD_15_lt : oldMemD_15 < 2 ^ 64)
     (holdMemD_16_lt : oldMemD_16 < 2 ^ 64)
     (holdMemD_17_lt : oldMemD_17 < 2 ^ 64)
-    (holdMemD_18_lt : oldMemD_18 < 2 ^ 64)
     (holdMemD_19_lt : oldMemD_19 < 2 ^ 64)
     (holdMemD_20_lt : oldMemD_20 < 2 ^ 64)
     (holdMemD_21_lt : oldMemD_21 < 2 ^ 64)
@@ -810,7 +808,7 @@ theorem PTokenTransferChecked_balance_correct
                   rt.containsRange (effectiveAddr baseAddr 21088) 8 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 21088) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 205) 1 = true) := by
-  have h := PTokenTransferChecked_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 oldMemB_4 oldMemD_5 oldMemB_6 oldMemD_7 vR4Old vR5Old oldMemD_8 oldMemB_9 vR6Old vR7Old oldMemB_10 oldMemB_11 vR3Old oldMemD_12 oldMemD_13 oldMemD_14 vR0Old oldMemD_15 oldMemD_16 vR8Old oldMemD_17 vR10Old oldMemD_18 oldMemD_19 oldMemD_20 vR9Old oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemB_27 oldMemB_28 oldMemB_29 oldMemD_30 oldMemB_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemD_37 oldMemD_38 oldMemB_39 oldMemD_40 oldMemB_41 addr0 addr1 addr2 addr3 h_addr0 h_addr1 h_addr2 h_addr3 holdMemD_1_lt holdMemD_3_lt holdMemD_5_lt holdMemD_7_lt holdMemD_8_lt holdMemD_12_lt holdMemD_13_lt holdMemD_14_lt holdMemD_15_lt holdMemD_16_lt holdMemD_17_lt holdMemD_18_lt holdMemD_19_lt holdMemD_20_lt holdMemD_21_lt holdMemD_22_lt holdMemD_23_lt holdMemD_24_lt holdMemD_25_lt holdMemD_26_lt holdMemD_30_lt holdMemD_32_lt holdMemD_33_lt holdMemD_34_lt holdMemD_35_lt holdMemD_36_lt holdMemD_37_lt holdMemD_38_lt holdMemD_40_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 h_branch35
+  have h := PTokenTransferChecked_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 oldMemB_4 oldMemD_5 oldMemB_6 oldMemD_7 vR4Old vR5Old oldMemD_8 oldMemB_9 vR6Old vR7Old oldMemB_10 oldMemB_11 vR3Old oldMemD_12 oldMemD_13 oldMemD_14 vR0Old oldMemD_15 oldMemD_16 vR8Old oldMemD_17 vR10Old oldMemD_18 oldMemD_19 oldMemD_20 vR9Old oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemB_27 oldMemB_28 oldMemB_29 oldMemD_30 oldMemB_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemD_37 oldMemD_38 oldMemB_39 oldMemD_40 oldMemB_41 addr0 addr1 addr2 addr3 h_addr0 h_addr1 h_addr2 h_addr3 holdMemD_1_lt holdMemD_3_lt holdMemD_5_lt holdMemD_7_lt holdMemD_8_lt holdMemD_12_lt holdMemD_13_lt holdMemD_14_lt holdMemD_15_lt holdMemD_16_lt holdMemD_17_lt holdMemD_19_lt holdMemD_20_lt holdMemD_21_lt holdMemD_22_lt holdMemD_23_lt holdMemD_24_lt holdMemD_25_lt holdMemD_26_lt holdMemD_30_lt holdMemD_32_lt holdMemD_33_lt holdMemD_34_lt holdMemD_35_lt holdMemD_36_lt holdMemD_37_lt holdMemD_38_lt holdMemD_40_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 h_branch35
   rw [← wrapSub_of_le h_funds0 h_src_lt0, ← wrapAdd_of_lt h_noovf1]
   exact h
 

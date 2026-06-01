@@ -3379,6 +3379,16 @@ fn lift_one(
     let post = post_atoms(&pre, &state);
     // (rr computed after abs_subst is built — see below)
 
+    // Drop surfaced `< 2^k` load-bound hypotheses no spec call consumes.
+    // `read_mem` records a bound for every fresh wide cell — including a
+    // dword cell that's only STORED to (the old value `stxdw_spec` takes
+    // but doesn't bound). Such `h<var>_lt` would be an unused theorem
+    // hypothesis; keep only the ones a spec call references as `hv`.
+    state.u64_load_vars.retain(|(v, _)| {
+        let h = format!("h{}_lt", v);
+        spec_calls.iter().any(|sc| sc.have_line.contains(&h))
+    });
+
     // Detect "complex" addresses in mem atoms — anything other than a
     // bare `InitReg` base counts as complex (wrapAdd-shaped, etc.).
     // Each unique complex address gets parameterised as an opaque Nat

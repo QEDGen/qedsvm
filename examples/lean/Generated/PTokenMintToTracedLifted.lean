@@ -57,10 +57,7 @@ theorem PTokenMintTo_lifted_spec
     (h_addr7 : addr7 = wrapAdd (addr3) (toU64 9))
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
     (holdMemD_2_lt : oldMemD_2 < 2 ^ 64)
-    (holdMemD_3_lt : oldMemD_3 < 2 ^ 64)
-    (holdMemD_5_lt : oldMemD_5 < 2 ^ 64)
     (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
-    (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
     (holdMemD_9_lt : oldMemD_9 < 2 ^ 64)
     (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
     (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
@@ -536,10 +533,7 @@ theorem PTokenMintTo_balance_correct
     (h_addr7 : addr7 = wrapAdd (addr3) (toU64 9))
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
     (holdMemD_2_lt : oldMemD_2 < 2 ^ 64)
-    (holdMemD_3_lt : oldMemD_3 < 2 ^ 64)
-    (holdMemD_5_lt : oldMemD_5 < 2 ^ 64)
     (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
-    (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
     (holdMemD_9_lt : oldMemD_9 < 2 ^ 64)
     (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
     (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
@@ -874,7 +868,7 @@ theorem PTokenMintTo_balance_correct
                   rt.containsWritable (effectiveAddr addr5 124) 8 = true) ∧
                   rt.containsRange (effectiveAddr addr4 152) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr4 152) 8 = true) := by
-  have h := PTokenMintTo_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 vR0Old oldMemD_2 vR7Old vR10Old oldMemD_3 vR3Old oldMemB_4 oldMemD_5 oldMemD_6 oldMemB_7 oldMemD_8 oldMemD_9 vR4Old oldMemD_10 vR9Old oldMemB_11 vR5Old vR8Old vR6Old oldMemD_12 oldMemD_13 oldMemB_14 oldMemB_15 oldMemD_16 oldMemD_17 oldMemD_18 oldMemD_19 oldMemD_20 oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemB_25 oldMemB_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemD_37 oldMemB_38 oldMemD_39 oldMemD_40 addr0 addr1 addr2 addr3 addr4 addr5 addr6 addr7 h_addr0 h_addr1 h_addr2 h_addr3 h_addr4 h_addr5 h_addr6 h_addr7 holdMemD_1_lt holdMemD_2_lt holdMemD_3_lt holdMemD_5_lt holdMemD_6_lt holdMemD_8_lt holdMemD_9_lt holdMemD_10_lt holdMemD_12_lt holdMemD_13_lt holdMemD_16_lt holdMemD_17_lt holdMemD_18_lt holdMemD_19_lt holdMemD_20_lt holdMemD_21_lt holdMemD_22_lt holdMemD_23_lt holdMemD_24_lt holdMemD_27_lt holdMemD_28_lt holdMemD_29_lt holdMemD_30_lt holdMemD_31_lt holdMemD_32_lt holdMemD_33_lt holdMemD_34_lt holdMemD_35_lt holdMemD_36_lt holdMemD_37_lt holdMemD_39_lt holdMemD_40_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 h_branch35 h_branch36 h_branch37
+  have h := PTokenMintTo_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 vR0Old oldMemD_2 vR7Old vR10Old oldMemD_3 vR3Old oldMemB_4 oldMemD_5 oldMemD_6 oldMemB_7 oldMemD_8 oldMemD_9 vR4Old oldMemD_10 vR9Old oldMemB_11 vR5Old vR8Old vR6Old oldMemD_12 oldMemD_13 oldMemB_14 oldMemB_15 oldMemD_16 oldMemD_17 oldMemD_18 oldMemD_19 oldMemD_20 oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemB_25 oldMemB_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemD_37 oldMemB_38 oldMemD_39 oldMemD_40 addr0 addr1 addr2 addr3 addr4 addr5 addr6 addr7 h_addr0 h_addr1 h_addr2 h_addr3 h_addr4 h_addr5 h_addr6 h_addr7 holdMemD_1_lt holdMemD_2_lt holdMemD_6_lt holdMemD_9_lt holdMemD_10_lt holdMemD_12_lt holdMemD_13_lt holdMemD_16_lt holdMemD_17_lt holdMemD_18_lt holdMemD_19_lt holdMemD_20_lt holdMemD_21_lt holdMemD_22_lt holdMemD_23_lt holdMemD_24_lt holdMemD_27_lt holdMemD_28_lt holdMemD_29_lt holdMemD_30_lt holdMemD_31_lt holdMemD_32_lt holdMemD_33_lt holdMemD_34_lt holdMemD_35_lt holdMemD_36_lt holdMemD_37_lt holdMemD_39_lt holdMemD_40_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 h_branch35 h_branch36 h_branch37
   rw [← wrapAdd_of_lt h_noovf0, ← wrapAdd_of_lt h_noovf1]
   exact h
 
