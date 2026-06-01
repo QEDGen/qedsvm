@@ -385,6 +385,24 @@ fn resolve_call_target(analysis: &Analysis, insn: &ebpf::Insn) -> Option<usize> 
         .find_map(|(&pc, (h, _name))| if *h == target_hash { Some(pc) } else { None })
 }
 
+/// `resolve_call_target` but mapped from the function registry's
+/// SLOT-based PC to a LOGICAL instruction index. The registry (and the
+/// VM) count `lddw` as two slots, while the lift's PCs / CodeReq /
+/// `call_local_spec` target are all logical indices — so a callee past
+/// any `lddw` would otherwise be off by the lddw count (e.g. p_token's
+/// `call_local` to logical 10836 resolves to slot 11537). Mirrors
+/// `resolve_jump_target`'s slot→logical handling. For lddw-free programs
+/// slot == logical, so this is a no-op (keeps those lifts byte-identical).
+fn resolve_call_target_logical(
+    ctx: &BinaryCtx, analysis: &Analysis, insn: &ebpf::Insn,
+) -> Option<usize> {
+    let slot = resolve_call_target(analysis, insn)?;
+    match ctx.slot_to_logical.get(slot) {
+        Some(Some(logical)) => Some(*logical),
+        _ => Some(slot), // out of range / mid-lddw: fall back (fail loudly downstream)
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Symbolic executor — phase 2 of the lift
 // -----------------------------------------------------------------------------
@@ -624,17 +642,21 @@ struct SymState {
     /// (`ldxdw`). The corresponding per-instruction spec carries a
     /// `< 2^64` side condition that the theorem signature must
     /// hypothesise so `sl_block_auto <;> assumption` discharges it.
-    u64_load_vars: Vec<String>,
+    /// Loaded mem-cell vars that carry a `< 2^k` bound the spec needs
+    /// surfaced as a hypothesis: `(var, k)` with k ∈ {16,32,64} for
+    /// half/word/dword loads (`ldxh`/`ldxw`/`ldxdw`). `h<var>_lt`.
+    u64_load_vars: Vec<(String, u32)>,
     /// Conditional jumps encountered on the happy-path walk. Each one
     /// adds a path hypothesis to the theorem signature.
     branch_hyps: Vec<BranchHyp>,
-    /// Symbolic call stack — `(resume_pc, saved_r10)` pushed by
-    /// `call_local`, popped by the corresponding `exit`. Saving r10
-    /// lets `exit_pops` restore the exact pre-call r10 (rather than
-    /// computing a wrapSub that doesn't match the spec's post).
-    /// Empty at the start of the walk and empty when the walk
-    /// terminates at the top-level `exit`.
-    call_stack: Vec<(usize, Expr)>,
+    /// Symbolic call stack — `(resume_pc, [r6,r7,r8,r9,r10] at call time)`
+    /// pushed by `call_local`, popped by the corresponding `exit`. The
+    /// full call-time r6..r10 are saved (not just r10) because the
+    /// `exit_pops` spec's `frame` must equal the frame the `call_local`
+    /// pushed — and a callee may clobber r6..r9, so their *current*
+    /// (exit-time) values would mismatch the pushed frame. Empty at the
+    /// start of the walk and empty when it terminates at the top exit.
+    call_stack: Vec<(usize, [Expr; 5])>,
     /// True once the walk has seen at least one `call_local`. When
     /// set, the emission adds `r6..r10` and `callStackIs []` to the
     /// pre-condition (the atoms `call_local_spec` needs to compose).
@@ -714,8 +736,11 @@ impl SymState {
         // (toU64 8)`) and ill-suited as a Lean identifier.
         let idx = self.fresh; self.fresh += 1;
         let name = format!("oldMem{}_{}", w_short(width), idx);
-        if matches!(width, Width::Dword) {
-            self.u64_load_vars.push(name.clone());
+        match width {
+            Width::Dword    => self.u64_load_vars.push((name.clone(), 64)),
+            Width::Word     => self.u64_load_vars.push((name.clone(), 32)),
+            Width::Halfword => self.u64_load_vars.push((name.clone(), 16)),
+            Width::Byte     => {} // bytes always fit; no bound needed
         }
         let v = Expr::InitMem(name);
         let cell = MemCell {
@@ -1002,31 +1027,64 @@ fn spec_call_for(
                 )
             }
         }
-        ST_DW_REG => {
-            // stxdw_spec baseReg valReg off baseAddr vSrc oldV pc
+        // Word / halfword loads (dst ≠ src): `ldx{w,h}_spec dst src off
+        // vOldDst baseAddr v pc hne hv`, hv = `v < 2^{32,16}` surfaced as
+        // `h<var>_lt`. Post is `dst ↦ᵣ v` (the ↦U32/↦U16 cell value, raw).
+        LD_W_REG | LD_H_REG => {
+            let (spec, w, pfx) = if insn.opc == LD_W_REG {
+                ("ldxw_spec", Width::Word, "oldMemW")
+            } else { ("ldxh_spec", Width::Halfword, "oldMemH") };
+            let base_addr = reg_val_lean(src);
+            let cell_val = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == base_addr
+                       && c.addr_off == off
+                       && c.width as u8 == w as u8)
+                .map(|c| c.value.clone());
+            let (v_arg, hv) = match &cell_val {
+                Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
+                Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
+                None => { let n = format!("{}_{}", pfx, state.fresh); (n.clone(), format!("h{}_lt", n)) }
+            };
+            let v_old_dst = state.regs.get(&dst)
+                .map(|e| e.to_lean())
+                .unwrap_or_else(|| reg_initial_name(dst));
+            format!(
+                "have {} := {} {} {} {} ({}) ({}) {} {} (by decide) {}",
+                hyp_name, spec, reg(dst), reg(src), offl,
+                v_old_dst, base_addr, v_arg, pc, hv,
+            )
+        }
+        ST_B_REG | ST_H_REG | ST_W_REG | ST_DW_REG => {
+            // stx{b,h,w,dw}_spec baseReg valReg off baseAddr vSrc oldV pc
+            // (all four share this arg shape; only the width and old-cell
+            // var prefix differ).
+            let (spec, w, pfx) = match insn.opc {
+                ST_B_REG  => ("stxb_spec",  Width::Byte,     "oldMemB"),
+                ST_H_REG  => ("stxh_spec",  Width::Halfword, "oldMemH"),
+                ST_W_REG  => ("stxw_spec",  Width::Word,     "oldMemW"),
+                ST_DW_REG => ("stxdw_spec", Width::Dword,    "oldMemD"),
+                _ => unreachable!(),
+            };
             let base_addr = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            // The "old value" of the cell being overwritten. For our
-            // case it's the mem name (we read it via read_mem first).
-            // Walk state.mem for the matching cell.
             let key_addr = base_addr.clone();
             // `atom_lean` parenthesises a compound prior value (e.g. a
             // `toU64 0` left by an earlier imm store) while leaving a
-            // bare `oldMemD_N` / fresh name unparenthesised (so the common
+            // bare `oldMem*_N` / fresh name unparenthesised (so the common
             // case stays byte-identical).
             let old_v = state.mem.iter()
                 .find(|c| c.addr_base.to_lean() == key_addr
                        && c.addr_off == off
-                       && c.width as u8 == Width::Dword as u8)
+                       && c.width as u8 == w as u8)
                 .map(|c| c.value.atom_lean())
                 // Cell not yet in state.mem → this store is the FIRST
                 // access to it. step()'s write_mem will call read_mem,
-                // allocating `oldMemD_{fresh}`. Predict that name (same
+                // allocating `oldMem*_{fresh}`. Predict that name (same
                 // as the load specs) instead of an unresolved `?oldV`.
-                .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
+                .unwrap_or_else(|| format!("{}_{}", pfx, state.fresh));
             format!(
-                "have {} := stxdw_spec {} {} {} ({}) ({}) {} {}",
-                hyp_name, reg(dst), reg(src), offl,
+                "have {} := {} {} {} {} ({}) ({}) {} {}",
+                hyp_name, spec, reg(dst), reg(src), offl,
                 base_addr, v_src, old_v, pc,
             )
         }
@@ -1286,16 +1344,24 @@ fn spec_call_for(
             // CURRENT register values — for ABI-respecting callees,
             // r6..r9 are unchanged from pre-call and r10 is bumped by
             // 0x1000.
+            // The spec's explicit `r6Old..r10Old` args are the CURRENT
+            // (exit-time) register values — what the `r ↦ᵣ` atoms hold in
+            // the exit_pops PRE, before it restores them.
             let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
             let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
             let r10 = reg_val_lean(10);
-            // Top of the symbolic call stack carries the pushed
-            // frame's metadata (resume PC + saved r10). Saved r6..r9
-            // = the values at call time, which for ABI-respecting
-            // callees match the current r6..r9.
-            let (resume, saved_r10) = state.call_stack.last()
-                .map(|(r, s)| (*r, s.to_lean()))
-                .unwrap_or((0, "?savedR10".to_string()));
+            // The `frame` (savedR6..savedR10) must equal what the matching
+            // `call_local` pushed — the CALL-TIME r6..r10 snapshot on the
+            // call stack — NOT the current values (a callee may clobber
+            // r6..r9). Only r10 happened to coincide before this fix.
+            let (resume, saved) = state.call_stack.last()
+                .map(|(r, s)| (*r, s.clone()))
+                .unwrap_or((0, [Expr::InitReg("?".into()), Expr::InitReg("?".into()),
+                                Expr::InitReg("?".into()), Expr::InitReg("?".into()),
+                                Expr::InitReg("?".into())]));
+            let (sv6, sv7, sv8, sv9, saved_r10) = (
+                saved[0].to_lean(), saved[1].to_lean(), saved[2].to_lean(),
+                saved[3].to_lean(), saved[4].to_lean());
             // Empty rest-of-stack — single-level calls only for now.
             // A nested-call demo would need to thread `cs`.
             // After `exit_pops_spec` is applied, the resulting triple
@@ -1305,11 +1371,11 @@ fn spec_call_for(
             // structural matching doesn't run iota. We `dsimp` the
             // hypothesis to force the reduction before composition.
             format!(
-                "have {0} := exit_pops_spec ⟨{1}, ({2}), ({3}), ({4}), ({5}), ({6})⟩ [] ({2}) ({3}) ({4}) ({5}) ({7}) {8}\n  \
+                "have {0} := exit_pops_spec ⟨{1}, ({2}), ({3}), ({4}), ({5}), ({6})⟩ [] ({7}) ({8}) ({9}) ({10}) ({11}) {12}\n  \
                  dsimp only at {0}",
                 hyp_name,
-                resume, r6, r7, r8, r9, saved_r10,
-                r10, pc,
+                resume, sv6, sv7, sv8, sv9, saved_r10,
+                r6, r7, r8, r9, r10, pc,
             )
         }
         JEQ64_IMM | JEQ32_IMM => {
@@ -1552,12 +1618,15 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.write_reg(dst, Expr::Mod(Box::new(raw), 256));
         }
         LD_H_REG => {
+            // `ldxh_spec` post is `dst ↦ᵣ v` (the ↦U16 cell value, raw —
+            // bounded < 2^16 by the surfaced hv). Mirrors ldxdw, not ldxb.
             let raw = state.read_mem(src, off, Width::Halfword);
-            state.write_reg(dst, Expr::Mod(Box::new(raw), 1 << 16));
+            state.write_reg(dst, raw);
         }
         LD_W_REG => {
+            // `ldxw_spec` post is `dst ↦ᵣ v` (the ↦U32 cell value, raw).
             let raw = state.read_mem(src, off, Width::Word);
-            state.write_reg(dst, Expr::Mod(Box::new(raw), 1 << 32));
+            state.write_reg(dst, raw);
         }
         LD_DW_REG => {
             let raw = state.read_mem(src, off, Width::Dword);
@@ -1580,12 +1649,15 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.write_mem(dst, off, Width::Byte, Expr::Mod(Box::new(cur), 256));
         }
         ST_H_REG => {
+            // `stxh_spec` post is `↦U16 vSrc` (the width notation truncates;
+            // the cell value is the raw register value, like stxdw's ↦U64).
             let cur = state.read_reg(src);
-            state.write_mem(dst, off, Width::Halfword, Expr::Mod(Box::new(cur), 1 << 16));
+            state.write_mem(dst, off, Width::Halfword, cur);
         }
         ST_W_REG => {
+            // `stxw_spec` post is `↦U32 vSrc` (raw value; ↦U32 truncates).
             let cur = state.read_reg(src);
-            state.write_mem(dst, off, Width::Word, Expr::Mod(Box::new(cur), 1 << 32));
+            state.write_mem(dst, off, Width::Word, cur);
         }
         ST_DW_REG => {
             let cur = state.read_reg(src);
@@ -1898,7 +1970,10 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         CALL_IMM => {
             state.saw_call = true;
             // r6..r9 must be in scope (they're framed by call_local_spec).
-            for r in 6..=9 { let _ = state.read_reg(r); }
+            // Snapshot the call-time r6..r10 — this is the exact frame the
+            // `call_local` pushes and the matching `exit_pops` must restore.
+            let r6 = state.read_reg(6); let r7 = state.read_reg(7);
+            let r8 = state.read_reg(8); let r9 = state.read_reg(9);
             // r10 is bumped by 0x1000 (one Solana V0 stack frame).
             // Use Nat.add (matching call_local_spec's `r10V + 0x1000`)
             // rather than wrapAdd, so the chain composes cleanly.
@@ -1907,11 +1982,8 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 Box::new(r10_old.clone()),
                 Box::new(Expr::Const(0x1000)),
             ));
-            // Track the resume PC + saved r10 so the matching `exit`
-            // can restore r10 to its exact pre-call symbolic value
-            // (matching exit_pops_spec's `frame.savedR10`).
             let resume = pc.map(|p| p + 1).unwrap_or(0);
-            state.call_stack.push((resume, r10_old));
+            state.call_stack.push((resume, [r6, r7, r8, r9, r10_old]));
         }
         EXIT => {
             if state.call_stack.is_empty() {
@@ -2906,7 +2978,7 @@ fn lift_one(
     let mut decode_skip_reason: Option<String> = None;
     if emit_decode_bridge {
         for (i, insn) in insns.iter().enumerate() {
-            let tgt = resolve_call_target(&analysis, insn);
+            let tgt = resolve_call_target_logical(ctx, &analysis, insn);
             let jtgt = Some(resolve_jump_target(ctx, i, insn.off as i64));
             match insn_to_lean_full(insn, i, tgt, jtgt) {
                 Ok(s)  => rendered_insns.push(s),
@@ -3007,10 +3079,14 @@ fn lift_one(
                     if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None, None, None) {
                         spec_calls.push(sc);
                     }
-                    let (resume, saved_r10) = state.call_stack.pop().unwrap();
-                    // exit_pops_spec restores r10 to frame.savedR10
-                    // (the pre-call r10 we saved on the call_stack).
-                    state.write_reg(10, saved_r10);
+                    let (resume, saved) = state.call_stack.pop().unwrap();
+                    // exit_pops_spec restores r6..r10 to the saved frame
+                    // (the pre-call values). Mirror that in the symbolic
+                    // state so the post matches — a callee that clobbered
+                    // r6..r9 leaves their *current* values stale.
+                    for (i, r) in (6u8..=10).enumerate() {
+                        state.write_reg(r, saved[i].clone());
+                    }
                     // In trace mode the next PC comes from the trace (it
                     // should equal `resume`); otherwise jump to resume.
                     if trace.is_some() { ti += 1; } else { pc_iter = resume; }
@@ -3051,7 +3127,7 @@ fn lift_one(
             }
 
             block_pcs.push(pc_iter);
-            let call_target = resolve_call_target(&analysis, ins);
+            let call_target = resolve_call_target_logical(ctx, &analysis, ins);
             // Branch hypothesis name (if this is a conditional jump).
             // The index into branch_hyps is the count of branches
             // seen so far.
@@ -3167,8 +3243,9 @@ fn lift_one(
                 }
                 ebpf::CALL_IMM => {
                     // The immediate is a Murmur3 hash; look up the
-                    // function registry to resolve the callee PC.
-                    pc_iter = resolve_call_target(&analysis, ins).ok_or_else(|| {
+                    // function registry to resolve the callee PC (mapped
+                    // slot→logical).
+                    pc_iter = resolve_call_target_logical(ctx, &analysis, ins).ok_or_else(|| {
                         format!(
                             "qedlift: call_local at pc {} has imm 0x{:x} \
                              but no matching function in the symbol table. \
@@ -3198,7 +3275,7 @@ fn lift_one(
             let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
                 format!(".call {}", ctor)
             } else {
-                let tgt = resolve_call_target(&analysis, &insns[pc]);
+                let tgt = resolve_call_target_logical(ctx, &analysis, &insns[pc]);
                 let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
                 insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
             };
@@ -3294,8 +3371,8 @@ fn lift_one(
     // that `sl_block_auto` leaves as a residual goal; we surface them
     // as theorem hypotheses and discharge with `<;> assumption`.
     let mut u64_hyps = String::new();
-    for v in &state.u64_load_vars {
-        u64_hyps.push_str(&format!("(h{}_lt : {} < 2 ^ 64)\n    ", v, v));
+    for (v, k) in &state.u64_load_vars {
+        u64_hyps.push_str(&format!("(h{}_lt : {} < 2 ^ {})\n    ", v, v, k));
     }
     // Path-hypothesis surface for any conditional jumps we walked.
     // For a JeqImm whose happy path is fall-through (the common
@@ -3579,7 +3656,7 @@ fn lift_one(
             for (p, _, _) in &abstractions { names.push(p.clone()); }
             for (_, h, _) in &abstractions { names.push(h.clone()); }
         }
-        for v in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
+        for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
         for (name, _) in &state.side_hyps { names.push(name.clone()); }
         // Memory-syscall params, in the same order `syscall_sig` binds
