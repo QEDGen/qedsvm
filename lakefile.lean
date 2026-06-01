@@ -107,6 +107,10 @@ lean_lib Examples where
     `Generated.PTokenTransferTracedLifted,
     `Generated.PTokenMintToTracedLifted,
     `Generated.PTokenBurnTracedLifted,
-    `Generated.PTokenTransferCheckedTracedLifted
+    `Generated.PTokenTransferCheckedTracedLifted,
+    -- CloseAccount: first arm whose happy path crosses a host syscall
+    -- (`sol_memset_` zeroing the account data). qedlift threads it via
+    -- `call_sol_memset_spec` (a `↦Bytes` blob + surfaced CU/size hyps).
+    `Generated.PTokenCloseAccountTracedLifted
   ]
   precompileModules := true

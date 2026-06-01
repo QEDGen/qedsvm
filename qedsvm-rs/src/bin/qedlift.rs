@@ -450,11 +450,44 @@ fn lean_off(off: i64) -> String {
     if off < 0 { format!("({})", off) } else { format!("{}", off) }
 }
 
-/// One precondition atom: a register binding or a memory cell binding.
+/// Contents of a variable-length byte blob (`↦Bytes`). Pre-state is a
+/// fresh symbolic `ByteArray` (`Sym`); a memory syscall rewrites it to
+/// a closed-form payload (`Replicate`, for `sol_memset_`).
+#[derive(Clone, Debug)]
+enum BytesVal {
+    /// Fresh symbolic byte-array variable (the unknown pre-state of a
+    /// memset'd region). `size` is its length as a Nat expression
+    /// (the syscall's `r3` count), surfaced as a theorem hypothesis.
+    Sym { name: String, size: Expr },
+    /// `replicateByte (fill % 256).toUInt8 count` — the post-state a
+    /// `sol_memset_(dst, fill, count)` leaves at `dst`.
+    Replicate { fill: Expr, count: Expr },
+}
+
+impl BytesVal {
+    fn to_lean(&self) -> String {
+        match self {
+            BytesVal::Sym { name, .. } => name.clone(),
+            BytesVal::Replicate { fill, count } => format!(
+                "replicateByte ({} % 256).toUInt8 {}",
+                fill.atom_lean(), count.atom_lean(),
+            ),
+        }
+    }
+}
+
+/// One precondition atom: a register binding, a fixed-width memory
+/// cell, or a variable-length byte blob (`↦Bytes`, from a memory
+/// syscall such as `sol_memset_`).
 #[derive(Clone, Debug)]
 enum Atom {
     Reg(u8, Expr),
     Mem { addr_base: Expr, addr_off: i64, width: Width, value: Expr },
+    /// A `↦Bytes` atom: `addr ↦Bytes <bytes>`. The address is the raw
+    /// symbolic value of the syscall's `r1` (no `effectiveAddr`
+    /// wrapper — `memBytesIs` takes a bare Nat), matching
+    /// `call_sol_memset_spec`'s precondition shape.
+    Bytes { addr: Expr, value: BytesVal },
 }
 
 
@@ -536,6 +569,24 @@ struct SymState {
     /// goal rr structurally equals what `slBlockIter` produces.
     /// Entries: (addr_base, off, width, is_writable).
     rr_walk: Vec<(Expr, i64, Width, bool)>,
+    /// Post-state contents of `↦Bytes` blobs written by memory
+    /// syscalls (`sol_memset_`), keyed by the rendered destination
+    /// address. `post_atoms` reads this to transform the pre `↦Bytes`
+    /// (a fresh `Sym`) into its post form (`Replicate`).
+    byte_blob_post: std::collections::BTreeMap<String, BytesVal>,
+    /// PCs the walk identified as host syscalls, mapped to the Lean
+    /// `Syscall` constructor (e.g. `.sol_memset`). The CodeReq builder
+    /// renders these as `.call <ctor>` rather than `.call_local`.
+    syscall_pcs: std::collections::BTreeMap<usize, &'static str>,
+    /// One entry per memory syscall whose CU cost is surfaced as a
+    /// theorem hypothesis: `(nCu_var, hCu_hyp)`. The model's
+    /// `syscallCu` is data-dependent (∝ r3), so an honest upper bound
+    /// is an assumption, not something the lift can discharge.
+    syscall_cu_vars: Vec<(String, String)>,
+    /// One entry per memset byte-blob: `(bytes_sym, size_rendered)`.
+    /// Surfaced as a `ByteArray` param + a `.size = <count>` hypothesis
+    /// in the theorem signature (the spec's `hbs` obligation).
+    memset_blobs: Vec<(String, String)>,
 }
 
 impl SymState {
@@ -1536,7 +1587,77 @@ fn atom_to_lean_with_subst(
                 addr_str, lean_off(*addr_off), width.lean_arrow(), sub(value),
             )
         }
+        Atom::Bytes { addr, value } => {
+            // `memBytesIs` takes a bare Nat address (no effectiveAddr).
+            // Fold the address through the abstraction map — including
+            // SUB-expressions (e.g. `wrapAdd baseAddr 8` → `addr4`),
+            // exactly as register/mem *values* are folded via `sub`. The
+            // address isn't itself an abstraction (no fixed-width atom
+            // owns it), so a whole-address `subst.get` wouldn't catch the
+            // inner `addrK`; `fold_abstractions` does, keeping the goal
+            // atom in the same shape the sl_rw_abs-rewritten chain (and
+            // the value `generalize`) produces.
+            format!("({} ↦Bytes {})", sub(addr), value.to_lean())
+        }
     }
+}
+
+/// Emit the lift artifacts for a `sol_memset_(dst=r1, fill=r2, count=r3)`
+/// host syscall at logical PC `pc`. Shaped to `call_sol_memset_spec`:
+/// adds a `↦Bytes` precondition atom at `r1`'s current value (a fresh
+/// `ByteArray` of size `r3`), records the post (the region filled with
+/// `r2`'s low byte) and `r0 := 0`. The model's `syscallCu` for memory
+/// ops is data-dependent (∝ r3), so the CU bound (`nCu`) and the blob
+/// size are surfaced as theorem hypotheses and threaded into the spec
+/// call rather than discharged here.
+fn emit_sol_memset(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) {
+    // Read the operands at the call (pre-state). `read_reg` records each
+    // in `pre` if not already present, so the chain frames them through
+    // to this step.
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1);
+    let r2v = state.read_reg(2);
+    let r3v = state.read_reg(3);
+
+    let idx = state.fresh; state.fresh += 1;
+    let bs_name  = format!("memsetBs_{}", idx);
+    let bs_sz    = format!("hmemsetBs_{}_sz", idx);
+    let ncu_name = format!("nCuMemset{}", idx);
+    let hcu_name = format!("hCuMemset{}", idx);
+
+    // Pre atom: `r1V ↦Bytes memsetBs_idx`, size pinned to `r3V`.
+    let size_rendered = r3v.atom_lean();
+    state.pre.push(Atom::Bytes {
+        addr: r1v.clone(),
+        value: BytesVal::Sym { name: bs_name.clone(), size: r3v.clone() },
+    });
+    state.memset_blobs.push((bs_name.clone(), size_rendered));
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone()));
+    state.syscall_pcs.insert(pc, ".sol_memset");
+
+    // Post effect: `r0 := 0`; the blob becomes `replicateByte (r2V%256) r3V`.
+    state.write_reg(0, Expr::Const(0));
+    state.byte_blob_post.insert(
+        r1v.to_lean(),
+        BytesVal::Replicate { fill: r2v.clone(), count: r3v.clone() },
+    );
+
+    // The spec call:
+    //   call_sol_memset_spec r0Old r1V r2V r3V pc nCu bsOld hbs hCu
+    let have_line = format!(
+        "have h_{pc} := call_sol_memset_spec {r0} {r1} {r2} {r3} {pc} {ncu} {bs} {hbs} {hcu}",
+        pc = pc,
+        r0 = r0v.atom_lean(), r1 = r1v.atom_lean(),
+        r2 = r2v.atom_lean(), r3 = r3v.atom_lean(),
+        ncu = ncu_name, bs = bs_name, hbs = bs_sz, hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
+    block_pcs.push(pc);
 }
 
 /// Build the postcondition atom list: same shape as pre, but each atom
@@ -1564,6 +1685,14 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                     width:     *width,
                     value:     v,
                 });
+            }
+            Atom::Bytes { addr, value } => {
+                // A memory syscall rewrote this blob: look up its post
+                // contents by rendered address (set in `byte_blob_post`).
+                let post_val = state.byte_blob_post.get(&addr.to_lean())
+                    .cloned()
+                    .unwrap_or_else(|| value.clone());
+                out.push(Atom::Bytes { addr: addr.clone(), value: post_val });
             }
         }
     }
@@ -2421,17 +2550,23 @@ fn lift_one(
             // executed PC is the fall-through (pc+1) is a host syscall
             // (e.g. `sol_memset_`), not an internal `call_local` — the
             // host runs it and returns to pc+1 without pushing a BPF
-            // frame. We model only local calls (`call_local_spec`), so
-            // emitting that here would mis-pair with a later exit. Fail
-            // clearly: this arm needs a syscall-effect spec.
+            // frame. Dispatch on the resolved syscall hash; emit the
+            // matching syscall-effect spec, advance, and continue.
             if ins.opc == ebpf::CALL_IMM {
                 if let Some(t) = trace {
                     if t.get(ti + 1).copied() == Some(pc_iter + 1) {
+                        if ins.imm as u32 == ebpf::hash_symbol_name(b"sol_memset_") {
+                            emit_sol_memset(&mut state, &mut spec_calls,
+                                            &mut block_pcs, pc_iter);
+                            ti += 1;
+                            continue;
+                        }
                         return Err(format!(
                             "call_imm at pc {} is a syscall (trace returns to {} \
-                             without a frame push); syscall-effect specs are not yet \
-                             modelled. This arm needs one (e.g. sol_memset_).",
-                            pc_iter, pc_iter + 1).into());
+                             without a frame push) with imm hash 0x{:08x}, but only \
+                             sol_memset_ is modelled so far. This arm needs a \
+                             syscall-effect spec for that hash.",
+                            pc_iter, pc_iter + 1, ins.imm as u32).into());
                     }
                 }
             }
@@ -2567,9 +2702,16 @@ fn lift_one(
         let opens = "(".repeat(block_pcs.len().saturating_sub(1));
         s.push_str(&opens);
         for (i, &pc) in block_pcs.iter().enumerate() {
-            let tgt = resolve_call_target(&analysis, &insns[pc]);
-            let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
-            let lean_insn = insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?;
+            // A `call_imm` the walk resolved to a host syscall renders
+            // as `.call <ctor>` (matching the syscall spec's CodeReq
+            // singleton), not the `.call_local` insn_to_lean_full emits.
+            let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
+                format!(".call {}", ctor)
+            } else {
+                let tgt = resolve_call_target(&analysis, &insns[pc]);
+                let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
+                insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
+            };
             if i == 0 {
                 s.push_str(&format!("(CodeReq.singleton {} ({}))", pc, lean_insn));
             } else {
@@ -2649,6 +2791,10 @@ fn lift_one(
                 push_var(addr_base, &mut vars);
                 push_var(value, &mut vars);
             }
+            // The blob's `Sym` name is a `ByteArray` (surfaced via
+            // `memset_blobs`, not here); the address's Nat leaves were
+            // already collected when the syscall's registers were read.
+            Atom::Bytes { addr, .. } => push_var(addr, &mut vars),
         }
     }
     let vars_sig = if vars.is_empty() { String::new() }
@@ -2668,6 +2814,35 @@ fn lift_one(
     for (i, bh) in state.branch_hyps.iter().enumerate() {
         branch_hyps_sig.push_str(&format!("({} : {})\n    ", bh.name(i), bh.lean_hyp()));
     }
+    // Memory-syscall surface. Each memset contributes a `ByteArray`
+    // param + a `.size = <count>` hypothesis (the spec's `hbs`), and a
+    // `nCu` Nat param + a per-step CU-bound hypothesis (the spec's
+    // `hCu`). The model's `syscallCu` for memory ops scales with `r3`,
+    // so this bound is an honest modeling assumption surfaced in the
+    // signature, not a fact the lift can prove.
+    let mut syscall_sig = String::new();
+    for (bs, size) in &state.memset_blobs {
+        syscall_sig.push_str(&format!("({} : ByteArray)\n    ", bs));
+        syscall_sig.push_str(&format!("(h{}_sz : {}.size = {})\n    ", bs, bs, size));
+    }
+    for (ncu, hcu) in &state.syscall_cu_vars {
+        syscall_sig.push_str(&format!("({} : Nat)\n    ", ncu));
+        syscall_sig.push_str(&format!(
+            "({} : ∀ s : State, (step (.call .sol_memset) s).cuConsumed \
+             ≤ s.cuConsumed + {})\n    ",
+            hcu, ncu,
+        ));
+    }
+    // The triple's CU bound `M`: 0 for syscall-free arms, else the sum
+    // of the memory syscalls' `nCu` vars. `sl_block_iter`'s final
+    // `cuTripleWithinMem_cast` reconciles the chain's `0 + nCu + …`
+    // against this closed form via `omega`.
+    let m_bound: String = if state.syscall_cu_vars.is_empty() {
+        "0".to_string()
+    } else {
+        state.syscall_cu_vars.iter().map(|(n, _)| n.clone())
+            .collect::<Vec<_>>().join(" + ")
+    };
     // `sl_block_auto` now dispatches conditional jumps to their
     // `_not_taken` variants in InstructionSpecs/Jump.lean (see
     // SVM/SBPF/SpecGen.lean), surfacing the path hypothesis as a
@@ -2709,7 +2884,14 @@ fn lift_one(
         let mut seen = std::collections::BTreeSet::new();
         let mut gens = Vec::new();
         for atom in pre.iter().chain(post.iter()) {
-            let v = match atom { Atom::Reg(_, v) => v, Atom::Mem { value, .. } => value };
+            // `↦Bytes` blobs carry a `BytesVal`, not a Nat `Expr` value
+            // (the fill/count are constants), so there's nothing to
+            // generalize — skip them.
+            let v = match atom {
+                Atom::Reg(_, v) => v,
+                Atom::Mem { value, .. } => value,
+                Atom::Bytes { .. } => continue,
+            };
             if is_complex(v) {
                 // Render with sub-expression abstractions folded, so the
                 // generalize target matches the (sl_rw_abs-folded) proof
@@ -2833,8 +3015,8 @@ fn lift_one(
 
     out.push_str(&format!(
         "open Memory in\n\
-         theorem {}_lifted_spec\n    {}{}{}{}: \
-         cuTripleWithinMem {} 0 {} {}\n      \
+         theorem {}_lifted_spec\n    {}{}{}{}{}: \
+         cuTripleWithinMem {} {} {} {}\n      \
          ({})\n      \
          ({}{})\n      \
          ({}{})\n      \
@@ -2845,7 +3027,8 @@ fn lift_one(
         abs_sig,
         u64_hyps,
         branch_hyps_sig,
-        n, start_pc, exit_pc,
+        syscall_sig,
+        n, m_bound, start_pc, exit_pc,
         cr_lean,
         atoms_to_lean(&pre,  &abs_subst),  cs_atom,
         atoms_to_lean(&post, &abs_subst),  cs_atom,
@@ -2901,6 +3084,17 @@ fn lift_one(
         }
         for v in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
+        // Memory-syscall params, in the same order `syscall_sig` binds
+        // them: each blob's `ByteArray` + size hyp, then each `nCu` +
+        // CU-bound hyp.
+        for (bs, _) in &state.memset_blobs {
+            names.push(bs.clone());
+            names.push(format!("h{}_sz", bs));
+        }
+        for (ncu, hcu) in &state.syscall_cu_vars {
+            names.push(ncu.clone());
+            names.push(hcu.clone());
+        }
 
         let mut extra_hyps = String::new();
         let mut rw_terms: Vec<String> = Vec::new();
@@ -2924,8 +3118,8 @@ fn lift_one(
 
         out.push_str(&format!(
             "open Memory in\n\
-             theorem {}_balance_correct\n    {}{}{}{}{}: \
-             cuTripleWithinMem {} 0 {} {}\n      \
+             theorem {}_balance_correct\n    {}{}{}{}{}{}: \
+             cuTripleWithinMem {} {} {} {}\n      \
              ({})\n      \
              ({}{})\n      \
              ({}{})\n      \
@@ -2934,8 +3128,8 @@ fn lift_one(
              rw [{}]\n  \
              exact h\n\n",
             module_name,
-            vars_sig, abs_sig, u64_hyps, branch_hyps_sig, extra_hyps,
-            n, start_pc, exit_pc,
+            vars_sig, abs_sig, u64_hyps, branch_hyps_sig, syscall_sig, extra_hyps,
+            n, m_bound, start_pc, exit_pc,
             cr_lean,
             atoms_to_lean(&pre, &abs_subst), cs_atom,
             atoms_to_lean(&post_clean, &abs_subst), cs_atom,
