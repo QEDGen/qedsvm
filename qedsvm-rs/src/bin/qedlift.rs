@@ -440,14 +440,6 @@ impl Width {
             Width::Dword    => "↦U64",
         }
     }
-    fn modulus(&self) -> u64 {
-        match self {
-            Width::Byte     => 256,
-            Width::Halfword => 1 << 16,
-            Width::Word     => 1 << 32,
-            Width::Dword    => 0, // no narrowing
-        }
-    }
 }
 
 /// Render a memory offset for `effectiveAddr base off`. Negative
@@ -465,20 +457,6 @@ enum Atom {
     Mem { addr_base: Expr, addr_off: i64, width: Width, value: Expr },
 }
 
-impl Atom {
-    fn to_lean(&self) -> String {
-        match self {
-            Atom::Reg(r, v) => format!("(.{} ↦ᵣ {})", reg_lit(*r), v.to_lean()),
-            Atom::Mem { addr_base, addr_off, width, value } => format!(
-                "(effectiveAddr {} {} {} {})",
-                addr_base.atom_lean(),
-                lean_off(*addr_off),
-                width.lean_arrow(),
-                value.to_lean(),
-            ),
-        }
-    }
-}
 
 fn reg_lit(n: u8) -> &'static str {
     match n {
@@ -640,7 +618,6 @@ impl SymState {
         // rr contribution: every store needs containsWritable.
         self.rr_walk.push((base_expr, off, width, true));
     }
-    fn next_fresh(&mut self) -> u32 { self.fresh += 1; self.fresh }
 }
 
 fn w_short(w: Width) -> &'static str {
@@ -2660,7 +2637,7 @@ fn lift_one(
     // Collect the symbolic variables we introduced so the theorem
     // signature can quantify over them.
     let mut vars: Vec<String> = Vec::new();
-    let mut push_var = |v: &Expr, vars: &mut Vec<String>| {
+    let push_var = |v: &Expr, vars: &mut Vec<String>| {
         if let Expr::InitReg(n) | Expr::InitMem(n) = v {
             if !vars.contains(n) { vars.push(n.clone()); }
         }
