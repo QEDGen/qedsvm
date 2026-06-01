@@ -32,6 +32,7 @@ open SVM.Pubkey
 /-- A decoded account field: an owned u64, an owned pubkey (four u64
     limbs), or an opaque blob given as a byte-segment list. -/
 inductive FieldVal where
+  | byte   (v : Nat)
   | u64    (v : Nat)
   | pubkey (p : Pubkey)
   | blob   (segs : List FieldSeg)
@@ -40,6 +41,7 @@ namespace FieldVal
 
 /-- Coarse field atom — the form a spec/codec consumes. -/
 def coarse (addr : Nat) : FieldVal → Assertion
+  | .byte v   => memByteIs addr v
   | .u64 v    => memU64Is addr v
   | .pubkey p => pubkeyIs addr p
   | .blob segs => memBytesIs addr (segsBytes segs)
@@ -48,6 +50,7 @@ def coarse (addr : Nat) : FieldVal → Assertion
     `coarse` only on `blob`, where the `↦Bytes` blob expands to its
     segments. -/
 def fine (addr : Nat) : FieldVal → Assertion
+  | .byte v   => memByteIs addr v
   | .u64 v    => memU64Is addr v
   | .pubkey p => pubkeyIs addr p
   | .blob segs => segsSL addr segs
@@ -60,6 +63,7 @@ def fineValid : FieldVal → Prop
 theorem coarse_fine (addr : Nat) (fv : FieldVal) (hv : fv.fineValid) :
     ∀ h, fv.coarse addr h ↔ fv.fine addr h := by
   cases fv with
+  | byte v    => intro h; exact Iff.rfl
   | u64 v     => intro h; exact Iff.rfl
   | pubkey p  => intro h; exact Iff.rfl
   | blob segs => exact memBytesIs_segs addr segs hv
