@@ -71,6 +71,11 @@ struct Args {
     /// balance debit/credit a static fall-through walk skips). Applies
     /// to single-arm mode (`--so` without `--idl`).
     trace:       Option<PathBuf>,
+    /// IDL instruction name for the refinement codegen (single-arm
+    /// mode). When given and recognised by the refinement registry,
+    /// qedlift also emits the `<module>Refinement.lean` asm-refines
+    /// theorem. Batch mode derives this from the IDL automatically.
+    arm_name:    Option<String>,
 }
 
 // -----------------------------------------------------------------------------
@@ -169,6 +174,7 @@ fn parse_args() -> Result<Args, String> {
     let mut idl:         Option<PathBuf> = None;
     let mut output_dir:  Option<PathBuf> = None;
     let mut trace:       Option<PathBuf> = None;
+    let mut arm_name:    Option<String>  = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -181,12 +187,13 @@ fn parse_args() -> Result<Args, String> {
             "--idl"         => idl         = Some(it.next().ok_or("--idl needs a path")?.into()),
             "--output-dir"  => output_dir  = Some(it.next().ok_or("--output-dir needs a path")?.into()),
             "--trace"       => trace       = Some(it.next().ok_or("--trace needs a path")?.into()),
+            "--arm-name"    => arm_name    = Some(it.next().ok_or("--arm-name needs a name")?),
             other           => return Err(format!("unknown arg: {}", other)),
         }
     }
     Ok(Args {
         so: so.ok_or("missing --so")?,
-        output, module, target_disc, idl, output_dir, trace,
+        output, module, target_disc, idl, output_dir, trace, arm_name,
     })
 }
 
@@ -1629,6 +1636,9 @@ struct LiftOutput {
     module_name: String,
     text_bytes:  usize,
     insn_count:  usize,
+    /// Optional asm-refines-intrinsic theorem `(module_name, lean)`,
+    /// emitted when the arm matches the refinement registry.
+    refinement:  Option<(String, String)>,
 }
 
 // Per-binary context shared across arms in batch mode. Building
@@ -1735,6 +1745,468 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
     Ok(BinaryCtx { executable, text_offset, text_bytes, insns, logical_to_slot, slot_to_logical })
 }
 
+// ════════════════════════════════════════════════════════════════
+// Refinement codegen — emit a per-arm asm-refines-intrinsic theorem
+// alongside the lift, mechanizing the hand recipe used for
+// Transfer / TransferChecked / MintTo / Burn. Given the lift's atoms +
+// the IDL arm name, it detects the mutated account cells, classifies
+// each account's codec fields (token vs mint), picks the matching
+// aggregation lemma, builds the frame, and emits the
+// `AsmRefines…`-obligation theorem. Returns `(module_name, lean)` or
+// `None` for arms not in the intrinsic registry / with an unrecognised
+// account layout.
+// ════════════════════════════════════════════════════════════════
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodecKind { Token, Mint }
+
+struct RefineSpec {
+    asm_pred: &'static str,
+    /// account roles in `AsmRefines…` argument order.
+    accounts: &'static [(&'static str, CodecKind)],
+}
+
+fn refine_registry(arm: &str) -> Option<RefineSpec> {
+    match arm {
+        "Transfer" | "TransferChecked" => Some(RefineSpec {
+            asm_pred: "AsmRefinesTokenTransfer",
+            accounts: &[("src", CodecKind::Token), ("dst", CodecKind::Token)],
+        }),
+        "MintTo" => Some(RefineSpec {
+            asm_pred: "AsmRefinesTokenMintTo",
+            accounts: &[("mint", CodecKind::Mint), ("dest", CodecKind::Token)],
+        }),
+        "Burn" => Some(RefineSpec {
+            asm_pred: "AsmRefinesTokenBurn",
+            accounts: &[("account", CodecKind::Token), ("mint", CodecKind::Mint)],
+        }),
+        _ => None,
+    }
+}
+
+/// Value of a memory cell at `(base_raw, off)` with the given byte-ness,
+/// if the lift owns it.
+fn cell_val<'a>(atoms: &'a [Atom], base_raw: &str, off: i64, byte: bool) -> Option<&'a Expr> {
+    for a in atoms {
+        if let Atom::Mem { addr_base, addr_off, width, value } = a {
+            if *addr_off == off && matches!(width, Width::Byte) == byte
+               && addr_base.to_lean() == base_raw {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// A balance/supply cell mutated in the post (`a ± b`, both loaded).
+struct MutCell { base: Expr, base_raw: String, off: i64, a: Expr, b: Expr, is_sub: bool }
+
+/// Output of building one account's aggregation + frame.
+struct AcctBuild {
+    base_arg: String,                  // "(addr5 + 88)" — lemma base argument
+    record: String,                    // the codec record literal
+    rw_pre: String,                    // aggregation rw call at the pre value
+    rw_post: String,                   // aggregation rw call at the post value
+    frame: Vec<String>,                // frame atoms
+    owned: Vec<(String, i64, bool)>,   // lift cells consumed (excluded from setup)
+    params: Vec<String>,               // new Nat params (framed owner o…)
+    barrays: Vec<String>,              // new ByteArray params
+    hyps: Vec<String>,                 // size + byte-bound hypotheses
+}
+
+fn emit_refinement(
+    arm_name:     &str,
+    lift_module:  &str,
+    pre:          &[Atom],
+    post_clean:   &[Atom],
+    abs_subst:    &std::collections::BTreeMap<String, String>,
+    vars:         &[String],
+    n_cu:         usize,
+    start_pc:     usize,
+    exit_pc:      usize,
+) -> Option<(String, String)> {
+    let spec = refine_registry(arm_name)?;
+    let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
+
+    // ── Detect mutated account cells (a ± b, both InitMem) ──────────
+    let is_initmem = |e: &Expr| matches!(e, Expr::InitMem(_));
+    let mut muts: Vec<MutCell> = Vec::new();
+    for atom in post_clean {
+        if let Atom::Mem { addr_base, addr_off, value, .. } = atom {
+            let (a, b, is_sub) = match value {
+                Expr::CleanSub(a, b) => ((**a).clone(), (**b).clone(), true),
+                Expr::NatAdd(a, b)   => ((**a).clone(), (**b).clone(), false),
+                _ => continue,
+            };
+            if is_initmem(&a) && is_initmem(&b) {
+                muts.push(MutCell { base: addr_base.clone(), base_raw: addr_base.to_lean(),
+                    off: *addr_off, a, b, is_sub });
+            }
+        }
+    }
+    if muts.is_empty() { return None; }
+    // The transferred amount `b` is shared across all mutated cells.
+    let amount = fold(&muts[0].b);
+
+    // ── Assign each registry account to a mutated cell ──────────────
+    // Token amount cells own a mint dword at off-64; mint supply cells
+    // own the is_initialized byte at off+9 (= base+45).
+    let is_mint_mut = |m: &MutCell| cell_val(pre, &m.base_raw, m.off + 9, true).is_some();
+    let is_tok_mut  = |m: &MutCell| cell_val(pre, &m.base_raw, m.off - 64, false).is_some();
+    let mut used = vec![false; muts.len()];
+    let mut builds: Vec<AcctBuild> = Vec::new();
+    let mut barray_ctr = 0u32;
+    let mut framed_owner = false;
+    for (role, codec) in spec.accounts {
+        // Pick an unused mutated cell matching this codec; for two
+        // same-codec token accounts (Transfer), src=sub, dst=add.
+        let want_sub = *role == "src" || *role == "account";
+        let idx = (0..muts.len()).find(|&i| {
+            !used[i] && match codec {
+                CodecKind::Token => is_tok_mut(&muts[i])
+                    && (spec.accounts.iter().filter(|(_, c)| *c == CodecKind::Token).count() < 2
+                        || muts[i].is_sub == want_sub),
+                CodecKind::Mint => is_mint_mut(&muts[i]),
+            }
+        })?;
+        used[idx] = true;
+        let m = &muts[idx];
+        let field_off = if *codec == CodecKind::Token { 64 } else { 36 };
+        let base_off = m.off - field_off;
+        let base_expr = fold(&m.base);
+        let base_arg = format!("({} + {})", base_expr, base_off);
+        let build = match codec {
+            CodecKind::Token => build_token(pre, m, &base_expr, base_off, &amount,
+                &fold, &mut barray_ctr, &mut framed_owner)?,
+            CodecKind::Mint  => build_mint(pre, m, &base_expr, base_off, &amount,
+                &fold, &mut barray_ctr)?,
+        };
+        let _ = base_arg;
+        builds.push(build);
+    }
+
+    // ── Assemble setup atoms (lift cells not owned by any account) ──
+    let owned: std::collections::HashSet<(String, i64, bool)> =
+        builds.iter().flat_map(|b| b.owned.iter().cloned()).collect();
+    let is_owned = |a: &Atom| match a {
+        Atom::Mem { addr_base, addr_off, width, .. } =>
+            owned.contains(&(addr_base.to_lean(), *addr_off, matches!(width, Width::Byte))),
+        _ => false,
+    };
+    let setup_pre: Vec<Atom> = pre.iter().filter(|a| !is_owned(a)).cloned().collect();
+    let setup_post: Vec<Atom> = post_clean.iter().filter(|a| !is_owned(a)).cloned().collect();
+
+    // ── Render ──────────────────────────────────────────────────────
+    let module = format!("{}Refinement", lift_module);
+    let lean = render_refinement(&spec, &module, &builds, pre, post_clean,
+        &setup_pre, &setup_post, abs_subst, vars, &amount, n_cu, start_pc, exit_pc);
+    Some((module, lean))
+}
+
+/// Build a token-account aggregation (src/dst/dest patterns).
+fn build_token(
+    pre: &[Atom], m: &MutCell, base_expr: &str, base_off: i64, amount: &str,
+    fold: &dyn Fn(&Expr) -> String, barray_ctr: &mut u32, framed_owner: &mut bool,
+) -> Option<AcctBuild> {
+    let base_arg = format!("({} + {})", base_expr, base_off);
+    let mut owned = Vec::new();
+    let mut params = Vec::new();
+    let mut barrays = Vec::new();
+    let mut hyps = Vec::new();
+    let mut frame = Vec::new();
+
+    // mint pubkey: 4 dwords at +0/8/16/24 (always owned).
+    let mut mint = Vec::new();
+    for i in 0..4 {
+        let off = base_off + 8 * i;
+        let v = fold(cell_val(pre, &m.base_raw, off, false)?);
+        mint.push(v);
+        owned.push((m.base_raw.clone(), off, false));
+    }
+    // owner pubkey: owned (read) or framed.
+    let owner_owned = cell_val(pre, &m.base_raw, base_off + 32, false).is_some();
+    let owner: Vec<String> = if owner_owned {
+        (0..4).map(|i| {
+            let off = base_off + 32 + 8 * i;
+            owned.push((m.base_raw.clone(), off, false));
+            fold(cell_val(pre, &m.base_raw, off, false).unwrap())
+        }).collect()
+    } else {
+        if *framed_owner { return None; } // only one framed-owner account supported
+        *framed_owner = true;
+        for i in 0..4 {
+            params.push(format!("o{}", i));
+            frame.push(format!("(effectiveAddr {} {} ↦U64 o{})", base_expr, base_off + 32 + 8 * i, i));
+        }
+        (0..4).map(|i| format!("o{}", i)).collect()
+    };
+    // amount field pre-value (the balance `a`).
+    let amt_field = fold(&m.a);
+    owned.push((m.base_raw.clone(), base_off + 64, false));
+
+    // rest bytes owned in [base+72, base+165).
+    let mut rest_bytes: Vec<i64> = Vec::new();
+    for a in pre {
+        if let Atom::Mem { addr_base, addr_off, width, .. } = a {
+            if addr_base.to_lean() == m.base_raw && matches!(width, Width::Byte)
+               && *addr_off >= base_off + 72 && *addr_off < base_off + 165 {
+                rest_bytes.push(*addr_off - base_off);
+            }
+        }
+    }
+    rest_bytes.sort();
+    let byte_val = |off: i64| fold(cell_val(pre, &m.base_raw, base_off + off, true).unwrap());
+    let g1 = { *barray_ctr += 1; format!("g{}", *barray_ctr) };
+    let g2 = { *barray_ctr += 1; format!("g{}", *barray_ctr) };
+    barrays.push(g1.clone()); barrays.push(g2.clone());
+
+    // Per-byte hyp name derived from the byte var (unique across accounts).
+    let hb = |v: &str| format!("h_{}", v);
+    let g1sz = format!("{}sz", g1);
+    // (lemma, record_rest, rw_args_tail). The tail is the lemma args after
+    // `base mint… owner… amount`: the rest bytes, gaps, and size/bound hyps.
+    let (lemma, rest, rest_args): (&str, String, String) = match rest_bytes.as_slice() {
+        [72, 108, 109] => {
+            let (b72, b108, b109) = (byte_val(72), byte_val(108), byte_val(109));
+            for o in [72, 108, 109] { owned.push((m.base_raw.clone(), base_off + o, true)); }
+            hyps.push(format!("({} : {}.size = 35)", g1sz, g1));
+            hyps.push(format!("({} : {} < 256)", hb(&b72), b72));
+            hyps.push(format!("({} : {} < 256)", hb(&b108), b108));
+            hyps.push(format!("({} : {} < 256)", hb(&b109), b109));
+            frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 73, g1));
+            frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 110, g2));
+            ("src_account_eq",
+             format!("PartialState.byteBA {} ++ ({} ++ (PartialState.byteBA {} ++ (PartialState.byteBA {} ++ {})))", b72, g1, b108, b109, g2),
+             format!("{} {} {} {} {} {} {} {} {}", b72, b108, b109, g1, g2, g1sz, hb(&b72), hb(&b108), hb(&b109)))
+        }
+        [108] => {
+            let b108 = byte_val(108);
+            owned.push((m.base_raw.clone(), base_off + 108, true));
+            hyps.push(format!("({} : {}.size = 36)", g1sz, g1));
+            hyps.push(format!("({} : {} < 256)", hb(&b108), b108));
+            frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 72, g1));
+            frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 109, g2));
+            ("dst_account_eq",
+             format!("{} ++ (PartialState.byteBA {} ++ {})", g1, b108, g2),
+             format!("{} {} {} {} {}", b108, g1, g2, g1sz, hb(&b108)))
+        }
+        [108, 109] => {
+            let (b108, b109) = (byte_val(108), byte_val(109));
+            for o in [108, 109] { owned.push((m.base_raw.clone(), base_off + o, true)); }
+            hyps.push(format!("({} : {}.size = 36)", g1sz, g1));
+            hyps.push(format!("({} : {} < 256)", hb(&b108), b108));
+            hyps.push(format!("({} : {} < 256)", hb(&b109), b109));
+            frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 72, g1));
+            frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 110, g2));
+            ("dest_account_eq",
+             format!("{} ++ (PartialState.byteBA {} ++ (PartialState.byteBA {} ++ {}))", g1, b108, b109, g2),
+             format!("{} {} {} {} {} {} {}", b108, b109, g1, g2, g1sz, hb(&b108), hb(&b109)))
+        }
+        _ => return None,
+    };
+
+    let owner_args = owner.join(" ");
+    let mint_args = mint.join(" ");
+    let record = format!(
+        "{{ mint := ⟨{}⟩,\n        owner := ⟨{}⟩, amount := {},\n        rest := {} }}",
+        mint.join(", "), owner.join(", "), amt_field, rest);
+    let post_amt = if m.is_sub { format!("({} - {})", amt_field, amount) } else { format!("({} + {})", amt_field, amount) };
+    let rw_pre = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, amt_field, rest_args);
+    let rw_post = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, post_amt, rest_args);
+    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params, barrays, hyps })
+}
+
+/// Build a mint-account aggregation (full preAuth or supply-only).
+fn build_mint(
+    pre: &[Atom], m: &MutCell, base_expr: &str, base_off: i64, amount: &str,
+    fold: &dyn Fn(&Expr) -> String, barray_ctr: &mut u32,
+) -> Option<AcctBuild> {
+    let base_arg = format!("({} + {})", base_expr, base_off);
+    let mut owned = Vec::new();
+    let mut barrays = Vec::new();
+    let mut hyps = Vec::new();
+    let mut frame = Vec::new();
+
+    let supply = fold(&m.a);
+    owned.push((m.base_raw.clone(), base_off + 36, false));
+    let b45 = fold(cell_val(pre, &m.base_raw, base_off + 45, true)?);
+    owned.push((m.base_raw.clone(), base_off + 45, true));
+    hyps.push(format!("(h_{} : {} < 256)", b45, b45));
+
+    let g_rest = { *barray_ctr += 1; format!("g{}", *barray_ctr) }; // gD (1B)
+    let g_free = { *barray_ctr += 1; format!("g{}", *barray_ctr) }; // gF (36B)
+    barrays.push(g_rest.clone()); barrays.push(g_free.clone());
+    hyps.push(format!("({}sz : {}.size = 1)", g_rest, g_rest));
+    frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 44, g_rest));
+    frame.push(format!("memBytesIs ({} + {}) {}", base_expr, base_off + 46, g_free));
+    let rest = format!("{} ++ (PartialState.byteBA {} ++ {})", g_rest, b45, g_free);
+
+    let preauth_owned = cell_val(pre, &m.base_raw, base_off + 4, false).is_some();
+    let (lemma, preauth, pre_args): (&str, String, String) = if preauth_owned {
+        let b0 = fold(cell_val(pre, &m.base_raw, base_off, true)?);
+        owned.push((m.base_raw.clone(), base_off, true));
+        hyps.insert(0, format!("(h_{} : {} < 256)", b0, b0));
+        let mut ps = Vec::new();
+        for i in 0..4 {
+            let off = base_off + 4 + 8 * i;
+            ps.push(fold(cell_val(pre, &m.base_raw, off, false)?));
+            owned.push((m.base_raw.clone(), off, false));
+        }
+        let g_a = { *barray_ctr += 1; format!("g{}", *barray_ctr) }; // gA (3B)
+        barrays.insert(0, g_a.clone());
+        hyps.insert(0, format!("({}sz : {}.size = 3)", g_a, g_a));
+        frame.insert(0, format!("memBytesIs ({} + {}) {}", base_expr, base_off + 1, g_a));
+        ("mint_account_eq",
+         format!("PartialState.byteBA {} ++ ({} ++ (PartialState.u64LE {} ++ (PartialState.u64LE {} ++ (PartialState.u64LE {} ++ PartialState.u64LE {}))))",
+            b0, g_a, ps[0], ps[1], ps[2], ps[3]),
+         format!("{} {} {} {} {} {}", b0, ps[0], ps[1], ps[2], ps[3], format!("{}", b45)))
+    } else {
+        let pa = { *barray_ctr += 1; format!("preAuth{}", *barray_ctr) };
+        barrays.insert(0, pa.clone());
+        frame.insert(0, format!("memBytesIs ({} + {}) {}", base_expr, base_off, pa));
+        ("mint_supply_eq", pa.clone(), format!("{}", b45))
+    };
+
+    let record = format!(
+        "{{ preAuth := {},\n        supply := {},\n        rest := {} }}",
+        preauth, supply, rest);
+    let post_sup = if m.is_sub { format!("({} - {})", supply, amount) } else { format!("({} + {})", supply, amount) };
+    let rw_pre = mint_rw(lemma, &base_arg, &preauth, &pre_args, &supply, &b45, &barrays, preauth_owned);
+    let rw_post = mint_rw(lemma, &base_arg, &preauth, &pre_args, &post_sup, &b45, &barrays, preauth_owned);
+    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params: Vec::new(), barrays, hyps })
+}
+
+/// Render a mint aggregation rw call for a given supply value.
+fn mint_rw(lemma: &str, base_arg: &str, preauth: &str, pre_args: &str,
+           supply: &str, b45: &str, barrays: &[String], preauth_owned: bool) -> String {
+    if preauth_owned {
+        // mint_account_eq base b0 p0 p1 p2 p3 supply b45 gA gD gF gAsz gDsz h_b0 h_b45
+        let g_a = &barrays[0]; let g_d = &barrays[1]; let g_f = &barrays[2];
+        let parts: Vec<&str> = pre_args.split_whitespace().collect(); // [b0, p0, p1, p2, p3, b45]
+        format!("{} {} {} {} {} {} {} {} {} {} {} {} {} {} h_{} h_{}",
+            lemma, base_arg, parts[0], parts[1], parts[2], parts[3], parts[4],
+            supply, b45, g_a, g_d, g_f,
+            format!("{}sz", g_a), format!("{}sz", g_d), parts[0], b45)
+    } else {
+        // mint_supply_eq base supply b45 preAuth gD gF gDsz h_b45
+        let g_d = &barrays[1]; let g_f = &barrays[2];
+        format!("{} {} {} {} {} {} {} {} h_{}",
+            lemma, base_arg, supply, b45, preauth, g_d, g_f,
+            format!("{}sz", g_d), b45)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_refinement(
+    spec: &RefineSpec, module: &str, builds: &[AcctBuild],
+    pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
+    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String], amount: &str,
+    n_cu: usize, start_pc: usize, exit_pc: usize,
+) -> String {
+    // params: vars (Nat), framed owners, ByteArrays, hyps.
+    let mut nat_params = vars.join(" ");
+    for b in builds { for p in &b.params { nat_params.push(' '); nat_params.push_str(p); } }
+    let mut barrays: Vec<String> = Vec::new();
+    let mut hyps: Vec<String> = Vec::new();
+    for b in builds { barrays.extend(b.barrays.iter().cloned()); hyps.extend(b.hyps.iter().cloned()); }
+
+    // AsmRefines account argument order (records), interleaved with addrs.
+    // Build: pred cr nCu 0 entry exit rr <addr args> <record args> amount setupPre setupPost
+    let addr_args: Vec<String> = builds.iter().map(|b| b.base_arg.clone()).collect();
+    let record_args: Vec<String> = builds.iter().map(|b| format!("\n      {}", b.record)).collect();
+
+    // rw list: pre-aggregations then post-aggregations.
+    let mut rw: Vec<String> = Vec::new();
+    for b in builds { rw.push(b.rw_pre.clone()); }
+    for b in builds { rw.push(b.rw_post.clone()); }
+
+    // frame F (right-folded sep-conj of all accounts' frame atoms).
+    let frame_atoms: Vec<String> = builds.iter().flat_map(|b| b.frame.iter().cloned()).collect();
+    let frame = frame_atoms.join(" **\n      ");
+
+    let mut imports = vec![
+        "import SVM.SBPF.Tactic.SL".to_string(),
+        "import SVM.Solana.Abstract.Refinement".to_string(),
+        format!("import Generated.{}TracedLifted", strip_refinement(module)),
+    ];
+    // aggregation deps
+    let uses_transfer_agg = builds.iter().any(|b|
+        b.rw_pre.starts_with("src_account_eq") || b.rw_pre.starts_with("dst_account_eq"));
+    let uses_mint_agg = builds.iter().any(|b|
+        b.rw_pre.starts_with("mint_account_eq") || b.rw_pre.starts_with("mint_supply_eq")
+        || b.rw_pre.starts_with("dest_account_eq"));
+    if uses_transfer_agg { imports.push("import PToken.TransferAggregation".to_string()); }
+    if uses_mint_agg { imports.push("import PToken.MintAggregation".to_string()); }
+
+    let mut opens = Vec::new();
+    if uses_transfer_agg { opens.push("Examples.PTokenTransferAggregation"); }
+    if uses_mint_agg { opens.push("Examples.PTokenMintAggregation"); }
+
+    let barray_sig = if barrays.is_empty() { String::new() }
+        else { format!("\n    ({} : ByteArray)", barrays.join(" ")) };
+    let hyp_sig = if hyps.is_empty() { String::new() }
+        else { format!("\n    {}", hyps.join("\n    ")) };
+
+    let lift_pre = atoms_to_lean(pre, abs_subst);
+    let lift_post = atoms_to_lean(post_clean, abs_subst);
+    let setup_pre_s = atoms_to_lean(setup_pre, abs_subst);
+    let setup_post_s = atoms_to_lean(setup_post, abs_subst);
+
+    format!(
+"/-
+  {arm} asm-refines-intrinsic theorem. MECHANICALLY EMITTED by qedlift's
+  refinement codegen from the lift's atoms + the IDL arm name. Wires the
+  trace-guided lift to `{pred}` via the codec-aggregation lemmas +
+  `cuTripleWithinMem_frame_right` + `sl_exact`.
+-/
+
+{imports}
+
+namespace Examples.{module}
+open SVM SVM.SBPF SVM.SBPF.Memory
+{opens}
+
+set_option maxHeartbeats 800000 in
+theorem refines_asm
+    (cr : CodeReq) (rr : Memory.RegionTable → Prop)
+    ({nat_params} : Nat){barray_sig}{hyp_sig}
+    (lift : cuTripleWithinMem {n} 0 {entry} {exit} cr
+      ({lift_pre})
+      ({lift_post}) rr) :
+    SVM.Solana.Abstract.{pred} cr {n} 0 {entry} {exit} rr {addrs}{records}
+      {amount}
+      ({setup_pre})
+      ({setup_post}) := by
+  unfold SVM.Solana.Abstract.{pred}
+  simp only [SVM.Solana.Abstract.Mint.withSupply, SVM.Solana.Abstract.TokenAccount.withAmount]
+  rw [{rw}]
+  simp only [pubkeyIs]
+  have framed := cuTripleWithinMem_frame_right
+    ( {frame} )
+    (by sl_pcfree) lift
+  simp only [Nat.add_assoc, Nat.reduceAdd]
+  sl_exact framed
+
+end Examples.{module}
+",
+        arm = spec.asm_pred, pred = spec.asm_pred, module = module,
+        imports = imports.join("\n"),
+        opens = if opens.is_empty() { String::new() } else { format!("open {}", opens.join(" ")) },
+        nat_params = nat_params, barray_sig = barray_sig, hyp_sig = hyp_sig,
+        n = n_cu, entry = start_pc, exit = exit_pc,
+        lift_pre = lift_pre, lift_post = lift_post,
+        addrs = addr_args.join(" "), records = record_args.join(""),
+        amount = amount,
+        setup_pre = setup_pre_s, setup_post = setup_post_s,
+        rw = rw.join(",\n      "), frame = frame,
+    )
+}
+
+/// "PTokenMintToRefinement" → "PTokenMintTo".
+fn strip_refinement(module: &str) -> String {
+    module.strip_suffix("Refinement").unwrap_or(module).to_string()
+}
+
 fn lift_one(
     so_path:         &Path,
     ctx:             &BinaryCtx,
@@ -1742,6 +2214,7 @@ fn lift_one(
     target_disc:     Option<i64>,
     module_override: Option<String>,
     trace:           Option<&[usize]>,
+    arm_name:        Option<&str>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
     let text_offset = ctx.text_offset;
@@ -2497,11 +2970,16 @@ fn lift_one(
 
     out.push_str(&format!("end Examples.Lifted.{}\n", module_name));
 
+    // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
+    let refinement = arm_name.and_then(|arm| emit_refinement(
+        arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc));
+
     Ok(LiftOutput {
         lean: out,
         module_name,
         text_bytes: text_bytes.len(),
         insn_count: insns.len(),
+        refinement,
     })
 }
 
@@ -2562,15 +3040,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // opcode (in either the .text renderer or the symbolic
             // executor) is reported and skipped, not fatal. This makes
             // the batch a coverage probe.
-            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None) {
+            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name)) {
                 Ok(result) => {
                     let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
                     if let Some(parent) = out_path.parent() {
                         std::fs::create_dir_all(parent)?;
                     }
                     std::fs::write(&out_path, &result.lean)?;
-                    println!("  ✔ {:<24} disc={:<4} {} insns → {}",
-                        ix.name, ix.discriminator, result.insn_count, out_path.display());
+                    let refined = if let Some((rmod, rlean)) = &result.refinement {
+                        let rpath = output_dir.join(format!("{}.lean", rmod));
+                        std::fs::write(&rpath, rlean)?;
+                        " (+refinement)"
+                    } else { "" };
+                    println!("  ✔ {:<24} disc={:<4} {} insns → {}{}",
+                        ix.name, ix.discriminator, result.insn_count, out_path.display(), refined);
                     lifted += 1;
                 }
                 Err(e) => {
@@ -2587,7 +3070,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Single-instruction mode (unchanged behaviour).
     let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone(),
-                          trace.as_deref())?;
+                          trace.as_deref(), args.arm_name.as_deref())?;
     match args.output {
         Some(path) => {
             if let Some(parent) = path.parent() {
@@ -2599,9 +3082,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  output : {}", path.display());
             println!("  .text  : {} bytes ({} insns)", result.text_bytes, result.insn_count);
             println!("  module : Examples.Lifted.{}", result.module_name);
+            if let Some((rmod, rlean)) = &result.refinement {
+                let rpath = path.with_file_name(format!("{}.lean", rmod));
+                std::fs::write(&rpath, rlean)?;
+                println!("  refine : {}", rpath.display());
+            }
         }
         None => {
             print!("{}", result.lean);
+            if let Some((_, rlean)) = &result.refinement {
+                println!("\n-- ╌╌ refinement ╌╌");
+                print!("{}", rlean);
+            }
         }
     }
     Ok(())
