@@ -798,38 +798,41 @@ impl BranchHyp {
         // this — infix `<`/`>`/`≤`/`=` bind looser than application.
         let va = self.dst_value.atom_lean();
         let sa = self.src_value.as_ref().map(|e| e.atom_lean()).unwrap_or_default();
+        // Immediate, parenthesised when negative: `toU64 -5` would parse
+        // as `(toU64) - 5` (an `Int → Nat` minus `Nat` type error).
+        let im = if self.imm < 0 { format!("({})", self.imm) } else { format!("{}", self.imm) };
         match (self.kind.clone(), self.taken) {
-            (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, self.imm),
-            (BranchKind::JeqImm, true)  => format!("{} = toU64 {}", v, self.imm),
-            (BranchKind::JneImm, false) => format!("{} = toU64 {}", v, self.imm),
-            (BranchKind::JneImm, true)  => format!("{} ≠ toU64 {}", v, self.imm),
+            (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, im),
+            (BranchKind::JeqImm, true)  => format!("{} = toU64 {}", v, im),
+            (BranchKind::JneImm, false) => format!("{} = toU64 {}", v, im),
+            (BranchKind::JneImm, true)  => format!("{} ≠ toU64 {}", v, im),
             // `jgt` is unsigned >. Taken => vDst > toU64 imm; not-taken
             // is the strict negation (¬ >). The Lean helper accepts
             // exactly these via if_pos/if_neg.
-            (BranchKind::JgtImm, false) => format!("¬ {} > toU64 {}", v, self.imm),
-            (BranchKind::JgtImm, true)  => format!("{} > toU64 {}", v, self.imm),
+            (BranchKind::JgtImm, false) => format!("¬ {} > toU64 {}", v, im),
+            (BranchKind::JgtImm, true)  => format!("{} > toU64 {}", v, im),
             // `jsgt` is signed >. Lean spec compares
             // `toSigned64 vDst > toSigned64 (toU64 imm)`.
-            (BranchKind::JsgtImm, false) => format!("¬ toSigned64 {} > toSigned64 (toU64 {})", va, self.imm),
-            (BranchKind::JsgtImm, true)  => format!("toSigned64 {} > toSigned64 (toU64 {})", va, self.imm),
+            (BranchKind::JsgtImm, false) => format!("¬ toSigned64 {} > toSigned64 (toU64 {})", va, im),
+            (BranchKind::JsgtImm, true)  => format!("toSigned64 {} > toSigned64 (toU64 {})", va, im),
             // `jsle` is signed ≤ (imm form).
-            (BranchKind::JsleImm, false) => format!("¬ toSigned64 {} ≤ toSigned64 (toU64 {})", va, self.imm),
-            (BranchKind::JsleImm, true)  => format!("toSigned64 {} ≤ toSigned64 (toU64 {})", va, self.imm),
+            (BranchKind::JsleImm, false) => format!("¬ toSigned64 {} ≤ toSigned64 (toU64 {})", va, im),
+            (BranchKind::JsleImm, true)  => format!("toSigned64 {} ≤ toSigned64 (toU64 {})", va, im),
             // `jlt`/`jle` are unsigned < / ≤ (imm form).
-            (BranchKind::JltImm, false) => format!("¬ {} < toU64 {}", v, self.imm),
-            (BranchKind::JltImm, true)  => format!("{} < toU64 {}", v, self.imm),
-            (BranchKind::JleImm, false) => format!("¬ {} ≤ toU64 {}", v, self.imm),
-            (BranchKind::JleImm, true)  => format!("{} ≤ toU64 {}", v, self.imm),
+            (BranchKind::JltImm, false) => format!("¬ {} < toU64 {}", v, im),
+            (BranchKind::JltImm, true)  => format!("{} < toU64 {}", v, im),
+            (BranchKind::JleImm, false) => format!("¬ {} ≤ toU64 {}", v, im),
+            (BranchKind::JleImm, true)  => format!("{} ≤ toU64 {}", v, im),
             // `jslt` is signed < (imm form).
-            (BranchKind::JsltImm, false) => format!("¬ toSigned64 {} < toSigned64 (toU64 {})", va, self.imm),
-            (BranchKind::JsltImm, true)  => format!("toSigned64 {} < toSigned64 (toU64 {})", va, self.imm),
+            (BranchKind::JsltImm, false) => format!("¬ toSigned64 {} < toSigned64 (toU64 {})", va, im),
+            (BranchKind::JsltImm, true)  => format!("toSigned64 {} < toSigned64 (toU64 {})", va, im),
             // `jge` unsigned ≥, `jsge` signed ≥, `jset` bit-test (imm form).
-            (BranchKind::JgeImm, false) => format!("¬ {} ≥ toU64 {}", v, self.imm),
-            (BranchKind::JgeImm, true)  => format!("{} ≥ toU64 {}", v, self.imm),
-            (BranchKind::JsgeImm, false) => format!("¬ toSigned64 {} ≥ toSigned64 (toU64 {})", va, self.imm),
-            (BranchKind::JsgeImm, true)  => format!("toSigned64 {} ≥ toSigned64 (toU64 {})", va, self.imm),
-            (BranchKind::JsetImm, false) => format!("¬ {} &&& toU64 {} ≠ 0", v, self.imm),
-            (BranchKind::JsetImm, true)  => format!("{} &&& toU64 {} ≠ 0", v, self.imm),
+            (BranchKind::JgeImm, false) => format!("¬ {} ≥ toU64 {}", v, im),
+            (BranchKind::JgeImm, true)  => format!("{} ≥ toU64 {}", v, im),
+            (BranchKind::JsgeImm, false) => format!("¬ toSigned64 {} ≥ toSigned64 (toU64 {})", va, im),
+            (BranchKind::JsgeImm, true)  => format!("toSigned64 {} ≥ toSigned64 (toU64 {})", va, im),
+            (BranchKind::JsetImm, false) => format!("¬ {} &&& toU64 {} ≠ 0", v, im),
+            (BranchKind::JsetImm, true)  => format!("{} &&& toU64 {} ≠ 0", v, im),
             // Register-form jumps compare two registers directly.
             (BranchKind::JeqReg, false) => format!("{} ≠ {}", v, s),
             (BranchKind::JeqReg, true)  => format!("{} = {}", v, s),
@@ -934,7 +937,7 @@ fn spec_call_for(
                 .find(|c| c.addr_base.to_lean() == base_addr
                        && c.addr_off == off
                        && c.width as u8 == Width::Byte as u8)
-                .map(|c| c.value.to_lean())
+                .map(|c| c.value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
             if dst == src {
                 // `ldxb r, [r]`: dst == src. The generic ldxb_spec would
@@ -965,28 +968,37 @@ fn spec_call_for(
             // `h<var>_lt` (i.e., `holdMemD_<N>_lt`).
             let base_addr = reg_val_lean(src);
             // Re-read of an already-accessed cell reuses its existing
-            // value var (read_mem returns the same cell); only a first
-            // access allocates oldMemD_<fresh>. Mirrors SymState::read_mem.
-            let v_name = state.mem.iter()
+            // value (read_mem returns the same cell); only a first access
+            // allocates oldMemD_<fresh>. A fresh / `InitMem`-valued cell
+            // renders bare with its surfaced `h<name>_lt` bound (the
+            // common case — kept byte-identical). A *reloaded compound*
+            // value (a register spilled to the stack then loaded back) is
+            // parenthesised and its `< 2^64` bound surfaced as the side
+            // hyp `hReloadLt_<pc>` that `step` registers.
+            let cell_val = state.mem.iter()
                 .find(|c| c.addr_base.to_lean() == base_addr
                        && c.addr_off == off
                        && c.width as u8 == Width::Dword as u8)
-                .map(|c| c.value.to_lean())
-                .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
+                .map(|c| c.value.clone());
+            let (v_arg, hv) = match &cell_val {
+                Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
+                Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
+                None => { let n = format!("oldMemD_{}", state.fresh); (n.clone(), format!("h{}_lt", n)) }
+            };
             if dst == src {
                 // `ldxdw r, [r]`: same-register variant (ldxdw_same_spec).
                 format!(
-                    "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) h{}_lt",
-                    hyp_name, reg(dst), offl, base_addr, v_name, pc, v_name,
+                    "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) {}",
+                    hyp_name, reg(dst), offl, base_addr, v_arg, pc, hv,
                 )
             } else {
                 let v_old_dst = state.regs.get(&dst)
                     .map(|e| e.to_lean())
                     .unwrap_or_else(|| reg_initial_name(dst));
                 format!(
-                    "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) h{}_lt",
+                    "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) {}",
                     hyp_name, reg(dst), reg(src), offl,
-                    v_old_dst, base_addr, v_name, pc, v_name,
+                    v_old_dst, base_addr, v_arg, pc, hv,
                 )
             }
         }
@@ -998,11 +1010,15 @@ fn spec_call_for(
             // case it's the mem name (we read it via read_mem first).
             // Walk state.mem for the matching cell.
             let key_addr = base_addr.clone();
+            // `atom_lean` parenthesises a compound prior value (e.g. a
+            // `toU64 0` left by an earlier imm store) while leaving a
+            // bare `oldMemD_N` / fresh name unparenthesised (so the common
+            // case stays byte-identical).
             let old_v = state.mem.iter()
                 .find(|c| c.addr_base.to_lean() == key_addr
                        && c.addr_off == off
                        && c.width as u8 == Width::Dword as u8)
-                .map(|c| c.value.to_lean())
+                .map(|c| c.value.atom_lean())
                 // Cell not yet in state.mem → this store is the FIRST
                 // access to it. step()'s write_mem will call read_mem,
                 // allocating `oldMemD_{fresh}`. Predict that name (same
@@ -1153,7 +1169,7 @@ fn spec_call_for(
                 .find(|c| c.addr_base.to_lean() == key_addr
                        && c.addr_off == off
                        && c.width as u8 == Width::Byte as u8)
-                .map(|c| c.value.to_lean())
+                .map(|c| c.value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
             format!(
                 "have {} := stb_spec {} {} {} ({}) ({}) {}",
@@ -1168,7 +1184,7 @@ fn spec_call_for(
                 .find(|c| c.addr_base.to_lean() == key_addr
                        && c.addr_off == off
                        && c.width as u8 == Width::Word as u8)
-                .map(|c| c.value.to_lean())
+                .map(|c| c.value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemW_{}", state.fresh));
             format!(
                 "have {} := stw_spec {} {} {} ({}) ({}) {}",
@@ -1183,7 +1199,7 @@ fn spec_call_for(
                 .find(|c| c.addr_base.to_lean() == key_addr
                        && c.addr_off == off
                        && c.width as u8 == Width::Dword as u8)
-                .map(|c| c.value.to_lean())
+                .map(|c| c.value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
             format!(
                 "have {} := stdw_spec {} {} {} ({}) ({}) {}",
@@ -1545,6 +1561,17 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         }
         LD_DW_REG => {
             let raw = state.read_mem(src, off, Width::Dword);
+            // A reloaded *compound* dword (a spilled register read back) is
+            // not a fresh `oldMemD_N` var, so `read_mem` surfaced no
+            // `< 2^64` bound for it. Register the matching `hReloadLt_<pc>`
+            // side hyp that `spec_call_for` references as the spec's `hv`.
+            if !matches!(raw, Expr::InitMem(_)) {
+                let pcn = pc.unwrap_or(0);
+                state.side_hyps.push((
+                    format!("hReloadLt_{}", pcn),
+                    format!("{} < 2 ^ 64", raw.to_lean()),
+                ));
+            }
             state.write_reg(dst, raw);
         }
         ST_B_REG => {
