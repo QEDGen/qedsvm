@@ -21,6 +21,19 @@ namespace SVM.SBPF
 
 open PartialState
 
+/-! ## Unit laws used to massage `segs` output into bespoke shapes -/
+
+/-- Assertion-level right unit: `P ** emp = P`. The `funext` form (vs the
+    pointwise `sepConj_emp_right`) lets `simp` strip a trailing `emp`
+    anywhere in a sep-conj chain — needed because `segsSL` ends in `emp`. -/
+theorem sepConj_emp_right_eq (P : Assertion) : (P ** emp) = P := by
+  funext h; exact propext (sepConj_emp_right h)
+
+/-- `ByteArray` right unit, to drop the trailing `++ empty` that
+    `segsBytes` leaves. -/
+@[simp] theorem ba_append_empty (a : ByteArray) : a ++ ByteArray.empty = a := by
+  apply ByteArray.ext; simp
+
 /-- A byte-level segment of an account field blob. -/
 inductive FieldSeg where
   /-- An owned byte cell (`↦ₘ`), value `< 256`. -/
