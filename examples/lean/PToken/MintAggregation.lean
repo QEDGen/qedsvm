@@ -137,6 +137,31 @@ theorem mint_account_eq
   exact propext (mint_account base b0 p0 p1 p2 p3 supply b45 gA gD gF
     hgA hgD hb0 hb45 h)
 
+/-- Mint codec ↔ scattered cells when the lift reads *only* `supply` and
+    the `is_initialized` byte (the Burn pattern): the whole 36-byte
+    `preAuth` blob is framed opaque, `supply` matches the lift's dword,
+    and `rest` splits into a 1-byte decimals gap + the is_init byte + a
+    36-byte freeze gap. -/
+theorem mint_supply_eq
+    (base supply b45 : Nat) (preAuth gD gF : ByteArray)
+    (hgD : gD.size = 1) (hb45 : b45 < 256) :
+    mintSupplyOf base
+      { preAuth := preAuth, supply := supply,
+        rest := gD ++ (PartialState.byteBA b45 ++ gF) }
+      = ( memBytesIs base preAuth **
+          memU64Is (base + 36) supply **
+          ( memBytesIs (base + 44) gD ** memByteIs (base + 45) b45 **
+            memBytesIs (base + 46) gF ) ) := by
+  funext h
+  apply propext
+  simp only [mintSupplyOf, mintAcctSupply, MINT_AUTH_OFF, SUPPLY_OFF,
+    MINT_REST_OFF, Nat.add_zero]
+  refine sepConj_iff_congr_right _ ?_ h
+  intro h
+  refine sepConj_iff_congr_right _ ?_ h
+  intro h
+  exact mint_rest_split base b45 gD gF hgD hb45 h
+
 /-! ## Destination token-account aggregation (MintTo / Burn)
 
 The MintTo destination (and Burn source) token account owns two `rest`

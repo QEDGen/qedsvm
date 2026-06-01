@@ -91,6 +91,8 @@ lean_lib Examples where
     `PToken.TransferRefinement,
     `PToken.TransferCheckedRefinement,
     `PToken.MintAggregation,
+    `PToken.MintToRefinement,
+    `PToken.BurnRefinement,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     `Generated.ByteIncrementLifted,
     `Generated.CounterLifted,
