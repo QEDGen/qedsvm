@@ -665,6 +665,11 @@ struct SymState {
     /// Surfaced as a `ByteArray` param + a `.size = <count>` hypothesis
     /// in the theorem signature (the spec's `hbs` obligation).
     memset_blobs: Vec<(String, String)>,
+    /// Generic surfaced side-condition hypotheses `(hyp_name, prop)` —
+    /// e.g. a divisor's `v ≠ 0` for `div/mod` reg-form (the divisor is
+    /// symbolic, so its non-zeroness is the caller's obligation, like a
+    /// branch hypothesis). Emitted into the theorem signature verbatim.
+    side_hyps: Vec<(String, String)>,
 }
 
 impl SymState {
@@ -1070,6 +1075,22 @@ fn spec_call_for(
             format!(
                 "have {} := neg64_spec {} ({}) {} (by decide)",
                 hyp_name, reg(dst), v_old, pc,
+            )
+        }
+        // div/mod reg-form: the divisor `v` is symbolic, so the spec's
+        // `hnz : v ≠ 0` (64) / `v % U32_MODULUS ≠ 0` (32) is surfaced as
+        // a theorem hypothesis named `hnz_<pc>` (registered by `step`).
+        DIV64_REG | MOD64_REG | DIV32_REG | MOD32_REG => {
+            let v_old = reg_val_lean(dst);
+            let v_src = reg_val_lean(src);
+            let spec = match insn.opc {
+                DIV64_REG => "div64_reg_spec", MOD64_REG => "mod64_reg_spec",
+                DIV32_REG => "div32_reg_spec", MOD32_REG => "mod32_reg_spec",
+                _ => unreachable!(),
+            };
+            format!(
+                "have {} := {} {} {} ({}) ({}) {} (by decide) hnz_{}",
+                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc, pc,
             )
         }
         // 32-bit imm ALU: `<op>32_imm_spec dst imm vOld pc hne`.
@@ -1677,6 +1698,27 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 LSH32_REG => format!("({} <<< ({} % 32)) % U32_MODULUS", a, b),
                 RSH32_REG => format!("({} % U32_MODULUS) >>> ({} % 32)", a, b),
                 MOV32_REG => format!("{} % U32_MODULUS", b),
+                _ => unreachable!(),
+            };
+            state.write_reg(dst, Expr::Raw(r));
+        }
+        // div/mod reg-form: surface the divisor's non-zeroness as a
+        // `hnz_<pc>` hypothesis (the divisor `src` is symbolic, read
+        // before the `dst` write so its rendering matches the spec arg).
+        DIV64_REG | MOD64_REG | DIV32_REG | MOD32_REG => {
+            let a = state.read_reg(dst).atom_lean();
+            let b = state.read_reg(src).atom_lean();
+            let pcn = pc.unwrap_or(0);
+            let prop = match insn.opc {
+                DIV64_REG | MOD64_REG => format!("{} ≠ 0", b),
+                _ /* 32-bit */        => format!("{} % U32_MODULUS ≠ 0", b),
+            };
+            state.side_hyps.push((format!("hnz_{}", pcn), prop));
+            let r = match insn.opc {
+                DIV64_REG => format!("({} / {}) % U64_MODULUS", a, b),
+                MOD64_REG => format!("{} % {}", a, b),
+                DIV32_REG => format!("({} % U32_MODULUS / ({} % U32_MODULUS)) % U32_MODULUS", a, b),
+                MOD32_REG => format!("{} % U32_MODULUS % ({} % U32_MODULUS)", a, b),
                 _ => unreachable!(),
             };
             state.write_reg(dst, Expr::Raw(r));
@@ -3241,6 +3283,11 @@ fn lift_one(
     // `hCu`). The model's `syscallCu` for memory ops scales with `r3`,
     // so this bound is an honest modeling assumption surfaced in the
     // signature, not a fact the lift can prove.
+    // Surfaced side-condition hypotheses (e.g. div/mod divisor ≠ 0).
+    let mut side_hyps_sig = String::new();
+    for (name, prop) in &state.side_hyps {
+        side_hyps_sig.push_str(&format!("({} : {})\n    ", name, prop));
+    }
     let mut syscall_sig = String::new();
     for (bs, size) in &state.memset_blobs {
         syscall_sig.push_str(&format!("({} : ByteArray)\n    ", bs));
@@ -3437,7 +3484,7 @@ fn lift_one(
 
     out.push_str(&format!(
         "open Memory in\n\
-         theorem {}_lifted_spec\n    {}{}{}{}{}: \
+         theorem {}_lifted_spec\n    {}{}{}{}{}{}: \
          cuTripleWithinMem {} {} {} {}\n      \
          ({})\n      \
          ({}{})\n      \
@@ -3449,6 +3496,7 @@ fn lift_one(
         abs_sig,
         u64_hyps,
         branch_hyps_sig,
+        side_hyps_sig,
         syscall_sig,
         n, m_bound, start_pc, exit_pc,
         cr_lean,
@@ -3506,6 +3554,7 @@ fn lift_one(
         }
         for v in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
+        for (name, _) in &state.side_hyps { names.push(name.clone()); }
         // Memory-syscall params, in the same order `syscall_sig` binds
         // them: each blob's `ByteArray` + size hyp, then each `nCu` +
         // CU-bound hyp.
@@ -3540,7 +3589,7 @@ fn lift_one(
 
         out.push_str(&format!(
             "open Memory in\n\
-             theorem {}_balance_correct\n    {}{}{}{}{}{}: \
+             theorem {}_balance_correct\n    {}{}{}{}{}{}{}: \
              cuTripleWithinMem {} {} {} {}\n      \
              ({})\n      \
              ({}{})\n      \
@@ -3550,7 +3599,7 @@ fn lift_one(
              rw [{}]\n  \
              exact h\n\n",
             module_name,
-            vars_sig, abs_sig, u64_hyps, branch_hyps_sig, syscall_sig, extra_hyps,
+            vars_sig, abs_sig, u64_hyps, branch_hyps_sig, side_hyps_sig, syscall_sig, extra_hyps,
             n, m_bound, start_pc, exit_pc,
             cr_lean,
             atoms_to_lean(&pre, &abs_subst), cs_atom,
