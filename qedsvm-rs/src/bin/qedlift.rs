@@ -2246,28 +2246,33 @@ fn emit_sol_memset(
     block_pcs.push(pc);
 }
 
-/// Emit the lift artifacts for a `sol_get_sysvar` host syscall at logical
-/// PC `pc`. The model's generic accessor (`Misc.execGetSysvar`) only sets
-/// `r0 := 0` — no memory effect, no output buffer — so this is the
-/// simplest syscall shape: a single `r0` atom, the `nCu`/`hCu` CU
-/// assumption surfaced as a hypothesis (as for memset), and nothing else.
-fn emit_sol_get_sysvar(
+/// Emit the lift artifacts for an "r0-only" host syscall — one whose
+/// model effect is just `r0 := 0` (no memory, no output buffer): e.g.
+/// `sol_get_sysvar` (`Misc.execGetSysvar`) and `sol_log_`
+/// (`Logging.execLog`). The simplest syscall shape: a single `r0` atom,
+/// with the `nCu`/`hCu` CU assumption surfaced as a hypothesis (as for
+/// memset). `spec` is the proven `call_<name>_spec` (takes r0Old pc nCu
+/// hCu); `ctor` is the `Syscall` constructor; `tag` names the fresh vars.
+fn emit_r0_syscall(
     state: &mut SymState,
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
+    spec: &str,
+    ctor: &'static str,
+    tag: &str,
 ) {
     let r0v = state.read_reg(0);
     let idx = state.fresh; state.fresh += 1;
-    let ncu_name = format!("nCuGetSysvar{}", idx);
-    let hcu_name = format!("hCuGetSysvar{}", idx);
-    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_get_sysvar"));
-    state.syscall_pcs.insert(pc, ".sol_get_sysvar");
+    let ncu_name = format!("nCu{}{}", tag, idx);
+    let hcu_name = format!("hCu{}{}", tag, idx);
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ctor));
+    state.syscall_pcs.insert(pc, ctor);
     state.write_reg(0, Expr::Const(0));
-    // call_sol_get_sysvar_spec r0Old pc nCu hCu
+    // call_<name>_spec r0Old pc nCu hCu
     let have_line = format!(
-        "have h_{pc} := call_sol_get_sysvar_spec {r0} {pc} {ncu} {hcu}",
-        pc = pc, r0 = r0v.atom_lean(), ncu = ncu_name, hcu = hcu_name,
+        "have h_{pc} := {spec} {r0} {pc} {ncu} {hcu}",
+        pc = pc, spec = spec, r0 = r0v.atom_lean(), ncu = ncu_name, hcu = hcu_name,
     );
     spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
     block_pcs.push(pc);
@@ -3180,16 +3185,22 @@ fn lift_one(
                             continue;
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
-                            emit_sol_get_sysvar(&mut state, &mut spec_calls,
-                                                &mut block_pcs, pc_iter);
+                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter, "call_sol_get_sysvar_spec", ".sol_get_sysvar", "GetSysvar");
+                            ti += 1;
+                            continue;
+                        }
+                        if imm == ebpf::hash_symbol_name(b"sol_log_") {
+                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter, "call_sol_log_spec", ".sol_log_", "Log");
                             ti += 1;
                             continue;
                         }
                         return Err(format!(
                             "call_imm at pc {} is a syscall (trace returns to {} \
                              without a frame push) with imm hash 0x{:08x}, but only \
-                             sol_memset_ / sol_get_sysvar are modelled so far. This \
-                             arm needs a syscall-effect spec for that hash.",
+                             sol_memset_ / sol_get_sysvar / sol_log_ are modelled so \
+                             far. This arm needs a syscall-effect spec for that hash.",
                             pc_iter, pc_iter + 1, imm).into());
                     }
                 }

@@ -95,6 +95,10 @@ lean_lib Examples where
     `PToken.BurnRefinement,
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
+    -- Logger: a real, non-Pinocchio Solana program (Rust/solana-program)
+    -- — generality proof that qedlift isn't p_token-specific. Crosses
+    -- sol_log_ and a 64-bit multiply chain.
+    `Generated.LoggerLifted,
     `Generated.ByteIncrementLifted,
     `Generated.CounterLifted,
     `Generated.GuardedCounterLifted,
