@@ -66,6 +66,8 @@ cargo run --features qedrecover --bin qedlift -- \
 
 With `--trace`, qedlift follows the real happy path through branchy bytecode and additionally emits a `*_balance_correct` corollary (clean Nat debit/credit). The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, the Counter family, Logger, and six p-token arms (Transfer, TransferChecked, MintTo, Burn, CloseAccount, InitializeMint2), all proof-complete. Batch mode (`--idl`) lifts every instruction in a TOML or Codama IDL.
 
+For the full `.so` + IDL to proof workflow (qedrecover scoping, trace capture, qedlift, and `lake build`), see [`PIPELINE.md`](PIPELINE.md).
+
 ### From Rust (`qedsvm-rs`)
 
 `qedsvm-rs` is the conformant executor, not a verifier. It runs compiled programs on the agave-faithful model and exists mainly so we can diff-test that model against mollusk, and so fuzzing and diff-test harnesses (for example [Janus](https://github.com/saicharanpogul/janus/tree/main/tests-qedsvm)) have a fast SVM to cross-check against. It proves nothing about your program.
