@@ -133,5 +133,55 @@ theorem cuTripleWithin_syscall_writes_r0_only
       · left; exact PartialState.singletonReg_returnData
       · left; exact PartialState.singletonReg_callStack
 
+/-! ## CPI syscalls: `sol_invoke_signed` / `sol_invoke_signed_c`
+
+IMPORTANT — these prove the SVM's *step-level* CPI model, which is a STUB
+(`Cpi.exec = { regs := r0 := 0 }`): the invoke succeeds (`r0 := 0`) with
+NO effect on the invoked accounts' memory. The real cross-program
+execution — parsing the C/Rust-ABI instruction + account-infos, deriving
+PDA signers, running the callee — lives in `Runner.executeFnCpi`
+(`cpiCallNextState`), NOT in `step`; the diff_mollusk CPI tests exercise
+that real path.
+
+Consequence: a lift over `step` using these specs is sound w.r.t. the
+SVM's `step` semantics but treats the CPI as effect-free — it captures
+everything on the arm EXCEPT the callee's account writes. Modelling those
+effects (per-callee, agreeing with `cpiCallNextState`) is the next layer
+and would *strengthen* these postconditions; wiring them now lets
+CPI-crossing arms lift instead of bailing on the invoke syscall. -/
+
+theorem call_sol_invoke_signed_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_invoke_signed) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_invoke_signed))
+      (.r0 ↦ᵣ r0Old)
+      (.r0 ↦ᵣ 0) :=
+  cuTripleWithin_syscall_writes_r0_only .sol_invoke_signed 0 pc nCu
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s hex => by simp [step, execSyscall, Cpi.exec]; exact hex)
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => h_step_cu s)
+    r0Old
+
+theorem call_sol_invoke_signed_c_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
+    (h_step_cu : ∀ s : State,
+        (step (.call .sol_invoke_signed_c) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_invoke_signed_c))
+      (.r0 ↦ᵣ r0Old)
+      (.r0 ↦ᵣ 0) :=
+  cuTripleWithin_syscall_writes_r0_only .sol_invoke_signed_c 0 pc nCu
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s hex => by simp [step, execSyscall, Cpi.exec]; exact hex)
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => by simp [step, execSyscall, Cpi.exec])
+    (fun s => h_step_cu s)
+    r0Old
 
 end SVM.SBPF
