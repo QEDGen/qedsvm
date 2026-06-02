@@ -389,6 +389,18 @@ mod layout_tests {
             "TransferAggregation.lean is out of sync with the qedlift emitter — \
              regenerate it (the file is mechanically emitted, do not hand-edit)");
     }
+
+    #[test]
+    fn mint_aggregation_is_mechanically_emitted() {
+        // SPL mint: supply@36, rest@44, size 82; dest token 72/165.
+        let m = render_mint_agg_module(
+            "Examples.PTokenMintAggregation", 36, 44, 82, 72, 165);
+        let on_disk = std::fs::read_to_string("../examples/lean/PToken/MintAggregation.lean")
+            .expect("read MintAggregation.lean");
+        assert_eq!(m, on_disk,
+            "MintAggregation.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -2874,25 +2886,44 @@ fn emit_refinement(
     // owned-byte patterns. Token codec uses the shared
     // `PToken.TransferAggregation`; mint accounts (agg: None) still rely
     // on the hand-written `PToken.MintAggregation`.
-    let token_aggs: Vec<(&str, bool, Vec<i64>)> = builds.iter()
-        .filter_map(|b| b.agg.as_ref().map(|(n, oo, p)| (n.as_str(), *oo, p.clone())))
-        .collect();
-    let aggregation = if token_aggs.is_empty() {
-        None
-    } else {
-        // Derive the token account's rest-region start + total size from
-        // the IDL layout (step a); fall back to SPL token's 72/165 when no
-        // IDL is threaded. `rest_start` = the byte after `amount`.
-        let (rest_start, acct_size) = idl
-            .and_then(|v| parse_account_layout(v, "token").ok())
-            .and_then(|layout| {
-                let amount = layout.fields.iter().find(|f| f.name == "amount")?;
-                Some((amount.offset as i64 + 8, layout.size as i64))
+    // Token account rest-region start + size from the IDL layout (step a);
+    // fall back to SPL token's 72/165. `rest_start` = the byte after `amount`.
+    let (tok_rest_start, tok_size) = idl
+        .and_then(|v| parse_account_layout(v, "token").ok())
+        .and_then(|l| {
+            let amount = l.fields.iter().find(|f| f.name == "amount")?;
+            Some((amount.offset as i64 + 8, l.size as i64))
+        })
+        .unwrap_or((72, 165));
+
+    let uses_mint = spec.accounts.iter().any(|(_, c)| matches!(c, CodecKind::Mint));
+    let aggregation = if uses_mint {
+        // Mint codec → the shared MintAggregation module (union of
+        // mint_account_eq / mint_supply_eq / dest_account_eq). Mint
+        // supply offset + rest offset from the IDL mint layout.
+        let (supply_off, rest_off, mint_size) = idl
+            .and_then(|v| parse_account_layout(v, "mint").ok())
+            .and_then(|l| {
+                let s = l.fields.iter().find(|f| f.name == "supply")?;
+                Some((s.offset as i64, s.offset as i64 + 8, l.size as i64))
             })
-            .unwrap_or((72, 165));
-        let agg_lean = render_token_agg_module(
-            "Examples.PTokenTransferAggregation", &token_aggs, rest_start, acct_size);
-        Some(("PToken.TransferAggregation".to_string(), agg_lean))
+            .unwrap_or((36, 44, 82));
+        let agg_lean = render_mint_agg_module(
+            "Examples.PTokenMintAggregation", supply_off, rest_off, mint_size,
+            tok_rest_start, tok_size);
+        Some(("PToken.MintAggregation".to_string(), agg_lean))
+    } else {
+        // Token codec → TransferAggregation, from the detected src/dst patterns.
+        let token_aggs: Vec<(&str, bool, Vec<i64>)> = builds.iter()
+            .filter_map(|b| b.agg.as_ref().map(|(n, oo, p)| (n.as_str(), *oo, p.clone())))
+            .collect();
+        if token_aggs.is_empty() {
+            None
+        } else {
+            let agg_lean = render_token_agg_module(
+                "Examples.PTokenTransferAggregation", &token_aggs, tok_rest_start, tok_size);
+            Some(("PToken.TransferAggregation".to_string(), agg_lean))
+        }
     };
     Some((module, lean, aggregation))
 }
@@ -3180,6 +3211,116 @@ open SVM.SBPF SVM.Solana
 end {ns}
 ",
         ns = ns, lemmas = lemmas.join("\n\n"))
+}
+
+/// Emit the full mint-aggregation module (the lemmas a mint-codec
+/// refinement imports: `mint_account_eq` full preAuth, `mint_supply_eq`
+/// opaque preAuth, and the token `dest_account_eq`). Mint structure is the
+/// SPL `COption<Pubkey>` preAuth (tag byte + 3-byte gap + 32-byte pubkey
+/// as four dwords) at [0,36), `supply` u64 at `supply_off`, rest at
+/// `rest_off`. The preAuth/rest splits reuse the `memBytesIs_segs` keystone.
+fn render_mint_agg_module(
+    ns: &str, supply_off: i64, rest_off: i64, mint_size: i64,
+    tok_rest_start: i64, tok_size: i64,
+) -> String {
+    let b1 = rest_off + 1;          // is_initialized byte offset
+    let b2 = rest_off + 2;          // freeze-authority gap start
+    let _ = mint_size;
+    let rest_proof = format!(
+"  have key := memBytesIs_segs (base + {rest_off})
+    [.gap gD, .byte b45, .gap gF] ⟨trivial, hb45, trivial, trivial⟩ h
+  simp only [segsBytes, segsSL, FieldSeg.bytes, FieldSeg.sl, FieldSeg.size,
+    hgD, ba_append_empty, sepConj_emp_right_eq, Nat.add_assoc, Nat.reduceAdd] at key
+  exact key", rest_off = rest_off);
+
+    let mint_account_eq = format!(
+"theorem mint_account_eq
+    (base b0 p0 p1 p2 p3 supply b45 : Nat) (gA gD gF : ByteArray)
+    (hgA : gA.size = 3) (hgD : gD.size = 1) (hb0 : b0 < 256) (hb45 : b45 < 256) :
+    mintSupplyOf base
+      {{ preAuth := PartialState.byteBA b0 ++ (gA ++
+          (PartialState.u64LE p0 ++ (PartialState.u64LE p1 ++
+            (PartialState.u64LE p2 ++ PartialState.u64LE p3)))),
+        supply := supply,
+        rest := gD ++ (PartialState.byteBA b45 ++ gF) }}
+      = ( ( memByteIs base b0 ** memBytesIs (base + 1) gA **
+            memU64Is (base + 4) p0 ** memU64Is (base + 12) p1 **
+            memU64Is (base + 20) p2 ** memU64Is (base + 28) p3 ) **
+          memU64Is (base + {supply_off}) supply **
+          ( memBytesIs (base + {rest_off}) gD ** memByteIs (base + {b1}) b45 **
+            memBytesIs (base + {b2}) gF ) ) := by
+  funext h
+  apply propext
+  simp only [mintSupplyOf, mintAcctSupply, MINT_AUTH_OFF, SUPPLY_OFF,
+    MINT_REST_OFF, Nat.add_zero]
+  have keyP : ∀ h, memBytesIs base
+      (PartialState.byteBA b0 ++ (gA ++ (PartialState.u64LE p0 ++
+        (PartialState.u64LE p1 ++ (PartialState.u64LE p2 ++ PartialState.u64LE p3))))) h ↔
+      ( memByteIs base b0 ** memBytesIs (base + 1) gA ** memU64Is (base + 4) p0 **
+        memU64Is (base + 12) p1 ** memU64Is (base + 20) p2 ** memU64Is (base + 28) p3 ) h := by
+    intro h
+    have key := memBytesIs_segs base
+      [.byte b0, .gap gA, .u64 p0, .u64 p1, .u64 p2, .u64 p3]
+      ⟨hb0, trivial, trivial, trivial, trivial, trivial, trivial⟩ h
+    simp only [segsBytes, segsSL, FieldSeg.bytes, FieldSeg.sl, FieldSeg.size,
+      hgA, ba_append_empty, sepConj_emp_right_eq, Nat.add_assoc, Nat.reduceAdd] at key
+    exact key
+  refine Iff.trans (sepConj_iff_congr_left _ keyP h) ?_
+  refine sepConj_iff_congr_right _ ?_ h; intro h
+  refine sepConj_iff_congr_right _ ?_ h; intro h
+{rest_proof}",
+        supply_off = supply_off, rest_off = rest_off, b1 = b1, b2 = b2,
+        rest_proof = rest_proof);
+
+    let mint_supply_eq = format!(
+"theorem mint_supply_eq
+    (base supply b45 : Nat) (preAuth gD gF : ByteArray)
+    (hgD : gD.size = 1) (hb45 : b45 < 256) :
+    mintSupplyOf base
+      {{ preAuth := preAuth, supply := supply,
+        rest := gD ++ (PartialState.byteBA b45 ++ gF) }}
+      = ( memBytesIs base preAuth **
+          memU64Is (base + {supply_off}) supply **
+          ( memBytesIs (base + {rest_off}) gD ** memByteIs (base + {b1}) b45 **
+            memBytesIs (base + {b2}) gF ) ) := by
+  funext h
+  apply propext
+  simp only [mintSupplyOf, mintAcctSupply, MINT_AUTH_OFF, SUPPLY_OFF,
+    MINT_REST_OFF, Nat.add_zero]
+  refine sepConj_iff_congr_right _ ?_ h; intro h
+  refine sepConj_iff_congr_right _ ?_ h; intro h
+{rest_proof}",
+        supply_off = supply_off, rest_off = rest_off, b1 = b1, b2 = b2,
+        rest_proof = rest_proof);
+
+    let mut gap_ctr = 0u32;
+    let dest = render_token_agg_lemma(
+        "dest_account_eq", false, &[108, 109], tok_rest_start, tok_size, &mut gap_ctr);
+    format!(
+"/-
+  Account-codec aggregation for mint-account lifts (MintTo / Burn).
+  MECHANICALLY EMITTED by qedlift from the IDL mint+token layouts + the
+  lift's owned-byte pattern. Do not edit by hand.
+-/
+
+import SVM.SBPF.SegAggregation
+import SVM.SBPF.PubkeySL
+import SVM.Solana.MintAccountCodec
+import SVM.Solana.TokenAccountCodec
+
+namespace {ns}
+
+open SVM.SBPF SVM.Solana
+
+{mint_account_eq}
+
+{mint_supply_eq}
+
+{dest}
+
+end {ns}
+",
+        ns = ns, mint_account_eq = mint_account_eq, mint_supply_eq = mint_supply_eq, dest = dest)
 }
 
 /// Write the mechanically-emitted aggregation module to its canonical
@@ -4411,10 +4552,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Batch mode: --idl <toml|json> + --output-dir <dir>.
-    if let Some(idl_path) = args.idl.as_ref() {
-        let output_dir = args.output_dir.as_ref()
-            .ok_or("--idl requires --output-dir")?;
+    // Batch mode: --idl <toml|json> + --output-dir <dir>. With --idl but
+    // no --output-dir, fall through to single-arm mode (the IDL is still
+    // loaded into `idl_value` above for layout-driven aggregation).
+    if let (Some(idl_path), Some(output_dir)) =
+        (args.idl.as_ref(), args.output_dir.as_ref())
+    {
         let idl = load_idl(idl_path)?;
         std::fs::create_dir_all(output_dir)?;
 
