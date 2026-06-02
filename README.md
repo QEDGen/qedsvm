@@ -2,12 +2,14 @@
 
 **Verify what runs on Solana, not what you wrote.**
 
-A Lean 4 model of the Solana Virtual Machine. Operates on the compiled `.so`: the same artifact mainnet runs.
+A Lean 4 model of the Solana Virtual Machine. It operates on the compiled `.so`, the same artifact mainnet runs, and does two separate jobs:
 
-- **Byte-for-byte conformant** with agave on 32 mollusk-cross-checked fixtures, including p-token Transfer at 76 CU identical. Full suite: ~3s.
-- **142 per-instruction Hoare triples** in separation logic, composable end-to-end. Every triple carries a verified compute-unit bound.
-- **Small trust base.** Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean` plus 21 explicit crypto trust statements. No rustc.
-- **One codebase, three deliverables.** Run any compiled program (`Runner.runElf`), prove what it does (`cuTripleWithin`), or lift the `.so` straight to that proof (`qedlift`).
+- **Execute** a program on a model proven byte-for-byte conformant with agave (differential-tested against mollusk on 32 fixtures, p-token Transfer at 76 CU identical, full suite ~3s). The `qedsvm-rs` crate is this executor, published mainly so the model can be diff-tested against mollusk and reused by fuzzing and diff-test harnesses.
+- **Verify** a program against a separation-logic spec with a proven compute-unit bound, in Lean: 142 per-instruction Hoare triples, composition tactics, and `qedlift` to lift a `.so` straight to a machine-checked proof with no `sorry`.
+
+> **Execution is not verification.** The Rust crate tells you what a program does on one input; it does not prove what it does on all of them. If you only use `qedsvm-rs`, you have a conformant executor, not a verified program. Verification lives entirely in the Lean layer.
+
+Small trust base: Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean` plus 21 explicit crypto trust statements. No rustc.
 
 ## Install
 
@@ -20,15 +22,16 @@ Prerequisites: Lean (via `elan`) and `cargo` / `rustc`. Lake builds `qedsvm-rs/l
 
 ## Demo
 
-Two artifacts make the headline claims visible in seconds.
+One command per job makes both halves visible in seconds.
 
 ```bash
-# Run incrementer + p-token Transfer through qedsvm and mollusk side by side.
-# Prints CU, return data, account-data digest, and a byte+CU verdict.
+# EXECUTE (conformance): run incrementer + p-token Transfer through qedsvm and
+# mollusk side by side. Prints CU, return data, account-data digest, byte+CU verdict.
+# This checks the model matches agave; it does not verify a program.
 cargo run --release --features diff-mollusk \
   --manifest-path qedsvm-rs/Cargo.toml --example conformance_demo
 
-# Type-check the end-to-end witness theorem for a 4-instruction sBPF program.
+# VERIFY: type-check the end-to-end witness theorem for a 4-instruction sBPF program.
 lake build ProofDemo
 ```
 
@@ -51,7 +54,9 @@ Worked examples: [`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncremen
 
 ### Lift a compiled program to a proof (`qedlift`)
 
-`qedlift` closes the loop: point it at a `.so` and it emits a Lean module that embeds the `.text` bytes, proves they decode to the expected `List Insn`, states a `cuTripleWithinMem` Hoare triple synthesized by symbolic execution, and discharges it with `sl_block_auto`. The spec statement is mechanical from the binary, not hand-typed, and the proof closes with no `sorry`.
+`qedlift` (and its sibling `qedrecover`) are the lifting front-end: they turn a binary into a proof obligation against the spec layer. This is the surface [qedgen](https://github.com/QEDGen) consumes, and long-term it lives there; it ships here for now, feature-gated behind `qedrecover`, as the most direct demonstration of the binary → proof path.
+
+Point it at a `.so` and it emits a Lean module that embeds the `.text` bytes, proves they decode to the expected `List Insn`, states a `cuTripleWithinMem` Hoare triple synthesized by symbolic execution, and discharges it with `sl_block_auto`. The spec statement is mechanical from the binary, not hand-typed, and the proof closes with no `sorry`.
 
 ```bash
 cargo run --features qedrecover --bin qedlift -- \
@@ -63,6 +68,8 @@ With `--trace`, qedlift follows the real happy path through branchy bytecode and
 
 ### From Rust (`qedsvm-rs`)
 
+`qedsvm-rs` is the conformant executor, not a verifier. It runs compiled programs on the agave-faithful model and exists mainly so we can diff-test that model against mollusk, and so fuzzing and diff-test harnesses (for example [Janus](https://github.com/saicharanpogul/janus/tree/main/tests-qedsvm)) have a fast SVM to cross-check against. It proves nothing about your program.
+
 ```rust
 use qedsvm::{ProgramResult, SVM};
 
@@ -71,69 +78,7 @@ svm.add_program(&program_id, elf_bytes);
 let result = svm.process_instruction(&instruction, &accounts)?;
 ```
 
-Types pin to agave master (`solana-pubkey`, `solana-instruction`, `solana-account`), so a Mollusk test passes data straight in. Differential testing against Mollusk:
-
-```bash
-cargo test --manifest-path qedsvm-rs/Cargo.toml --features diff-mollusk
-```
-
-#### Consuming qedsvm from a downstream crate
-
-Cargo doesn't propagate `cargo:rustc-link-arg` directives from a dependency's `build.rs` to dependent crates' link commands, so a downstream crate depending on `qedsvm` link-fails on the ~80 Lean dylibs and the forced-load `lean_*` crypto bridge symbols unless it re-emits them itself. The `qedsvm-buildscript` helper crate handles all of that in one call:
-
-```toml
-# Your Cargo.toml
-[dependencies]
-qedsvm = { path = "../qedsvm/qedsvm-rs", features = ["diff-mollusk"] }
-
-[build-dependencies]
-qedsvm-buildscript = { path = "../qedsvm/qedsvm-rs/qedsvm-buildscript" }
-```
-
-```rust
-// Your build.rs
-fn main() {
-    let qedsvm_root = std::env::var("QEDSVM_ROOT")
-        .unwrap_or_else(|_| "../qedsvm".to_string());
-    qedsvm_buildscript::emit_link_args(std::path::Path::new(&qedsvm_root))
-        .expect("emit qedsvm link args");
-}
-```
-
-Run `lake build` in the qedsvm checkout first so the helper has a populated `.lake/build/`.
-
-#### Diff-test crates: handling the `solana-account` version split
-
-`qedsvm::Svm::process_instruction` takes `(Pubkey, AccountSharedData)` from `solana-account 4.x`. `mollusk-svm 0.12.1-agave-4.0::process_instruction` takes the same shape but from `solana-account 3.x` (mollusk's interface crate hasn't moved to 4.x yet). Cargo pulls both versions; they share names but are not directly interconvertible.
-
-A one-line dev-dep alias for mollusk's older copy is the established workaround:
-
-```toml
-[dev-dependencies]
-qedsvm = { path = "...", features = ["diff-mollusk"] }
-mollusk-svm = "0.12.1-agave-4.0"
-solana-account = "4.3.0"
-# Aliased name lets you construct the version mollusk expects without
-# colliding with qedsvm's 4.x.
-mollusk-account = { package = "solana-account", version = "3.4.0" }
-```
-
-For the actual conversion, use the helpers under `qedsvm::diff::*` (gated by `diff-mollusk`) so you're not rewriting the field copy in every diff-test crate:
-
-```rust
-use qedsvm::diff::{mollusk_to_qedsvm, qedsvm_to_mollusk};
-
-// Build the fixture once in mollusk shape, run on both engines.
-let qedsvm_accounts = mollusk_to_qedsvm(&mollusk_accounts);
-let mollusk_result = mollusk.process_instruction(&ix, &mollusk_accounts);
-let qedsvm_result  = svm.process_instruction(&ix, &qedsvm_accounts);
-
-// Round-trip works the other way too (e.g. fuzzers that drive qedsvm
-// first and then cross-check with mollusk).
-let mollusk_accounts_back = qedsvm_to_mollusk(&qedsvm_accounts);
-```
-
-The Janus differential-test harness ([`saicharanpogul/janus/tests-qedsvm`](https://github.com/saicharanpogul/janus/tree/main/tests-qedsvm)) is a complete working example.
+Crate-level docs (differential testing, consuming qedsvm downstream, the `solana-account` version split) live in [`qedsvm-rs/README.md`](qedsvm-rs/README.md).
 
 ## Coverage
 
