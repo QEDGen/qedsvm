@@ -3196,11 +3196,30 @@ fn lift_one(
                             ti += 1;
                             continue;
                         }
+                        // CPI. NOTE: modelled per the SVM's step-level CPI
+                        // STUB (`Cpi.exec` = r0:=0) — effect-free on the
+                        // invoked accounts. Sound w.r.t. `step`, but the
+                        // lifted triple does NOT capture the callee's
+                        // account writes (those live in executeFnCpi). See
+                        // `call_sol_invoke_signed_spec`'s doc comment.
+                        if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
+                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter, "call_sol_invoke_signed_spec", ".sol_invoke_signed", "InvokeSigned");
+                            ti += 1;
+                            continue;
+                        }
+                        if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_c") {
+                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter, "call_sol_invoke_signed_c_spec", ".sol_invoke_signed_c", "InvokeSignedC");
+                            ti += 1;
+                            continue;
+                        }
                         return Err(format!(
                             "call_imm at pc {} is a syscall (trace returns to {} \
                              without a frame push) with imm hash 0x{:08x}, but only \
-                             sol_memset_ / sol_get_sysvar / sol_log_ are modelled so \
-                             far. This arm needs a syscall-effect spec for that hash.",
+                             sol_memset_ / sol_get_sysvar / sol_log_ / \
+                             sol_invoke_signed{{,_c}} are modelled so far. This arm \
+                             needs a syscall-effect spec for that hash.",
                             pc_iter, pc_iter + 1, imm).into());
                     }
                 }
