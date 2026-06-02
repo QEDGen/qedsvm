@@ -76,6 +76,43 @@ struct Args {
     /// qedlift also emits the `<module>Refinement.lean` asm-refines
     /// theorem. Batch mode derives this from the IDL automatically.
     arm_name:    Option<String>,
+    /// qedrecover sidecar (`*.qedmeta.toml`). When given, qedlift reads
+    /// `{discriminator.value, name, cu_budget}` for each in-scope
+    /// instruction and drives targeting from the sidecar instead of the
+    /// manual `--target-disc`/`--arm-name` flags, cross-checking each
+    /// lifted triple's CU against the claimed `cu_budget`.
+    qedmeta:     Option<PathBuf>,
+    /// Restrict a `--qedmeta` run to a single instruction by name.
+    target_name: Option<String>,
+}
+
+// -----------------------------------------------------------------------------
+// qedmeta sidecar (subset). Only the fields qedlift needs for targeting;
+// serde ignores the rest (target/idl/account/recovered/blocks).
+// -----------------------------------------------------------------------------
+
+#[derive(Debug, serde::Deserialize)]
+struct QedMeta {
+    #[serde(rename = "instruction")]
+    instructions: Vec<QedMetaIx>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct QedMetaIx {
+    name:          String,
+    #[allow(dead_code)] refines: Option<String>,
+    cu_budget:     Option<u64>,
+    discriminator: QedMetaDisc,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct QedMetaDisc {
+    value: i64,
+}
+
+fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)?;
+    Ok(toml::from_str(&text)?)
 }
 
 // -----------------------------------------------------------------------------
@@ -175,6 +212,8 @@ fn parse_args() -> Result<Args, String> {
     let mut output_dir:  Option<PathBuf> = None;
     let mut trace:       Option<PathBuf> = None;
     let mut arm_name:    Option<String>  = None;
+    let mut qedmeta:     Option<PathBuf> = None;
+    let mut target_name: Option<String>  = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -188,12 +227,15 @@ fn parse_args() -> Result<Args, String> {
             "--output-dir"  => output_dir  = Some(it.next().ok_or("--output-dir needs a path")?.into()),
             "--trace"       => trace       = Some(it.next().ok_or("--trace needs a path")?.into()),
             "--arm-name"    => arm_name    = Some(it.next().ok_or("--arm-name needs a name")?),
+            "--qedmeta"     => qedmeta     = Some(it.next().ok_or("--qedmeta needs a path")?.into()),
+            "--target-name" => target_name = Some(it.next().ok_or("--target-name needs a name")?),
             other           => return Err(format!("unknown arg: {}", other)),
         }
     }
     Ok(Args {
         so: so.ok_or("missing --so")?,
         output, module, target_disc, idl, output_dir, trace, arm_name,
+        qedmeta, target_name,
     })
 }
 
@@ -2360,6 +2402,9 @@ struct LiftOutput {
     module_name: String,
     text_bytes:  usize,
     insn_count:  usize,
+    /// CU count of the lifted triple (`n` in `cuTripleWithinMem n …`).
+    /// Surfaced so `--qedmeta` can cross-check the claimed `cu_budget`.
+    cu:          usize,
     /// Optional asm-refines-intrinsic theorem `(module_name, lean)`,
     /// emitted when the arm matches the refinement registry.
     refinement:  Option<(String, String)>,
@@ -3839,6 +3884,7 @@ fn lift_one(
         module_name,
         text_bytes: text_bytes.len(),
         insn_count: insns.len(),
+        cu: n,
         refinement,
     })
 }
@@ -3871,6 +3917,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(p) => Some(load_trace(p)?),
         None => None,
     };
+
+    // Sidecar-driven mode: --qedmeta <toml>. Drives targeting from the
+    // qedrecover sidecar (discriminator + name) instead of the manual
+    // --target-disc/--arm-name flags, and cross-checks each lifted
+    // triple's CU against the claimed cu_budget. Optionally narrowed to
+    // one instruction with --target-name.
+    if let Some(meta_path) = args.qedmeta.as_ref() {
+        let meta = load_qedmeta(meta_path)?;
+        let so_stem = args.so.file_stem()
+            .map(|s| pascal_case(&s.to_string_lossy()))
+            .unwrap_or_else(|| "Lifted".to_string());
+
+        let selected: Vec<&QedMetaIx> = match args.target_name.as_ref() {
+            Some(want) => meta.instructions.iter().filter(|i| &i.name == want).collect(),
+            None       => meta.instructions.iter().collect(),
+        };
+        if selected.is_empty() {
+            return Err(format!("--qedmeta {}: no in-scope instruction{}",
+                meta_path.display(),
+                args.target_name.as_ref()
+                    .map(|n| format!(" named {:?}", n)).unwrap_or_default()).into());
+        }
+
+        println!("=== qedlift (qedmeta) ===");
+        println!("  input  : {}", args.so.display());
+        println!("  sidecar: {}", meta_path.display());
+        println!("  arms   : {}", selected.len());
+
+        let mut budget_fail = false;
+        for ix in selected {
+            let arm = pascal_case(&ix.name);
+            let module_name = format!("{}{}", so_stem, arm);
+            let result = lift_one(&args.so, &ctx, &analysis,
+                Some(ix.discriminator.value), Some(module_name.clone()),
+                trace.as_deref(), Some(&arm))?;
+
+            // Cross-check the claimed CU budget against the lifted triple.
+            // The budget is an upper bound on the verified CU; the lifted
+            // `n` is the exact CU of the discharged triple.
+            let budget_note = match ix.cu_budget {
+                Some(b) if result.cu as u64 > b => {
+                    budget_fail = true;
+                    format!(" ✘ CU {} EXCEEDS budget {}", result.cu, b)
+                }
+                Some(b) => format!(" ✔ CU {} ≤ budget {}", result.cu, b),
+                None    => format!(" CU {} (no budget claimed)", result.cu),
+            };
+
+            let out_path = if let Some(o) = args.output.as_ref() {
+                o.clone()
+            } else if let Some(d) = args.output_dir.as_ref() {
+                std::fs::create_dir_all(d)?;
+                d.join(format!("{}Lifted.lean", module_name))
+            } else {
+                return Err("--qedmeta needs --output (single arm) or --output-dir".into());
+            };
+            std::fs::write(&out_path, &result.lean)?;
+            let refined = if let Some((rmod, rlean)) = &result.refinement {
+                let rpath = out_path.with_file_name(format!("{}.lean", rmod));
+                std::fs::write(&rpath, rlean)?;
+                " (+refinement)"
+            } else { "" };
+            println!("  ✔ {:<20} disc={:<4}{} → {}{}",
+                ix.name, ix.discriminator.value, budget_note, out_path.display(), refined);
+        }
+        if budget_fail {
+            return Err("one or more lifted triples exceeded the claimed cu_budget".into());
+        }
+        return Ok(());
+    }
 
     // Batch mode: --idl <toml|json> + --output-dir <dir>.
     if let Some(idl_path) = args.idl.as_ref() {
