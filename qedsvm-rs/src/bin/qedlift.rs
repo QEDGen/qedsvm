@@ -2595,6 +2595,11 @@ struct LiftOutput {
     /// Optional asm-refines-intrinsic theorem `(module_name, lean)`,
     /// emitted when the arm matches the refinement registry.
     refinement:  Option<(String, String)>,
+    /// Optional aggregation module `(import_module, lean)` the refinement
+    /// imports (e.g. `PToken.TransferAggregation`), mechanically emitted
+    /// from the lift's owned-byte pattern. Written to its canonical
+    /// `examples/lean/<module-path>.lean` location.
+    aggregation: Option<(String, String)>,
 }
 
 // Per-binary context shared across arms in batch mode. Building
@@ -2768,6 +2773,10 @@ struct AcctBuild {
     params: Vec<String>,               // new Nat params (framed owner o…)
     barrays: Vec<String>,              // new ByteArray params
     hyps: Vec<String>,                 // size + byte-bound hypotheses
+    // Token-codec aggregation: (lemma_name, owner_owned, rest_pattern).
+    // `Some` for token accounts (drives mechanically emitting the
+    // aggregation module); `None` for mint accounts (hand-written for now).
+    agg: Option<(String, bool, Vec<i64>)>,
 }
 
 fn emit_refinement(
@@ -2780,7 +2789,8 @@ fn emit_refinement(
     n_cu:         usize,
     start_pc:     usize,
     exit_pc:      usize,
-) -> Option<(String, String)> {
+    // Returns `(refine_module, refine_lean, optional (agg_module, agg_lean))`.
+) -> Option<(String, String, Option<(String, String)>)> {
     let spec = refine_registry(arm_name)?;
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
 
@@ -2856,7 +2866,23 @@ fn emit_refinement(
     let module = format!("{}Refinement", lift_module);
     let lean = render_refinement(&spec, &module, &builds, pre, post_clean,
         &setup_pre, &setup_post, abs_subst, vars, &amount, n_cu, start_pc, exit_pc);
-    Some((module, lean))
+
+    // Mechanically emit the token-codec aggregation module (the
+    // `*_account_eq` lemmas the refinement imports), from the detected
+    // owned-byte patterns. Token codec uses the shared
+    // `PToken.TransferAggregation`; mint accounts (agg: None) still rely
+    // on the hand-written `PToken.MintAggregation`.
+    let token_aggs: Vec<(&str, bool, Vec<i64>)> = builds.iter()
+        .filter_map(|b| b.agg.as_ref().map(|(n, oo, p)| (n.as_str(), *oo, p.clone())))
+        .collect();
+    let aggregation = if token_aggs.is_empty() {
+        None
+    } else {
+        let agg_lean = render_token_agg_module(
+            "Examples.PTokenTransferAggregation", &token_aggs);
+        Some(("PToken.TransferAggregation".to_string(), agg_lean))
+    };
+    Some((module, lean, aggregation))
 }
 
 /// Build a token-account aggregation (src/dst/dest patterns).
@@ -2969,7 +2995,8 @@ fn build_token(
     let post_amt = if m.is_sub { format!("({} - {})", amt_field, amount) } else { format!("({} + {})", amt_field, amount) };
     let rw_pre = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, amt_field, rest_args);
     let rw_post = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, post_amt, rest_args);
-    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params, barrays, hyps })
+    let agg = Some((lemma.to_string(), owner_owned, rest_bytes.clone()));
+    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params, barrays, hyps, agg })
 }
 
 // -----------------------------------------------------------------------------
@@ -2983,15 +3010,11 @@ fn build_token(
 // hardcoded `match rest_bytes` arms to any pattern.
 // -----------------------------------------------------------------------------
 
-// `#[allow(dead_code)]` until the codegen emits the aggregation during a
-// lift (next step); the unit test below already exercises + pins it.
 /// A segment of an account's `rest` region.
-#[allow(dead_code)]
 enum RestSeg { Byte(i64), Gap { off: i64, len: i64 } }
 
 /// General segmentation of `[start, end)` given sorted owned byte offsets:
 /// owned bytes become `Byte`, the runs between/around them become `Gap`s.
-#[allow(dead_code)]
 fn rest_segments(owned: &[i64], start: i64, end: i64) -> Vec<RestSeg> {
     let mut segs = Vec::new();
     let mut cur = start;
@@ -3008,7 +3031,6 @@ fn rest_segments(owned: &[i64], start: i64, end: i64) -> Vec<RestSeg> {
 /// lemma for a token account whose `rest` region owns `owned` bytes.
 /// `owner_owned` = the lift read the owner (else it's framed via `o0..o3`).
 /// `gap_ctr` threads gap numbering across a module's lemmas.
-#[allow(dead_code)]
 fn render_token_agg_lemma(
     name: &str, owner_owned: bool, owned: &[i64], rest_start: i64, size: i64,
     gap_ctr: &mut u32,
@@ -3117,7 +3139,6 @@ fn render_token_agg_lemma(
 
 /// Emit the full token-aggregation module (the lemmas a token-codec
 /// refinement imports). `accounts` is `(lemma_name, owner_owned, owned_bytes)`.
-#[allow(dead_code)]
 fn render_token_agg_module(ns: &str, accounts: &[(&str, bool, Vec<i64>)]) -> String {
     let mut gap_ctr = 0u32;
     let lemmas: Vec<String> = accounts.iter()
@@ -3145,6 +3166,23 @@ open SVM.SBPF SVM.Solana
 end {ns}
 ",
         ns = ns, lemmas = lemmas.join("\n\n"))
+}
+
+/// Write the mechanically-emitted aggregation module to its canonical
+/// `examples/lean/<module-path>.lean` location (relative to cwd). The
+/// import module name (e.g. `PToken.TransferAggregation`) maps to the
+/// path under the Examples lib `srcDir`. Returns a label for the log.
+fn write_aggregation(agg: &Option<(String, String)>) -> std::io::Result<&'static str> {
+    if let Some((module, lean)) = agg {
+        let path = format!("examples/lean/{}.lean", module.replace('.', "/"));
+        if let Some(parent) = std::path::Path::new(&path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, lean)?;
+        Ok(" (+agg)")
+    } else {
+        Ok("")
+    }
 }
 
 /// Build a mint-account aggregation (full preAuth or supply-only).
@@ -3204,7 +3242,7 @@ fn build_mint(
     let post_sup = if m.is_sub { format!("({} - {})", supply, amount) } else { format!("({} + {})", supply, amount) };
     let rw_pre = mint_rw(lemma, &base_arg, &preauth, &pre_args, &supply, &b45, &barrays, preauth_owned);
     let rw_post = mint_rw(lemma, &base_arg, &preauth, &pre_args, &post_sup, &b45, &barrays, preauth_owned);
-    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params: Vec::new(), barrays, hyps })
+    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params: Vec::new(), barrays, hyps, agg: None })
 }
 
 /// Render a mint aggregation rw call for a given supply value.
@@ -4238,8 +4276,10 @@ fn lift_one(
     out.push_str(&format!("end Examples.Lifted.{}\n", module_name));
 
     // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
-    let refinement = arm_name.and_then(|arm| emit_refinement(
+    let refine_emit = arm_name.and_then(|arm| emit_refinement(
         arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc));
+    let aggregation = refine_emit.as_ref().and_then(|(_, _, a)| a.clone());
+    let refinement = refine_emit.map(|(m, l, _)| (m, l));
 
     Ok(LiftOutput {
         lean: out,
@@ -4248,6 +4288,7 @@ fn lift_one(
         insn_count: insns.len(),
         cu: n,
         refinement,
+        aggregation,
     })
 }
 
@@ -4341,8 +4382,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::fs::write(&rpath, rlean)?;
                 " (+refinement)"
             } else { "" };
-            println!("  ✔ {:<20} disc={:<4}{} → {}{}",
-                ix.name, ix.discriminator.value, budget_note, out_path.display(), refined);
+            let agg = write_aggregation(&result.aggregation)?;
+            println!("  ✔ {:<20} disc={:<4}{} → {}{}{}",
+                ix.name, ix.discriminator.value, budget_note, out_path.display(), refined, agg);
         }
         if budget_fail {
             return Err("one or more lifted triples exceeded the claimed cu_budget".into());
@@ -4390,8 +4432,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::fs::write(&rpath, rlean)?;
                         " (+refinement)"
                     } else { "" };
-                    println!("  ✔ {:<24} disc={:<4} {} insns → {}{}",
-                        ix.name, ix.discriminator, result.insn_count, out_path.display(), refined);
+                    let agg = write_aggregation(&result.aggregation)?;
+                    println!("  ✔ {:<24} disc={:<4} {} insns → {}{}{}",
+                        ix.name, ix.discriminator, result.insn_count, out_path.display(), refined, agg);
                     lifted += 1;
                 }
                 Err(e) => {
@@ -4424,6 +4467,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let rpath = path.with_file_name(format!("{}.lean", rmod));
                 std::fs::write(&rpath, rlean)?;
                 println!("  refine : {}", rpath.display());
+            }
+            if write_aggregation(&result.aggregation)? == " (+agg)" {
+                if let Some((m, _)) = &result.aggregation {
+                    println!("  agg    : examples/lean/{}.lean", m.replace('.', "/"));
+                }
             }
         }
         None => {
