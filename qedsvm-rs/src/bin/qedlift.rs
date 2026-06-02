@@ -203,6 +203,15 @@ fn load_codama(text: &str) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Er
     Ok(out)
 }
 
+/// Load a Codama (`.json`) IDL as a raw `serde_json::Value` for layout
+/// extraction. Returns `None` for the minimal `.toml` IDL format (which
+/// carries no account layout) or on read/parse error.
+fn load_idl_value(path: &Path) -> Option<serde_json::Value> {
+    if path.extension().and_then(|e| e.to_str()) != Some("json") { return None; }
+    let text = std::fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 // -----------------------------------------------------------------------------
 // Codama account-data-struct → byte layout.
 //
@@ -215,9 +224,6 @@ fn load_codama(text: &str) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Er
 // bytes folded into the account's `rest` region.
 // -----------------------------------------------------------------------------
 
-// `#[allow(dead_code)]` until the refinement codegen (step b) consumes
-// the layout; the unit tests below already exercise it.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 enum FieldKind {
     Pubkey,      // 32-byte ↦Pubkey (four u64 limbs)
@@ -226,24 +232,21 @@ enum FieldKind {
     Bytes(usize),// opaque region of N bytes (options, arrays, wide scalars)
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct AccountField {
     name:   String,
     offset: usize,
-    kind:   FieldKind,
+    #[allow(dead_code)] kind: FieldKind, // read only by the layout tests
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct AccountLayout {
-    name:   String,
+    #[allow(dead_code)] name: String,    // metadata; offsets/size are what's consumed
     fields: Vec<AccountField>,
     size:   usize,
 }
 
 /// Byte width of a Codama `numberTypeNode` format.
-#[allow(dead_code)]
 fn codama_number_size(fmt: &str) -> Option<usize> {
     match fmt {
         "u8" | "i8"     => Some(1),
@@ -258,7 +261,6 @@ fn codama_number_size(fmt: &str) -> Option<usize> {
 /// Byte size of a Codama type node. `defined` resolves
 /// `definedTypeLinkNode`s (e.g. the `accountState` enum). Returns `None`
 /// for variable-size or unsupported nodes.
-#[allow(dead_code)]
 fn codama_type_size(
     ty: &serde_json::Value,
     defined: &std::collections::HashMap<String, serde_json::Value>,
@@ -293,7 +295,6 @@ fn codama_type_size(
 }
 
 /// Classify a field's type node into a codec `FieldKind`.
-#[allow(dead_code)]
 fn codama_field_kind(
     ty: &serde_json::Value,
     defined: &std::collections::HashMap<String, serde_json::Value>,
@@ -310,7 +311,6 @@ fn codama_field_kind(
 
 /// Parse a Codama account-data struct into a byte layout. `name` is the
 /// account node name (e.g. "token", "mint").
-#[allow(dead_code)]
 fn parse_account_layout(
     root: &serde_json::Value,
     name: &str,
@@ -381,7 +381,8 @@ mod layout_tests {
         let m = render_token_agg_module(
             "Examples.PTokenTransferAggregation",
             &[("src_account_eq", true,  vec![72, 108, 109]),
-              ("dst_account_eq", false, vec![108])]);
+              ("dst_account_eq", false, vec![108])],
+            72, 165);
         let on_disk = std::fs::read_to_string("../examples/lean/PToken/TransferAggregation.lean")
             .expect("read TransferAggregation.lean");
         assert_eq!(m, on_disk,
@@ -2789,6 +2790,7 @@ fn emit_refinement(
     n_cu:         usize,
     start_pc:     usize,
     exit_pc:      usize,
+    idl:          Option<&serde_json::Value>,
     // Returns `(refine_module, refine_lean, optional (agg_module, agg_lean))`.
 ) -> Option<(String, String, Option<(String, String)>)> {
     let spec = refine_registry(arm_name)?;
@@ -2878,8 +2880,18 @@ fn emit_refinement(
     let aggregation = if token_aggs.is_empty() {
         None
     } else {
+        // Derive the token account's rest-region start + total size from
+        // the IDL layout (step a); fall back to SPL token's 72/165 when no
+        // IDL is threaded. `rest_start` = the byte after `amount`.
+        let (rest_start, acct_size) = idl
+            .and_then(|v| parse_account_layout(v, "token").ok())
+            .and_then(|layout| {
+                let amount = layout.fields.iter().find(|f| f.name == "amount")?;
+                Some((amount.offset as i64 + 8, layout.size as i64))
+            })
+            .unwrap_or((72, 165));
         let agg_lean = render_token_agg_module(
-            "Examples.PTokenTransferAggregation", &token_aggs);
+            "Examples.PTokenTransferAggregation", &token_aggs, rest_start, acct_size);
         Some(("PToken.TransferAggregation".to_string(), agg_lean))
     };
     Some((module, lean, aggregation))
@@ -3139,11 +3151,13 @@ fn render_token_agg_lemma(
 
 /// Emit the full token-aggregation module (the lemmas a token-codec
 /// refinement imports). `accounts` is `(lemma_name, owner_owned, owned_bytes)`.
-fn render_token_agg_module(ns: &str, accounts: &[(&str, bool, Vec<i64>)]) -> String {
+fn render_token_agg_module(
+    ns: &str, accounts: &[(&str, bool, Vec<i64>)], rest_start: i64, size: i64,
+) -> String {
     let mut gap_ctr = 0u32;
     let lemmas: Vec<String> = accounts.iter()
         .map(|(name, owner_owned, owned)|
-            render_token_agg_lemma(name, *owner_owned, owned, 72, 165, &mut gap_ctr))
+            render_token_agg_lemma(name, *owner_owned, owned, rest_start, size, &mut gap_ctr))
         .collect();
     format!(
 "/-
@@ -3384,6 +3398,7 @@ fn lift_one(
     module_override: Option<String>,
     trace:           Option<&[usize]>,
     arm_name:        Option<&str>,
+    idl:             Option<&serde_json::Value>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
     let text_offset = ctx.text_offset;
@@ -4277,7 +4292,7 @@ fn lift_one(
 
     // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
     let refine_emit = arm_name.and_then(|arm| emit_refinement(
-        arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc));
+        arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc, idl));
     let aggregation = refine_emit.as_ref().and_then(|(_, _, a)| a.clone());
     let refinement = refine_emit.map(|(m, l, _)| (m, l));
 
@@ -4313,6 +4328,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // + CFG build over the whole batch.
     let ctx = load_binary(&args.so)?;
     let analysis = Analysis::from_executable(&ctx.executable)?;
+
+    // Codama IDL (when a `.json` is given) — used by the refinement
+    // codegen to derive account layouts (rest-region start + size).
+    let idl_value = args.idl.as_ref().and_then(|p| load_idl_value(p));
 
     // Optional execution-trace oracle (single-arm mode). One decimal
     // logical PC per line; blank lines and `#` comments are ignored.
@@ -4354,7 +4373,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let module_name = format!("{}{}", so_stem, arm);
             let result = lift_one(&args.so, &ctx, &analysis,
                 Some(ix.discriminator.value), Some(module_name.clone()),
-                trace.as_deref(), Some(&arm))?;
+                trace.as_deref(), Some(&arm), idl_value.as_ref())?;
 
             // Cross-check the claimed CU budget against the lifted triple.
             // The budget is an upper bound on the verified CU; the lifted
@@ -4420,7 +4439,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // opcode (in either the .text renderer or the symbolic
             // executor) is reported and skipped, not fatal. This makes
             // the batch a coverage probe.
-            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name)) {
+            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value.as_ref()) {
                 Ok(result) => {
                     let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
                     if let Some(parent) = out_path.parent() {
@@ -4451,7 +4470,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Single-instruction mode (unchanged behaviour).
     let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone(),
-                          trace.as_deref(), args.arm_name.as_deref())?;
+                          trace.as_deref(), args.arm_name.as_deref(), idl_value.as_ref())?;
     match args.output {
         Some(path) => {
             if let Some(parent) = path.parent() {
