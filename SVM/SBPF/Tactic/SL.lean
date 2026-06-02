@@ -755,7 +755,20 @@ partial def proveDisjoint (a b : Expr) : MetaM Expr := do
         #[← proveDisjoint a bb[bb.size - 2]!, ← proveDisjoint a bb[bb.size - 1]!]
     | some ``SVM.SBPF.CodeReq.singleton =>
       let aa := a.getAppArgs; let bb := b.getAppArgs
-      let ne ← mkAppM ``Ne #[aa[aa.size - 2]!, bb[bb.size - 2]!]
+      let pc1 := aa[aa.size - 2]!
+      let pc2 := bb[bb.size - 2]!
+      -- `mkDecideProof` discharges `pc₁ ≠ pc₂` only when both PCs are
+      -- ground (concrete Nat literals): `decide (pc₁ ≠ pc₂)` must reduce
+      -- to `true`. For symbolic, base-shifted PCs (`base + 0 ≠ base + 7`,
+      -- as in the hand-written base-relative proofs) it gets stuck and
+      -- yields a kernel-invalid term. Throw on non-ground PCs so
+      -- `dischargeDisjoint` falls back to the `sl_disjoint_codereq`
+      -- tactic, whose `first | decide | omega` handles symbolic linear
+      -- inequalities. (The fast path still covers concrete PCs — the
+      -- O(n²)→O(n) case that motivated this builder.)
+      if pc1.hasFVar || pc1.hasMVar || pc2.hasFVar || pc2.hasMVar then
+        throwError m!"proveDisjoint: non-ground PCs, deferring to tactic:\n  {pc1} ≠ {pc2}"
+      let ne ← mkAppM ``Ne #[pc1, pc2]
       mkAppM ``SVM.SBPF.CodeReq.singleton_disjoint_singleton
         #[aa[aa.size - 1]!, bb[bb.size - 1]!, ← mkDecideProof ne]
     | _ => throwError m!"proveDisjoint: rhs not a CodeReq union/singleton:\n  {b}"

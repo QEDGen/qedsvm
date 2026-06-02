@@ -3646,9 +3646,14 @@ fn lift_one(
         }
         t
     } else if needs_assumption {
-        "sl_block_auto <;> assumption".to_string()
+        // 2-space indent (matching the sl_block_iter branch): a bare
+        // col-0 tactic gets absorbed by a following `open Memory in`
+        // (parsed as the tactic combinator) when a `_balance_correct`
+        // corollary follows, breaking the parse. Indenting lets the
+        // col-0 `open …`/`end` terminate the block.
+        "  sl_block_auto <;> assumption".to_string()
     } else {
-        "sl_block_auto".to_string()
+        "  sl_block_auto".to_string()
     };
     let tactic: &str = Box::leak(tactic.into_boxed_str());
 
