@@ -21,12 +21,12 @@ qedsvm is the model and spec layer downstream verification tools sit on, not a v
 | C. Tactic suite (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) | ✅ shipped |
 | D. sBPF macro library | ✅ mostly shipped |
 | E. Solana program library | ⚠️ partial, System `Transfer` end-to-end; SPL Token / ATA / Anchor patterns pending |
-| F. Differential testing (mollusk fixtures) | ✅ 26 fixtures byte+CU equal |
+| F. Differential testing (mollusk fixtures) | ✅ 32 fixtures byte+CU equal |
 | G. ELF loader + arbitrary program execution | ✅ shipped |
 | H. Crypto syscalls (12), agave-pinned crates | ✅ shipped |
 | Solana data-model SL predicates (`SVM/Solana/`) | ✅ 3 shipped; ~10 more queued |
 
-**Headline numbers.** 142 per-instruction Hoare triples · 26 diff-mollusk fixtures including p-token Transfer at 76 CU byte+CU identical to mollusk · full suite ~3 s · end-to-end Hoare-triple proof over compiler-emitted bytecode covering **76 of 76 CU** on the p-token Transfer happy path, terminating with exitCode = 0.
+**Headline numbers.** 142 per-instruction Hoare triples · 32 diff-mollusk fixtures including p-token Transfer at 76 CU byte+CU identical to mollusk · full suite ~3 s · end-to-end Hoare-triple proof over compiler-emitted bytecode covering **76 of 76 CU** on the p-token Transfer happy path, terminating with exitCode = 0 · `qedlift` lifts a `.so` straight to a `sorry`-free Lean triple.
 
 ## Next: Direction-A MIR pivot
 

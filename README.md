@@ -4,10 +4,10 @@
 
 A Lean 4 model of the Solana Virtual Machine. Operates on the compiled `.so`: the same artifact mainnet runs.
 
-- **Byte-for-byte conformant** with agave on 26 mollusk-cross-checked fixtures, including p-token Transfer at 76 CU identical. Full suite: ~3s.
+- **Byte-for-byte conformant** with agave on 32 mollusk-cross-checked fixtures, including p-token Transfer at 76 CU identical. Full suite: ~3s.
 - **142 per-instruction Hoare triples** in separation logic, composable end-to-end. Every triple carries a verified compute-unit bound.
 - **Small trust base.** Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean` plus 21 explicit crypto trust statements. No rustc.
-- **One codebase, two deliverables.** Run any compiled program (`Runner.runElf`); prove what it does (`cuTripleWithin`).
+- **One codebase, three deliverables.** Run any compiled program (`Runner.runElf`), prove what it does (`cuTripleWithin`), or lift the `.so` straight to that proof (`qedlift`).
 
 ## Install
 
@@ -48,6 +48,18 @@ example : cuTripleWithin 2 0 2 someCode P Q := by sl_block_iter
 ```
 
 Worked examples: [`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncrement.lean) (raw bytes → witness theorem) · [`examples/lean/PToken/BalanceSpec.lean`](examples/lean/PToken/BalanceSpec.lean) (Solana-data-model refinement target).
+
+### Lift a compiled program to a proof (`qedlift`)
+
+`qedlift` closes the loop: point it at a `.so` and it emits a Lean module that embeds the `.text` bytes, proves they decode to the expected `List Insn`, states a `cuTripleWithinMem` Hoare triple synthesized by symbolic execution, and discharges it with `sl_block_auto`. The spec statement is mechanical from the binary, not hand-typed, and the proof closes with no `sorry`.
+
+```bash
+cargo run --features qedrecover --bin qedlift -- \
+  --so qedsvm-rs/tests/fixtures/byte_increment.so \
+  --output examples/lean/Generated/ByteIncrementLifted.lean
+```
+
+With `--trace`, qedlift follows the real happy path through branchy bytecode and additionally emits a `*_balance_correct` corollary (clean Nat debit/credit). The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, the Counter family, Logger, and six p-token arms (Transfer, TransferChecked, MintTo, Burn, CloseAccount, InitializeMint2), all proof-complete. Batch mode (`--idl`) lifts every instruction in a TOML or Codama IDL.
 
 ### From Rust (`qedsvm-rs`)
 
@@ -135,6 +147,7 @@ The Janus differential-test harness ([`saicharanpogul/janus/tests-qedsvm`](https
 | 142 per-instruction Hoare triples | ✅ |
 | Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) | ✅ |
 | End-to-end proofs over compiler-emitted bytecode | ✅ 76 / 76 CU on p-token Transfer, exitCode = 0 |
+| Bytecode → proof lift (`qedlift`) | ✅ `.so` → `sorry`-free Lean triple + CU bound |
 
 See [`ROADMAP.md`](ROADMAP.md) for the phase-by-phase breakdown and current work.
 
@@ -143,9 +156,11 @@ See [`ROADMAP.md`](ROADMAP.md) for the phase-by-phase breakdown and current work
 ```
 SVM/                  Lean library: interpreter, spec layer, Solana SL predicates
 examples/lean/        Hoare-proof examples (ByteIncrement, PToken/, CompilerRt*, …)
+examples/lean/Generated/  qedlift output: .so → sorry-free Lean triples
 examples/rust/        → qedsvm-rs/examples (symlink)
 qedsvm-rs/            Cargo workspace
 ├── (root)            Mollusk-shaped Rust API
+├── src/bin/qedlift.rs    Bytecode → Lean-proof lifter (--features qedrecover)
 └── lean-bridge/      Agave-pinned crypto staticlib called by Lean
 docs/                 Active design notes (docs/archive/ for shipped plans)
 ```
