@@ -1,18 +1,8 @@
 /-
-  Account-codec aggregation for the real p_token Transfer lift.
-
-  The trace-guided lift owns the src/dst account fields as *scattered*
-  cells: mint/owner/amount as `↦U64` (dword loads), and a few `rest`
-  bytes (`ldxb` loads) with the remaining `rest` bytes framed in as
-  opaque gaps. `src_account_eq` / `dst_account_eq` reshape that scattered
-  shape into the coarse `tokenAcctBalanceOf` codec atom the refinement
-  consumes.
-
-  mint/owner/amount need NO byte aggregation: `↦Pubkey` is four `↦U64`
-  limbs matching the lift's dword cells directly. Only the `rest` blob is
-  split — and that split is now a one-application instance of the keystone
-  `memBytesIs_segs` (`SVM/SBPF/SegAggregation.lean`): pick the byte-segment
-  list (owned bytes + framed gaps), the keystone does the proof.
+  Account-codec aggregation for token-account lifts.
+  MECHANICALLY EMITTED by qedlift from the IDL account layout + the lift's
+  owned-byte pattern (general `rest_segments`; the proof is a fixed
+  `memBytesIs_segs` instance). Do not edit by hand.
 -/
 
 import SVM.SBPF.SegAggregation
@@ -23,23 +13,19 @@ namespace Examples.PTokenTransferAggregation
 
 open SVM.SBPF SVM.Solana
 
-/-- Full src-account codec ↔ scattered cells. mint/owner/amount match the
-    lift's `↦U64` cells directly; the `rest` blob (owned bytes at offsets
-    72/108/109, framed gaps `g1` 73..107 / `g2` 110..164) splits via
-    `memBytesIs_segs`. -/
 theorem src_account_eq
     (base c0 c1 c2 c3 o0 o1 o2 o3 amount b72 b108 b109 : Nat)
-    (g1 g2 : ByteArray) (hg1 : g1.size = 35)
-    (h72 : b72 < 256) (h108 : b108 < 256) (h109 : b109 < 256) :
+    (g1 g2 : ByteArray) (hg1 : g1.size = 35) (h72 : b72 < 256) (h108 : b108 < 256) (h109 : b109 < 256) :
     tokenAcctBalanceOf base
       { mint := ⟨c0, c1, c2, c3⟩, owner := ⟨o0, o1, o2, o3⟩, amount := amount,
-        rest := PartialState.byteBA b72 ++ (g1 ++
-          (PartialState.byteBA b108 ++ (PartialState.byteBA b109 ++ g2))) }
+        rest := PartialState.byteBA b72 ++ (g1 ++ (PartialState.byteBA b108 ++ (PartialState.byteBA b109 ++ g2))) }
       = ( pubkeyIs base ⟨c0, c1, c2, c3⟩ **
           pubkeyIs (base + 32) ⟨o0, o1, o2, o3⟩ **
           memU64Is (base + 64) amount **
-          ( memByteIs (base + 72) b72 ** memBytesIs (base + 73) g1 **
-            memByteIs (base + 108) b108 ** memByteIs (base + 109) b109 **
+          ( memByteIs (base + 72) b72 **
+            memBytesIs (base + 73) g1 **
+            memByteIs (base + 108) b108 **
+            memByteIs (base + 109) b109 **
             memBytesIs (base + 110) g2 ) ) := by
   funext h
   apply propext
@@ -55,10 +41,6 @@ theorem src_account_eq
     hg1, ba_append_empty, sepConj_emp_right_eq, Nat.add_assoc, Nat.reduceAdd] at key
   exact key
 
-/-- Full dst-account codec ↔ scattered cells. The lift doesn't read the
-    dst owner, so its four `↦U64` limbs are framed in (carried by
-    `o0..o3`); the `rest` blob owns only the state byte (108), gaps `g3`
-    72..107 / `g4` 109..164. -/
 theorem dst_account_eq
     (base c0 c1 c2 c3 o0 o1 o2 o3 amount b108 : Nat)
     (g3 g4 : ByteArray) (hg3 : g3.size = 36) (h108 : b108 < 256) :
@@ -68,7 +50,8 @@ theorem dst_account_eq
       = ( pubkeyIs base ⟨c0, c1, c2, c3⟩ **
           pubkeyIs (base + 32) ⟨o0, o1, o2, o3⟩ **
           memU64Is (base + 64) amount **
-          ( memBytesIs (base + 72) g3 ** memByteIs (base + 108) b108 **
+          ( memBytesIs (base + 72) g3 **
+            memByteIs (base + 108) b108 **
             memBytesIs (base + 109) g4 ) ) := by
   funext h
   apply propext
@@ -78,7 +61,8 @@ theorem dst_account_eq
   refine sepConj_iff_congr_right _ ?_ h; intro h
   refine sepConj_iff_congr_right _ ?_ h; intro h
   have key := memBytesIs_segs (base + 72)
-    [.gap g3, .byte b108, .gap g4] ⟨trivial, h108, trivial, trivial⟩ h
+    [.gap g3, .byte b108, .gap g4]
+    ⟨trivial, h108, trivial, trivial⟩ h
   simp only [segsBytes, segsSL, FieldSeg.bytes, FieldSeg.sl, FieldSeg.size,
     hg3, ba_append_empty, sepConj_emp_right_eq, Nat.add_assoc, Nat.reduceAdd] at key
   exact key

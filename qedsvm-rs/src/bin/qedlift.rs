@@ -374,6 +374,20 @@ mod layout_tests {
         let supply = l.fields.iter().find(|f| f.name == "supply").unwrap();
         assert_eq!((supply.offset, supply.kind.clone()), (36, FieldKind::U64));
     }
+
+    #[test]
+    fn transfer_aggregation_is_mechanically_emitted() {
+        // src reads owner + rest bytes 72/108/109; dst frames owner, reads 108.
+        let m = render_token_agg_module(
+            "Examples.PTokenTransferAggregation",
+            &[("src_account_eq", true,  vec![72, 108, 109]),
+              ("dst_account_eq", false, vec![108])]);
+        let on_disk = std::fs::read_to_string("../examples/lean/PToken/TransferAggregation.lean")
+            .expect("read TransferAggregation.lean");
+        assert_eq!(m, on_disk,
+            "TransferAggregation.lean is out of sync with the qedlift emitter — \
+             regenerate it (the file is mechanically emitted, do not hand-edit)");
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -2956,6 +2970,181 @@ fn build_token(
     let rw_pre = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, amt_field, rest_args);
     let rw_post = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, post_amt, rest_args);
     Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params, barrays, hyps })
+}
+
+// -----------------------------------------------------------------------------
+// Account-aggregation codegen.
+//
+// Emits the `*_account_eq` aggregation lemmas (today hand-written in
+// PToken/TransferAggregation.lean) from the account layout + the lift's
+// owned-byte pattern. The lemmas are GENERIC in the field values
+// (`b72`/`h72`/`g1`, not lift vars), so they're a pure function of the
+// owned-byte pattern — `rest_segments` generalizes the previously
+// hardcoded `match rest_bytes` arms to any pattern.
+// -----------------------------------------------------------------------------
+
+// `#[allow(dead_code)]` until the codegen emits the aggregation during a
+// lift (next step); the unit test below already exercises + pins it.
+/// A segment of an account's `rest` region.
+#[allow(dead_code)]
+enum RestSeg { Byte(i64), Gap { off: i64, len: i64 } }
+
+/// General segmentation of `[start, end)` given sorted owned byte offsets:
+/// owned bytes become `Byte`, the runs between/around them become `Gap`s.
+#[allow(dead_code)]
+fn rest_segments(owned: &[i64], start: i64, end: i64) -> Vec<RestSeg> {
+    let mut segs = Vec::new();
+    let mut cur = start;
+    for &b in owned {
+        if b > cur { segs.push(RestSeg::Gap { off: cur, len: b - cur }); }
+        segs.push(RestSeg::Byte(b));
+        cur = b + 1;
+    }
+    if cur < end { segs.push(RestSeg::Gap { off: cur, len: end - cur }); }
+    segs
+}
+
+/// Emit one `tokenAcctBalanceOf base record = <fine cells>` aggregation
+/// lemma for a token account whose `rest` region owns `owned` bytes.
+/// `owner_owned` = the lift read the owner (else it's framed via `o0..o3`).
+/// `gap_ctr` threads gap numbering across a module's lemmas.
+#[allow(dead_code)]
+fn render_token_agg_lemma(
+    name: &str, owner_owned: bool, owned: &[i64], rest_start: i64, size: i64,
+    gap_ctr: &mut u32,
+) -> String {
+    let segs = rest_segments(owned, rest_start, size);
+    // Assign gap names + collect byte offsets, preserving segment order.
+    let mut gap_name: Vec<(usize, String)> = Vec::new(); // (seg idx, gN)
+    for (i, s) in segs.iter().enumerate() {
+        if let RestSeg::Gap { .. } = s {
+            *gap_ctr += 1;
+            gap_name.push((i, format!("g{}", gap_ctr)));
+        }
+    }
+    let gname = |idx: usize| gap_name.iter().find(|(i, _)| *i == idx).unwrap().1.clone();
+    let byte_offs: Vec<i64> = segs.iter().filter_map(|s|
+        if let RestSeg::Byte(o) = s { Some(*o) } else { None }).collect();
+
+    // Params.
+    let byte_vars: Vec<String> = byte_offs.iter().map(|o| format!("b{}", o)).collect();
+    let gap_vars: Vec<String> = gap_name.iter().map(|(_, g)| g.clone()).collect();
+    let nat_params = {
+        let mut p = vec!["base".to_string(), "c0".into(), "c1".into(), "c2".into(), "c3".into(),
+            "o0".into(), "o1".into(), "o2".into(), "o3".into(), "amount".into()];
+        p.extend(byte_vars.clone());
+        p.join(" ")
+    };
+    // Hyps: non-last gaps need a size hyp; each owned byte needs `< 256`.
+    let last = segs.len().saturating_sub(1);
+    let mut hyps: Vec<String> = Vec::new();
+    let mut size_hyps: Vec<String> = Vec::new();
+    for (i, s) in segs.iter().enumerate() {
+        if let RestSeg::Gap { len, .. } = s {
+            if i != last {
+                let g = gname(i);
+                hyps.push(format!("(h{} : {}.size = {})", g, g, len));
+                size_hyps.push(format!("h{}", g));
+            }
+        }
+    }
+    for o in &byte_offs { hyps.push(format!("(h{} : b{} < 256)", o, o)); }
+
+    // LHS record `rest` (right-folded `++` chain) + RHS fine cells.
+    let term = |s: &RestSeg, i: usize| match s {
+        RestSeg::Byte(o)  => format!("PartialState.byteBA b{}", o),
+        RestSeg::Gap { .. } => gname(i),
+    };
+    let chain = {
+        let parts: Vec<String> = segs.iter().enumerate().map(|(i, s)| term(s, i)).collect();
+        let mut acc = parts.last().cloned().unwrap_or_else(|| "ByteArray.empty".into());
+        for p in parts.iter().rev().skip(1) {
+            // Parenthesise only a compound tail; an atomic tail stays bare.
+            acc = if acc.contains(" ++ ") { format!("{} ++ ({})", p, acc) }
+                  else { format!("{} ++ {}", p, acc) };
+        }
+        acc
+    };
+    let fine: Vec<String> = segs.iter().enumerate().map(|(i, s)| match s {
+        RestSeg::Byte(o)        => format!("memByteIs (base + {}) b{}", o, o),
+        RestSeg::Gap { off, .. } => format!("memBytesIs (base + {}) {}", off, gname(i)),
+    }).collect();
+    // memBytesIs_segs args.
+    let seg_list: Vec<String> = segs.iter().enumerate().map(|(i, s)| match s {
+        RestSeg::Byte(o)  => format!(".byte b{}", o),
+        RestSeg::Gap { .. } => format!(".gap {}", gname(i)),
+    }).collect();
+    let mut bounds: Vec<String> = segs.iter().map(|s| match s {
+        RestSeg::Byte(o)  => format!("h{}", o),
+        RestSeg::Gap { .. } => "trivial".to_string(),
+    }).collect();
+    bounds.push("trivial".to_string()); // nil case
+    let simp_sizes = if size_hyps.is_empty() { String::new() }
+        else { format!("{}, ", size_hyps.join(", ")) };
+
+    let _ = owner_owned; // owner is always spelled via o0..o3 params either way
+    format!(
+"theorem {name}
+    ({nat_params} : Nat)
+    ({gaps} : ByteArray){hyps} :
+    tokenAcctBalanceOf base
+      {{ mint := ⟨c0, c1, c2, c3⟩, owner := ⟨o0, o1, o2, o3⟩, amount := amount,
+        rest := {chain} }}
+      = ( pubkeyIs base ⟨c0, c1, c2, c3⟩ **
+          pubkeyIs (base + 32) ⟨o0, o1, o2, o3⟩ **
+          memU64Is (base + 64) amount **
+          ( {fine} ) ) := by
+  funext h
+  apply propext
+  simp only [tokenAcctBalanceOf, tokenAcctBalance, MINT_OFF, OWNER_OFF, AMOUNT_OFF,
+    REST_OFF, Nat.add_zero]
+  refine sepConj_iff_congr_right _ ?_ h; intro h
+  refine sepConj_iff_congr_right _ ?_ h; intro h
+  refine sepConj_iff_congr_right _ ?_ h; intro h
+  have key := memBytesIs_segs (base + {rest_start})
+    [{seg_list}]
+    ⟨{bounds}⟩ h
+  simp only [segsBytes, segsSL, FieldSeg.bytes, FieldSeg.sl, FieldSeg.size,
+    {simp_sizes}ba_append_empty, sepConj_emp_right_eq, Nat.add_assoc, Nat.reduceAdd] at key
+  exact key",
+        name = name, nat_params = nat_params, gaps = gap_vars.join(" "),
+        hyps = if hyps.is_empty() { String::new() } else { format!(" {}", hyps.join(" ")) },
+        chain = chain, fine = fine.join(" **\n            "),
+        rest_start = rest_start, seg_list = seg_list.join(", "),
+        bounds = bounds.join(", "), simp_sizes = simp_sizes,
+    )
+}
+
+/// Emit the full token-aggregation module (the lemmas a token-codec
+/// refinement imports). `accounts` is `(lemma_name, owner_owned, owned_bytes)`.
+#[allow(dead_code)]
+fn render_token_agg_module(ns: &str, accounts: &[(&str, bool, Vec<i64>)]) -> String {
+    let mut gap_ctr = 0u32;
+    let lemmas: Vec<String> = accounts.iter()
+        .map(|(name, owner_owned, owned)|
+            render_token_agg_lemma(name, *owner_owned, owned, 72, 165, &mut gap_ctr))
+        .collect();
+    format!(
+"/-
+  Account-codec aggregation for token-account lifts.
+  MECHANICALLY EMITTED by qedlift from the IDL account layout + the lift's
+  owned-byte pattern (general `rest_segments`; the proof is a fixed
+  `memBytesIs_segs` instance). Do not edit by hand.
+-/
+
+import SVM.SBPF.SegAggregation
+import SVM.SBPF.PubkeySL
+import SVM.Solana.TokenAccountCodec
+
+namespace {ns}
+
+open SVM.SBPF SVM.Solana
+
+{lemmas}
+
+end {ns}
+",
+        ns = ns, lemmas = lemmas.join("\n\n"))
 }
 
 /// Build a mint-account aggregation (full preAuth or supply-only).
