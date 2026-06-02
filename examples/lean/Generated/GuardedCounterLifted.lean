@@ -93,7 +93,7 @@ theorem GuardedCounterLifted_lifted_spec
       (fun rt => ((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 8) 8 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 8) 8 = true) := by
-sl_block_auto <;> assumption
+  sl_block_auto <;> assumption
 
 open Memory in
 theorem GuardedCounterLifted_balance_correct

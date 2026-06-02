@@ -97,6 +97,6 @@ theorem TwoOpDecrement_lifted_spec
       (fun rt => ((rt.containsRange (effectiveAddr baseAddr 1) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 1) 8 = true) := by
-sl_block_auto <;> assumption
+  sl_block_auto <;> assumption
 
 end Examples.Lifted.TwoOpDecrement
