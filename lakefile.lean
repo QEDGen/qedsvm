@@ -104,7 +104,10 @@ lean_lib Examples where
     -- heap (reads/commits the bump slot at 0x300000000, writes + reads an
     -- allocated block). Proves a heap-allocating program lifts with the
     -- heap modeled as ordinary memory cells (no SL-core changes).
+    -- `HeapAllocSpec` restates the lift via the `heapBumpPtr`/`heapBlock`
+    -- SL predicates (a clean allocation claim).
     `Generated.HeapAllocLifted,
+    `HeapAllocSpec,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen
