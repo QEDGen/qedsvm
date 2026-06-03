@@ -17,6 +17,7 @@ instruction sequence.
 import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
+import SVM.SBPF.HeapSL
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 4000000
@@ -92,5 +93,35 @@ theorem HeapAlloc_lifted_spec
                   rt.containsWritable (effectiveAddr (toU64 12884934640) 0) 8 = true) ∧
                   rt.containsRange (effectiveAddr (toU64 12884934640) 0) 8 = true) := by
   sl_block_auto <;> assumption
+
+open Memory in
+theorem HeapAlloc_allocates
+    (baseAddr oldMemD_0 vR2Old oldMemD_1 vR0Old : Nat)
+    (holdMemD_0_lt : oldMemD_0 < 2 ^ 64)
+    (hReloadLt_5 : toU64 42 % 2 ^ (8 * 8) < 2 ^ 64)
+    : cuTripleWithinMem 7 0 0 7
+      ((((((((CodeReq.singleton 0 (.lddw .r1 (12884901888))).union
+        (CodeReq.singleton 1 (.ldx .dword .r2 .r1 0))).union
+        (CodeReq.singleton 2 (.lddw .r2 (12884934640)))).union
+        (CodeReq.singleton 3 (.stx .dword .r1 0 .r2))).union
+        (CodeReq.singleton 4 (.st .dword .r2 0 (42)))).union
+        (CodeReq.singleton 5 (.ldx .dword .r1 .r2 0))).union
+        (CodeReq.singleton 6 (.mov64 .r0 (.imm (0))))))
+      ((.r1 ↦ᵣ baseAddr) **
+      (heapBumpPtr (oldMemD_0)) **
+      (.r2 ↦ᵣ vR2Old) **
+      (heapBlockU64 ((toU64 12884934640)) (oldMemD_1)) **
+      (.r0 ↦ᵣ vR0Old))
+      ((.r1 ↦ᵣ toU64 42 % 2 ^ (8 * 8)) **
+      (heapBumpPtr (toU64 12884934640)) **
+      (.r2 ↦ᵣ toU64 12884934640) **
+      (heapBlockU64 ((toU64 12884934640)) (toU64 42 % 2 ^ (8 * 8))) **
+      (.r0 ↦ᵣ toU64 0))
+      (fun rt => (((rt.containsRange (effectiveAddr (toU64 12884901888) 0) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr (toU64 12884901888) 0) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr (toU64 12884934640) 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr (toU64 12884934640) 0) 8 = true) := by
+  simp only [heapBumpPtr, heapBlockU64]
+  exact HeapAlloc_lifted_spec baseAddr oldMemD_0 vR2Old oldMemD_1 vR0Old holdMemD_0_lt hReloadLt_5
 
 end Examples.Lifted.HeapAlloc

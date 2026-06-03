@@ -460,6 +460,26 @@ mod layout_tests {
             "VaultRefinement.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
     }
+
+    /// The heap-allocating lift, including the mechanically-emitted
+    /// `HeapAlloc_allocates` corollary (heap cells folded into
+    /// `heapBumpPtr`/`heapBlockU64`) and the conditional `HeapSL` import,
+    /// is mechanically emitted. Guards the heap-corollary codegen.
+    #[test]
+    fn heap_alloc_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/heap_alloc.so");
+        let ctx = load_binary(so).expect("load heap_alloc.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse heap_alloc.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("HeapAlloc".to_string()),
+            None, None, None).expect("lift heap_alloc.so");
+
+        let on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/HeapAllocLifted.lean")
+                .expect("read HeapAllocLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "HeapAllocLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -2487,6 +2507,60 @@ fn atom_to_lean_with_subst(
             format!("({} ↦Bytes {})", sub(addr), value.to_lean())
         }
     }
+}
+
+/// The BPF program heap: `[MM_HEAP_START, MM_HEAP_START + 0x8000)`.
+const HEAP_START_I: i64 = 0x300000000;
+const HEAP_END_I:   i64 = 0x300000000 + 0x8000;
+
+/// If a memory cell's address is a flat heap constant (an `lddw`-loaded
+/// `MM_HEAP_START`-range address with offset `off`), return its absolute
+/// heap address. Used to fold heap cells into the `heapBumpPtr` /
+/// `heapBlockU64` allocator predicates.
+fn heap_cell_addr(addr_base: &Expr, off: i64) -> Option<i64> {
+    let k = match addr_base {
+        Expr::Const(k) => *k,
+        Expr::ToU64(inner) => match inner.as_ref() {
+            Expr::Const(k) => *k,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let abs = k.checked_add(off)?;
+    if (HEAP_START_I..HEAP_END_I).contains(&abs) { Some(abs) } else { None }
+}
+
+/// Render an atom for the heap-allocation corollary: a `u64` heap cell at
+/// `MM_HEAP_START` becomes `heapBumpPtr v` (the bump-position slot), any
+/// other heap cell becomes `heapBlockU64 addr v` (an allocated block);
+/// everything else renders as usual.
+fn atom_to_lean_heap(
+    atom: &Atom,
+    subst: &std::collections::BTreeMap<String, String>,
+) -> String {
+    if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+        if matches!(width, Width::Dword) {
+            if let Some(abs) = heap_cell_addr(addr_base, *addr_off) {
+                let v = fold_abstractions(value.to_lean(), subst);
+                return if abs == HEAP_START_I {
+                    format!("(heapBumpPtr ({}))", v)
+                } else {
+                    format!("(heapBlockU64 ({}) ({}))", addr_base.atom_lean(), v)
+                };
+            }
+        }
+    }
+    atom_to_lean_with_subst(atom, subst)
+}
+
+fn atoms_to_lean_heap(
+    atoms: &[Atom],
+    subst: &std::collections::BTreeMap<String, String>,
+) -> String {
+    atoms.iter()
+        .map(|a| atom_to_lean_heap(a, subst))
+        .collect::<Vec<_>>()
+        .join(" **\n      ")
 }
 
 /// Emit the lift artifacts for a `sol_memset_(dst=r1, fill=r2, count=r3)`
@@ -4724,6 +4798,59 @@ fn lift_one(
         rr,
         tactic,
     ));
+
+    // ── Heap-allocation corollary ──────────────────────────────────
+    // If the program touched the runtime heap (the embedded bump
+    // allocator keeps its position at MM_HEAP_START and allocates by
+    // load/store/ALU on heap memory), re-express those cells via the
+    // `heapBumpPtr` / `heapBlockU64` predicates so the spec reads as an
+    // allocation claim rather than raw cells at fixed addresses. The
+    // predicates unfold to the same `memU64Is` cells, so `exact` closes
+    // after `simp`. Gated on heap cells being present, so non-heap lifts
+    // (counter / vault / token) regenerate byte-identical.
+    let has_heap = pre.iter().chain(post.iter()).any(|a|
+        matches!(a, Atom::Mem { addr_base, addr_off, width, .. }
+            if matches!(width, Width::Dword) && heap_cell_addr(addr_base, *addr_off).is_some()));
+    if has_heap {
+        // The lift theorem's parameter list, in declaration order.
+        let mut names: Vec<String> = vars.clone();
+        if use_block_iter && !abstractions.is_empty() {
+            for (p, _, _) in &abstractions { names.push(p.clone()); }
+            for (_, h, _) in &abstractions { names.push(h.clone()); }
+        }
+        for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
+        for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
+        for (name, _) in &state.side_hyps { names.push(name.clone()); }
+        for (bs, _) in &state.memset_blobs {
+            names.push(bs.clone());
+            names.push(format!("h{}_sz", bs));
+        }
+        for (ncu, hcu, _) in &state.syscall_cu_vars {
+            names.push(ncu.clone());
+            names.push(hcu.clone());
+        }
+        out = out.replacen("import SVM.SBPF.Macros\n",
+            "import SVM.SBPF.Macros\nimport SVM.SBPF.HeapSL\n", 1);
+        out.push_str(&format!(
+            "open Memory in\n\
+             theorem {}_allocates\n    {}{}{}{}{}{}: \
+             cuTripleWithinMem {} {} {} {}\n      \
+             ({})\n      \
+             ({}{})\n      \
+             ({}{})\n      \
+             (fun rt => {}) := by\n  \
+             simp only [heapBumpPtr, heapBlockU64]\n  \
+             exact {}_lifted_spec {}\n\n",
+            module_name,
+            vars_sig, abs_sig, u64_hyps, branch_hyps_sig, side_hyps_sig, syscall_sig,
+            n, m_bound, start_pc, exit_pc,
+            cr_lean,
+            atoms_to_lean_heap(&pre,  &abs_subst), cs_atom,
+            atoms_to_lean_heap(&post, &abs_subst), cs_atom,
+            rr,
+            module_name, names.join(" "),
+        ));
+    }
 
     // ── Balance-correctness corollary ──────────────────────────────
     // Re-expose `wrapSub`/`wrapAdd` balance shifts in the post as
