@@ -4413,9 +4413,16 @@ fn lift_one(
     {
         let mut seen: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
+        // A flat constant address (e.g. `toU64 0x300000000` from an
+        // `lddw` — the program-heap case) is NOT complex: it has no nested
+        // `wrapAdd` chain to fold, and `sl_block_auto` re-derives the same
+        // concrete value, so abstracting it to `addrK` only creates a
+        // mismatch (the opaque param can't unify with the literal).
+        let is_const_addr = |e: &Expr| matches!(e, Expr::Const(_))
+            || matches!(e, Expr::ToU64(inner) if matches!(inner.as_ref(), Expr::Const(_)));
         for atom in &pre {
             if let Atom::Mem { addr_base, .. } = atom {
-                if !matches!(addr_base, Expr::InitReg(_)) {
+                if !matches!(addr_base, Expr::InitReg(_)) && !is_const_addr(addr_base) {
                     let rendered = addr_base.to_lean();
                     if !seen.contains_key(&rendered) {
                         let idx = seen.len();

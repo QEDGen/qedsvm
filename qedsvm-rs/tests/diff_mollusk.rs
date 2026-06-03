@@ -40,6 +40,10 @@ const LOGGER_SO: &[u8] = include_bytes!("fixtures/logger.so");
 /// verifies our `deserialize_account_writes` actually picks up the
 /// program's write, byte-for-byte against mollusk.
 const INCREMENTER_SO: &[u8] = include_bytes!("fixtures/incrementer.so");
+/// Embedded-bump-allocator demo: reads/commits the heap bump slot at
+/// 0x300000000 and writes + reads an allocated block. Exercises the
+/// program heap as ordinary memory (no syscall allocator).
+const HEAP_ALLOC_SO: &[u8] = include_bytes!("fixtures/heap_alloc.so");
 /// SPL Token program. Real on-chain binary (134 KB, vendored from
 /// blueshift-gg/sbpf — see `fixtures/README.md` for provenance).
 /// Exercises sysvar getters, deeper syscall surface, and the full
@@ -390,6 +394,60 @@ fn incrementer_program_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for incrementer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Heap-allocating program: exercises the embedded bump allocator over
+/// the program heap (reads/commits the bump slot at 0x300000000, writes
+/// and reads an allocated block). It touches no accounts, so this is a
+/// pure byte-level conformance check — both engines must run the heap
+/// load/store sequence to Success with identical CU and return data,
+/// confirming qedsvm models the heap region exactly as agave/mollusk do.
+#[test]
+fn heap_alloc_program_matches_mollusk() {
+    let program_id = pid(7);
+    let acct_key = pid(8);
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, HEAP_ALLOC_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs heap_alloc");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        HEAP_ALLOC_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for heap_alloc: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }

@@ -100,6 +100,11 @@ lean_lib Examples where
     -- sol_log_ and a 64-bit multiply chain.
     `Generated.LoggerLifted,
     `Generated.ByteIncrementLifted,
+    -- HeapAlloc: the embedded bump-allocator pattern over the program
+    -- heap (reads/commits the bump slot at 0x300000000, writes + reads an
+    -- allocated block). Proves a heap-allocating program lifts with the
+    -- heap modeled as ordinary memory cells (no SL-core changes).
+    `Generated.HeapAllocLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen
