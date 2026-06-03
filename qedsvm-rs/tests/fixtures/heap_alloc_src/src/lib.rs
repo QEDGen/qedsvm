@@ -26,12 +26,9 @@ pub extern "C" fn entrypoint(_input: *mut u8) -> u64 {
         let slot = 0x300000000usize as *mut u64;
         // First 16-byte allocation, taken from the heap end (downward).
         let block = (0x300000000usize + 0x8000 - 16) as *mut u64;
-        let old = core::ptr::read_volatile(slot); // read current bump position
+        let _old = core::ptr::read_volatile(slot); // read current bump position
         core::ptr::write_volatile(slot, block as u64); // commit new position
-        // Write a register-derived value into the allocated block. (A
-        // plain immediate store `[block] = 42` would emit ST_DW_IMM, which
-        // sl_block_auto's SpecGen does not yet wire — orthogonal to heap.)
-        core::ptr::write_volatile(block, old.wrapping_add(42)); // write into the block
+        core::ptr::write_volatile(block, 42); // write into the allocated block (ST_DW_IMM)
         let _v = core::ptr::read_volatile(block); // read it back
     }
     0

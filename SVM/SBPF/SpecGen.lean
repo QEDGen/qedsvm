@@ -186,6 +186,26 @@ private def stxSpec
   let app ← mkAppM specName #[baseReg, valReg, off, baseAddr, vSrc, oldV, pcLit]
   return { app, sideGoals := [] }
 
+/-- ST (store-immediate). Pattern: `.st width baseReg off imm`. The clean
+    `st{b,w,dw}_spec` wrappers discharge the step side condition
+    internally (h_step is proved for the concrete `.st` shape), so — like
+    STX — there are no residual side goals. There is no halfword variant
+    (`sth_spec` / ST_H_IMM is unmodelled). -/
+private def stSpec
+    (pcLit w baseReg off imm : Expr) :
+    MetaM SpecApp := do
+  let baseAddr ← mkNatMVar
+  let oldV ← mkNatMVar
+  let specName ← match w.consumeMData.getAppFn.constName? with
+    | some ``SVM.SBPF.Width.byte  => pure ``SVM.SBPF.stb_spec
+    | some ``SVM.SBPF.Width.word  => pure ``SVM.SBPF.stw_spec
+    | some ``SVM.SBPF.Width.dword => pure ``SVM.SBPF.stdw_spec
+    | some ``SVM.SBPF.Width.half  =>
+      throwError "SpecGen: ST_H_IMM (halfword store-immediate) has no spec (sth_spec is unmodelled)"
+    | _ => throwError m!"SpecGen: unknown Width ctor in {w}"
+  let app ← mkAppM specName #[baseReg, off, imm, baseAddr, oldV, pcLit]
+  return { app, sideGoals := [] }
+
 /-- Conditional-jump dispatch (imm-src variant). Builds the
     `<op>_imm_not_taken_spec` application — the linear form where the
     path hypothesis collapses the conditional to the fall-through PC
@@ -308,6 +328,8 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
     ldxSpec pcLit args[0]! args[1]! args[2]! args[3]!
   | ``SVM.SBPF.Insn.stx =>
     stxSpec pcLit args[0]! args[1]! args[2]! args[3]!
+  | ``SVM.SBPF.Insn.st =>
+    stSpec pcLit args[0]! args[1]! args[2]! args[3]!
   -- Control flow. Conditional jumps dispatch to the linear "not
   -- taken" variants in InstructionSpecs/Jump.lean — the path
   -- hypothesis becomes a residual goal discharged by
