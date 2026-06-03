@@ -200,6 +200,18 @@ theorem wrapSub_of_le {a b : Nat} (hle : b ≤ a) (ha : a < 2 ^ 64) :
       show a + 2 ^ 64 - b = (a - b) + 2 ^ 64 by omega, Nat.add_mod_right]
   exact Nat.mod_eq_of_lt (by omega)
 
+/-- `toU64 1` is the Nat literal `1` (the immediate `1` sign-extends to
+    `1`). Lets a constant-`+1` credit (`cell := wrapAdd v (toU64 1)`) clean
+    to `v + 1` the way `wrapAdd_of_lt` cleans a loaded-amount credit. -/
+theorem toU64_one : toU64 1 = 1 := by decide
+
+/-- When the sum fits in 64 bits, a `+1` `wrapAdd` is ordinary `· + 1`.
+    The constant-delta counterpart of `wrapAdd_of_lt`, used by the
+    balance-corollary codegen for `counter += 1` handlers. -/
+theorem wrapAdd_one_of_lt {a : Nat} (h : a + 1 < 2 ^ 64) :
+    wrapAdd a (toU64 1) = a + 1 := by
+  rw [toU64_one]; exact wrapAdd_of_lt h
+
 /-- 32-bit modulus for 32-bit ALU operations -/
 def U32_MODULUS : Nat := 2 ^ 32
 

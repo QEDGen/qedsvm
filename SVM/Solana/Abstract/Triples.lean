@@ -89,7 +89,7 @@ theorem tokenTransfer_spec
             (PartialAbstractState.singletonAccount dst
               (tDst.withAmount (tDst.amount + amount))), ?_, ?_⟩
     · -- CompatibleWith the post-state: every owned key matches.
-      refine ⟨fun k t hk => ?_, fun k m hk => ?_⟩
+      refine ⟨fun k t hk => ?_, fun k m hk => ?_, fun k cc hk => ?_⟩
       · -- accounts clause
         by_cases h_k_src : k = src
         · subst h_k_src
@@ -118,6 +118,11 @@ theorem tokenTransfer_spec
         rw [PartialAbstractState.union_mints_of_left_none
               (PartialAbstractState.singletonAccount_mints k),
             PartialAbstractState.singletonAccount_mints] at hk
+        exact absurd hk (by simp)
+      · -- counters clause: the post partial state owns no counters.
+        rw [PartialAbstractState.union_counters_of_left_none
+              (PartialAbstractState.singletonAccount_counters k),
+            PartialAbstractState.singletonAccount_counters] at hk
         exact absurd hk (by simp)
     · -- The assertion holds on the constructed partial state.
       refine ⟨PartialAbstractState.singletonAccount src
@@ -167,7 +172,7 @@ theorem tokenMintTo_spec
               (m.withSupply (m.supply + amount))).union
             (PartialAbstractState.singletonAccount dest
               (tDest.withAmount (tDest.amount + amount))), ?_, ?_⟩
-    · refine ⟨fun k t hk => ?_, fun k mm hk => ?_⟩
+    · refine ⟨fun k t hk => ?_, fun k mm hk => ?_, fun k cc hk => ?_⟩
       · -- accounts clause: only `dest` is owned (the mint singleton owns no accounts).
         rw [PartialAbstractState.union_accounts_of_left_none
               (PartialAbstractState.singletonMint_accounts k)] at hk
@@ -195,6 +200,11 @@ theorem tokenMintTo_spec
                 (PartialAbstractState.singletonMint_mints_other h_k_mint),
               PartialAbstractState.singletonAccount_mints] at hk
           cases hk
+      · -- counters clause: the post partial state owns no counters.
+        rw [PartialAbstractState.union_counters_of_left_none
+              (PartialAbstractState.singletonMint_counters k),
+            PartialAbstractState.singletonAccount_counters] at hk
+        exact absurd hk (by simp)
     · refine ⟨PartialAbstractState.singletonMint mint
                 (m.withSupply (m.supply + amount)),
               PartialAbstractState.singletonAccount dest
@@ -238,7 +248,7 @@ theorem tokenBurn_spec
               (tAcc.withAmount (tAcc.amount - amount))).union
             (PartialAbstractState.singletonMint mint
               (m.withSupply (m.supply - amount))), ?_, ?_⟩
-    · refine ⟨fun k t hk => ?_, fun k mm hk => ?_⟩
+    · refine ⟨fun k t hk => ?_, fun k mm hk => ?_, fun k cc hk => ?_⟩
       · -- accounts clause: only `account` is owned (left singleton).
         by_cases h_k_acc : k = account
         · subst h_k_acc
@@ -266,11 +276,62 @@ theorem tokenBurn_spec
         · exfalso
           rw [PartialAbstractState.singletonMint_mints_other h_k_mint] at hk
           cases hk
+      · -- counters clause: the post partial state owns no counters.
+        rw [PartialAbstractState.union_counters_of_left_none
+              (PartialAbstractState.singletonAccount_counters k),
+            PartialAbstractState.singletonMint_counters] at hk
+        exact absurd hk (by simp)
     · refine ⟨PartialAbstractState.singletonAccount account
                 (tAcc.withAmount (tAcc.amount - amount)),
               PartialAbstractState.singletonMint mint
                 (m.withSupply (m.supply - amount)),
               singletonAccount_Disjoint_singletonMint _ _,
               rfl, rfl, rfl⟩
+
+/-! ## counterIncrement spec — the first non-token intrinsic -/
+
+/-- The abstract spec for `counterIncrement key`: the counter account's
+    `counter` field increases by one. Single account, single field, only
+    an overflow precondition — strictly simpler than the token specs (no
+    `src ≠ dst` disjointness, no second account). Validates that the
+    abstract-triple machinery is layout-general, not token-shaped. -/
+theorem counterIncrement_spec
+    (key : Pubkey) (c : CounterAccount)
+    (h_noOverflow : c.counter + 1 < 2 ^ 64) :
+    absTriple [.counterIncrement key]
+      (key ↦cnt c)
+      (key ↦cnt c.withCounter (c.counter + 1)) := by
+  intro s hP
+  obtain ⟨ph, hC, hph⟩ := hP
+  subst hph
+  -- The single owned counter agrees with the full state.
+  have h_s : s.counters key = some c :=
+    hC.counters key c PartialAbstractState.singletonCounter_counters_self
+  have h_get : s.getCounter key = some c := h_s
+  refine ⟨s.setCounter key (c.withCounter (c.counter + 1)), ?_, ?_⟩
+  · -- runMir reaches the constructed post-state.
+    rw [runMir_singleton]
+    simp only [runStep, h_get, if_neg (Nat.not_le.mpr h_noOverflow)]
+  · -- Post-condition holdsFor the constructed state.
+    refine ⟨PartialAbstractState.singletonCounter key
+              (c.withCounter (c.counter + 1)), ?_, rfl⟩
+    refine ⟨fun k t hk => ?_, fun k m hk => ?_, fun k cc hk => ?_⟩
+    · -- accounts clause: the post partial state owns no accounts.
+      rw [PartialAbstractState.singletonCounter_accounts] at hk
+      exact absurd hk (by simp)
+    · -- mints clause: the post partial state owns no mints.
+      rw [PartialAbstractState.singletonCounter_mints] at hk
+      exact absurd hk (by simp)
+    · -- counters clause: only `key` is owned.
+      by_cases h_k : k = key
+      · subst h_k
+        rw [PartialAbstractState.singletonCounter_counters_self] at hk
+        have h_eq : cc = c.withCounter (c.counter + 1) := by
+          injection hk with h; exact h.symm
+        subst h_eq
+        exact AbstractState.setCounter_counters_eq _ _ _
+      · exfalso
+        rw [PartialAbstractState.singletonCounter_counters_other h_k] at hk
+        cases hk
 
 end SVM.Solana.Abstract

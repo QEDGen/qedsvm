@@ -100,7 +100,18 @@ lean_lib Examples where
     -- sol_log_ and a 64-bit multiply chain.
     `Generated.LoggerLifted,
     `Generated.ByteIncrementLifted,
-    `Generated.CounterLifted,
+    -- Counter: a real non-token .so re-lifted trace-style, plus the first
+    -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
+    -- AsmRefinesCounterIncrement). Validates that the refinement codegen
+    -- is layout-general, not SPL-token-shaped.
+    `Generated.CounterTracedLifted,
+    `Generated.CounterRefinement,
+    -- Vault: a multi-field NON-token account ({owner:Pubkey, total:u64,
+    -- bump:u8}). The refinement (AsmRefinesFieldUpdate) reshapes the codec
+    -- via the layout-general `account_agg` and frames the untouched
+    -- owner+bump fields — mechanized multi-field non-token aggregation.
+    `Generated.VaultTracedLifted,
+    `Generated.VaultRefinement,
     `Generated.GuardedCounterLifted,
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,

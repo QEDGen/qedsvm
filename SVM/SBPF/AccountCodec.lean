@@ -104,6 +104,14 @@ theorem account_agg (base : Nat) :
     exact Iff.trans (sepConj_iff_congr_left _ (fv.coarse_fine (base + off) hvf) h)
       (sepConj_iff_congr_right _ (ih hvr) h)
 
+/-- Equality form of `account_agg` (via `funext`/`propext`), for `rw`ing a
+    coarse account codec to its fine (scattered) form inside a refinement
+    goal — the layout-general counterpart of the SPL `*_account_eq`
+    lemmas. -/
+theorem codecCoarse_eq_fine (base : Nat) (fields : List (Nat × FieldVal))
+    (hv : codecValid fields) : codecCoarse base fields = codecFine base fields := by
+  funext h; exact propext (account_agg base fields hv h)
+
 /-! ## Validation — the SPL token account is an instance
 
 `src_account_eq`'s content (mint pubkey, owner pubkey, amount u64, and a

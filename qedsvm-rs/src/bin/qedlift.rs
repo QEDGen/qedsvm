@@ -236,7 +236,7 @@ enum FieldKind {
 struct AccountField {
     name:   String,
     offset: usize,
-    #[allow(dead_code)] kind: FieldKind, // read only by the layout tests
+    kind:   FieldKind, // FieldVal classification, consumed by the vault codegen
 }
 
 #[derive(Debug, Clone)]
@@ -399,6 +399,65 @@ mod layout_tests {
             .expect("read MintAggregation.lean");
         assert_eq!(m, on_disk,
             "MintAggregation.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// The counter lift + the first NON-token refinement
+    /// (`AsmRefinesCounterIncrement`) are mechanically emitted. Re-runs
+    /// the whole emitter (detection + constant-`+1` cleaning + render) on
+    /// `counter.so` and diffs both files, guarding the counter-codec path.
+    #[test]
+    fn counter_refinement_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/counter.so");
+        let ctx = load_binary(so).expect("load counter.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse counter.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("Counter".to_string()),
+            None, Some("counterIncrement"), None).expect("lift counter.so");
+
+        let lift_on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/CounterTracedLifted.lean")
+                .expect("read CounterTracedLifted.lean");
+        assert_eq!(result.lean, lift_on_disk,
+            "CounterTracedLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+
+        let (_, rlean) = result.refinement.expect("counter refinement emitted");
+        let refine_on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/CounterRefinement.lean")
+                .expect("read CounterRefinement.lean");
+        assert_eq!(rlean, refine_on_disk,
+            "CounterRefinement.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// The multi-field NON-token vault refinement (`AsmRefinesFieldUpdate`)
+    /// is mechanically emitted from the Codama IDL account layout. Re-runs
+    /// the emitter on `vault.so` + `vault.codama.json` and diffs both
+    /// files, guarding the layout-general account-codec path.
+    #[test]
+    fn vault_refinement_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/vault.so");
+        let idl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+                .expect("read vault.codama.json")).expect("parse vault IDL");
+        let ctx = load_binary(so).expect("load vault.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("Vault".to_string()),
+            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault.so");
+
+        let lift_on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/VaultTracedLifted.lean")
+                .expect("read VaultTracedLifted.lean");
+        assert_eq!(result.lean, lift_on_disk,
+            "VaultTracedLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+
+        let (_, rlean) = result.refinement.expect("vault refinement emitted");
+        let refine_on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/VaultRefinement.lean")
+                .expect("read VaultRefinement.lean");
+        assert_eq!(rlean, refine_on_disk,
+            "VaultRefinement.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
     }
 }
@@ -2732,7 +2791,7 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
 // ════════════════════════════════════════════════════════════════
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum CodecKind { Token, Mint }
+enum CodecKind { Token, Mint, Counter, Vault }
 
 struct RefineSpec {
     asm_pred: &'static str,
@@ -2754,8 +2813,33 @@ fn refine_registry(arm: &str) -> Option<RefineSpec> {
             asm_pred: "AsmRefinesTokenBurn",
             accounts: &[("account", CodecKind::Token), ("mint", CodecKind::Mint)],
         }),
+        // First NON-token intrinsic: a single-field counter account whose
+        // codec is one `u64` (coarse = fine, no aggregation). The constant
+        // `+1` delta is handled by the `counterIncrement` clean-up + the
+        // dedicated `emit_counter_refinement` path.
+        "counterIncrement" => Some(RefineSpec {
+            asm_pred: "AsmRefinesCounterIncrement",
+            accounts: &[("counter", CodecKind::Counter)],
+        }),
+        // Multi-field NON-token account (e.g. {owner:Pubkey, total:u64,
+        // bump:u8}). The layout-general `AsmRefinesFieldUpdate` obligation
+        // is proved by reshaping the codec via `account_agg` and framing
+        // the untouched fields — `emit_vault_refinement`, IDL-driven.
+        "VaultIncrement" => Some(RefineSpec {
+            asm_pred: "AsmRefinesFieldUpdate",
+            accounts: &[("vault", CodecKind::Vault)],
+        }),
         _ => None,
     }
+}
+
+/// Whether `arm` refines a codec with a constant `+1` delta (counter or
+/// vault). Gates the constant-delta balance cleaning so other arms (e.g.
+/// `two_op`'s `+1`) stay byte-identical.
+fn is_const_delta_arm(arm: Option<&str>) -> bool {
+    arm.and_then(refine_registry).map_or(false, |s| {
+        s.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Counter | CodecKind::Vault))
+    })
 }
 
 /// Value of a memory cell at `(base_raw, off)` with the given byte-ness,
@@ -2806,6 +2890,22 @@ fn emit_refinement(
     // Returns `(refine_module, refine_lean, optional (agg_module, agg_lean))`.
 ) -> Option<(String, String, Option<(String, String)>)> {
     let spec = refine_registry(arm_name)?;
+
+    // Counter codec: a single `u64` field with a constant `+1` delta and
+    // no aggregation (coarse = fine). A dedicated path keeps the token /
+    // mint codegen byte-for-byte unchanged.
+    if spec.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Counter)) {
+        return emit_counter_refinement(&spec, lift_module, pre, post_clean,
+            abs_subst, vars, n_cu, start_pc, exit_pc);
+    }
+
+    // Vault codec: a multi-field NON-token account (IDL layout). Owns the
+    // updated `u64` field, frames the rest, reshapes via `account_agg`.
+    if spec.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Vault)) {
+        return emit_vault_refinement(&spec, lift_module, pre, post_clean,
+            abs_subst, vars, n_cu, start_pc, exit_pc, idl);
+    }
+
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
 
     // ── Detect mutated account cells (a ± b, both InitMem) ──────────
@@ -2847,6 +2947,11 @@ fn emit_refinement(
                     && (spec.accounts.iter().filter(|(_, c)| *c == CodecKind::Token).count() < 2
                         || muts[i].is_sub == want_sub),
                 CodecKind::Mint => is_mint_mut(&muts[i]),
+                // All-counter / all-vault specs take their early
+                // `emit_*_refinement` paths; this loop only runs for
+                // token/mint codecs.
+                CodecKind::Counter | CodecKind::Vault =>
+                    unreachable!("counter/vault codec handled by its own emitter"),
             }
         })?;
         used[idx] = true;
@@ -2860,6 +2965,8 @@ fn emit_refinement(
                 &fold, &mut barray_ctr, &mut framed_owner)?,
             CodecKind::Mint  => build_mint(pre, m, &base_expr, base_off, &amount,
                 &fold, &mut barray_ctr)?,
+            CodecKind::Counter | CodecKind::Vault =>
+                unreachable!("counter/vault codec handled by its own emitter"),
         };
         let _ = base_arg;
         builds.push(build);
@@ -3523,6 +3630,292 @@ end Examples.{module}
         amount = amount,
         setup_pre = setup_pre_s, setup_post = setup_post_s,
         rw = rw.join(",\n      "), frame = frame,
+    )
+}
+
+/// Emit a counter-codec refinement: a single owned `u64` cell at the
+/// counter offset, incremented by the constant 1. No aggregation module
+/// (coarse = fine for a `u64`), no frame (the cell is fully owned), no
+/// `amount` argument (the delta is the constant 1).
+fn emit_counter_refinement(
+    spec: &RefineSpec, lift_module: &str,
+    pre: &[Atom], post_clean: &[Atom],
+    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
+    n_cu: usize, start_pc: usize, exit_pc: usize,
+) -> Option<(String, String, Option<(String, String)>)> {
+    let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
+
+    // Find the incremented counter cell: a `u64` whose post value is the
+    // cleaned `NatAdd(InitMem, Const)` form.
+    let mut found: Option<(Expr, i64, Expr)> = None;
+    for atom in post_clean {
+        if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+            if matches!(width, Width::Dword) {
+                if let Expr::NatAdd(a, b) = value {
+                    if matches!(a.as_ref(), Expr::InitMem(_))
+                        && matches!(b.as_ref(), Expr::Const(_)) {
+                        found = Some(((*addr_base).clone(), *addr_off, (**a).clone()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let (base, off, pre_val) = found?;
+    let base_l = fold(&base);
+    let addr_arg = if off == 0 { base_l.clone() } else { format!("({} + {})", base_l, off) };
+    let counter_pre = fold(&pre_val);
+    let record = format!("{{ counter := {} }}", counter_pre);
+
+    // The single owned `u64` cell is excluded from the setup frame; every
+    // other lift atom (registers, etc.) stays in setup.
+    let owned_base = base.to_lean();
+    let is_owned = |a: &Atom| match a {
+        Atom::Mem { addr_base, addr_off, width, .. } =>
+            addr_base.to_lean() == owned_base && *addr_off == off
+                && matches!(width, Width::Dword),
+        _ => false,
+    };
+    let setup_pre: Vec<Atom> = pre.iter().filter(|a| !is_owned(a)).cloned().collect();
+    let setup_post: Vec<Atom> = post_clean.iter().filter(|a| !is_owned(a)).cloned().collect();
+
+    let module = format!("{}Refinement", lift_module);
+    let lean = render_counter_refinement(spec, &module, &addr_arg, &record,
+        pre, post_clean, &setup_pre, &setup_post, abs_subst, vars, n_cu, start_pc, exit_pc);
+    Some((module, lean, None))
+}
+
+/// Render the counter refinement theorem. The proof is `unfold` +
+/// `simp [counterValOf]` + `sl_exact lift`: no codec aggregation rewrite
+/// (a single `u64` is coarse = fine) and no frame (the cell is owned).
+fn render_counter_refinement(
+    spec: &RefineSpec, module: &str, addr_arg: &str, record: &str,
+    pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
+    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
+    n_cu: usize, start_pc: usize, exit_pc: usize,
+) -> String {
+    let nat_params = vars.join(" ");
+    let lift_pre = atoms_to_lean(pre, abs_subst);
+    let lift_post = atoms_to_lean(post_clean, abs_subst);
+    let setup_pre_s = atoms_to_lean(setup_pre, abs_subst);
+    let setup_post_s = atoms_to_lean(setup_post, abs_subst);
+
+    format!(
+"/-
+  {pred} asm-refines-intrinsic theorem. MECHANICALLY EMITTED by qedlift's
+  refinement codegen — the first NON-token refinement. The counter
+  account is a single `u64` field (coarse = fine, no codec aggregation),
+  so the proof is `unfold` + `simp [counterValOf]` + `sl_exact` with no
+  aggregation rewrite and no frame.
+-/
+
+import SVM.SBPF.Tactic.SL
+import SVM.Solana.Abstract.Refinement
+import Generated.{lift}TracedLifted
+
+namespace Examples.{module}
+open SVM SVM.SBPF SVM.SBPF.Memory
+
+set_option maxHeartbeats 800000 in
+theorem refines_asm
+    (cr : CodeReq) (rr : Memory.RegionTable → Prop)
+    ({nat_params} : Nat)
+    (lift : cuTripleWithinMem {n} 0 {entry} {exit} cr
+      ({lift_pre})
+      ({lift_post}) rr) :
+    SVM.Solana.Abstract.{pred} cr {n} 0 {entry} {exit} rr {addr}
+      {record}
+      ({setup_pre})
+      ({setup_post}) := by
+  unfold SVM.Solana.Abstract.{pred}
+  simp only [SVM.Solana.counterValOf_eq]
+  sl_exact lift
+
+end Examples.{module}
+",
+        pred = spec.asm_pred,
+        lift = strip_refinement(module),
+        module = module,
+        nat_params = nat_params,
+        n = n_cu, entry = start_pc, exit = exit_pc,
+        lift_pre = lift_pre, lift_post = lift_post,
+        addr = addr_arg, record = record,
+        setup_pre = setup_pre_s, setup_post = setup_post_s,
+    )
+}
+
+/// Emit a multi-field NON-token vault refinement (`AsmRefinesFieldUpdate`).
+/// Owns the updated `u64` field, frames the untouched fields, and reshapes
+/// the account codec via `account_agg`/`codecCoarse_eq_fine`. The field
+/// layout is driven by the Codama IDL account struct — the layout-general
+/// path that makes a new program's refinement free.
+fn emit_vault_refinement(
+    spec: &RefineSpec, lift_module: &str,
+    pre: &[Atom], post_clean: &[Atom],
+    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
+    n_cu: usize, start_pc: usize, exit_pc: usize,
+    idl: Option<&serde_json::Value>,
+) -> Option<(String, String, Option<(String, String)>)> {
+    let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
+    let layout = parse_account_layout(idl?, "vault").ok()?;
+
+    // The updated field: a `u64` cell whose cleaned post value is
+    // `NatAdd(InitMem, Const)` (the constant `+k` delta).
+    let mut updated: Option<(Expr, i64, Expr, i64)> = None; // base, off, pre_val, delta
+    for atom in post_clean {
+        if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+            if matches!(width, Width::Dword) {
+                if let Expr::NatAdd(a, b) = value {
+                    if let (Expr::InitMem(_), Expr::Const(k)) = (a.as_ref(), b.as_ref()) {
+                        updated = Some(((*addr_base).clone(), *addr_off, (**a).clone(), *k));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let (base, upd_off, upd_pre, delta) = updated?;
+    let base_l = fold(&base);
+    let upd_pre_l = fold(&upd_pre);
+
+    // Walk the IDL layout: emit a `FieldVal` per field; own the updated
+    // `u64`, frame every other field (fresh params + fine atoms).
+    let mut fresh = 0u32;
+    let mut params: Vec<String> = Vec::new();
+    let mut pre_fields: Vec<String> = Vec::new();
+    let mut post_fields: Vec<String> = Vec::new();
+    let mut frame: Vec<String> = Vec::new();
+    let mut updated_seen = false;
+    for f in &layout.fields {
+        let off = f.offset as i64;
+        match &f.kind {
+            FieldKind::U64 if off == upd_off => {
+                updated_seen = true;
+                pre_fields.push(format!("({}, .u64 {})", off, upd_pre_l));
+                post_fields.push(format!("({}, .u64 ({} + {}))", off, upd_pre_l, delta));
+                // owned by the lift — not framed.
+            }
+            FieldKind::Pubkey => {
+                let limbs: Vec<String> = (0..4).map(|_| {
+                    let p = format!("o{}", fresh); fresh += 1; params.push(p.clone()); p
+                }).collect();
+                let rec = format!("⟨{}⟩", limbs.join(", "));
+                pre_fields.push(format!("({}, .pubkey {})", off, rec));
+                post_fields.push(format!("({}, .pubkey {})", off, rec));
+                for (i, limb) in limbs.iter().enumerate() {
+                    frame.push(format!("(effectiveAddr {} {} ↦U64 {})", base_l, off + 8 * i as i64, limb));
+                }
+            }
+            FieldKind::U64 => {
+                let p = format!("fu{}", fresh); fresh += 1; params.push(p.clone());
+                pre_fields.push(format!("({}, .u64 {})", off, p));
+                post_fields.push(format!("({}, .u64 {})", off, p));
+                frame.push(format!("(effectiveAddr {} {} ↦U64 {})", base_l, off, p));
+            }
+            FieldKind::Byte => {
+                let p = format!("fb{}", fresh); fresh += 1; params.push(p.clone());
+                pre_fields.push(format!("({}, .byte {})", off, p));
+                post_fields.push(format!("({}, .byte {})", off, p));
+                frame.push(format!("(effectiveAddr {} {} ↦ₘ {})", base_l, off, p));
+            }
+            // Blob fields (scattered owned bytes / framed gaps) are not yet
+            // mechanized for the vault path; bail so the lift still emits.
+            FieldKind::Bytes(_) => return None,
+        }
+    }
+    if !updated_seen { return None; }
+
+    // setup = lift atoms not owning the updated cell (registers, etc.).
+    let owned_base = base.to_lean();
+    let is_owned = |a: &Atom| match a {
+        Atom::Mem { addr_base, addr_off, width, .. } =>
+            addr_base.to_lean() == owned_base && *addr_off == upd_off
+                && matches!(width, Width::Dword),
+        _ => false,
+    };
+    let setup_pre: Vec<Atom> = pre.iter().filter(|a| !is_owned(a)).cloned().collect();
+    let setup_post: Vec<Atom> = post_clean.iter().filter(|a| !is_owned(a)).cloned().collect();
+
+    let module = format!("{}Refinement", lift_module);
+    let lean = render_vault_refinement(spec, &module, &base_l, &pre_fields, &post_fields,
+        &frame, &params, pre, post_clean, &setup_pre, &setup_post,
+        abs_subst, vars, n_cu, start_pc, exit_pc);
+    Some((module, lean, None))
+}
+
+/// Render the vault refinement. The proof reshapes both coarse codecs to
+/// fine via `account_agg` (`codecCoarse_eq_fine`), unfolds the fine atoms,
+/// frames the untouched fields, and closes with `sl_exact`.
+fn render_vault_refinement(
+    spec: &RefineSpec, module: &str, base_l: &str,
+    pre_fields: &[String], post_fields: &[String], frame: &[String], params: &[String],
+    pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
+    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
+    n_cu: usize, start_pc: usize, exit_pc: usize,
+) -> String {
+    let mut nat_params = vars.join(" ");
+    for p in params { nat_params.push(' '); nat_params.push_str(p); }
+    let pre_list = pre_fields.join(", ");
+    let post_list = post_fields.join(", ");
+    let frame_s = frame.join(" **\n      ");
+    let lift_pre = atoms_to_lean(pre, abs_subst);
+    let lift_post = atoms_to_lean(post_clean, abs_subst);
+    let setup_pre_s = atoms_to_lean(setup_pre, abs_subst);
+    let setup_post_s = atoms_to_lean(setup_post, abs_subst);
+
+    format!(
+"/-
+  {pred} asm-refines theorem for a multi-field NON-token account.
+  MECHANICALLY EMITTED by qedlift from the Codama IDL account layout +
+  the lift's atoms. The lift owns the updated `u64` field; the account
+  codec is reshaped coarse→fine via the layout-general `account_agg`
+  (`codecCoarse_eq_fine`) and the untouched fields are framed.
+-/
+
+import SVM.SBPF.Tactic.SL
+import SVM.Solana.Abstract.Refinement
+import Generated.{lift}TracedLifted
+
+namespace Examples.{module}
+open SVM SVM.SBPF SVM.SBPF.Memory
+
+set_option maxHeartbeats 800000 in
+theorem refines_asm
+    (cr : CodeReq) (rr : Memory.RegionTable → Prop)
+    ({nat_params} : Nat)
+    (lift : cuTripleWithinMem {n} 0 {entry} {exit} cr
+      ({lift_pre})
+      ({lift_post}) rr) :
+    SVM.Solana.Abstract.{pred} cr {n} 0 {entry} {exit} rr {base}
+      [{pre_list}]
+      [{post_list}]
+      ({setup_pre})
+      ({setup_post}) := by
+  unfold SVM.Solana.Abstract.{pred}
+  rw [codecCoarse_eq_fine {base}
+        [{pre_list}]
+        (by simp [codecValid, FieldVal.fineValid]),
+      codecCoarse_eq_fine {base}
+        [{post_list}]
+        (by simp [codecValid, FieldVal.fineValid])]
+  simp only [codecFine, FieldVal.fine, pubkeyIs, sepConj_emp_right_eq, Nat.add_zero]
+  have framed := cuTripleWithinMem_frame_right
+    ( {frame} )
+    (by sl_pcfree) lift
+  sl_exact framed
+
+end Examples.{module}
+",
+        pred = spec.asm_pred,
+        lift = strip_refinement(module),
+        module = module,
+        nat_params = nat_params,
+        n = n_cu, entry = start_pc, exit = exit_pc,
+        lift_pre = lift_pre, lift_post = lift_post,
+        base = base_l,
+        pre_list = pre_list, post_list = post_list,
+        setup_pre = setup_pre_s, setup_post = setup_post_s,
+        frame = frame_s,
     )
 }
 
@@ -4334,8 +4727,19 @@ fn lift_one(
     // cell by exactly the amount." Only memory cells whose value wraps
     // two LOADED values (`InitMem`) qualify — register/address
     // arithmetic (`r8 ↦ wrapAdd addrN k`) is excluded by that filter.
-    enum Shift { Sub(Expr, Expr), Add(Expr, Expr) }
+    enum Shift { Sub(Expr, Expr), Add(Expr, Expr), AddConst(Expr, i64) }
     let is_initmem = |e: &Expr| matches!(e, Expr::InitMem(_));
+    // A constant immediate delta `toU64 k` (e.g. `add64 r2, 1`).
+    let const_delta = |e: &Expr| -> Option<i64> {
+        if let Expr::ToU64(inner) = e {
+            if let Expr::Const(k) = inner.as_ref() { return Some(*k); }
+        }
+        None
+    };
+    // Only constant-delta codec arms (counter / vault) expose the constant
+    // `+k` cleaning; other arms (e.g. `two_op`'s `+1`) keep the raw
+    // `wrapAdd` form so they regenerate byte-identically.
+    let counter_arm = is_const_delta_arm(arm_name);
     let mut shifts: Vec<Shift> = Vec::new();
     let mut post_clean: Vec<Atom> = Vec::with_capacity(post.len());
     for atom in &post {
@@ -4356,6 +4760,15 @@ fn lift_one(
                         addr_off: *addr_off, width: *width,
                         value: Expr::NatAdd(a.clone(), b.clone()) });
                     continue;
+                }
+                if counter_arm && is_initmem(a) {
+                    if let Some(k) = const_delta(b) {
+                        shifts.push(Shift::AddConst((**a).clone(), k));
+                        post_clean.push(Atom::Mem { addr_base: addr_base.clone(),
+                            addr_off: *addr_off, width: *width,
+                            value: Expr::NatAdd(a.clone(), Box::new(Expr::Const(k))) });
+                        continue;
+                    }
                 }
             }
         }
@@ -4402,6 +4815,15 @@ fn lift_one(
                     let bl = fold_abstractions(b.to_lean(), &abs_subst);
                     extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
                     rw_terms.push(format!("← wrapAdd_of_lt h_noovf{}", k));
+                }
+                Shift::AddConst(a, c) => {
+                    // The counter `+1` credit. `wrapAdd_one_of_lt` cleans
+                    // `wrapAdd a (toU64 1)` to `a + 1`; only `+1` is wired
+                    // (the sole counter delta).
+                    debug_assert_eq!(*c, 1, "only a +1 constant delta is supported");
+                    let al = fold_abstractions(a.to_lean(), &abs_subst);
+                    extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
+                    rw_terms.push(format!("← wrapAdd_one_of_lt h_noovf{}", k));
                 }
             }
         }

@@ -33,6 +33,8 @@ import SVM.Solana.Mir
 import SVM.Solana.Abstract.Triples
 import SVM.Solana.TokenAccountCodec
 import SVM.Solana.MintAccountCodec
+import SVM.Solana.CounterAccountCodec
+import SVM.SBPF.AccountCodec
 import SVM.SBPF.CPSSpec
 
 namespace SVM.Solana.Abstract
@@ -228,5 +230,78 @@ theorem tokenBurnRefinement_intro
       cr nSteps nCu entry exit rr accountAddr mintAddr setupPre setupPost where
   abs_spec := tokenBurn_spec account mint tAcc m amount h_funds
   asm_spec := h_asm
+
+/-! ## counterIncrement
+
+A bytecode-level refinement of `counterIncrement` is an asm Hoare triple
+whose pre/post own a single `counterValOf` atom (the counter, value
+mutated), shifted up by one. The first NON-token refinement: no mint /
+owner / amount, no `rest` blob, no codec aggregation (a single `u64`
+field is coarse = fine). It validates that the refinement bridge is
+layout-general. -/
+
+/-- Asm-side obligation for a `counterIncrement` refinement. The delta is
+    the constant `1`, so there is no `amount` parameter. -/
+def AsmRefinesCounterIncrement
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop)
+    (addr : Nat) (c : CounterAccount)
+    (setupPre setupPost : Assertion) : Prop :=
+  cuTripleWithinMem nSteps nCu entry exit cr
+    (setupPre ** counterValOf addr c)
+    (setupPost ** counterValOf addr (c.withCounter (c.counter + 1)))
+    rr
+
+/-- Refinement pair for a `counterIncrement` intrinsic. -/
+structure CounterIncrementRefinement
+    (key : Pubkey) (c : CounterAccount)
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop) (addr : Nat)
+    (setupPre setupPost : Assertion) : Prop where
+  /-- Abstract MIR triple — the spec the asm must refine. -/
+  abs_spec : absTriple [.counterIncrement key]
+               (key ↦cnt c)
+               (key ↦cnt c.withCounter (c.counter + 1))
+  /-- Asm-side obligation — the bytecode realizes the abstract effect. -/
+  asm_spec : AsmRefinesCounterIncrement cr nSteps nCu entry exit rr
+              addr c setupPre setupPost
+
+/-- Constructor: package both halves into a `CounterIncrementRefinement`.
+    The abstract half is discharged via `counterIncrement_spec`. -/
+theorem counterIncrementRefinement_intro
+    (key : Pubkey) (c : CounterAccount)
+    (h_noOverflow : c.counter + 1 < 2 ^ 64)
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop) (addr : Nat)
+    (setupPre setupPost : Assertion)
+    (h_asm : AsmRefinesCounterIncrement cr nSteps nCu entry exit rr
+              addr c setupPre setupPost) :
+    CounterIncrementRefinement key c cr nSteps nCu entry exit rr addr setupPre setupPost where
+  abs_spec := counterIncrement_spec key c h_noOverflow
+  asm_spec := h_asm
+
+/-! ## fieldUpdate — layout-general NON-token codec refinement
+
+The asm obligation for a single-field update on an account described by a
+`FieldVal` layout (the Codama IDL's account struct). `preFields` and
+`postFields` differ only at the mutated field; the untouched fields flow
+through. Unlike the SPL `AsmRefinesToken*` predicates this is NOT tied to
+a fixed record — the layout is a parameter, so ONE predicate covers any
+account shape. The realizing proof reshapes both coarse codecs to their
+fine (scattered) form via `account_agg`/`codecCoarse_eq_fine` and frames
+the untouched fine atoms; for a multi-field non-token account (e.g.
+`{owner:Pubkey@0, total:u64@32, bump:u8@40}`) it mechanically frames the
+pubkey + byte fields and owns the updated `u64`. This is the layout-driven
+codec aggregation, emitted off the token domain. -/
+
+def AsmRefinesFieldUpdate
+    (cr : CodeReq) (nSteps nCu entry exit : Nat)
+    (rr : Memory.RegionTable → Prop)
+    (base : Nat) (preFields postFields : List (Nat × FieldVal))
+    (setupPre setupPost : Assertion) : Prop :=
+  cuTripleWithinMem nSteps nCu entry exit cr
+    (setupPre ** codecCoarse base preFields)
+    (setupPost ** codecCoarse base postFields)
+    rr
 
 end SVM.Solana.Abstract

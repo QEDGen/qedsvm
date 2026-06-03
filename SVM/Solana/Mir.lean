@@ -69,6 +69,11 @@ inductive MirStmt where
       `account`'s `amount` and the `mint`'s `supply` by `amount`. Errors
       on a missing account/mint or insufficient account funds. -/
   | tokenBurn (account mint : Pubkey) (amount : Nat)
+  /-- Increment the single-field counter account at `key` by one. The
+      first NON-token intrinsic — it owns no mint/owner, validating that
+      the refinement machinery is layout-general. Errors on a missing
+      counter or u64 overflow. -/
+  | counterIncrement (key : Pubkey)
   deriving Inhabited
 
 /-! ## runStep — operational semantics for one MIR statement -/
@@ -114,6 +119,12 @@ def runStep (stmt : MirStmt) (s : AbstractState) :
         let s1 := s.set account (tAcc.withAmount (tAcc.amount - amount))
         let s2 := s1.setMint mint (m.withSupply (m.supply - amount))
         .ok s2
+  | .counterIncrement key =>
+    match s.getCounter key with
+    | none   => .error (.accountMissing key)
+    | some c =>
+      if c.counter + 1 ≥ 2 ^ 64 then .error (.overflow key)
+      else .ok (s.setCounter key (c.withCounter (c.counter + 1)))
 
 /-! ## runMir — sequence of statements
 

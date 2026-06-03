@@ -93,28 +93,56 @@ def withSupply (m : Mint) (s : Nat) : Mint :=
 
 end Mint
 
+/-! ## CounterAccount — a decoded single-field counter account
+
+The byte-level counterpart is the bare `u64` at the account-data
+offset (codec `counterValOf` in `SVM.Solana.CounterAccountCodec`). This
+is the abstract-side record for a NON-token program: it owns no mint /
+owner / pubkey scaffolding, just a `counter`. It validates that the
+refinement machinery is layout-general, not SPL-token-shaped. -/
+
+structure CounterAccount where
+  counter : Nat
+  deriving Inhabited
+
+namespace CounterAccount
+
+/-- Adjust the `counter` field. -/
+def withCounter (c : CounterAccount) (n : Nat) : CounterAccount :=
+  { c with counter := n }
+
+@[simp] theorem withCounter_counter (c : CounterAccount) (n : Nat) :
+    (c.withCounter n).counter = n := rfl
+
+end CounterAccount
+
 /-! ## AbstractState — the partial heap of decoded accounts
 
-Two resource maps today: `accounts` (token accounts) and `mints` (mint
-accounts). Grows as later pilots demand new resources (`signers`,
-`ixData`, `returnData`, `cuRemaining`, `cpiLog`). -/
+Three resource maps today: `accounts` (token accounts), `mints` (mint
+accounts), and `counters` (single-field counter accounts). Grows as
+later pilots demand new resources (`signers`, `ixData`, `returnData`,
+`cuRemaining`, `cpiLog`). -/
 
 structure AbstractState where
   accounts : Pubkey → Option TokenAccount
   mints    : Pubkey → Option Mint
+  counters : Pubkey → Option CounterAccount
   deriving Inhabited
 
 namespace AbstractState
 
 /-- The empty abstract state owns no accounts. -/
 def empty : AbstractState :=
-  { accounts := fun _ => none, mints := fun _ => none }
+  { accounts := fun _ => none, mints := fun _ => none, counters := fun _ => none }
 
 @[simp] theorem empty_accounts (k : Pubkey) :
     empty.accounts k = none := rfl
 
 @[simp] theorem empty_mints (k : Pubkey) :
     empty.mints k = none := rfl
+
+@[simp] theorem empty_counters (k : Pubkey) :
+    empty.counters k = none := rfl
 
 /-- Read the account at `key`, if any. Definitionally equal to
     `s.accounts key`; the named accessor is useful for `simp` rewriting. -/
@@ -171,6 +199,10 @@ def update (s : AbstractState) (key : Pubkey) (f : TokenAccount → TokenAccount
 @[simp] theorem set_mints (s : AbstractState) (key : Pubkey) (t : TokenAccount) :
     (s.set key t).mints = s.mints := rfl
 
+/-- Setting a token account leaves the counter heap unchanged. -/
+@[simp] theorem set_counters (s : AbstractState) (key : Pubkey) (t : TokenAccount) :
+    (s.set key t).counters = s.counters := rfl
+
 /-! ### Mint heap accessors (mirror the token-account ones) -/
 
 /-- Read the mint at `key`, if any. -/
@@ -222,6 +254,67 @@ def updateMint (s : AbstractState) (key : Pubkey) (f : Mint → Mint) :
   unfold updateMint
   cases hk : s.getMint key with
   | some m => exact setMint_getMint_of_ne s (f m) h
+  | none   => rfl
+
+/-- Setting a mint leaves the counter heap unchanged. -/
+@[simp] theorem setMint_counters (s : AbstractState) (key : Pubkey) (m : Mint) :
+    (s.setMint key m).counters = s.counters := rfl
+
+/-! ### Counter heap accessors (mirror the token-account / mint ones) -/
+
+/-- Read the counter at `key`, if any. -/
+@[inline] def getCounter (s : AbstractState) (key : Pubkey) : Option CounterAccount :=
+  s.counters key
+
+/-- Install counter `c` at `key`, leaving every other key (and all token
+    accounts / mints) unchanged. -/
+def setCounter (s : AbstractState) (key : Pubkey) (c : CounterAccount) : AbstractState :=
+  { s with counters := fun k => if k = key then some c else s.counters k }
+
+@[simp] theorem setCounter_getCounter_eq (s : AbstractState) (key : Pubkey) (c : CounterAccount) :
+    (s.setCounter key c).getCounter key = some c := by
+  unfold setCounter getCounter; simp
+
+@[simp] theorem setCounter_getCounter_of_ne (s : AbstractState) {key key' : Pubkey}
+    (c : CounterAccount) (h : key' ≠ key) :
+    (s.setCounter key c).getCounter key' = s.getCounter key' := by
+  unfold setCounter getCounter; simp [h]
+
+@[simp] theorem setCounter_counters_eq (s : AbstractState) (key : Pubkey) (c : CounterAccount) :
+    (s.setCounter key c).counters key = some c := by
+  unfold setCounter; simp
+
+@[simp] theorem setCounter_counters_of_ne (s : AbstractState) {key key' : Pubkey}
+    (c : CounterAccount) (h : key' ≠ key) :
+    (s.setCounter key c).counters key' = s.counters key' := by
+  unfold setCounter; simp [h]
+
+/-- Setting a counter leaves the token-account heap unchanged. -/
+@[simp] theorem setCounter_accounts (s : AbstractState) (key : Pubkey) (c : CounterAccount) :
+    (s.setCounter key c).accounts = s.accounts := rfl
+
+/-- Setting a counter leaves the mint heap unchanged. -/
+@[simp] theorem setCounter_mints (s : AbstractState) (key : Pubkey) (c : CounterAccount) :
+    (s.setCounter key c).mints = s.mints := rfl
+
+/-- Apply `f` to the counter at `key`, if it exists. No-op if absent. -/
+def updateCounter (s : AbstractState) (key : Pubkey) (f : CounterAccount → CounterAccount) :
+    AbstractState :=
+  match s.getCounter key with
+  | some c => s.setCounter key (f c)
+  | none   => s
+
+@[simp] theorem updateCounter_getCounter_eq (s : AbstractState) (key : Pubkey)
+    (f : CounterAccount → CounterAccount) (c : CounterAccount) (h : s.getCounter key = some c) :
+    (s.updateCounter key f).getCounter key = some (f c) := by
+  unfold updateCounter; rw [h]; exact setCounter_getCounter_eq s key (f c)
+
+@[simp] theorem updateCounter_getCounter_of_ne (s : AbstractState) {key key' : Pubkey}
+    (f : CounterAccount → CounterAccount) (h : key' ≠ key) :
+    (s.updateCounter key f).getCounter key' = s.getCounter key' := by
+  unfold updateCounter
+  cases hk : s.getCounter key with
+  | some c => exact setCounter_getCounter_of_ne s (f c) h
   | none   => rfl
 
 end AbstractState
