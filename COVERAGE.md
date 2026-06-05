@@ -115,10 +115,16 @@ into a `FieldVal` list and reshaped through `codecCoarse` / `account_agg`. Cover
   in the obligation (the gap is universally quantified), so the theorem holds for any contents.
 - **Non-constant deltas**: Counter and Vault both assume post = `NatAdd(InitMem, Const)`. A
   register-computed delta needs custom refinement.
-- **Owned (handler-touched) bytes inside a blob**: only fully-framed blobs are emitted today.
-  A blob the handler reads/writes (scattered owned bytes with gaps, like the SPL `rest` region)
-  is still hand-instanced via `memBytesIs_segs`; the codegen emits a single `.gap`, not a mixed
-  `[.byte, .gap, .u64, ...]` segment list.
+- **Owned (handler-touched) bytes inside a blob**: the generic vault path only emits
+  fully-framed blobs (a single `.gap`), not a mixed `[.byte, .gap, .u64, ...]` segment list. Two
+  things to note. (1) For SPL token/mint this is already mechanized on the *token* path:
+  `rest_segments` + `render_token_agg_module` discover the owned bytes of the `rest` region and
+  emit the segment list, so the common touched-blob instance is covered. (2) The open gap is a
+  *non-token* program that reads or writes scattered bytes inside an IDL-opaque field; the
+  generic `account_agg` machinery already proves it (`memBytesIs_segs` over the mixed list), only
+  the vault codegen does not yet discover owned bytes from the lift atoms and emit them. A
+  read-only touched blob fits `AsmRefinesFieldUpdate` directly (pre == post for the blob); a
+  written one makes the blob differ pre/post and shades into new state semantics.
 - **New state semantics** (swap, deposit, anything not token/mint/+const-field): needs the full
   hand-authored stack: a `MirStmt` constructor + `runStep` clause + abstract triple + an
   `AsmRefines*` predicate + the first per-program proof.
