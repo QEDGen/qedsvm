@@ -461,6 +461,39 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// The blob/`account_agg` codegen path: the SAME `vault.so`, but the
+    /// untouched `owner` field is described as a `[u8; 32]` array in the
+    /// IDL, so it is framed as an opaque `.blob [.gap g]` (`↦Bytes`) rather
+    /// than four pubkey dwords. Guards the layout-general blob aggregation
+    /// (`memBytesIs_segs`) the vault codegen now emits. Both files are
+    /// `lake build`-verified (sorry-free) under `Generated.VaultBlob*`.
+    #[test]
+    fn vault_blob_refinement_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/vault.so");
+        let idl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault_blob.codama.json")
+                .expect("read vault_blob.codama.json")).expect("parse vault_blob IDL");
+        let ctx = load_binary(so).expect("load vault.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("VaultBlob".to_string()),
+            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault.so (blob)");
+
+        let lift_on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/VaultBlobTracedLifted.lean")
+                .expect("read VaultBlobTracedLifted.lean");
+        assert_eq!(result.lean, lift_on_disk,
+            "VaultBlobTracedLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+
+        let (_, rlean) = result.refinement.expect("vault blob refinement emitted");
+        let refine_on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/VaultBlobRefinement.lean")
+                .expect("read VaultBlobRefinement.lean");
+        assert_eq!(rlean, refine_on_disk,
+            "VaultBlobRefinement.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
     /// The heap-allocating lift, including the mechanically-emitted
     /// `HeapAlloc_allocates` corollary (heap cells folded into
     /// `heapBumpPtr`/`heapBlockU64`) and the conditional `HeapSL` import,
@@ -3856,6 +3889,7 @@ fn emit_vault_refinement(
     // `u64`, frame every other field (fresh params + fine atoms).
     let mut fresh = 0u32;
     let mut params: Vec<String> = Vec::new();
+    let mut ba_params: Vec<String> = Vec::new();
     let mut pre_fields: Vec<String> = Vec::new();
     let mut post_fields: Vec<String> = Vec::new();
     let mut frame: Vec<String> = Vec::new();
@@ -3892,9 +3926,19 @@ fn emit_vault_refinement(
                 post_fields.push(format!("({}, .byte {})", off, p));
                 frame.push(format!("(effectiveAddr {} {} ↦ₘ {})", base_l, off, p));
             }
-            // Blob fields (scattered owned bytes / framed gaps) are not yet
-            // mechanized for the vault path; bail so the lift still emits.
-            FieldKind::Bytes(_) => return None,
+            // A blob field (option / enum / array / wide scalar) the handler
+            // does not touch: frame the whole region as a single opaque `↦Bytes`
+            // gap (`.blob [.gap g]`). `account_agg`/`memBytesIs_segs` reshape
+            // coarse⟷fine generically; the gap carries no `< 256` side
+            // condition. The byte size is not pinned in the obligation (the
+            // gap is a free `ByteArray`), so the theorem holds for any
+            // contents of that region.
+            FieldKind::Bytes(_) => {
+                let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
+                pre_fields.push(format!("({}, .blob [.gap {}])", off, g));
+                post_fields.push(format!("({}, .blob [.gap {}])", off, g));
+                frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off, g));
+            }
         }
     }
     if !updated_seen { return None; }
@@ -3912,7 +3956,7 @@ fn emit_vault_refinement(
 
     let module = format!("{}Refinement", lift_module);
     let lean = render_vault_refinement(spec, &module, &base_l, &pre_fields, &post_fields,
-        &frame, &params, pre, post_clean, &setup_pre, &setup_post,
+        &frame, &params, &ba_params, pre, post_clean, &setup_pre, &setup_post,
         abs_subst, vars, n_cu, start_pc, exit_pc);
     Some((module, lean, None))
 }
@@ -3923,12 +3967,35 @@ fn emit_vault_refinement(
 fn render_vault_refinement(
     spec: &RefineSpec, module: &str, base_l: &str,
     pre_fields: &[String], post_fields: &[String], frame: &[String], params: &[String],
+    ba_params: &[String],
     pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
     n_cu: usize, start_pc: usize, exit_pc: usize,
 ) -> String {
     let mut nat_params = vars.join(" ");
     for p in params { nat_params.push(' '); nat_params.push_str(p); }
+    // Nat binder group, plus a `ByteArray` group for blob-field gaps (only
+    // emitted when a blob field is present, so non-blob output is unchanged).
+    let mut binders = format!("({nat_params} : Nat)");
+    if !ba_params.is_empty() {
+        binders.push_str(&format!("\n    ({} : ByteArray)", ba_params.join(" ")));
+    }
+    // Compose the simp sets from the field kinds actually present, so each
+    // lemma is used (no `unusedSimpArgs` lint) and a blob-free vault emits
+    // byte-identically to before. `pubkeyIs` only when a pubkey field is
+    // framed; the segment lemmas (`segsSL`/`FieldSeg.sl`, `segsValid`/
+    // `FieldSeg.valid`) only when a blob field is present.
+    let has_pubkey = pre_fields.iter().any(|f| f.contains(".pubkey"));
+    let has_blob = !ba_params.is_empty();
+    let mut fine = vec!["codecFine", "FieldVal.fine"];
+    if has_pubkey { fine.push("pubkeyIs"); }
+    if has_blob { fine.push("segsSL"); fine.push("FieldSeg.sl"); }
+    fine.push("sepConj_emp_right_eq");
+    fine.push("Nat.add_zero");
+    let fine_simp = fine.join(", ");
+    let mut valid = vec!["codecValid", "FieldVal.fineValid"];
+    if has_blob { valid.push("segsValid"); valid.push("FieldSeg.valid"); }
+    let valid_simp = valid.join(", ");
     let pre_list = pre_fields.join(", ");
     let post_list = post_fields.join(", ");
     let frame_s = frame.join(" **\n      ");
@@ -3956,7 +4023,7 @@ open SVM SVM.SBPF SVM.SBPF.Memory
 set_option maxHeartbeats 800000 in
 theorem refines_asm
     (cr : CodeReq) (rr : Memory.RegionTable → Prop)
-    ({nat_params} : Nat)
+    {binders}
     (lift : cuTripleWithinMem {n} 0 {entry} {exit} cr
       ({lift_pre})
       ({lift_post}) rr) :
@@ -3968,11 +4035,11 @@ theorem refines_asm
   unfold SVM.Solana.Abstract.{pred}
   rw [codecCoarse_eq_fine {base}
         [{pre_list}]
-        (by simp [codecValid, FieldVal.fineValid]),
+        (by simp [{valid_simp}]),
       codecCoarse_eq_fine {base}
         [{post_list}]
-        (by simp [codecValid, FieldVal.fineValid])]
-  simp only [codecFine, FieldVal.fine, pubkeyIs, sepConj_emp_right_eq, Nat.add_zero]
+        (by simp [{valid_simp}])]
+  simp only [{fine_simp}]
   have framed := cuTripleWithinMem_frame_right
     ( {frame} )
     (by sl_pcfree) lift
@@ -3983,7 +4050,9 @@ end Examples.{module}
         pred = spec.asm_pred,
         lift = strip_refinement(module),
         module = module,
-        nat_params = nat_params,
+        binders = binders,
+        valid_simp = valid_simp,
+        fine_simp = fine_simp,
         n = n_cu, entry = start_pc, exit = exit_pc,
         lift_pre = lift_pre, lift_post = lift_post,
         base = base_l,

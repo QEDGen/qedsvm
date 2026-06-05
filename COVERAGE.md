@@ -104,14 +104,21 @@ registry (`refine_registry`, `qedlift.rs:2876`) maps arm names to obligations:
 | anything else | none | — | 🟠 |
 
 The `Vault` / `AsmRefinesFieldUpdate` path is the genuinely layout-general one: any
-`{Pubkey, u64, u8}` field list is parsed from the Codama IDL (`parse_account_layout`) into a
-`FieldVal` list and reshaped through `codecCoarse` / `account_agg`. It stops at:
+`{Pubkey, u64, u8, blob}` field list is parsed from the Codama IDL (`parse_account_layout`)
+into a `FieldVal` list and reshaped through `codecCoarse` / `account_agg`. Coverage:
 
-- **Blob / option / enum / array fields** (`FieldKind::Bytes`): bails (`return None`). The
-  generic `account_agg` could absorb these, but the vault codegen does not emit it yet. This is
-  the highest-leverage gap: the proving machinery exists, only the codegen is missing.
+- **Blob / option / enum / array fields** (`FieldKind::Bytes`): now mechanized. An untouched
+  blob field is framed as a single opaque `.blob [.gap g]` (a free `ByteArray`, rendered
+  `↦Bytes`); `account_agg` / `memBytesIs_segs` reshape it coarse to fine generically. Verified
+  end-to-end by `Generated.VaultBlobRefinement` (sorry-free `lake build`, axiom-clean) and the
+  `vault_blob_refinement_is_mechanically_emitted` pin test. The blob's byte size is not pinned
+  in the obligation (the gap is universally quantified), so the theorem holds for any contents.
 - **Non-constant deltas**: Counter and Vault both assume post = `NatAdd(InitMem, Const)`. A
   register-computed delta needs custom refinement.
+- **Owned (handler-touched) bytes inside a blob**: only fully-framed blobs are emitted today.
+  A blob the handler reads/writes (scattered owned bytes with gaps, like the SPL `rest` region)
+  is still hand-instanced via `memBytesIs_segs`; the codegen emits a single `.gap`, not a mixed
+  `[.byte, .gap, .u64, ...]` segment list.
 - **New state semantics** (swap, deposit, anything not token/mint/+const-field): needs the full
   hand-authored stack: a `MirStmt` constructor + `runStep` clause + abstract triple + an
   `AsmRefines*` predicate + the first per-program proof.
@@ -144,9 +151,9 @@ just discriminators for batch targeting, no layout, so it falls back to the hard
 
 | Tier | Programs | Needs |
 | --- | --- | --- |
-| Fully mechanical, no hand Lean | SPL Transfer / TransferChecked / MintTo / Burn, Counter-increment, Vault `{pubkey,u64,u8}` +const field update, heap-bump allocation | `.so` + trace; IDL for vault/batch |
+| Fully mechanical, no hand Lean | SPL Transfer / TransferChecked / MintTo / Burn, Counter-increment, Vault `{pubkey,u64,u8,blob}` +const field update, heap-bump allocation | `.so` + trace; IDL for vault/batch |
 | Raw triple only (no abstract meaning) | any straight-line / dispatch / bounded-trace arm over the modeled opcodes + 5 syscalls | `.so` + a concrete `--trace` |
-| Needs hand-authoring | new intrinsic semantics, blob/enum/array account fields, variable deltas, loops with invariants | new MIR intrinsic + triple + refinement + first proof |
+| Needs hand-authoring | new intrinsic semantics, handler-touched bytes inside a blob, variable deltas, loops with invariants | new MIR intrinsic + triple + refinement + first proof |
 | Not modeled at all | hashing, curves, PDA derivation, memcpy, return data, real CPI callee semantics, real sysvar contents | spec work in `SpecGen` + ISA |
 
 Comprehensive and genuinely mechanical inside the token / mint / counter / vault / heap

@@ -120,6 +120,11 @@ lean_lib Examples where
     -- owner+bump fields — mechanized multi-field non-token aggregation.
     `Generated.VaultTracedLifted,
     `Generated.VaultRefinement,
+    -- Same vault.so, but the untouched `owner` field is described as a
+    -- `[u8; 32]` blob in the IDL: exercises the blob/`account_agg` codegen
+    -- path (`.blob [.gap g]` framed as `↦Bytes`, `memBytesIs_segs` reshape).
+    `Generated.VaultBlobTracedLifted,
+    `Generated.VaultBlobRefinement,
     `Generated.GuardedCounterLifted,
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
