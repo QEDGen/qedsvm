@@ -3,7 +3,7 @@
 Date: 2026-06-05
 Status: reference for the current lift/recover coverage
 Verified against: `1df62c1` (`SVM/SBPF/SpecGen.lean`, `qedsvm-rs/src/bin/qedlift.rs`, `SVM/SBPF/ISA.lean`)
-Related: [PIPELINE.md](PIPELINE.md)
+Related: [PIPELINE.md](PIPELINE.md), [MIR.md](MIR.md)
 
 This is the honest boundary of the `.so` (+ Codama IDL, + trace) to machine-checked-proof
 pipeline. The headline: the **raw lift to a Hoare triple is broad**, but the **mechanical
