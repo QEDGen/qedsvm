@@ -27,6 +27,7 @@
 import SVM.Solana.Abstract.Refinement
 import Generated.VaultRefinement
 import SVM.SBPF.Tactic.Discharge
+import SVM.Solana.TokenFieldCodec
 
 namespace Examples.DischargePoC
 
@@ -80,32 +81,13 @@ example
 
 /-! ## Token transfer: convergence to the field-list route
 
-The SPL token account `tokenAcctBalance` (mint@0, owner@32, amount@64,
-rest@72) IS a `codecCoarse` field list — the convergence keystone that
-lets `AsmRefinesTokenTransfer` use the same accessor projection as the
-vault, instead of the bespoke `TokenAccount` record (QEDGen/qedsvm#24,
-"converge AsmRefinesToken*"). -/
-
-/-- The token field list: the SPL account as a layout-general `FieldVal`
-    list (the `account_agg` example in `SVM/SBPF/AccountCodec.lean`). -/
-def tokenFields (mint owner : SVM.Pubkey) (amount : Nat) (rest : ByteArray) :
-    List (Nat × FieldVal) :=
-  [(0, .pubkey mint), (32, .pubkey owner), (64, .u64 amount), (72, .blob [.gap rest])]
-
-/-- **Convergence keystone.** The byte-level token account predicate is the
-    coarse codec of its field list. So a token obligation is a field-list
-    obligation, and the accessor projection applies. -/
-theorem tokenAcctBalance_codec (ata : Nat) (mint owner : SVM.Pubkey) (amount : Nat) (rest : ByteArray) :
-    tokenAcctBalance ata mint owner amount rest
-      = codecCoarse ata (tokenFields mint owner amount rest) := by
-  simp [tokenAcctBalance, tokenFields, MINT_OFF, OWNER_OFF, AMOUNT_OFF, REST_OFF,
-        codecCoarse, FieldVal.coarse, segsBytes, FieldSeg.bytes,
-        sepConj_emp_right_eq]
-
-/-- The accessor reads the `amount` field (offset 64) of a token field list. -/
-@[simp] theorem u64FieldAt_tokenFields (mint owner : SVM.Pubkey) (amount : Nat) (rest : ByteArray) :
-    u64FieldAt 64 (tokenFields mint owner amount rest) = amount := by
-  simp [u64FieldAt, tokenFields]
+The SPL token account as a `FieldVal` field list, the convergence keystone
+(`tokenAcctBalance_codec`), and the discharged amount-field `ensures`
+(`token_ensures_debit` / `token_ensures_credit`) now live in the library:
+`SVM.Solana.TokenFieldCodec`. The SPL layout is fixed, so those `ensures`
+are single library facts rather than per-lift emissions. What remains here
+is the obligation-level reshape demonstrated on a real `AsmRefinesToken-
+Transfer`. -/
 
 /-- Convert a real `AsmRefinesTokenTransfer` obligation into field-list
     (`codecCoarse`) form via the convergence keystone — the token-side
@@ -126,18 +108,5 @@ theorem transfer_field_obligation
   simpa only [tokenAcctBalanceOf, tokenAcctBalance_codec,
               TokenAccount.withAmount_amount, TokenAccount.withAmount_mint,
               TokenAccount.withAmount_owner, TokenAccount.withAmount_rest] using h
-
-/-- qedgen `ensures_axiom_0`: `from_balance post = from_balance pre - amount`,
-    on the src account's `amount` field, projected from the field list. -/
-theorem transfer_ensures_0 (mint owner : SVM.Pubkey) (fromAmt amount : Nat) (rest : ByteArray) :
-    u64FieldAt 64 (tokenFields mint owner (fromAmt - amount) rest)
-      = u64FieldAt 64 (tokenFields mint owner fromAmt rest) - amount := by
-  qedsvm_discharge
-
-/-- qedgen `ensures_axiom_1`: `to_balance post = to_balance pre + amount`. -/
-theorem transfer_ensures_1 (mint owner : SVM.Pubkey) (toAmt amount : Nat) (rest : ByteArray) :
-    u64FieldAt 64 (tokenFields mint owner (toAmt + amount) rest)
-      = u64FieldAt 64 (tokenFields mint owner toAmt rest) + amount := by
-  qedsvm_discharge
 
 end Examples.DischargePoC
