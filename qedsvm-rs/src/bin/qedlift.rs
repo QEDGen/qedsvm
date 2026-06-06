@@ -3754,21 +3754,20 @@ fn emit_counter_refinement(
 
     // Find the incremented counter cell: a `u64` whose post value is the
     // cleaned `NatAdd(InitMem, Const)` form.
-    let mut found: Option<(Expr, i64, Expr)> = None;
+    let mut found: Option<(Expr, i64, Expr, i64)> = None;
     for atom in post_clean {
         if let Atom::Mem { addr_base, addr_off, width, value } = atom {
             if matches!(width, Width::Dword) {
                 if let Expr::NatAdd(a, b) = value {
-                    if matches!(a.as_ref(), Expr::InitMem(_))
-                        && matches!(b.as_ref(), Expr::Const(_)) {
-                        found = Some(((*addr_base).clone(), *addr_off, (**a).clone()));
+                    if let (Expr::InitMem(_), Expr::Const(k)) = (a.as_ref(), b.as_ref()) {
+                        found = Some(((*addr_base).clone(), *addr_off, (**a).clone(), *k));
                         break;
                     }
                 }
             }
         }
     }
-    let (base, off, pre_val) = found?;
+    let (base, off, pre_val, delta) = found?;
     let base_l = fold(&base);
     let addr_arg = if off == 0 { base_l.clone() } else { format!("({} + {})", base_l, off) };
     let counter_pre = fold(&pre_val);
@@ -3788,7 +3787,8 @@ fn emit_counter_refinement(
 
     let module = format!("{}Refinement", lift_module);
     let lean = render_counter_refinement(spec, &module, &addr_arg, &record,
-        pre, post_clean, &setup_pre, &setup_post, abs_subst, vars, n_cu, start_pc, exit_pc);
+        pre, post_clean, &setup_pre, &setup_post, abs_subst, vars, n_cu, start_pc, exit_pc,
+        &counter_pre, delta);
     Some((module, lean, None))
 }
 
@@ -3800,6 +3800,7 @@ fn render_counter_refinement(
     pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
     n_cu: usize, start_pc: usize, exit_pc: usize,
+    counter_pre: &str, delta: i64,
 ) -> String {
     let nat_params = vars.join(" ");
     let lift_pre = atoms_to_lean(pre, abs_subst);
@@ -3817,6 +3818,7 @@ fn render_counter_refinement(
 -/
 
 import SVM.SBPF.Tactic.SL
+import SVM.SBPF.Tactic.Discharge
 import SVM.Solana.Abstract.Refinement
 import Generated.{lift}TracedLifted
 
@@ -3838,12 +3840,21 @@ theorem refines_asm
   simp only [SVM.Solana.counterValOf_eq]
   sl_exact lift
 
+/-- qedgen `ensures`-shape, mechanically discharged: the counter field
+    shifts by {delta}. Pairs with `refines_asm`; the counter account is a
+    single-`u64` field list, so the accessor projection is `u64FieldAt 0`. -/
+theorem ensures ({counter_pre} : Nat) :
+    u64FieldAt 0 [(0, .u64 ({counter_pre} + {delta}))]
+      = u64FieldAt 0 [(0, .u64 {counter_pre})] + {delta} := by
+  qedsvm_discharge
+
 end Examples.{module}
 ",
         pred = spec.asm_pred,
         lift = strip_refinement(module),
         module = module,
         nat_params = nat_params,
+        counter_pre = counter_pre, delta = delta,
         n = n_cu, entry = start_pc, exit = exit_pc,
         lift_pre = lift_pre, lift_post = lift_post,
         addr = addr_arg, record = record,

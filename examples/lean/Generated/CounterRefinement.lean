@@ -7,6 +7,7 @@
 -/
 
 import SVM.SBPF.Tactic.SL
+import SVM.SBPF.Tactic.Discharge
 import SVM.Solana.Abstract.Refinement
 import Generated.CounterTracedLifted
 
@@ -37,5 +38,13 @@ theorem refines_asm
   unfold SVM.Solana.Abstract.AsmRefinesCounterIncrement
   simp only [SVM.Solana.counterValOf_eq]
   sl_exact lift
+
+/-- qedgen `ensures`-shape, mechanically discharged: the counter field
+    shifts by 1. Pairs with `refines_asm`; the counter account is a
+    single-`u64` field list, so the accessor projection is `u64FieldAt 0`. -/
+theorem ensures (oldMemD_0 : Nat) :
+    u64FieldAt 0 [(0, .u64 (oldMemD_0 + 1))]
+      = u64FieldAt 0 [(0, .u64 oldMemD_0)] + 1 := by
+  qedsvm_discharge
 
 end Examples.CounterRefinement
