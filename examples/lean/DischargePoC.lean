@@ -26,34 +26,15 @@
 
 import SVM.Solana.Abstract.Refinement
 import Generated.VaultRefinement
+import SVM.SBPF.Tactic.Discharge
 
 namespace Examples.DischargePoC
 
 open SVM SVM.SBPF SVM.SBPF.Memory SVM.Pubkey SVM.Solana SVM.Solana.Abstract
 
-/-- qedgen's `from_balance : State → Nat`, instantiated: read the `u64`
-    field at byte offset `off` from a decoded account. Here `State` is the
-    field list the lift produces; `from_balance := u64FieldAt off`. -/
-def u64FieldAt (off : Nat) : List (Nat × FieldVal) → Nat
-  | [] => 0
-  | (o, .u64 v) :: rest => if o = off then v else u64FieldAt off rest
-  | _ :: rest => u64FieldAt off rest
-
-/-- Generic accessor evaluation: a `.u64` field at `off` reads its value,
-    when the entries before it carry other offsets (true of the lift's
-    sorted, distinct-offset field lists). Turns the per-program `simp` into
-    a reusable lemma — the projection the discharge tactic applies. -/
-theorem u64FieldAt_found (off v : Nat) (before after : List (Nat × FieldVal))
-    (hb : ∀ e ∈ before, e.1 ≠ off) :
-    u64FieldAt off (before ++ (off, .u64 v) :: after) = v := by
-  induction before with
-  | nil => simp [u64FieldAt]
-  | cons e es ih =>
-    have ho : e.1 ≠ off := hb e (by simp)
-    have ih' := ih (fun x hx => hb x (by simp [hx]))
-    obtain ⟨o, fv⟩ := e
-    simp only [List.cons_append]
-    cases fv <;> simp_all [u64FieldAt]
+-- `u64FieldAt` (qedgen's accessor, instantiated), `u64FieldAt_found` (the
+-- generic projection lemma), and the `qedsvm_discharge` tactic now live in
+-- the library: `SVM.SBPF.Tactic.Discharge`.
 
 /-! ## Vault: `total post = total pre + 1`, discharged from the real lift
 
@@ -75,7 +56,7 @@ theorem vault_total_discharged
         setupPre setupPost
       ∧ u64FieldAt 32 [(0, .pubkey ⟨o0, o1, o2, o3⟩), (32, .u64 (oldMemD_0 + 1)), (40, .byte fb4)]
           = u64FieldAt 32 [(0, .pubkey ⟨o0, o1, o2, o3⟩), (32, .u64 oldMemD_0), (40, .byte fb4)] + 1 :=
-  ⟨h, by simp [u64FieldAt]⟩
+  ⟨h, by qedsvm_discharge⟩
 
 /-- End-to-end: the real vault lift (`Generated.VaultRefinement.refines_asm`)
     flows through the discharge to qedgen's `total post = total pre + 1`. The
@@ -151,12 +132,12 @@ theorem transfer_field_obligation
 theorem transfer_ensures_0 (mint owner : SVM.Pubkey) (fromAmt amount : Nat) (rest : ByteArray) :
     u64FieldAt 64 (tokenFields mint owner (fromAmt - amount) rest)
       = u64FieldAt 64 (tokenFields mint owner fromAmt rest) - amount := by
-  simp
+  qedsvm_discharge
 
 /-- qedgen `ensures_axiom_1`: `to_balance post = to_balance pre + amount`. -/
 theorem transfer_ensures_1 (mint owner : SVM.Pubkey) (toAmt amount : Nat) (rest : ByteArray) :
     u64FieldAt 64 (tokenFields mint owner (toAmt + amount) rest)
       = u64FieldAt 64 (tokenFields mint owner toAmt rest) + amount := by
-  simp
+  qedsvm_discharge
 
 end Examples.DischargePoC
