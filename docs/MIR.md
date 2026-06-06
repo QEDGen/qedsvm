@@ -3,7 +3,7 @@
 Date: 2026-06-06
 Status: reference for the current (Direction-A pilot) MIR
 Verified against: `6407d35` (`SVM/Solana/Mir.lean`, `SVM/Solana/Abstract/{State,Triples,Refinement}.lean`)
-Related: [PIPELINE.md](PIPELINE.md), [COVERAGE.md](COVERAGE.md), `docs/mir-readability-spike.md`
+Related: [PIPELINE.md](PIPELINE.md), [COVERAGE.md](COVERAGE.md), `mir-readability-spike.md`
 
 The MIR is the layer that says what a compiled program *means*. PIPELINE.md ends at a
 machine-checked `cuTripleWithinMem`: a faithful but byte-level Hoare triple over registers and
@@ -200,4 +200,4 @@ qedspec and a lift, no new Lean. See COVERAGE.md for which shapes are mechanical
   not preemptively.
 - `AsmRefinesFieldUpdate` (layout-general) has no abstract `runStep` counterpart yet.
 - The readability stack (Domain / Footprint vocabulary) is partially landed; see
-  `docs/mir-readability-spike.md` for the five-layer plan and what remains.
+  `mir-readability-spike.md` for the five-layer plan and what remains.

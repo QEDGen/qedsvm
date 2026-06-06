@@ -94,4 +94,4 @@ They are meant to compose. qedrecover's `discriminatorValue`, `armEntryPc`, and 
 2. **Trace capture is manual.** Flip `TRACE_STEPS := true` in `SVM/SBPF/Runner.lean`, run the matching `diff_mollusk` test with `--nocapture`, and post-process the `STEP pc=` lines into a `.pcs` file. The exact recipe is in the header comment of each `.pcs`.
 3. **Happy/sad-path tagging in qedrecover is pending** (needs the same mollusk trace). Until then `reachableBlocks` lists both.
 
-These are consistent with qedrecover/qedlift being the lifting front-end that moves into qedgen long-term; qedgen is expected to emit the overlay/sidecar at compile time and own the one-command path. See the [README](README.md) and [ROADMAP](ROADMAP.md).
+These are consistent with qedrecover/qedlift being the lifting front-end that moves into qedgen long-term; qedgen is expected to emit the overlay/sidecar at compile time and own the one-command path. See the [README](../README.md) and [ROADMAP](../ROADMAP.md).

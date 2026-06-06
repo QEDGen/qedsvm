@@ -66,7 +66,7 @@ cargo run --features qedrecover --bin qedlift -- \
 
 With `--trace`, qedlift follows the real happy path through branchy bytecode and additionally emits a `*_balance_correct` corollary (clean Nat debit/credit). The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, the Counter family, Logger, and six p-token arms (Transfer, TransferChecked, MintTo, Burn, CloseAccount, InitializeMint2), all proof-complete. Batch mode (`--idl`) lifts every instruction in a TOML or Codama IDL.
 
-For the full `.so` + IDL to proof workflow (qedrecover scoping, trace capture, qedlift, and `lake build`), see [`PIPELINE.md`](PIPELINE.md).
+For the full `.so` + IDL to proof workflow (qedrecover scoping, trace capture, qedlift, and `lake build`), see [`docs/PIPELINE.md`](docs/PIPELINE.md).
 
 ### From Rust (`qedsvm-rs`)
 
