@@ -1,9 +1,12 @@
 # The Solana-native MIR: abstract semantics and the refinement bridge
 
 Date: 2026-06-06
-Status: reference for the current (Direction-A pilot) MIR
+Status: reference for the current (Direction-A pilot) MIR. TRANSITIONAL: see
+[abstract-domain-direction.md](abstract-domain-direction.md) for why this layer is slated to
+converge into a `qedsvm_discharge` tactic over qedgen's parametric obligations rather than remain
+a standalone domain.
 Verified against: `6407d35` (`SVM/Solana/Mir.lean`, `SVM/Solana/Abstract/{State,Triples,Refinement}.lean`)
-Related: [PIPELINE.md](PIPELINE.md), [COVERAGE.md](COVERAGE.md), `mir-readability-spike.md`
+Related: [PIPELINE.md](PIPELINE.md), [COVERAGE.md](COVERAGE.md), [abstract-domain-direction.md](abstract-domain-direction.md), `mir-readability-spike.md`
 
 The MIR is the layer that says what a compiled program *means*. PIPELINE.md ends at a
 machine-checked `cuTripleWithinMem`: a faithful but byte-level Hoare triple over registers and
