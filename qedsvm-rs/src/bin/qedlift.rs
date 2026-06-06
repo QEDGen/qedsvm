@@ -3957,7 +3957,7 @@ fn emit_vault_refinement(
     let module = format!("{}Refinement", lift_module);
     let lean = render_vault_refinement(spec, &module, &base_l, &pre_fields, &post_fields,
         &frame, &params, &ba_params, pre, post_clean, &setup_pre, &setup_post,
-        abs_subst, vars, n_cu, start_pc, exit_pc);
+        abs_subst, vars, n_cu, start_pc, exit_pc, upd_off, delta, &upd_pre_l);
     Some((module, lean, None))
 }
 
@@ -3971,9 +3971,19 @@ fn render_vault_refinement(
     pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
     n_cu: usize, start_pc: usize, exit_pc: usize,
+    upd_off: i64, delta: i64, upd_pre_l: &str,
 ) -> String {
     let mut nat_params = vars.join(" ");
     for p in params { nat_params.push(' '); nat_params.push_str(p); }
+    // Binder group for the `ensures` corollary: only the params that appear
+    // in the field lists (the updated field's pre value + the framed-field
+    // params), so the projection theorem has no unused binders.
+    let mut ens_nat = upd_pre_l.to_string();
+    for p in params { ens_nat.push(' '); ens_nat.push_str(p); }
+    let mut ensures_binders = format!("({ens_nat} : Nat)");
+    if !ba_params.is_empty() {
+        ensures_binders.push_str(&format!("\n    ({} : ByteArray)", ba_params.join(" ")));
+    }
     // Nat binder group, plus a `ByteArray` group for blob-field gaps (only
     // emitted when a blob field is present, so non-blob output is unchanged).
     let mut binders = format!("({nat_params} : Nat)");
@@ -4014,6 +4024,7 @@ fn render_vault_refinement(
 -/
 
 import SVM.SBPF.Tactic.SL
+import SVM.SBPF.Tactic.Discharge
 import SVM.Solana.Abstract.Refinement
 import Generated.{lift}TracedLifted
 
@@ -4045,12 +4056,25 @@ theorem refines_asm
     (by sl_pcfree) lift
   sl_exact framed
 
+/-- qedgen `ensures`-shape, mechanically discharged: the mutated `u64`
+    field (offset {upd_off}) shifts by {delta}. Pairs with `refines_asm`
+    (which says the bytecode realises this field-list transition); together
+    they discharge qedgen's `accessor post = accessor pre ± k` over the
+    decoded field list via the layout-general accessor projection. -/
+theorem ensures
+    {ensures_binders} :
+    u64FieldAt {upd_off} [{post_list}]
+      = u64FieldAt {upd_off} [{pre_list}] + {delta} := by
+  qedsvm_discharge
+
 end Examples.{module}
 ",
         pred = spec.asm_pred,
         lift = strip_refinement(module),
         module = module,
         binders = binders,
+        ensures_binders = ensures_binders,
+        upd_off = upd_off, delta = delta,
         valid_simp = valid_simp,
         fine_simp = fine_simp,
         n = n_cu, entry = start_pc, exit = exit_pc,

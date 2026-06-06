@@ -7,6 +7,7 @@
 -/
 
 import SVM.SBPF.Tactic.SL
+import SVM.SBPF.Tactic.Discharge
 import SVM.Solana.Abstract.Refinement
 import Generated.VaultTracedLifted
 
@@ -51,5 +52,16 @@ theorem refines_asm
       (effectiveAddr baseAddr 40 ↦ₘ fb4) )
     (by sl_pcfree) lift
   sl_exact framed
+
+/-- qedgen `ensures`-shape, mechanically discharged: the mutated `u64`
+    field (offset 32) shifts by 1. Pairs with `refines_asm`
+    (which says the bytecode realises this field-list transition); together
+    they discharge qedgen's `accessor post = accessor pre ± k` over the
+    decoded field list via the layout-general accessor projection. -/
+theorem ensures
+    (oldMemD_0 o0 o1 o2 o3 fb4 : Nat) :
+    u64FieldAt 32 [(0, .pubkey ⟨o0, o1, o2, o3⟩), (32, .u64 (oldMemD_0 + 1)), (40, .byte fb4)]
+      = u64FieldAt 32 [(0, .pubkey ⟨o0, o1, o2, o3⟩), (32, .u64 oldMemD_0), (40, .byte fb4)] + 1 := by
+  qedsvm_discharge
 
 end Examples.VaultRefinement
