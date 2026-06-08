@@ -1,11 +1,24 @@
 # The Solana-native MIR: abstract semantics and the refinement bridge
 
 Date: 2026-06-06
-Status: reference for the current (Direction-A pilot) MIR. TRANSITIONAL: see
-[abstract-domain-direction.md](abstract-domain-direction.md) for why this layer is slated to
-converge into a `qedsvm_discharge` tactic over qedgen's parametric obligations rather than remain
-a standalone domain.
-Verified against: `6407d35` (`SVM/Solana/Mir.lean`, `SVM/Solana/Abstract/{State,Triples,Refinement}.lean`)
+Status: **RETIRED (historical).** The Direction-A pilot MIR described below was removed in
+QEDGen/qedsvm#25. `SVM/Solana/Mir.lean` and `SVM/Solana/Abstract/Triples.lean` are deleted, and
+the intrinsic-specific bundling structures (`TokenTransferRefinement` etc.) are gone. The asm-side
+obligation predicates (`AsmRefinesTokenTransfer`/`MintTo`/`Burn`, `AsmRefinesCounterIncrement`,
+and the layout-general `AsmRefinesFieldUpdate`) survive in `SVM/Solana/Abstract/Refinement.lean`
+as the bridging input until qedgen consumes the discharge form (QEDGen/solana-skills#86).
+
+The abstract MIR domain is no longer load-bearing: a token/mint obligation converges to a
+layout-general **field-list** obligation via the codec keystones
+(`SVM/Solana/TokenFieldCodec.lean` `tokenAcctBalance_codec`, `SVM/Solana/MintFieldCodec.lean`
+`mintSupply_codec`), and qedgen's parametric `ensures` drops out as an accessor projection
+(`u64FieldAt`) discharged by the `qedsvm_discharge` tactic (`SVM/SBPF/Tactic/Discharge.lean`).
+qedlift's refinement codegen emits this per arm as the `refines_field` corollary. See
+[abstract-domain-direction.md](abstract-domain-direction.md) for the convergence rationale.
+
+The remainder of this document is kept as the historical record of the pilot.
+
+Verified against: `6407d35` (then-current `SVM/Solana/Mir.lean`, `SVM/Solana/Abstract/{State,Triples,Refinement}.lean`; Mir/Triples since deleted)
 Related: [PIPELINE.md](PIPELINE.md), [COVERAGE.md](COVERAGE.md), [abstract-domain-direction.md](abstract-domain-direction.md), `mir-readability-spike.md`
 
 The MIR is the layer that says what a compiled program *means*. PIPELINE.md ends at a

@@ -37,11 +37,10 @@
   shape; it's deferred until a downstream theorem actually consumes
   it (at which point the wrapper lift is worth writing).
 
-  Per the Direction-A MIR design (qedgen issue #66), this theorem is
-  the canonical lowering target for a `Stmt::TokenTransfer { from, to,
-  amount }` MIR node — `runMir`-of-`TokenTransfer` IS exactly this
-  predicate shift. The synthetic-anchor version is the first proven
-  instance of that lowering.
+  This theorem is the canonical lowering target for a token transfer —
+  the `tokenAcctBalance` predicate shift the bytecode realises. The
+  synthetic-anchor version is the first proven instance of that lowering.
+  (The retired Direction-A MIR layer is documented in `docs/MIR.md`.)
 -/
 
 import SVM.Solana.TokenAccount
