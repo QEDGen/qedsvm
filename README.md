@@ -15,10 +15,10 @@ Small trust base: Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean
 
 ```lean
 require qedsvm from git
-  "https://github.com/QEDGen/qedsvm.git" @ "main"
+  "https://github.com/QEDGen/qedsvm.git" @ "v0.3.0"
 ```
 
-Prerequisites: Lean (via `elan`) and `cargo` / `rustc`. Lake builds `qedsvm-rs/lean-bridge/` automatically.
+Prerequisites: Lean (via `elan`) and `cargo` / `rustc`. Lake builds `qedsvm-rs/lean-bridge/` automatically. The public module boundary (both proof engines + the discharge route) is documented in [docs/API.md](docs/API.md).
 
 ## Demo
 
