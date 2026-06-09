@@ -15,9 +15,9 @@
       abstraction relation φ that says "this abstract account matches
       these concrete bytes at this layout offset."
 
-  Extension protocol: add fields here only when an in-flight pilot
-  needs them. Each new field adds clauses to the SL `Disjoint` /
-  `CompatibleWith` / `union` definitions in `Abstract/SepLogic.lean`.
+  Extension protocol: add fields here only when a consumer needs them.
+  These records back the byte-level codecs (`TokenAccountCodec`,
+  `MintAccountCodec`, `CounterAccountCodec`) the discharge route reshapes.
 -/
 
 import SVM.Pubkey
