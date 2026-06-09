@@ -2981,6 +2981,14 @@ struct AcctBuild {
     // `Some` for token accounts (drives mechanically emitting the
     // aggregation module); `None` for mint accounts (hand-written for now).
     agg: Option<(String, bool, Vec<i64>)>,
+    // Discharge-route field-list atoms: this account's `codecCoarse base
+    // (tokenFields/mintFields …)` in the pre- and post-state. The keystone
+    // (`tokenAcctBalance_codec` / `mintSupply_codec`) shows the bespoke
+    // `tokenAcctBalanceOf` / `mintSupplyOf` atom equals these, so the kept
+    // `AsmRefinesToken*` obligation reshapes to a layout-general field-list
+    // obligation — the `refines_field` corollary the codegen emits.
+    field_pre: String,
+    field_post: String,
 }
 
 fn emit_refinement(
@@ -3253,7 +3261,16 @@ fn build_token(
     let rw_pre = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, amt_field, rest_args);
     let rw_post = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, post_amt, rest_args);
     let agg = Some((lemma.to_string(), owner_owned, rest_bytes.clone()));
-    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params, barrays, hyps, agg })
+    // Discharge-route field list (SPL token: mint@0, owner@32, amount@64,
+    // opaque tail@72) — the `tokenAcctBalance_codec` keystone target.
+    let field_pre = format!(
+        "codecCoarse {} (SVM.Solana.tokenFields ⟨{}⟩ ⟨{}⟩ {} ({}))",
+        base_arg, mint.join(", "), owner.join(", "), amt_field, rest);
+    let field_post = format!(
+        "codecCoarse {} (SVM.Solana.tokenFields ⟨{}⟩ ⟨{}⟩ {} ({}))",
+        base_arg, mint.join(", "), owner.join(", "), post_amt, rest);
+    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params, barrays, hyps, agg,
+        field_pre, field_post })
 }
 
 // -----------------------------------------------------------------------------
@@ -3611,7 +3628,16 @@ fn build_mint(
     let post_sup = if m.is_sub { format!("({} - {})", supply, amount) } else { format!("({} + {})", supply, amount) };
     let rw_pre = mint_rw(lemma, &base_arg, &preauth, &pre_args, &supply, &b45, &barrays, preauth_owned);
     let rw_post = mint_rw(lemma, &base_arg, &preauth, &pre_args, &post_sup, &b45, &barrays, preauth_owned);
-    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params: Vec::new(), barrays, hyps, agg: None })
+    // Discharge-route field list (SPL mint: mint_authority@0, supply@36,
+    // tail@44) — the `mintSupply_codec` keystone target.
+    let field_pre = format!(
+        "codecCoarse {} (SVM.Solana.mintFields ({}) {} ({}))",
+        base_arg, preauth, supply, rest);
+    let field_post = format!(
+        "codecCoarse {} (SVM.Solana.mintFields ({}) {} ({}))",
+        base_arg, preauth, post_sup, rest);
+    Some(AcctBuild { base_arg, record, rw_pre, rw_post, frame, owned, params: Vec::new(), barrays, hyps, agg: None,
+        field_pre, field_post })
 }
 
 /// Render a mint aggregation rw call for a given supply value.
@@ -3662,11 +3688,14 @@ fn render_refinement(
     let frame_atoms: Vec<String> = builds.iter().flat_map(|b| b.frame.iter().cloned()).collect();
     let frame = frame_atoms.join(" **\n      ");
 
+    let uses_mint_codec = builds.iter().any(|b| b.field_pre.contains("mintFields"));
     let mut imports = vec![
         "import SVM.SBPF.Tactic.SL".to_string(),
         "import SVM.Solana.Abstract.Refinement".to_string(),
+        "import SVM.Solana.TokenFieldCodec".to_string(),
         format!("import Generated.{}TracedLifted", strip_refinement(module)),
     ];
+    if uses_mint_codec { imports.push("import SVM.Solana.MintFieldCodec".to_string()); }
     // aggregation deps
     let uses_transfer_agg = builds.iter().any(|b|
         b.rw_pre.starts_with("src_account_eq") || b.rw_pre.starts_with("dst_account_eq"));
@@ -3675,6 +3704,28 @@ fn render_refinement(
         || b.rw_pre.starts_with("dest_account_eq"));
     if uses_transfer_agg { imports.push("import PToken.TransferAggregation".to_string()); }
     if uses_mint_agg { imports.push("import PToken.MintAggregation".to_string()); }
+
+    // Discharge-route field-list atoms (builds order matches the obligation's
+    // account-atom order), for the `refines_field` reshape corollary.
+    let field_pre_join = builds.iter().map(|b| b.field_pre.clone())
+        .collect::<Vec<_>>().join(" **\n      ");
+    let field_post_join = builds.iter().map(|b| b.field_post.clone())
+        .collect::<Vec<_>>().join(" **\n      ");
+    // Reshape simp set for `refines_field`: the token keystone always (every
+    // arm owns ≥1 token account); the mint keystone only when a mint account
+    // is present, so a token-only arm doesn't reference the unimported
+    // `MintFieldCodec` lemmas.
+    let mut reshape_simp = vec![
+        "SVM.Solana.tokenAcctBalanceOf_eq", "SVM.Solana.tokenAcctBalanceOf_withAmount",
+        "SVM.Solana.tokenAcctBalance_codec",
+    ];
+    if uses_mint_codec {
+        reshape_simp.extend([
+            "SVM.Solana.mintSupplyOf_eq", "SVM.Solana.mintSupplyOf_withSupply",
+            "SVM.Solana.mintSupply_codec",
+        ]);
+    }
+    let reshape_simp = reshape_simp.join(", ");
 
     let mut opens = Vec::new();
     if uses_transfer_agg { opens.push("Examples.PTokenTransferAggregation"); }
@@ -3725,6 +3776,29 @@ theorem refines_asm
   simp only [Nat.add_assoc, Nat.reduceAdd]
   sl_exact framed
 
+/-- Discharge-route reshape: the `{pred}` obligation is a layout-general
+    field-list (`codecCoarse`/`tokenFields`/`mintFields`) obligation. The
+    convergence keystones (`tokenAcctBalance_codec` / `mintSupply_codec`)
+    rewrite the bespoke `tokenAcctBalanceOf` / `mintSupplyOf` atoms to the
+    field-list codec, so qedgen reads the mutated field off the decoded list
+    via the library `*_ensures_*` facts (`qedsvm_discharge`). Pairs with
+    `refines_asm` (the lift realises the obligation). -/
+theorem refines_field
+    (cr : CodeReq) (rr : Memory.RegionTable → Prop)
+    ({nat_params} : Nat){barray_sig}
+    (h : SVM.Solana.Abstract.{pred} cr {n} 0 {entry} {exit} rr {addrs}{records}
+      {amount}
+      ({setup_pre})
+      ({setup_post})) :
+    cuTripleWithinMem {n} 0 {entry} {exit} cr
+      (({setup_pre}) **
+      {field_pre})
+      (({setup_post}) **
+      {field_post})
+      rr := by
+  unfold SVM.Solana.Abstract.{pred} at h
+  simpa only [{reshape_simp}] using h
+
 end Examples.{module}
 ",
         arm = spec.asm_pred, pred = spec.asm_pred, module = module,
@@ -3737,6 +3811,8 @@ end Examples.{module}
         amount = amount,
         setup_pre = setup_pre_s, setup_post = setup_post_s,
         rw = rw.join(",\n      "), frame = frame,
+        field_pre = field_pre_join, field_post = field_post_join,
+        reshape_simp = reshape_simp,
     )
 }
 

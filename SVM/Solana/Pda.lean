@@ -20,9 +20,9 @@
 --     and matches what programs do when re-deriving with a known bump
 --     (`create_program_address` instead of `find_program_address`).
 --
--- Per the Direction-A MIR design (qedgen issue #66), these are the
--- canonical refinement target for a `Stmt::Pda { bind, seeds, program }`
--- MIR node — `runMir`-of-`Pda` is exactly `isPda bind program seeds`.
+-- These are the canonical refinement target for a PDA-deriving step
+-- (`Stmt::Pda { bind, seeds, program }`): the derivation obligation is
+-- exactly `isPda bind program seeds`.
 --
 -- Both predicates operate over raw `ByteArray` (the form returned by
 -- the syscall API in `SVM.SBPF.Pda`). A Pubkey-typed wrapper
