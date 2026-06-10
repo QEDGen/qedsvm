@@ -456,6 +456,118 @@ record syntax, not `RegFile.set`, so the no-op axiom is untouched. -/
     (execSyscall sc s).regs.r10 = s.regs.r10 := by
   cases sc <;> simp [execSyscall]
 
+/-- Whether an instruction is `.call_local` — the only `step` arm that
+    *pushes* onto `callStack`. The `.exit` arm with non-empty `callStack`
+    *pops*, but the run starts with `callStack = []` and never grows it
+    unless a `.call_local` is fetched along the way. (Moved here from
+    `RunnerBridge.lean` for the conditional r10 lemmas below.) -/
+def Insn.isCallLocal : Insn → Bool
+  | .call_local _ => true
+  | _             => false
+
+/-- `execTryFind` preserves `callStack` in both match arms. Companion
+    to `execTryFind_preserves_regions` at `Pda.lean:193`. -/
+@[simp] theorem execTryFind_preserves_callStack (s : State) :
+    (Pda.execTryFind s).callStack = s.callStack := by
+  simp only [Pda.execTryFind]
+  split <;> simp
+
+/-- `execSyscall` never modifies `callStack`. The CPI-stub
+    `Cpi.exec` just sets `r0 := 0`; all other syscalls touch only
+    `regs`/`mem`/`log`/`returnData`. -/
+@[simp] theorem execSyscall_preserves_callStack (sc : Syscall) (s : State) :
+    (execSyscall sc s).callStack = s.callStack := by
+  cases sc <;> first | rfl | simp [execSyscall]
+
+/-! ## Conditional r10 frame lemmas (#32 item 4)
+
+Blanket r10 preservation is FALSE under call-stack semantics:
+`.call_local` bumps r10 by a frame and `.exit` restores it from the
+popped frame. The honest form is conditional — r10 (and the empty
+call stack) are preserved across any window in which no `.call_local`
+is fetched: with the stack empty, `.exit` halts instead of popping,
+`.callx` is a jump with no frame push, and every other instruction
+either goes through `RegFile.set` (a no-op on r10) or a syscall
+(`execSyscall_preserves_r10`). These are the upstream replacements
+for the four blanket lemmas qedgen's vendored copy carried
+(`step_preserves_r10`, `executeFn_preserves_r10`,
+`executeFn_r10_initState{,2}`). -/
+
+/-- One step preserves r10 when the instruction is not `.call_local`
+    and the call stack is empty. -/
+theorem step_preserves_r10_of_no_push (insn : Insn) (s : State)
+    (h_nf : insn.isCallLocal = false) (h_cs : s.callStack = []) :
+    (step insn s).regs.r10 = s.regs.r10 := by
+  cases insn <;>
+    first
+    | (simp [Insn.isCallLocal] at h_nf; done)
+    | (simp only [step] <;> simp [h_cs, -RegFile.set]; done)
+    | (simp only [step] <;> split <;> simp [h_cs, -RegFile.set]; done)
+    | (simp only [step];
+       first
+       | exact execSyscall_preserves_r10 _ _
+       | (show (execSyscall _ s).callStack = ([] : List CallFrame);
+          rw [execSyscall_preserves_callStack]; exact h_cs))
+
+/-- One step keeps the call stack empty when the instruction is not
+    `.call_local` (nothing else pushes; `.exit` on an empty stack
+    halts). -/
+theorem step_preserves_callStack_of_no_push (insn : Insn) (s : State)
+    (h_nf : insn.isCallLocal = false) (h_cs : s.callStack = []) :
+    (step insn s).callStack = [] := by
+  cases insn <;>
+    first
+    | (simp [Insn.isCallLocal] at h_nf; done)
+    | (simp only [step] <;> simp [h_cs, -RegFile.set]; done)
+    | (simp only [step] <;> split <;> simp [h_cs, -RegFile.set]; done)
+    | (simp only [step];
+       first
+       | exact execSyscall_preserves_r10 _ _
+       | (show (execSyscall _ s).callStack = ([] : List CallFrame);
+          rw [execSyscall_preserves_callStack]; exact h_cs))
+
+/-- r10 and the empty call stack are preserved across any fuel window
+    in which the fetch function never yields a `.call_local`. -/
+theorem executeFn_preserves_r10_of_no_push
+    (fetch : Nat → Option Insn) (s : State) (fuel : Nat)
+    (h_nf : ∀ a i, fetch a = some i → i.isCallLocal = false)
+    (h_cs : s.callStack = []) :
+    (executeFn fetch s fuel).regs.r10 = s.regs.r10 ∧
+      (executeFn fetch s fuel).callStack = [] := by
+  induction fuel generalizing s with
+  | zero => exact ⟨rfl, h_cs⟩
+  | succ n ih =>
+    unfold executeFn
+    cases h : s.exitCode with
+    | some _ => exact ⟨rfl, h_cs⟩
+    | none =>
+      cases hf : fetch s.pc with
+      | none => exact ⟨rfl, h_cs⟩
+      | some insn =>
+        have h_insn := h_nf _ _ hf
+        have h_cs' := step_preserves_callStack_of_no_push insn s h_insn h_cs
+        obtain ⟨h1, h2⟩ := ih (step insn s) h_cs'
+        exact ⟨h1.trans (step_preserves_r10_of_no_push insn s h_insn h_cs), h2⟩
+
+/-- From `initState`, r10 stays at the frame top for the whole run
+    when no `.call_local` is ever fetched. -/
+theorem executeFn_r10_initState
+    (fetch : Nat → Option Insn) (inputAddr : Nat) (mem : Mem)
+    (regions : RegionTable) (fuel : Nat)
+    (h_nf : ∀ a i, fetch a = some i → i.isCallLocal = false) :
+    (executeFn fetch (initState inputAddr mem regions) fuel).regs.r10
+      = STACK_START + 0x1000 :=
+  (executeFn_preserves_r10_of_no_push fetch _ fuel h_nf rfl).1
+
+/-- `initState2` variant of `executeFn_r10_initState`. -/
+theorem executeFn_r10_initState2
+    (fetch : Nat → Option Insn) (inputAddr insnAddr : Nat) (mem : Mem)
+    (regions : RegionTable) (entryPc fuel : Nat)
+    (h_nf : ∀ a i, fetch a = some i → i.isCallLocal = false) :
+    (executeFn fetch (initState2 inputAddr insnAddr mem regions entryPc) fuel).regs.r10
+      = STACK_START + 0x1000 :=
+  (executeFn_preserves_r10_of_no_push fetch _ fuel h_nf rfl).1
+
 /-! ## Region table — execution invariant
 
 The `step` function never mutates `s.regions`: the field stays fixed

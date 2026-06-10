@@ -172,6 +172,67 @@ macro_rules
       rewrite_mem [$[$ts],*];
       exact $closing))
 
+/-! ## region_covers — discharge concrete region-coverage checks (#32 item 2)
+
+With a *symbolic* region table, coverage closes by hypothesis rewrite
+(the `Patterns.lean` idiom). With a *concrete* table (a list literal,
+e.g. `runtimeRegions n` after unfolding) plus address bounds in
+context, the check is mechanical: unfold the table fold, turn the
+boolean disjunction into propositions, and let `omega` pick the
+covering region. The optional bracket takes the defs that reveal the
+table (the table def itself plus address-space constants).
+
+Usage:
+  region_covers                          -- table already a literal
+  region_covers [runtimeRegions, Memory.STACK_START]
+-/
+
+open Lean.Parser.Tactic in
+syntax "region_covers" ("[" simpLemma,* "]")? : tactic
+
+set_option hygiene false in
+open Lean.Parser.Tactic in
+macro_rules
+  | `(tactic| region_covers) => `(tactic| (
+      simp only [Memory.RegionTable.containsRange,
+        Memory.RegionTable.containsWritable, Memory.Region.contains,
+        List.any_cons, List.any_nil, Bool.or_eq_true, Bool.and_eq_true,
+        Bool.or_false, Bool.false_or, Bool.true_and, Bool.false_and,
+        decide_eq_true_eq];
+      omega))
+  | `(tactic| region_covers [$[$defs:simpLemma],*]) => `(tactic| (
+      simp (config := { failIfUnchanged := false }) only [$[$defs],*] at *;
+      region_covers))
+
+/-! ## wp_exec_from — phase-window split (#32 item 3)
+
+The phased / skeleton-first proof discipline splits a long run into
+windows: prove each phase as its own lemma, compose with
+`executeFn_compose`. Unrolling `wp_step` N times to *reach* step N
+blows kernel depth; the compose rewrite is O(1). This is the tactic
+wrapper that was previously hand-written at every phase boundary.
+
+`wp_exec_from k m` rewrites a goal about `executeFn fetch s (k + m)`
+(the fuel literal is matched up to defeq, so `76` matches `36 + 40`)
+into one about `executeFn fetch (executeFn fetch s k) m`. The `using h`
+form additionally rewrites the inner window with the phase lemma
+`h : executeFn fetch s k = s'`.
+
+Usage:
+  wp_exec_from 36 40 using hphase1
+  -- goal is now about `executeFn fetch s' 40`; continue with wp_exec
+  -- or the next phase.
+-/
+
+syntax "wp_exec_from" term:max term:max ("using" term)? : tactic
+
+set_option hygiene false in
+macro_rules
+  | `(tactic| wp_exec_from $k $m) =>
+      `(tactic| rw [executeFn_compose _ _ $k $m])
+  | `(tactic| wp_exec_from $k $m using $h) =>
+      `(tactic| rw [executeFn_compose _ _ $k $m, $h:term])
+
 /-! ## Regression: `wp_exec` must reduce `Width.bytes` itself
 
 The region check at every `ldx`/`st`/`stx` step compares against
@@ -197,5 +258,63 @@ private theorem wp_exec_reduces_width_bytes
       (initState inputAddr mem rt) 2).exitCode = some 0 := by
   open SVM.SBPF.Memory in
   wp_exec [widthBytesRegressionProg] []
+
+/-! ## Regression: `region_covers` on a concrete table
+
+A `runtimeRegions`-shaped literal table (stack + heap + input), a
+symbolic address with bounds: coverage and writable-coverage both
+close mechanically. -/
+
+private def regionCoversTestTable (inputLen : Nat) : Memory.RegionTable :=
+  [ { start := Memory.STACK_START, size := 0x1000 * 64, writable := true }
+  , { start := Memory.HEAP_START,  size := 0x8000,      writable := true }
+  , { start := Memory.INPUT_START, size := inputLen,    writable := false } ]
+
+private theorem region_covers_concrete_table
+    (inputLen addr : Nat)
+    (h_lo : Memory.INPUT_START ≤ addr)
+    (h_hi : addr + 8 ≤ Memory.INPUT_START + inputLen) :
+    (regionCoversTestTable inputLen).containsRange addr 8 = true := by
+  region_covers [regionCoversTestTable, Memory.INPUT_START]
+
+private theorem region_covers_writable
+    (inputLen addr : Nat)
+    (h_lo : Memory.HEAP_START ≤ addr)
+    (h_hi : addr + 8 ≤ Memory.HEAP_START + 0x8000) :
+    (regionCoversTestTable inputLen).containsWritable addr 8 = true := by
+  region_covers [regionCoversTestTable, Memory.HEAP_START, Memory.INPUT_START]
+
+/-! ## Regression: `wp_exec_from` splits the fuel literal
+
+The fuel literal (`4`) must match `2 + 2` up to defeq for the compose
+rewrite to fire, and the `using` form must rewrite the inner window
+with a phase lemma. The phase lemma here is itself produced by
+`executeFn_step` + `executeFn_zero` (the manual idiom the tactic's
+phased discipline composes with). -/
+
+private def phaseSplitProg : Nat → Option Insn
+  | 0 => some (.mov64 .r2 (.imm 7))
+  | 1 => some (.add64 .r2 (.imm 1))
+  | 2 => some (.mov64 .r0 (.imm 0))
+  | 3 => some .exit
+  | _ => none
+
+private theorem wp_exec_from_splits
+    (inputAddr : Nat) (mem : Memory.Mem) (rt : Memory.RegionTable) :
+    (executeFn phaseSplitProg (initState inputAddr mem rt) 4).exitCode
+      = some 0 := by
+  wp_exec_from 2 2
+  wp_exec [phaseSplitProg] []
+
+private theorem wp_exec_from_using_phase_lemma
+    (inputAddr : Nat) (mem : Memory.Mem) (rt : Memory.RegionTable) :
+    (executeFn phaseSplitProg (initState inputAddr mem rt) 4).exitCode
+      = some 0 := by
+  have hphase : executeFn phaseSplitProg (initState inputAddr mem rt) 1
+      = step (.mov64 .r2 (.imm 7)) (initState inputAddr mem rt) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step _ _ 0 _ rfl rfl, executeFn_zero]
+  wp_exec_from 1 3 using hphase
+  wp_exec [phaseSplitProg, step] []
 
 end SVM.SBPF
