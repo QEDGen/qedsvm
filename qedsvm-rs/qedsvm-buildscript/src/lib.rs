@@ -176,6 +176,16 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
     // positional link-args (not `-l` flags) because Lake's filenames
     // (`qedsvm_SVM_Ffi.dylib`) lack the `lib` prefix that
     // `rustc-link-lib=dylib=NAME` expects.
+    // On Linux, rustc passes `-Wl,--as-needed`, which drops any of these
+    // module `.so`s the binary doesn't reference *directly* from its
+    // DT_NEEDED list. But the modules reference each other's
+    // `initialize_*` symbols at load time (e.g. `Ffi.so` needs
+    // `initialize_qedsvm_SVM_SBPF_Runner`), so a dropped module is missing
+    // at runtime → "undefined symbol" on startup. Keep them all needed.
+    // (macOS doesn't use --as-needed, so no-op there.)
+    if cfg!(target_os = "linux") {
+        println!("cargo:rustc-link-arg=-Wl,--no-as-needed");
+    }
     let mut count = 0;
     for entry in std::fs::read_dir(&lake_lean_dir)
         .map_err(|_| Error::LakeArtifactsMissing(lake_lean_dir.clone()))?
@@ -192,6 +202,10 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
     }
     if count == 0 {
         return Err(Error::NoQedsvmDylibs(lake_lean_dir));
+    }
+    // Restore the default for the remaining libs (which ARE referenced).
+    if cfg!(target_os = "linux") {
+        println!("cargo:rustc-link-arg=-Wl,--as-needed");
     }
 
     // Force-load every `lean_*` export from libleanbridge.a so the
