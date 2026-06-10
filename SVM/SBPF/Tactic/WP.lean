@@ -42,7 +42,7 @@ macro_rules
       repeat (
         unfold execSegment;
         dsimp (config := { failIfUnchanged := false })
-          [initState, execInsn,
+          [initState, execInsn, Width.bytes,
            RegFile.get, RegFile.set, resolveSrc, readByWidth, $[$fetch],*];
         simp (config := { failIfUnchanged := false }) [*, $[$extras],*]);
       rfl))
@@ -62,7 +62,7 @@ macro_rules
   | `(tactic| wp_step [$[$fetch:simpLemma],*] [$[$extras:simpLemma],*]) => `(tactic| (
       unfold execSegment;
       dsimp (config := { failIfUnchanged := false })
-        [initState, execInsn,
+        [initState, execInsn, Width.bytes,
          RegFile.get, RegFile.set, resolveSrc, readByWidth, $[$fetch],*];
       simp (config := { failIfUnchanged := false }) [*, $[$extras],*]))
 
@@ -171,5 +171,31 @@ macro_rules
   | `(tactic| solve_read [$[$ts:rwRule],*] $closing) => `(tactic| (
       rewrite_mem [$[$ts],*];
       exact $closing))
+
+/-! ## Regression: `wp_exec` must reduce `Width.bytes` itself
+
+The region check at every `ldx`/`st`/`stx` step compares against
+`w.bytes`. `Width.bytes` is a plain def, so unless the macro's dsimp
+list reduces it, `Width.dword.bytes` never becomes `8`, a coverage
+hypothesis like `rt.containsRange addr 8 = true` never matches, the
+`if` never resolves, and the trailing `rfl` whnf-explodes into a
+heartbeat timeout (QEDGen/solana-skills#86, #32). This theorem proves a
+load through a *symbolic* region table without `Width.bytes` in the
+extras list; the low heartbeat budget makes a regression fail fast
+instead of hanging CI. -/
+
+private def widthBytesRegressionProg : Nat → Option Insn
+  | 0 => some (.ldx .dword .r2 .r1 0)
+  | 1 => some .exit
+  | _ => none
+
+set_option maxHeartbeats 400000 in
+private theorem wp_exec_reduces_width_bytes
+    (inputAddr : Nat) (mem : Memory.Mem) (rt : Memory.RegionTable)
+    (h_rt : rt.containsRange (Memory.effectiveAddr inputAddr 0) 8 = true) :
+    (executeFn widthBytesRegressionProg
+      (initState inputAddr mem rt) 2).exitCode = some 0 := by
+  open SVM.SBPF.Memory in
+  wp_exec [widthBytesRegressionProg] []
 
 end SVM.SBPF
