@@ -228,8 +228,12 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
     // `link-lib=dylib=*` entries it thinks are unreferenced, so the
     // dylibs disappear from the final cc invocation. Pass them
     // positionally too so they participate in symbol resolution.
-    let leanshared = lean_lib_dir.join("libleanshared.dylib");
-    let lake_shared = lean_lib_dir.join("libLake_shared.dylib");
+    // Runtime shared-library extension is platform-specific: `.dylib`
+    // on macOS, `.so` on Linux (CI). (The `qedsvm_*` module loop above
+    // already accepts either extension.)
+    let dylib_ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+    let leanshared = lean_lib_dir.join(format!("libleanshared.{dylib_ext}"));
+    let lake_shared = lean_lib_dir.join(format!("libLake_shared.{dylib_ext}"));
     for p in [&leanshared, &lake_shared] {
         if !p.exists() {
             return Err(Error::LeanRuntimeDylibMissing(p.clone()));
