@@ -222,6 +222,28 @@ theorem byte_increment_macro_spec_auto (baseAddr vR2Old oldByte : Nat) :
                   rt.containsWritable (effectiveAddr baseAddr 0) 1 = true) := by
   sl_block_auto
 
+/-! ## halfword store-immediate via `sl_block_auto` — the ST_H_IMM pin
+
+Pins the SpecGen dispatch for `.st .half` (`sth_spec`): two adjacent
+halfword immediate stores into separate `↦U16` cells, the second with
+a negative immediate to exercise the `toU64` truncation in the post
+(`toU64 imm % 2 ^ (2 * 8)`). Like the other store-imm wrappers there
+are no residual side goals. -/
+open Memory in
+theorem halfword_store_imm_macro_spec_auto (baseAddr oldH0 oldH1 : Nat) :
+    cuTripleWithinMem 2 0 0 2
+      ((CodeReq.singleton 0 (.st .half .r1 0 0x1234)).union
+       (CodeReq.singleton 1 (.st .half .r1 2 (-1))))
+      ((.r1 ↦ᵣ baseAddr) **
+        (effectiveAddr baseAddr 0 ↦U16 oldH0) **
+        (effectiveAddr baseAddr 2 ↦U16 oldH1))
+      ((.r1 ↦ᵣ baseAddr) **
+        (effectiveAddr baseAddr 0 ↦U16 (toU64 0x1234 % 2 ^ (2 * 8))) **
+        (effectiveAddr baseAddr 2 ↦U16 (toU64 (-1) % 2 ^ (2 * 8))))
+      (fun rt => rt.containsWritable (effectiveAddr baseAddr 0) 2 = true ∧
+                  rt.containsWritable (effectiveAddr baseAddr 2) 2 = true) := by
+  sl_block_auto
+
 /-! ## lamport_transfer via `sl_block_auto` — bounds via residual goals
 
 Same theorem as `lamport_transfer_macro_spec` above. `sl_block_auto`
