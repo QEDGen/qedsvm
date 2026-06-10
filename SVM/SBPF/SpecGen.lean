@@ -187,10 +187,9 @@ private def stxSpec
   return { app, sideGoals := [] }
 
 /-- ST (store-immediate). Pattern: `.st width baseReg off imm`. The clean
-    `st{b,w,dw}_spec` wrappers discharge the step side condition
+    `st{b,h,w,dw}_spec` wrappers discharge the step side condition
     internally (h_step is proved for the concrete `.st` shape), so — like
-    STX — there are no residual side goals. There is no halfword variant
-    (`sth_spec` / ST_H_IMM is unmodelled). -/
+    STX — there are no residual side goals. -/
 private def stSpec
     (pcLit w baseReg off imm : Expr) :
     MetaM SpecApp := do
@@ -198,10 +197,9 @@ private def stSpec
   let oldV ← mkNatMVar
   let specName ← match w.consumeMData.getAppFn.constName? with
     | some ``SVM.SBPF.Width.byte  => pure ``SVM.SBPF.stb_spec
+    | some ``SVM.SBPF.Width.half  => pure ``SVM.SBPF.sth_spec
     | some ``SVM.SBPF.Width.word  => pure ``SVM.SBPF.stw_spec
     | some ``SVM.SBPF.Width.dword => pure ``SVM.SBPF.stdw_spec
-    | some ``SVM.SBPF.Width.half  =>
-      throwError "SpecGen: ST_H_IMM (halfword store-immediate) has no spec (sth_spec is unmodelled)"
     | _ => throwError m!"SpecGen: unknown Width ctor in {w}"
   let app ← mkAppM specName #[baseReg, off, imm, baseAddr, oldV, pcLit]
   return { app, sideGoals := [] }
