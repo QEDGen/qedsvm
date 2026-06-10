@@ -39,8 +39,22 @@ open Memory
     Flip to `true`, rebuild Lean, run a single fixture with
     `cargo test … -- --nocapture 2>trace.txt`, then flip back. Used to
     bisect cross-engine CU drift against mollusk's
-    `SBF_TRACE_DIR` / `SBF_TRACE_DISASSEMBLE` output. -/
+    `SBF_TRACE_DIR` / `SBF_TRACE_DISASSEMBLE` output.
+
+    For plain PC traces (the `.pcs` files qedlift/qedrecover consume)
+    do NOT flip this — use the runtime hook below
+    (`QEDSVM_TRACE_OUT=<path>`), which needs no rebuild. -/
 def TRACE_STEPS : Bool := false
+
+/-- Runtime PC-trace hook, the automated path for capturing `.pcs`
+    files. Same shape as `dbgTrace` (identity on the thunk), so it is
+    proof-transparent: `traceStep pc f = f ()` by definition. The
+    extern implementation (`qedsvm-rs/lean-bridge/`) appends one
+    decimal PC per line to the file named by `QEDSVM_TRACE_OUT` when
+    that env var is set, and is a no-op otherwise. See
+    `scripts/capture_trace.sh` for the one-command capture flow. -/
+@[never_extract, extern "lean_qedsvm_trace_step"]
+def traceStep (_pc : USize) (f : Unit → α) : α := f ()
 
 /-- Pad a Nat as a `width`-digit lowercase hex string. -/
 private def hex (n width : Nat) : String :=
@@ -836,11 +850,12 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             cpiCallNextState registry s .sol_invoke_signed_c fuel'
               (runCallee pidBytes parsedAccts ixData)
           | _ => step insn s
-        if TRACE_STEPS then
-          dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
-          executeFnCpiWithFuel registry fetch s' fuel'
-        else
-          executeFnCpiWithFuel registry fetch s' fuel'
+        traceStep (USize.ofNat s.pc) fun _ =>
+          if TRACE_STEPS then
+            dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
+            executeFnCpiWithFuel registry fetch s' fuel'
+          else
+            executeFnCpiWithFuel registry fetch s' fuel'
 
 /-- Original signature, preserved for existing callers (demos +
     `Runner.run` / `Runner.runElf`). A thin wrapper around

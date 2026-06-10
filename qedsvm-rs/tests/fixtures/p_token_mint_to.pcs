@@ -1,7 +1,6 @@
 # p_token MintTo (discriminant 7) happy-path execution trace.
 # One decimal logical PC per line, in execution order.
-# Captured from the Lean reference VM (TRACE_STEPS) via
-# `p_token_mint_to_matches_mollusk` in tests/diff_mollusk.rs.
+# Regenerate: scripts/capture_trace.sh p_token_mint_to_matches_mollusk <this file>
 # Inputs: amount=250, initial supply=1000, dest balance=0.
 # 120 PCs. NOTE: the real happy path does NOT enter the pc~3368-3452
 # account-parsing back-branch region that caps the static walker;
