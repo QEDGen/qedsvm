@@ -209,5 +209,97 @@ theorem exit_aborts_spec_cuTriple (vR0 pc : Nat) :
     show (executeFn fetch s 0).cuConsumed ≤ s.cuConsumed + 0
     rw [executeFn_zero]; omega
 
+/-! ## Error-exit collapse — `mov64 r0, err; exit` / `lddw r0, err; exit`
+
+The canonical error-handler landing in compiled Solana programs is a
+two-instruction block: set r0 to a constant error code, exit. (Pinocchio
+encodes `ProgramError` as `code <<< 32`, which exceeds the 32-bit
+`mov64` immediate, so the dispatch-mismatch exit uses `lddw`; small
+ad-hoc codes use `mov64`. p_token has 6 `mov64` + 1 `lddw` of these.)
+
+One lemma per shape discharges every such block in one `apply` — the
+"error-path collapse" lever from the recovery-pipeline issue. Both are
+plain compositions: `{mov64,lddw}_spec` ⨾ `exit_aborts_spec_cuTriple`
+via `cuTripleAbortsWithin_seq_abort`. -/
+
+/-- `mov64 r0, err; exit` aborts with `toU64 err`, from any prior r0. -/
+theorem errorExit_spec (err : Int) (vR0Old pc : Nat) :
+    cuTripleAbortsWithin 2 0 pc
+      ((CodeReq.singleton pc (.mov64 .r0 (.imm err))).union
+        (CodeReq.singleton (pc + 1) .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 err) :=
+  cuTripleAbortsWithin_seq_abort
+    (CodeReq.singleton_disjoint_singleton _ _ (by omega))
+    (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
+      (mov64_imm_spec .r0 err vR0Old pc (by decide)))
+    (exit_aborts_spec_cuTriple (toU64 err) (pc + 1))
+
+/-- `lddw r0, err; exit` aborts with `toU64 err`, from any prior r0.
+    The lddw form carries 64-bit error codes (pinocchio's
+    `ProgramError` encoding `code <<< 32`). -/
+theorem errorExit_lddw_spec (err : Int) (vR0Old pc : Nat) :
+    cuTripleAbortsWithin 2 0 pc
+      ((CodeReq.singleton pc (.lddw .r0 err)).union
+        (CodeReq.singleton (pc + 1) .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 err) :=
+  cuTripleAbortsWithin_seq_abort
+    (CodeReq.singleton_disjoint_singleton _ _ (by omega))
+    (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
+      (lddw_spec .r0 err vR0Old pc (by decide)))
+    (exit_aborts_spec_cuTriple (toU64 err) (pc + 1))
+
+/-! The other half of the idiom: error blocks that set r0 and JUMP to a
+shared bare-`exit` block instead of carrying their own exit (p_token's
+transfer arm routes every error landing through the single `exit` at
+logical 3542). Same collapse, one extra `ja` hop. -/
+
+/-- `mov64 r0, err; ja tgt` with `exit` at `tgt`: aborts with
+    `toU64 err`. The side conditions just say the shared exit doesn't
+    overlap the two-instruction landing. -/
+theorem errorExitJa_spec (err : Int) (vR0Old pc tgt : Nat)
+    (h1 : pc ≠ tgt) (h2 : pc + 1 ≠ tgt) :
+    cuTripleAbortsWithin 3 0 pc
+      (((CodeReq.singleton pc (.mov64 .r0 (.imm err))).union
+        (CodeReq.singleton (pc + 1) (.ja tgt))).union
+        (CodeReq.singleton tgt .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 err) :=
+  cuTripleAbortsWithin_seq_abort
+    (CodeReq.Disjoint_union_left
+      (CodeReq.singleton_disjoint_singleton _ _ h1)
+      (CodeReq.singleton_disjoint_singleton _ _ h2))
+    (cuTripleWithin_seq
+      (CodeReq.singleton_disjoint_singleton _ _ (by omega))
+      (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
+        (mov64_imm_spec .r0 err vR0Old pc (by decide)))
+      (cuTripleWithin_widen_emp ((.r0 ↦ᵣ toU64 err) ** callStackIs [])
+        (pcFree_sepConj (pcFree_regIs _ _) (pcFree_callStackIs _))
+        (ja_spec tgt (pc + 1))))
+    (exit_aborts_spec_cuTriple (toU64 err) tgt)
+
+/-- `lddw r0, err; ja tgt` with `exit` at `tgt`: aborts with
+    `toU64 err`. The 64-bit-immediate variant of `errorExitJa_spec`. -/
+theorem errorExitJa_lddw_spec (err : Int) (vR0Old pc tgt : Nat)
+    (h1 : pc ≠ tgt) (h2 : pc + 1 ≠ tgt) :
+    cuTripleAbortsWithin 3 0 pc
+      (((CodeReq.singleton pc (.lddw .r0 err)).union
+        (CodeReq.singleton (pc + 1) (.ja tgt))).union
+        (CodeReq.singleton tgt .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 err) :=
+  cuTripleAbortsWithin_seq_abort
+    (CodeReq.Disjoint_union_left
+      (CodeReq.singleton_disjoint_singleton _ _ h1)
+      (CodeReq.singleton_disjoint_singleton _ _ h2))
+    (cuTripleWithin_seq
+      (CodeReq.singleton_disjoint_singleton _ _ (by omega))
+      (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
+        (lddw_spec .r0 err vR0Old pc (by decide)))
+      (cuTripleWithin_widen_emp ((.r0 ↦ᵣ toU64 err) ** callStackIs [])
+        (pcFree_sepConj (pcFree_regIs _ _) (pcFree_callStackIs _))
+        (ja_spec tgt (pc + 1))))
+    (exit_aborts_spec_cuTriple (toU64 err) tgt)
 
 end SVM.SBPF

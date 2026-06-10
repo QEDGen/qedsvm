@@ -1992,6 +1992,15 @@ def reachableBlocks : List (Nat × Nat × List Nat) :=
     (2700, 2705, [2669])
   ]
 
+/-- Blocks that exit with a CONSTANT r0 (directly, or via a jump /
+    fall-through to a shared bare-`exit` block), as
+    `(blockStartPc, exitCode)`. Code 0 entries are the success
+    funnels; nonzero entries are constant error landings. Each is
+    discharged in one `apply` of `errorExit{,Ja}{,_lddw}_spec`
+    (InstructionSpecs/Terminating.lean). -/
+def constExitBlocks : List (Nat × Nat) :=
+  [(4288, 0), (3583, 0), (4119, 0), (4523, 0), (4546, 0), (4328, 0), (4786, 0), (4159, 0), (4754, 0)]
+
 /-- Block-start PCs the execution trace passed through — the
     happy path of this instruction, in block order. Blocks in
     `reachableBlocks` but not here were never executed by the
