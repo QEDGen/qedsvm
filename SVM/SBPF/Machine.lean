@@ -204,6 +204,11 @@ def ERR_INVALID_LENGTH : Nat := 0xFFFFFFFFFFFFFFF7
     is active (it is, under `FeatureSet::all_enabled`). -/
 def ERR_INVALID_ATTRIBUTE : Nat := 0xFFFFFFFFFFFFFFF6
 
+/-- Exit code for `SyscallError::BadSeeds`: a PDA derivation given more
+    than `MAX_SEEDS` (16) seeds or a seed longer than 32 bytes. Agave
+    aborts (`MaxSeedLengthExceeded`) rather than returning in-band. -/
+def ERR_BAD_SEEDS : Nat := 0xFFFFFFFFFFFFFFF5
+
 /-- `MAX_RETURN_DATA` (agave): a program may set at most 1024 bytes of
     return data; a larger `sol_set_return_data` aborts. -/
 def MAX_RETURN_DATA : Nat := 1024
