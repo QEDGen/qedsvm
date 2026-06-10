@@ -60,6 +60,7 @@ lean_lib SVM where
 -- build with `lake build Examples` to type-check the proofs.
 lean_lib Examples where
   srcDir := "examples/lean"
+  precompileModules := true
   roots := #[
     `ByteIncrement,
     `DischargePoC,
@@ -146,12 +147,3 @@ lean_lib Examples where
     -- sl_block_iter discharge perf fix (O(n²) → O(n)).
     `Generated.PTokenInitializeMint2TracedLifted
   ]
-  -- NOTE: no `precompileModules` here (unlike the core `SVM` lib). On the
-  -- pinned toolchain (v4.30.0-rc2), the precompiled native dylib for the
-  -- aggregation modules (e.g. `PToken.MintAggregation`) type-checks but
-  -- *segfaults on dlopen*, which crashed every downstream importer (the
-  -- four asm-refines-intrinsic modules) at import time — not in the proof,
-  -- which is why a stubbed `sorry` body still crashed. Precompilation only
-  -- speeds native_decide/#eval; the kernel still fully checks every proof
-  -- without it, so dropping it here is sound and costs ~nothing (Examples
-  -- builds in ~40s). Revisit once the toolchain is bumped.
