@@ -244,6 +244,13 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
     // Export the binary's dynamic symbol table.
     if cfg!(target_os = "linux") {
         println!("cargo:rustc-link-arg=-rdynamic");
+        // `libleanbridge.a` is a Rust `staticlib`, so it bundles its own
+        // copy of `std`/`core` (assert_failed, fmt builders, …). The main
+        // binary links `core` too, so the two collide. macOS's `ld`
+        // tolerates duplicate symbols (first definition wins); Linux's
+        // `rust-lld` treats them as errors. Allow first-wins to match —
+        // the symbols are byte-identical (same rustc/toolchain).
+        println!("cargo:rustc-link-arg=-Wl,--allow-multiple-definition");
     }
     if cfg!(target_os = "macos") {
         println!("cargo:rustc-link-arg=-Wl,-export_dynamic");
