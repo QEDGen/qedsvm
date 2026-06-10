@@ -939,11 +939,20 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
             let relocated := Elf.applyDataRelocations elfBytes header sec.addr raw
             loadBytesAt mem₁ relocated (Elf.relocateSecAddr sec.addr)
           | none => mem₁
+        -- Start at the ELF entrypoint (L8): map `e_entry` to a logical PC
+        -- via the slot map (mirrors `runElfWithFuel`). For fixtures whose
+        -- entry is at slot 0 this is exactly the old `pc := 0`.
+        let entryPc :=
+          let slotMap := Decode.buildSlotMap textBytes
+          let byteOff := if header.entry ≥ textSec.addr
+                         then header.entry - textSec.addr else 0
+          let slot := byteOff / 8
+          if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
         let s : State :=
           { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
             mem         := mem
             regions     := elfRegions elfBytes header textSec cfg.input.size
-            pc          := 0
+            pc          := entryPc
             exitCode    := none
             cuBudget    := cfg.cuBudget
             progIdBytes := cfg.progIdBytes }

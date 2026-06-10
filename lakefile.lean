@@ -62,6 +62,10 @@ lean_lib Examples where
   srcDir := "examples/lean"
   precompileModules := true
   roots := #[
+    -- Soundness gate: fails the build if any flagship theorem acquires a
+    -- non-standard axiom (sorry / native_decide / crypto). Keep first.
+    `AxiomAudit,
+    `SyscallHashPin,
     `ByteIncrement,
     `DischargePoC,
     `ProofDemo,

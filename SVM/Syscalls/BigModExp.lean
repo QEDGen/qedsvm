@@ -54,15 +54,16 @@ def cu : Nat := 33
   let expLen  := Memory.readU64 s.mem (paramsA + 24)
   let modPtr  := Memory.readU64 s.mem (paramsA + 32)
   let modLen  := Memory.readU64 s.mem (paramsA + 40)
-  let valid := baseLen ≤ MAX_INPUT_LEN ∧ expLen ≤ MAX_INPUT_LEN
-            ∧ modLen ≤ MAX_INPUT_LEN
-  let result : Option ByteArray :=
-    if valid then
-      some (modpow (readBytes s.mem basePtr baseLen)
-                   (readBytes s.mem expPtr  expLen)
-                   (readBytes s.mem modPtr  modLen))
-    else none
-  commitOptional s s.regs.r2 modLen result
+  -- Agave rejects any operand longer than 512 bytes with
+  -- `SyscallError::InvalidLength` (an instruction abort), NOT an in-band
+  -- error return. Fail closed. See docs/SOUNDNESS_AUDIT_* (M9).
+  if baseLen ≤ MAX_INPUT_LEN ∧ expLen ≤ MAX_INPUT_LEN ∧ modLen ≤ MAX_INPUT_LEN then
+    let result := modpow (readBytes s.mem basePtr baseLen)
+                         (readBytes s.mem expPtr  expLen)
+                         (readBytes s.mem modPtr  modLen)
+    commitOptional s s.regs.r2 modLen (some result)
+  else
+    { s with exitCode := some ERR_INVALID_LENGTH }
 
 end BigModExp
 end SVM.SBPF

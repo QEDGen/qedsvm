@@ -14,6 +14,7 @@ the post-state's returnData is exactly the input bytes. -/
 theorem call_sol_set_return_data_spec
     (r0Old r1V r2V : Nat) (rdOld bsIn : ByteArray) (pc : Nat) (nCu : Nat)
     (hSize : bsIn.size = r2V)
+    (hLen : r2V ≤ MAX_RETURN_DATA)
     (hCu : ∀ s : State,
         (step (.call .sol_set_return_data) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleWithin 1 nCu pc (pc + 1)
@@ -149,7 +150,9 @@ theorem call_sol_set_return_data_spec
             pc := s.pc + 1
             cuConsumed := (ReturnData.execSet s).cuConsumed
                           + syscallCu .sol_set_return_data s }) = _
-    simp only [ReturnData.execSet]
+    -- len = r2V ≤ MAX_RETURN_DATA, so execSet takes the success branch.
+    have hnotbig : ¬ (s.regs.r2 > MAX_RETURN_DATA) := by rw [hs_r2_field]; omega
+    simp only [ReturnData.execSet, if_neg hnotbig]
     -- Both sides have the same record fields; the readBytes call needs
     -- s.regs.r1 = r1V, s.regs.r2 = r2V, and h_readBytes.
     rw [hs_r1_field, hs_r2_field, h_readBytes]

@@ -5,12 +5,14 @@
 //! mirrors `mollusk_svm::Mollusk` so a real Mollusk test can run
 //! through qedsvm by replacing one type name.
 //!
-//! Out of scope for v1:
-//! - CPI: the underlying Lean runner has a v1 CPI stub that takes
-//!   program-id as `r1` directly (not the full `SolInstruction`
-//!   read). Programs that invoke other programs will get `r0 = 1`
-//!   from the CPI call. The `add_program` map is wired but unused
-//!   until the Lean side gets a `Pubkey → ByteArray` registry.
+//! CPI: the underlying Lean runner (`Runner.executeFnCpiWithFuel`)
+//! executes `sol_invoke_signed{,_c}` by parsing the instruction +
+//! AccountInfo array, serializing a callee sub-input, and running the
+//! callee from the `add_program` registry (passed through as a blob),
+//! sharing the parent's compute-unit meter. NOTE: this is the
+//! diff-testing runner path; the proof-facing `step` CPI is a separate
+//! stub (see SVM/Syscalls/Cpi.lean) and the runner CPI model still has
+//! known authorization gaps (docs/SOUNDNESS_AUDIT_*.md, C4/C5/M6).
 use std::collections::HashMap;
 
 use solana_account::AccountSharedData;

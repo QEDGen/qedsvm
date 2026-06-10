@@ -221,8 +221,15 @@ def execTransfer (mem : Mem) (accts : List AcctInput) (lamports : Nat) :
     -- Agave checks: from is signer, both writable, from.owner = System,
     -- from.lamports ≥ lamports, no overflow on to. We surface a
     -- single failure code (r0 := 1) for any of these; specific
-    -- `SystemError` mapping is a follow-up.
+    -- `SystemError` mapping is a follow-up. (H9: the writable + owner
+    -- gates were previously missing — agave rejects a transfer debiting a
+    -- non-System-owned or read-only account: `ExternalAccountLamportSpend`
+    -- / `ReadonlyLamportChange`. See docs/SOUNDNESS_AUDIT_* (H9).)
     if !fromAcct.isSigner then
+      ⟨mem, 1, CU_DEFAULT⟩
+    else if !fromAcct.isWritable || !toAcct.isWritable then
+      ⟨mem, 1, CU_DEFAULT⟩
+    else if !isSystemOwner fromAcct.owner then
       ⟨mem, 1, CU_DEFAULT⟩
     else if fromAcct.lamports < lamports then
       ⟨mem, 1, CU_DEFAULT⟩
@@ -317,7 +324,13 @@ def execAssign (mem : Mem) (accts : List AcctInput) (newOwner : ByteArray) :
     NativeResult :=
   match accts with
   | acct :: _ =>
+    -- H9: agave's `Assign` requires the account to be a (writable)
+    -- signer AND currently owned by the System program — you cannot
+    -- reassign an account another program owns. The owner gate was
+    -- previously missing. See docs/SOUNDNESS_AUDIT_* (H9/M4-account).
     if !acct.isSigner then ⟨mem, 1, CU_DEFAULT⟩
+    else if !acct.isWritable then ⟨mem, 1, CU_DEFAULT⟩
+    else if !isSystemOwner acct.owner then ⟨mem, 1, CU_DEFAULT⟩
     else
       let m1 := writeBytes mem acct.ownerPtr 32 newOwner
       ⟨m1, 0, CU_DEFAULT⟩

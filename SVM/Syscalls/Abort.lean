@@ -14,9 +14,13 @@ def cu : Nat := 100
 @[simp] def execAbort (s : State) : State :=
   { s with exitCode := some ERR_ABORT }
 
-/-- `sol_panic_(msgPtr, msgLen, filePtr, fileLen, line)`. Logs the
-    message bytes (file/line dropped — they're for diagnostics, not
-    state) and sets `exitCode := some ERR_ABORT`. -/
+/-- `sol_panic_(file_ptr, file_len, line, column)` — agave's `SyscallPanic`
+    (4 args; r1/r2 point at the source FILE name, not a user message;
+    line/column in r3/r4 are diagnostics). Only the abort
+    (`exitCode := ERR_ABORT`) is load-bearing and matches agave. Agave
+    does not write the file to the program log and charges `len` CU; we
+    approximate by pushing the bytes and charging a flat CU (panic is an
+    error path, never diff-compared). See docs/SOUNDNESS_AUDIT_* (M10). -/
 @[simp] def execPanic (s : State) : State :=
   let ptr := s.regs.r1
   let len := s.regs.r2

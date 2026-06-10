@@ -1,12 +1,15 @@
 -- Flat byte-addressable memory model for sBPF verification
 --
--- sBPF uses a flat address space partitioned into 5 regions:
---   0x000000000 : Read-only data (.rodata)
---   0x100000000 : Bytecode
+-- sBPF uses a flat address space. The runtime maps these regions; note
+-- that NOTHING is mapped below 0x100000000 (the program region base):
+--   0x100000000 : Program region (.text + .rodata + .data.rel.ro)
 --   0x200000000 : Stack
 --   0x300000000 : Heap
 --   0x400000000 : Input buffer (serialized accounts + instruction data)
 --
+-- This "no low region" fact is load-bearing: `effectiveAddr` clamps a
+-- negative computed address to 0, so a fault there only stays sound as
+-- long as address 0 is unmapped (see docs/SOUNDNESS_AUDIT_* M3).
 -- Programs receive a pointer to the input buffer in r1 at entry.
 
 import SVM.SBPF.ISA
@@ -103,6 +106,9 @@ so existing `unfold Memory.writeU8; simp` patterns in
 
 /-! ## Region base addresses -/
 
+-- Unused: `.rodata` is mapped inside the program region (BYTECODE_START),
+-- not as a separate region at 0. Kept only for reference; nothing is
+-- mapped at address 0 (see the module header, M3).
 def RODATA_START   : Nat := 0x000000000
 def BYTECODE_START : Nat := 0x100000000
 def STACK_START    : Nat := 0x200000000

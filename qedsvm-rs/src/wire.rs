@@ -32,9 +32,9 @@ pub enum ExitOutcome {
 #[derive(Clone, Debug)]
 pub struct RawResult {
     pub outcome: ExitOutcome,
-    /// Compute units consumed (instructions executed at the
-    /// top-level program; CPI sub-calls are counted as 1 CU at the
-    /// caller's level under v1 semantics — see Lean's
+    /// Compute units consumed. CPI sub-calls share the parent's meter:
+    /// the callee runs on the caller's remaining fuel and its
+    /// instructions count toward this total (see Lean's
     /// `Runner.executeFnCpiWithFuel`).
     pub compute_units_consumed: u64,
     /// The input region after execution (writable account data lives

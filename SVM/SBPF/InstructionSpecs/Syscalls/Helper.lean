@@ -135,53 +135,78 @@ theorem cuTripleWithin_syscall_writes_r0_only
 
 /-! ## CPI syscalls: `sol_invoke_signed` / `sol_invoke_signed_c`
 
-IMPORTANT — these prove the SVM's *step-level* CPI model, which is a STUB
-(`Cpi.exec = { regs := r0 := 0 }`): the invoke succeeds (`r0 := 0`) with
-NO effect on the invoked accounts' memory. The real cross-program
-execution — parsing the C/Rust-ABI instruction + account-infos, deriving
-PDA signers, running the callee — lives in `Runner.executeFnCpi`
-(`cpiCallNextState`), NOT in `step`; the diff_mollusk CPI tests exercise
-that real path.
+The proof-facing step-level CPI is a FAIL-CLOSED stub
+(`Cpi.exec = { exitCode := some ERR_UNSUPPORTED_INSTRUCTION }`): a real
+cross-program invocation mutates callee account memory, sets return
+data, enforces privilege/signer/depth rules, and can fail — none of
+which is modeled in `step`. Rather than fabricate a successful,
+effect-free invoke (which a lift could read as "all account memory
+unchanged"), `step` aborts. The real cross-program execution lives in
+`Runner.cpiCallNextState` (reached via `executeFnCpiWithFuel`), which the
+diff_mollusk CPI tests exercise; that path intercepts CPI before `step`
+and is unaffected by this stub.
 
-Consequence: a lift over `step` using these specs is sound w.r.t. the
-SVM's `step` semantics but treats the CPI as effect-free — it captures
-everything on the arm EXCEPT the callee's account writes. Modelling those
-effects (per-callee, agreeing with `cpiCallNextState`) is the next layer
-and would *strengthen* these postconditions; wiring them now lets
-CPI-crossing arms lift instead of bailing on the invoke syscall. -/
+So a lift over `step` that reaches a CPI proves an ABORT at that point.
+These `*_aborts_spec`s state exactly that. A future proof-side CPI model
+that agrees with `cpiCallNextState` would replace them with effectful
+postconditions. See docs/SOUNDNESS_AUDIT_* (C4/C5). -/
 
-theorem call_sol_invoke_signed_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
-    (h_step_cu : ∀ s : State,
+theorem call_sol_invoke_signed_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
         (step (.call .sol_invoke_signed) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_invoke_signed 0 pc nCu
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s hex => by simp [step, execSyscall, Cpi.exec]; exact hex)
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => h_step_cu s)
-    r0Old
+      emp ERR_UNSUPPORTED_INSTRUCTION := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
+  rw [hP1, PartialState.union_empty_left] at hu
+  rw [hP1] at hd
+  clear hP1 h1
+  have hfetch : fetch s.pc = some (.call .sol_invoke_signed) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = step (.call .sol_invoke_signed) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      { (Cpi.exec s) with pc := s.pc + 1
+                          cuConsumed := (Cpi.exec s).cuConsumed
+                            + syscallCu .sol_invoke_signed s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  · rw [hexec]
+    show (Cpi.exec s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
+    rfl
+  · rw [hstep_eq]; exact hCu s
 
-theorem call_sol_invoke_signed_c_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
-    (h_step_cu : ∀ s : State,
+theorem call_sol_invoke_signed_c_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
         (step (.call .sol_invoke_signed_c) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed_c))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_invoke_signed_c 0 pc nCu
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s hex => by simp [step, execSyscall, Cpi.exec]; exact hex)
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => by simp [step, execSyscall, Cpi.exec])
-    (fun s => h_step_cu s)
-    r0Old
+      emp ERR_UNSUPPORTED_INSTRUCTION := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
+  rw [hP1, PartialState.union_empty_left] at hu
+  rw [hP1] at hd
+  clear hP1 h1
+  have hfetch : fetch s.pc = some (.call .sol_invoke_signed_c) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = step (.call .sol_invoke_signed_c) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      { (Cpi.exec s) with pc := s.pc + 1
+                          cuConsumed := (Cpi.exec s).cuConsumed
+                            + syscallCu .sol_invoke_signed_c s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  · rw [hexec]
+    show (Cpi.exec s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
+    rfl
+  · rw [hstep_eq]; exact hCu s
 
 end SVM.SBPF

@@ -106,16 +106,30 @@ Built by specializing `cuTripleWithin_1reg_cjump` with `cond := True`
 and `target := vReg` — the `if True then vReg else pc + 1` reduces to
 `vReg`, giving the unconditional value-dependent jump shape we want. -/
 
-/-- `callx reg`: indirect call. PC moves from `pc` to `regs[reg]` in
-    one step. The pre/post both retain `reg ↦ᵣ vReg` since `reg` is
-    only read. -/
-theorem callx_spec (reg : Reg) (vReg pc : Nat) :
-    cuTripleWithin 1 0 pc vReg
+/-- `callx reg`: indirect call. The model fails closed (real sBPF V0
+    frame-push + vaddr→PC translation + depth check are not modeled), so
+    a step on `.callx` aborts with `ERR_UNSUPPORTED_INSTRUCTION`. A lift
+    that reaches a `callx` therefore proves an ABORT at that point. See
+    docs/SOUNDNESS_AUDIT_* (C2). -/
+theorem callx_aborts_spec (reg : Reg) (pc : Nat) :
+    cuTripleAbortsWithin 1 0 pc
       (CodeReq.singleton pc (.callx reg))
-      (reg ↦ᵣ vReg) (reg ↦ᵣ vReg) := by
-  have h := cuTripleWithin_1reg_cjump reg vReg pc vReg (.callx reg) True
-    (fun s hreg => by simp only [step, if_true]; rw [hreg])
-  simpa using h
+      emp ERR_UNSUPPORTED_INSTRUCTION := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
+  rw [hP1, PartialState.union_empty_left] at hu
+  rw [hP1] at hd
+  clear hP1 h1
+  have hfetch : fetch s.pc = some (.callx reg) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hexec : executeFn fetch s 1 = step (.callx reg) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  · rw [hexec]
+    show (step (.callx reg) s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
+    rfl
+  · rw [hexec]; simp [step]
 
 
 end SVM.SBPF

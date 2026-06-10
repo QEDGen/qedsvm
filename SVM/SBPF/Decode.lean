@@ -121,12 +121,18 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
   let imm    := readI32LE bytes (off + 4)
   let dst?   := decodeReg dstN
   let src?   := decodeReg srcN
-  -- Resolve jump target via slotMap.
+  -- Resolve a PC-relative slot offset to a logical PC, or `none` if it
+  -- lands outside the program. Agave's verifier rejects an out-of-code
+  -- jump at load time (`JumpOutOfCode`); failing the decode (so the whole
+  -- program fails to load) reproduces that rather than silently
+  -- retargeting to PC 0. See docs/SOUNDNESS_AUDIT_* (H3).
   let currentSlot : Int := (off / 8 : Int)
-  let targetSlotInt : Int := currentSlot + 1 + off16
-  let targetPc : Nat :=
-    let n := targetSlotInt.toNat
-    if h : n < slotMap.size then slotMap[n]'h else 0
+  let resolveTarget : Int → Option Nat := fun slotInt =>
+    if slotInt < 0 then none
+    else
+      let n := slotInt.toNat
+      if h : n < slotMap.size then some (slotMap[n]'h) else none
+  let targetPc? : Option Nat := resolveTarget (currentSlot + 1 + off16)
   match opcode with
   -- ALU 64-bit immediate (class = 7, source = 0)
   | 0x07 => dst?.map fun d => (.add64 d (.imm imm), 8)
@@ -182,31 +188,32 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
   | 0xac => match dst?, src? with | some d, some s => some (.xor32  d (.reg s), 8) | _, _ => none
   | 0xbc => match dst?, src? with | some d, some s => some (.mov32  d (.reg s), 8) | _, _ => none
   | 0xcc => match dst?, src? with | some d, some s => some (.arsh32 d (.reg s), 8) | _, _ => none
-  -- Jumps (class = 5, immediate source)
-  | 0x05 => some (.ja targetPc, 8)
-  | 0x15 => dst?.map fun d => (.jeq  d (.imm imm) targetPc, 8)
-  | 0x25 => dst?.map fun d => (.jgt  d (.imm imm) targetPc, 8)
-  | 0x35 => dst?.map fun d => (.jge  d (.imm imm) targetPc, 8)
-  | 0x45 => dst?.map fun d => (.jset d (.imm imm) targetPc, 8)
-  | 0x55 => dst?.map fun d => (.jne  d (.imm imm) targetPc, 8)
-  | 0x65 => dst?.map fun d => (.jsgt d (.imm imm) targetPc, 8)
-  | 0x75 => dst?.map fun d => (.jsge d (.imm imm) targetPc, 8)
-  | 0xa5 => dst?.map fun d => (.jlt  d (.imm imm) targetPc, 8)
-  | 0xb5 => dst?.map fun d => (.jle  d (.imm imm) targetPc, 8)
-  | 0xc5 => dst?.map fun d => (.jslt d (.imm imm) targetPc, 8)
-  | 0xd5 => dst?.map fun d => (.jsle d (.imm imm) targetPc, 8)
+  -- Jumps (class = 5, immediate source). An out-of-code target makes the
+  -- whole decode fail (`targetPc? = none`); see resolveTarget above.
+  | 0x05 => targetPc?.map fun t => (.ja t, 8)
+  | 0x15 => dst?.bind fun d => targetPc?.map fun t => (.jeq  d (.imm imm) t, 8)
+  | 0x25 => dst?.bind fun d => targetPc?.map fun t => (.jgt  d (.imm imm) t, 8)
+  | 0x35 => dst?.bind fun d => targetPc?.map fun t => (.jge  d (.imm imm) t, 8)
+  | 0x45 => dst?.bind fun d => targetPc?.map fun t => (.jset d (.imm imm) t, 8)
+  | 0x55 => dst?.bind fun d => targetPc?.map fun t => (.jne  d (.imm imm) t, 8)
+  | 0x65 => dst?.bind fun d => targetPc?.map fun t => (.jsgt d (.imm imm) t, 8)
+  | 0x75 => dst?.bind fun d => targetPc?.map fun t => (.jsge d (.imm imm) t, 8)
+  | 0xa5 => dst?.bind fun d => targetPc?.map fun t => (.jlt  d (.imm imm) t, 8)
+  | 0xb5 => dst?.bind fun d => targetPc?.map fun t => (.jle  d (.imm imm) t, 8)
+  | 0xc5 => dst?.bind fun d => targetPc?.map fun t => (.jslt d (.imm imm) t, 8)
+  | 0xd5 => dst?.bind fun d => targetPc?.map fun t => (.jsle d (.imm imm) t, 8)
   -- Jumps (register source)
-  | 0x1d => match dst?, src? with | some d, some s => some (.jeq  d (.reg s) targetPc, 8) | _, _ => none
-  | 0x2d => match dst?, src? with | some d, some s => some (.jgt  d (.reg s) targetPc, 8) | _, _ => none
-  | 0x3d => match dst?, src? with | some d, some s => some (.jge  d (.reg s) targetPc, 8) | _, _ => none
-  | 0x4d => match dst?, src? with | some d, some s => some (.jset d (.reg s) targetPc, 8) | _, _ => none
-  | 0x5d => match dst?, src? with | some d, some s => some (.jne  d (.reg s) targetPc, 8) | _, _ => none
-  | 0x6d => match dst?, src? with | some d, some s => some (.jsgt d (.reg s) targetPc, 8) | _, _ => none
-  | 0x7d => match dst?, src? with | some d, some s => some (.jsge d (.reg s) targetPc, 8) | _, _ => none
-  | 0xad => match dst?, src? with | some d, some s => some (.jlt  d (.reg s) targetPc, 8) | _, _ => none
-  | 0xbd => match dst?, src? with | some d, some s => some (.jle  d (.reg s) targetPc, 8) | _, _ => none
-  | 0xcd => match dst?, src? with | some d, some s => some (.jslt d (.reg s) targetPc, 8) | _, _ => none
-  | 0xdd => match dst?, src? with | some d, some s => some (.jsle d (.reg s) targetPc, 8) | _, _ => none
+  | 0x1d => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jeq  d (.reg s) t, 8)
+  | 0x2d => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jgt  d (.reg s) t, 8)
+  | 0x3d => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jge  d (.reg s) t, 8)
+  | 0x4d => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jset d (.reg s) t, 8)
+  | 0x5d => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jne  d (.reg s) t, 8)
+  | 0x6d => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jsgt d (.reg s) t, 8)
+  | 0x7d => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jsge d (.reg s) t, 8)
+  | 0xad => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jlt  d (.reg s) t, 8)
+  | 0xbd => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jle  d (.reg s) t, 8)
+  | 0xcd => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jslt d (.reg s) t, 8)
+  | 0xdd => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jsle d (.reg s) t, 8)
   -- Call (opcode 0x85). After R_BPF_64_32 relocation has run
   -- (`SVM.SBPF.Elf.applyRelocations`), the imm field is one of:
   --   - a known syscall's Murmur3 hash (e.g. `sol_log_` → 0x207559bd)
@@ -223,6 +230,13 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
     let immU := readU32LE bytes (off + 4)
     match SyscallHash.fromHash immU with
     | .unknown _ =>
+      -- Internal call: imm is treated as a signed slot-offset, falling
+      -- back to PC 0 when out of range. NOTE: this fallback is itself a
+      -- divergence (agave relocates a defined internal call to a murmur3
+      -- HASH of the target PC, not an offset — tracked as H2), so an
+      -- out-of-range result here is usually a hash, not a bad jump. We do
+      -- NOT fail-close this arm (unlike jumps): doing so would reject
+      -- every hashed internal call until the H2 hash→PC registry lands.
       let targetSlotInt : Int := currentSlot + 1 + imm
       let targetPcLocal : Nat :=
         let n := targetSlotInt.toNat
@@ -249,10 +263,14 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
   | 0x7b => match dst?, src? with | some d, some s => some (.stx .dword d off16 s, 8) | _, _ => none
   -- lddw — 16-byte: low 32 bits in this slot's imm, high 32 in the next.
   | 0x18 =>
-    let immLoNat := readU32LE bytes (off + 4)
-    let immHiNat := readU32LE bytes (off + 12)
-    let combined : Int := (immHiNat * 0x100000000 + immLoNat : Nat)
-    dst?.map fun d => (.lddw d combined, 16)
+    -- lddw needs a full 16 bytes; a truncated one at end-of-text is a
+    -- malformed program (agave rejects the incomplete instruction).
+    if off + 16 > bytes.size then none
+    else
+      let immLoNat := readU32LE bytes (off + 4)
+      let immHiNat := readU32LE bytes (off + 12)
+      let combined : Int := (immHiNat * 0x100000000 + immLoNat : Nat)
+      dst?.map fun d => (.lddw d combined, 16)
   | _ => none
 
 /-! ## Program decoding (two-pass) -/
@@ -273,6 +291,11 @@ where
     | 0 => some acc
     | fuel' + 1 =>
       if off ≥ bytes.size then some acc
+      else if off + 8 > bytes.size then
+        -- A trailing partial slot (fewer than 8 bytes remain): the text
+        -- length is not a multiple of 8. Agave rejects this at load
+        -- (`ProgramLengthNotMultiple`). See docs/SOUNDNESS_AUDIT_* (M4).
+        none
       else
         match decodeInsn bytes slotMap off with
         | none => none

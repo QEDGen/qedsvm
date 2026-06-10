@@ -206,25 +206,40 @@ theorem call_sol_get_sysvar_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
 
 /-! ## Syscall: `.unknown` (unrecognized hash)
 
-For any unrecognized syscall hash, agave aborts; we return 0 in `r0`
-so programs that test against opaque hashes don't spuriously fail. -/
+For any unrecognized / unregistered syscall hash agave rejects the
+program; we fail closed with the same effect (`exitCode :=
+ERR_UNSUPPORTED_INSTRUCTION`) rather than fabricate success. A lift that
+reaches an unknown syscall therefore proves an ABORT. See
+docs/SOUNDNESS_AUDIT_* (H7). -/
 
-theorem call_sol_unknown_spec (hash r0Old : Nat) (pc : Nat) (nCu : Nat)
-    (h_step_cu : ∀ s : State,
+theorem call_sol_unknown_aborts_spec (hash : Nat) (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
         (step (.call (.unknown hash)) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call (.unknown hash)))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only (.unknown hash) 0 pc nCu
-    (fun s => by simp [step, execSyscall, Misc.execUnknown])
-    (fun s => by simp [step, execSyscall, Misc.execUnknown])
-    (fun s => by simp [step, execSyscall, Misc.execUnknown])
-    (fun s hex => by simp [step, execSyscall, Misc.execUnknown]; exact hex)
-    (fun s => by simp [step, execSyscall, Misc.execUnknown])
-    (fun s => by simp [step, execSyscall, Misc.execUnknown])
-    (fun s => h_step_cu s)
-    r0Old
+      emp ERR_UNSUPPORTED_INSTRUCTION := by
+  intro R hRfree fetch hcr s hPR hpc hex
+  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
+  rw [hP1, PartialState.union_empty_left] at hu
+  rw [hP1] at hd
+  clear hP1 h1
+  have hfetch : fetch s.pc = some (.call (.unknown hash)) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = step (.call (.unknown hash)) s := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      { (Misc.execUnknown s) with pc := s.pc + 1
+                                  cuConsumed := (Misc.execUnknown s).cuConsumed
+                                    + syscallCu (.unknown hash) s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  · rw [hexec]
+    show (Misc.execUnknown s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
+    rfl
+  · rw [hstep_eq]; exact hCu s
 
 
 end SVM.SBPF

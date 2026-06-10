@@ -66,11 +66,12 @@ def cu : Nat := 100
 @[simp] def execGetSysvar (s : State) : State :=
   { s with regs := s.regs.set .r0 0 }
 
-/-- Unknown syscall hash. Agave aborts with `UnknownSyscall`; we
-    return 0 so programs that test against an opaque hash don't
-    spuriously fail. -/
+/-- Unknown / unregistered syscall hash. Agave rejects the program
+    (`UnknownSyscall`); we fail closed with the same effect rather than
+    fabricate success (`r0 := 0`), which would let a proof continue past
+    a call the real VM never executes. See docs/SOUNDNESS_AUDIT_* (H7). -/
 @[simp] def execUnknown (s : State) : State :=
-  { s with regs := s.regs.set .r0 0 }
+  { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION }
 
 end Misc
 end SVM.SBPF

@@ -33,8 +33,11 @@ namespace MemOps
     else s.mem a
   { s with regs := s.regs.set .r0 0, mem := mem' }
 
-/-- `sol_memcmp(p1, p2, n, out)`: write -1/0/+1 (as i32, two's
-    complement) to `*r4`. -/
+/-- `sol_memcmp(p1, p2, n, out)`: write the i32 difference of the first
+    differing byte pair (`a - b`, where `a,b ∈ [0,255]` so the result is
+    in `[-255,255]`), as a two's-complement u32, to `*r4`. Agave writes
+    this exact difference, not just the sign. See docs/SOUNDNESS_AUDIT_*
+    (H7). -/
 @[simp] def execCmp (s : State) : State :=
   let p1   := s.regs.r1
   let p2   := s.regs.r2
@@ -45,13 +48,9 @@ namespace MemOps
     else
       let va := s.mem (p1 + i) % 256
       let vb := s.mem (p2 + i) % 256
-      if va < vb then -1
-      else if va > vb then 1
-      else 0) 0
+      (va : Int) - (vb : Int)) 0
   let cmpU32 : Nat :=
-    if cmp = 0 then 0
-    else if cmp < 0 then 0xFFFFFFFF
-    else 1
+    if cmp ≥ 0 then cmp.toNat else U32_MODULUS - (-cmp).toNat
   let mem' := Memory.writeU32 s.mem outA cmpU32
   { s with regs := s.regs.set .r0 0, mem := mem' }
 
