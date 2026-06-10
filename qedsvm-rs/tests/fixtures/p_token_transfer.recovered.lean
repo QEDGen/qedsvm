@@ -2001,6 +2001,63 @@ def reachableBlocks : List (Nat × Nat × List Nat) :=
 def constExitBlocks : List (Nat × Nat) :=
   [(4288, 0), (3583, 0), (4119, 0), (4523, 0), (4546, 0), (4328, 0), (4786, 0), (4159, 0), (4754, 0)]
 
+/-- Recognised instruction idioms, as `(pc, tag)` — the asm-side
+    domain vocabulary. `u64_field_{increment,decrement}` is the
+    balance-mutation triple; `error_propagation_check` marks a
+    call whose r0 result is branch-tested (the compiled `Err(e)`
+    propagation seam); `read_discriminator` is the dispatch load. -/
+def idioms : List (Nat × String) :=
+  [
+    (198, "read_discriminator width=1"),
+    (1286, "error_propagation_check call_pc=1286 test_pc=1288"),
+    (1400, "error_propagation_check call_pc=1400 test_pc=1402"),
+    (1514, "error_propagation_check call_pc=1514 test_pc=1516"),
+    (1571, "error_propagation_check call_pc=1571 test_pc=1573"),
+    (1709, "error_propagation_check call_pc=1709 test_pc=1711"),
+    (1732, "error_propagation_check call_pc=1732 test_pc=1734"),
+    (1775, "u64_field_increment base=r3 off=152 amount=r5"),
+    (1796, "u64_field_decrement base=r2 off=124 amount=r4"),
+    (1817, "u64_field_increment base=r3 off=152 amount=r5"),
+    (1822, "u64_field_decrement base=r4 off=72 amount=r5"),
+    (1825, "u64_field_increment base=r3 off=72 amount=r5"),
+    (1844, "u64_field_increment base=r3 off=72 amount=r2"),
+    (1950, "u64_field_decrement base=r2 off=124 amount=r4"),
+    (1966, "u64_field_increment base=r10 off=-2080 amount=r3"),
+    (2722, "u64_field_increment base=r3 off=152 amount=r5"),
+    (2727, "u64_field_decrement base=r4 off=72 amount=r5"),
+    (2730, "u64_field_increment base=r3 off=72 amount=r5"),
+    (3526, "error_propagation_check call_pc=3526 test_pc=3528"),
+    (4085, "error_propagation_check call_pc=4085 test_pc=4087"),
+    (4198, "error_propagation_check call_pc=4198 test_pc=4200"),
+    (4254, "error_propagation_check call_pc=4254 test_pc=4256"),
+    (4365, "error_propagation_check call_pc=4365 test_pc=4367"),
+    (4508, "error_propagation_check call_pc=4508 test_pc=4510"),
+    (4547, "u64_field_increment base=r3 off=72 amount=r4"),
+    (4667, "u64_field_increment base=r3 off=152 amount=r8"),
+    (4673, "u64_field_decrement base=r5 off=72 amount=r8"),
+    (4676, "u64_field_increment base=r3 off=72 amount=r8"),
+    (4755, "u64_field_increment base=r3 off=152 amount=r4"),
+    (4789, "u64_field_decrement base=r3 off=124 amount=r5"),
+    (4820, "u64_field_increment base=r1 off=10664 amount=r2"),
+    (4826, "u64_field_decrement base=r1 off=80 amount=r2"),
+    (4829, "u64_field_increment base=r1 off=10584 amount=r2"),
+    (5058, "u64_field_increment base=r1 off=21088 amount=r2"),
+    (5064, "u64_field_decrement base=r1 off=80 amount=r2"),
+    (5067, "u64_field_increment base=r1 off=21008 amount=r2"),
+    (5105, "u64_field_decrement base=r3 off=124 amount=r4"),
+    (5527, "u64_field_increment base=r10 off=-2096 amount=r1"),
+    (5634, "u64_field_increment base=r10 off=-2120 amount=r1"),
+    (5745, "u64_field_increment base=r10 off=-2112 amount=r1"),
+    (5829, "u64_field_increment base=r10 off=-2120 amount=r1"),
+    (6130, "u64_field_increment base=r3 off=72 amount=r4"),
+    (6148, "u64_field_increment base=r10 off=-2112 amount=r1"),
+    (6262, "u64_field_increment base=r10 off=-2128 amount=r1"),
+    (6346, "u64_field_increment base=r10 off=-2112 amount=r1"),
+    (6555, "u64_field_increment base=r10 off=-2112 amount=r1"),
+    (6684, "u64_field_increment base=r10 off=-2112 amount=r1"),
+    (6782, "u64_field_increment base=r10 off=-2112 amount=r1")
+  ]
+
 /-- Block-start PCs the execution trace passed through — the
     happy path of this instruction, in block order. Blocks in
     `reachableBlocks` but not here were never executed by the

@@ -105,11 +105,13 @@ Top-level fields:
 
 ## Extension points reserved in v0.1
 
-- **Idiom annotations**. Empty `[[instruction.idiom]]` array reserved
-  for the asm-side recogniser (lever 4 in the issue thread). Once the
-  recogniser ships, each entry tags a block-start PC with a canonical
-  pattern name (`lamports_add`, `read_discriminator`, etc.); the Lean
-  proof applies the corresponding domain lemma in one `apply`.
+- **Idiom annotations**. The asm-side recogniser (lever 4 in the
+  issue thread) shipped in qedrecover (`idioms.rs`) with a starter
+  vocabulary: `u64_field_{increment,decrement}` (the balance-mutation
+  triple), `error_propagation_check` (call whose r0 result is
+  branch-tested), `read_discriminator` (the dispatch load). Tags are
+  emitted as `idioms` in the recovered Lean metadata today; promoting
+  them into `[[instruction.idiom]]` here is the remaining v0.2 step.
 
 - **Happy/sad-path tags**. Empty `[[instruction.tag]]` array reserved
   for execution-trace-driven path classification. Each entry labels

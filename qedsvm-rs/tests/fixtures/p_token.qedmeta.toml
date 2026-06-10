@@ -104,14 +104,18 @@ blocks = [
 ]
 
 # ---------------------------------------------------------------- idioms (v0.2+)
-# Lever 4 from issue #11. Once the recogniser ships, each entry tags
-# a block-start PC with a canonical pattern; the Lean proof applies
-# the corresponding domain lemma in one `apply`.
-# Empty in v0.1.
+# Lever 4 from issue #11. The recogniser SHIPPED (qedrecover
+# src/bin/qedrecover/idioms.rs): starter vocabulary
+# {u64_field_increment, u64_field_decrement, error_propagation_check,
+# read_discriminator}, emitted as `idioms` in the recovered Lean
+# metadata. Real example from this binary (the transfer debit/credit
+# pair, recognised at logical 4673/4676):
 # [[instruction.idiom]]
-# block_start = 5048
-# pattern     = "lamports_add"
-# bindings    = { dst_reg = "r3", src_reg = "r2", offset = 0xa0 }
+# pc      = 4673
+# pattern = "u64_field_decrement"
+# bindings = { base = "r5", off = 72, amount = "r8" }
+# Promotion of the recognised tags into this sidecar (same channel as
+# the trace tags above) is the remaining v0.2 step.
 
 # ---------------------------------------------------------------- tags (v0.2+)
 # Happy/sad-path classification from an execution trace. Produced

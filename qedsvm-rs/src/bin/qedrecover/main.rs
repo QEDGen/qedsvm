@@ -10,6 +10,8 @@
 //!     --so       tests/fixtures/p_token.so \
 //!     --overlay  tests/fixtures/p_token.qedoverlay.toml
 
+mod idioms;
+
 use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -422,6 +424,7 @@ fn emit_lean<W: std::io::Write>(
     jeq_pc:     usize,
     arm_entry_logical: usize,
     arm_blocks: &[&CfgNode],
+    idiom_tags: &[idioms::Idiom],
     trace:      Option<&BTreeSet<usize>>,
 ) -> std::io::Result<()> {
     let module = format!("QedRecover.{}", pascal(&ovix.name));
@@ -540,6 +543,21 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "  [{}]", const_exits.iter()
         .map(|(pc, code)| format!("({}, {})", pc, code))
         .collect::<Vec<_>>().join(", "))?;
+    writeln!(out)?;
+
+    // Recognised idioms (idioms.rs starter vocabulary).
+    writeln!(out, "/-- Recognised instruction idioms, as `(pc, tag)` — the asm-side")?;
+    writeln!(out, "    domain vocabulary. `u64_field_{{increment,decrement}}` is the")?;
+    writeln!(out, "    balance-mutation triple; `error_propagation_check` marks a")?;
+    writeln!(out, "    call whose r0 result is branch-tested (the compiled `Err(e)`")?;
+    writeln!(out, "    propagation seam); `read_discriminator` is the dispatch load. -/")?;
+    writeln!(out, "def idioms : List (Nat × String) :=")?;
+    writeln!(out, "  [")?;
+    for (i, idm) in idiom_tags.iter().enumerate() {
+        let sep = if i + 1 < idiom_tags.len() { "," } else { "" };
+        writeln!(out, "    ({}, \"{} {}\"){}", idm.pc, idm.name, idm.detail, sep)?;
+    }
+    writeln!(out, "  ]")?;
     writeln!(out)?;
 
     // Happy-path tagging (when a trace was supplied).
@@ -951,6 +969,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      blocks with exits outside the function: {}",
                          exiting.len());
 
+                // --- idiom recognition -----------------------------------
+                let idiom_tags = idioms::scan_arm(
+                    &analysis, &arm_blocks,
+                    Some((load_pc, number_size(disc_format).unwrap_or(1))));
+                {
+                    let mut counts: std::collections::BTreeMap<&str, usize> =
+                        std::collections::BTreeMap::new();
+                    for idm in &idiom_tags {
+                        *counts.entry(idm.name).or_default() += 1;
+                    }
+                    let rendered = counts.iter()
+                        .map(|(n, c)| format!("{} x{}", n, c))
+                        .collect::<Vec<_>>().join(", ");
+                    println!("      idioms: {}",
+                             if rendered.is_empty() { "none".to_string() }
+                             else { rendered });
+                }
+
                 // --- constant-exit blocks (static shape) ----------------
                 let (n_zero, n_nonzero) = arm_blocks.iter()
                     .filter_map(|b| error_exit_code(&analysis, b))
@@ -976,7 +1012,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     emit_lean(&mut f, &args, &overlay, ovix, idl_ix,
                               &analysis, disc_value, disc_size,
                               load_pc, jeq_pc, arm_entry_logical, &arm_blocks,
-                              trace_pcs.as_ref())?;
+                              &idiom_tags, trace_pcs.as_ref())?;
                     println!();
                     println!("=== emitted Lean metadata ===");
                     println!("  output: {}", path.display());
@@ -988,7 +1024,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     emit_lean(&mut lock, &args, &overlay, ovix, idl_ix,
                               &analysis, disc_value, disc_size,
                               load_pc, jeq_pc, arm_entry_logical, &arm_blocks,
-                              trace_pcs.as_ref())?;
+                              &idiom_tags, trace_pcs.as_ref())?;
                 }
             }
         }
@@ -1080,5 +1116,53 @@ mod tests {
         // Shape 2: prelude landing `lddw r0, 10<<32; ja <bare exit>`.
         assert_eq!(error_exit_code(&analysis, block_containing(124)),
             Some(10u64 << 32), "prelude ja-landing misclassified");
+    }
+
+    /// Idiom recogniser pins on real p_token bytecode.
+    #[test]
+    fn idioms_recognise_transfer_shapes() {
+        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let loader = Arc::new(BuiltinProgram::new_mock());
+        let executable: Executable<NoopCtx> =
+            Executable::load(&bytes, loader).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&executable).expect("analyse p_token.so");
+
+        // Arm slice idioms: the transfer debit/credit pair must be
+        // recognised as a u64_field_decrement/increment on the same
+        // offset, and the dispatch load as read_discriminator.
+        let (load_pc, _, arm_entry_slot) = find_dispatch_arm(
+            &analysis.instructions, 0, ebpf::LD_B_REG, 3,
+        ).expect("find transfer dispatch arm");
+        let func_set = function_block_set(&analysis, arm_entry_slot);
+        let arm_blocks = slice_cfg(&analysis, arm_entry_slot, Some(&func_set));
+        let tags = idioms::scan_arm(&analysis, &arm_blocks, Some((load_pc, 1)));
+
+        assert!(tags.iter().any(|i| i.pc == 198 && i.name == "read_discriminator"));
+        assert!(tags.iter().any(|i| i.pc == 4673
+                && i.name == "u64_field_decrement"
+                && i.detail == "base=r5 off=72 amount=r8"),
+            "transfer source debit not recognised");
+        assert!(tags.iter().any(|i| i.pc == 4676
+                && i.name == "u64_field_increment"
+                && i.detail == "base=r3 off=72 amount=r8"),
+            "transfer dest credit not recognised");
+        // In-arm propagation seams: helper calls whose r0 result is
+        // branch-tested in the fall-through block (a call always ends
+        // its block). e.g. pc 1286: `call 11385; mov64 r1, -1;
+        // jsgt r0, 0` — pin one concrete hit.
+        assert!(tags.iter().any(|i| i.name == "error_propagation_check"
+                && i.detail == "call_pc=1286 test_pc=1288"),
+            "in-arm helper-result seam not recognised");
+
+        // The real propagation seam is the entrypoint's
+        // `call 12311; …; jne r0` at 59..63 — scan its block directly.
+        let entry_block = analysis.cfg_nodes.values()
+            .find(|b| b.instructions.start <= 59 && 59 < b.instructions.end)
+            .expect("block containing the entrypoint call");
+        let entry_tags = idioms::scan_arm(&analysis, &[entry_block], None);
+        assert!(entry_tags.iter().any(|i| i.name == "error_propagation_check"
+                && i.detail == "call_pc=59 test_pc=63"),
+            "entrypoint error-propagation seam not recognised: {:?}",
+            entry_tags.iter().map(|i| (i.pc, i.name)).collect::<Vec<_>>());
     }
 }

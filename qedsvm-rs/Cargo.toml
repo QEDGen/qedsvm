@@ -43,7 +43,7 @@ path = "src/bin/disasm_to_lean.rs"
 # doesn't pull in solana-sbpf.
 [[bin]]
 name = "qedrecover"
-path = "src/bin/qedrecover.rs"
+path = "src/bin/qedrecover/main.rs"
 required-features = ["qedrecover"]
 
 # qedlift — end-to-end lift demo: load a Solana .so, extract .text,
