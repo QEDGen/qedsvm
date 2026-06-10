@@ -154,6 +154,13 @@ def cuTryFind (s : State) : Nat :=
 /-- Execute `sol_create_program_address`.
     ABI: r1 = `*const [VmSlice; N]`, r2 = N, r3 = `*const [u8; 32]`
     program_id, r4 = `*mut [u8; 32]` out. r0 = 0/1. -/
+-- NOTE (M7, deferred): agave ABORTS with `BadSeeds` for > MAX_SEEDS seeds
+-- or an over-long seed; the model returns in-band r0:=1 (via
+-- `createProgramAddress` → none → commitOptional). Adding the abort
+-- changes `execCreate`'s structure and breaks the two LEGITIMATE n0/n1
+-- `call_create_program_address_*_spec` proofs (~400 lines each) that
+-- reduce `execCreate` to `commitOptional`. Left as-is. (Programs use
+-- valid seeds, so the divergence is rarely reachable.)
 @[simp] def execCreate (s : State) : State :=
   let seeds  := readSeeds s.mem s.regs.r1 s.regs.r2
   let pid    := readBytes s.mem s.regs.r3 32

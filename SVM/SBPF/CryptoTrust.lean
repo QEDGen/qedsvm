@@ -134,14 +134,19 @@ Ristretto-validity is a strict subset of Edwards-validity (many
 valid Edwards points are not valid Ristretto points); the two
 validators do not agree on arbitrary inputs.
 
-These axioms are trivial *shape* statements — included for parity
-with the other curve syscalls. There is no payload size to assert
-because the return type is `Bool`. -/
-axiom curve_validate_edwards_total (point : ByteArray) :
-    Curve25519.validateEdwards point = true ∨ Curve25519.validateEdwards point = false
+These are trivial *shape* statements — included for parity with the
+other curve syscalls. There is no payload size to assert because the
+return type is `Bool`, so unlike the size statements below they are
+THEOREMS (provable by `Bool` case analysis), not trusted axioms: a
+`Bool` is always `true` or `false` regardless of what the bridge
+returns. Kept as named lemmas only so call sites read uniformly. -/
+theorem curve_validate_edwards_total (point : ByteArray) :
+    Curve25519.validateEdwards point = true ∨ Curve25519.validateEdwards point = false := by
+  cases h : Curve25519.validateEdwards point <;> simp [h]
 
-axiom curve_validate_ristretto_total (point : ByteArray) :
-    Curve25519.validateRistretto point = true ∨ Curve25519.validateRistretto point = false
+theorem curve_validate_ristretto_total (point : ByteArray) :
+    Curve25519.validateRistretto point = true ∨ Curve25519.validateRistretto point = false := by
+  cases h : Curve25519.validateRistretto point <;> simp [h]
 
 /-! ## `sol_curve_group_op`  (trusts `curve25519-dalek = 4.1.3`)
 
@@ -250,12 +255,14 @@ proofs can use. The matching consumer-facing Hoare triples in
 `writes_r0_only` that pins one extra register and makes the regs/mem
 post-state conditional on that pinning):
 
-- `call_sol_curve_validate_point_unsupported_spec` (unsupported
-  curve_id ⇒ r0 := 2, mem untouched, no FFI call)
+- (`sol_curve_validate_point` unsupported curve_id now FAILS CLOSED
+  with `ERR_INVALID_ATTRIBUTE` — matches agave under
+  `abort_on_invalid_curve` — so the old "r0 := 2" triple was removed; see
+  `InstructionSpecs/Crypto.lean` and SOUNDNESS_AUDIT M7)
 - `call_sol_secp256k1_recover_invalid_recid_spec` (recovery_id > 3
   ⇒ r0 := 2, mem untouched, no FFI call)
-- `call_sol_curve_group_op_unsupported_spec` (unsupported curve_id
-  ⇒ r0 := 1, mem untouched via commitOptional none-arm)
+- (`sol_curve_group_op` unsupported curve_id now FAILS CLOSED with
+  `ERR_INVALID_ATTRIBUTE` too; the old "r0 := 1" triple was removed — M7)
 - `call_sol_curve_multiscalar_mul_zero_n_spec` (n = 0 ⇒ r0 := 1,
   mem untouched)
 - `call_sol_curve_decompress_unsupported_spec` (unsupported BLS

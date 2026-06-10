@@ -7,9 +7,10 @@ open Memory
 /-! ## Memory-byte reasoning helpers shared across widths
 
 `readU64_eq_of_bytes_match` connects 8 byte-level facts to a single
-`readU64` value via the existing `readU64_writeU64_same` axiom — we
-show `mem` agrees with `writeU64 mem addr v` at every address, then
-apply the axiom. Used by `ldxdw_spec` to discharge step semantics. -/
+`readU64` value via the `readU64_writeU64_same` lemma (a proven
+theorem, not an axiom) — we show `mem` agrees with `writeU64 mem addr v`
+at every address, then apply it. Used by `ldxdw_spec` to discharge step
+semantics. -/
 
 theorem readU16_eq_of_bytes_match {mem : Memory.Mem} {addr v : Nat}
     (hv : v < 2 ^ 16)

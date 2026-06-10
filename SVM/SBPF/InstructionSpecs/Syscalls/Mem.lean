@@ -1608,27 +1608,24 @@ relates the `s.mem`-based fold in `MemOps.execCmp` to the
 ByteArray-based fold in `memcmpFold`, under the coherence hypotheses
 provided by the `↦Bytes` atoms in the precondition. -/
 
-/-- ByteArray-based lexicographic comparison fold. Mirrors the
-    `s.mem`-based fold inside `MemOps.execCmp`, but reads bytes from
-    a `ByteArray` instead of `State.mem`. Returns -1 / 0 / 1 (i32). -/
+/-- ByteArray-based comparison fold. Mirrors the `s.mem`-based fold
+    inside `MemOps.execCmp`, but reads bytes from a `ByteArray` instead
+    of `State.mem`. Returns the i32 difference `a - b` of the first
+    differing byte pair (in `[-255,255]`), or 0 if equal. -/
 def memcmpFold (p1 p2 : ByteArray) (n : Nat) : Int :=
   (List.range n).foldl (fun acc i =>
     if acc ≠ 0 then acc
     else
       let va := (p1.get! i).toNat
       let vb := (p2.get! i).toNat
-      if va < vb then (-1 : Int)
-      else if va > vb then 1
-      else 0) 0
+      (va : Int) - (vb : Int)) 0
 
-/-- The u32 result written at `*r4` by `sol_memcmp`: 0 for equal,
-    0xFFFFFFFF for p1 < p2 (i32 -1 reinterpreted as u32), 1 for
-    p1 > p2. -/
+/-- The u32 result written at `*r4` by `sol_memcmp`: the i32 difference
+    of the first differing byte pair, reinterpreted as a two's-complement
+    u32 (0 for equal). -/
 def memcmpResultU32 (p1 p2 : ByteArray) (n : Nat) : Nat :=
   let cmp := memcmpFold p1 p2 n
-  if cmp = 0 then 0
-  else if cmp < 0 then 0xFFFFFFFF
-  else 1
+  if cmp ≥ 0 then cmp.toNat else U32_MODULUS - (-cmp).toNat
 
 /-- Under coherence (`s.mem (pV + i) = (pBytes.get! i).toNat` for both
     p1 and p2), the `s.mem`-based fold in `execCmp` equals the
@@ -1645,9 +1642,7 @@ private theorem execCmp_fold_eq (s : State) (p1V p2V n : Nat)
       else
         let va := s.mem (p1V + i) % 256
         let vb := s.mem (p2V + i) % 256
-        if va < vb then (-1 : Int)
-        else if va > vb then 1
-        else 0) (0 : Int) = memcmpFold p1Bytes p2Bytes n := by
+        (va : Int) - (vb : Int)) (0 : Int) = memcmpFold p1Bytes p2Bytes n := by
   unfold memcmpFold
   induction n with
   | zero => rfl

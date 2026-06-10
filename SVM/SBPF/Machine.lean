@@ -174,6 +174,44 @@ def ERR_ABORT          : Nat := 0xFFFFFFFFFFFFFFFD
     `AddressStore` under the hood); we surface it as a sentinel exit
     code so the harness can map it to a `Failure` outcome. -/
 def ERR_ACCESS_VIOLATION : Nat := 0xFFFFFFFFFFFFFFFC
+/-- Exit code for an instruction the model does not faithfully execute
+    and therefore refuses to run rather than fabricate a result. Agave
+    raises `EbpfError::UnsupportedInstruction` (or `SyscallError` for an
+    unregistered syscall). Used by `.callx` (indirect call: frame/vaddr
+    semantics not modeled), the proof-side CPI stub, and unknown
+    syscalls. Failing closed keeps the model from proving an exit code
+    that is false of the real VM on these paths. -/
+def ERR_UNSUPPORTED_INSTRUCTION : Nat := 0xFFFFFFFFFFFFFFFA
+/-- Exit code for exceeding the sBPF call-depth limit. Agave raises
+    `EbpfError::CallDepthExceeded` at the 65th nested frame. -/
+def ERR_CALL_DEPTH_EXCEEDED : Nat := 0xFFFFFFFFFFFFFFF9
+
+/-- Maximum sBPF call depth (`MAX_CALL_DEPTH` in solana-sbpf). The 65th
+    nested `call`/`call_local` aborts with `CallDepthExceeded`. -/
+def MAX_CALL_DEPTH : Nat := 64
+
+/-- Exit code for `sol_set_return_data` with `len > MAX_RETURN_DATA`.
+    Agave raises `SyscallError::ReturnDataTooLarge`. -/
+def ERR_RETURN_DATA_TOO_LARGE : Nat := 0xFFFFFFFFFFFFFFF8
+
+/-- Exit code for a syscall called with an over-length input that agave
+    rejects (`SyscallError::InvalidLength`): `sol_big_mod_exp` over 512
+    bytes, `sol_curve_multiscalar_mul` over 512 points, etc. -/
+def ERR_INVALID_LENGTH : Nat := 0xFFFFFFFFFFFFFFF7
+
+/-- Exit code for `SyscallError::InvalidAttribute`: an unsupported
+    curve id passed to a curve25519 syscall when `abort_on_invalid_curve`
+    is active (it is, under `FeatureSet::all_enabled`). -/
+def ERR_INVALID_ATTRIBUTE : Nat := 0xFFFFFFFFFFFFFFF6
+
+/-- Exit code for `SyscallError::BadSeeds`: a PDA derivation given more
+    than `MAX_SEEDS` (16) seeds or a seed longer than 32 bytes. Agave
+    aborts (`MaxSeedLengthExceeded`) rather than returning in-band. -/
+def ERR_BAD_SEEDS : Nat := 0xFFFFFFFFFFFFFFF5
+
+/-- `MAX_RETURN_DATA` (agave): a program may set at most 1024 bytes of
+    return data; a larger `sol_set_return_data` aborts. -/
+def MAX_RETURN_DATA : Nat := 1024
 
 /-! ## Wrapping 64-bit arithmetic -/
 
@@ -215,10 +253,28 @@ theorem wrapAdd_one_of_lt {a : Nat} (h : a + 1 < 2 ^ 64) :
 /-- 32-bit modulus for 32-bit ALU operations -/
 def U32_MODULUS : Nat := 2 ^ 32
 
-@[simp] def wrapAdd32 (a b : Nat) : Nat := (a + b) % U32_MODULUS
-@[simp] def wrapSub32 (a b : Nat) : Nat := (a + U32_MODULUS - b % U32_MODULUS) % U32_MODULUS
-@[simp] def wrapMul32 (a b : Nat) : Nat := (a * b) % U32_MODULUS
+/-- Sign-extend a value already reduced mod 2^32 into a 64-bit register.
+    For sBPF V0/V1 the 32-bit ADD/SUB/MUL results are sign-extended:
+    solana-sbpf computes `(x as i32).wrapping_op(y) as i64 as u64`
+    (`explicit_sign_extension_of_results` is V2-only, where it instead
+    zero-extends). If bit 31 of `n` is set, the upper 32 bits become 1s.
+    See docs/SOUNDNESS_AUDIT_* (C1). -/
+@[simp] def signExtend32 (n : Nat) : Nat :=
+  if n < 0x80000000 then n else n + (U64_MODULUS - U32_MODULUS)
+
+-- ADD32 / SUB32 / MUL32 sign-extend their i32 result into the 64-bit
+-- destination (V0/V1 semantics). The other 32-bit ALU ops (OR/AND/XOR,
+-- shifts, MOV32, DIV32, MOD32, NEG32) zero-extend — see those arms.
+@[simp] def wrapAdd32 (a b : Nat) : Nat := signExtend32 ((a + b) % U32_MODULUS)
+@[simp] def wrapSub32 (a b : Nat) : Nat := signExtend32 ((a + U32_MODULUS - b % U32_MODULUS) % U32_MODULUS)
+@[simp] def wrapMul32 (a b : Nat) : Nat := signExtend32 ((a * b) % U32_MODULUS)
 @[simp] def wrapNeg32 (a : Nat) : Nat := (U32_MODULUS - a % U32_MODULUS) % U32_MODULUS
+
+-- C1 regression pins: V0 sign-extends 32-bit add/sub/mul into r[dst].
+example : wrapSub32 0 1 = 0xFFFFFFFFFFFFFFFF := by decide          -- 0 - 1 underflows, all-ones
+example : wrapAdd32 0 0x7FFFFFFF = 0x7FFFFFFF := by decide          -- bit 31 clear: unchanged
+example : wrapAdd32 0 0x80000000 = 0xFFFFFFFF80000000 := by decide  -- bit 31 set: sign-extended
+example : wrapMul32 0xFFFFFFFF 0xFFFFFFFF = 1 := by decide          -- (-1)*(-1) = 1
 
 /-! ## Byte-region helpers for syscall bodies
 

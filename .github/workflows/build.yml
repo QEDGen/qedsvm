@@ -21,23 +21,44 @@ jobs:
       - name: Show toolchain
         run: lean --version
 
-      - name: lake build
-        run: lake build
-
-      - name: Verify zero axioms outside Account.lean
+      - name: lake build (core SVM library)
         run: |
-          set -e
-          UNEXPECTED=$(grep -rln '^axiom' Svm/ | grep -v 'Account.lean' || true)
+          set -o pipefail
+          lake build 2>&1 | tee build-core.log
+
+      - name: lake build Examples (flagship proofs + axiom-audit gate)
+        # AxiomAudit.lean is the first root of the Examples target: it fails
+        # the build if any flagship theorem depends on a non-standard axiom
+        # (sorry / native_decide / crypto). See examples/lean/AxiomAudit.lean.
+        run: |
+          set -o pipefail
+          lake build Examples 2>&1 | tee build-examples.log
+
+      - name: Verify no `sorry` reached the kernel
+        # Lean emits "declaration uses 'sorry'" for any declaration that
+        # elaborated a sorry. Grepping the build log (not the source) avoids
+        # false positives from the word "sorry" appearing in comments.
+        run: |
+          if grep -F "declaration uses 'sorry'" build-core.log build-examples.log; then
+            echo "Found a declaration that uses sorry — qedsvm does not ship sorries."
+            exit 1
+          fi
+
+      - name: Verify zero axiom declarations outside CryptoTrust.lean
+        # The only sanctioned axioms are the crypto shape axioms in
+        # SVM/SBPF/CryptoTrust.lean. Any new `axiom` elsewhere in SVM/ is a
+        # TCB regression and must be reviewed deliberately.
+        run: |
+          UNEXPECTED=$(grep -rln '^axiom' SVM/ | grep -v 'SVM/SBPF/CryptoTrust.lean' || true)
           if [ -n "$UNEXPECTED" ]; then
-            echo "Unexpected axioms outside Account.lean:"
+            echo "Unexpected axioms outside CryptoTrust.lean:"
             echo "$UNEXPECTED"
             exit 1
           fi
 
-      - name: Verify zero sorry
-        run: |
-          set -e
-          if grep -rn '\bsorry\b' Svm/; then
-            echo "Found sorry — qedsvm does not ship sorries."
-            exit 1
-          fi
+      - name: Differential conformance vs mollusk/agave
+        # Empirical soundness backstop: runs the compiled Lean interpreter
+        # against mollusk on the fixture corpus. Reuses the Lean artifact
+        # `lake build` just produced (avoids the stale-dylib skew).
+        working-directory: qedsvm-rs
+        run: cargo test --features diff-mollusk

@@ -11,18 +11,21 @@
   and exposes `extractText` to pull out the `.text` section's bytes
   ready to feed into `Decode.decodeProgram` / `Runner.run`.
 
-  Limitations:
-  - We extract the raw `.text` section bytes only. Programs that rely on
-    `.rodata` being mapped into memory (the usual case for table-driven
-    Anchor code) will not yet behave correctly — that's a follow-up
-    (need to map `.rodata` into `Mem` starting at the appropriate VA).
-  - Relocations: we support the most common Solana sBPF relocation,
-    `R_BPF_64_64`, which patches the immediate of an `lddw` instruction
-    to point at a symbol's runtime address (typically a constant in
-    `.rodata`). This is what `rustc` / Anchor / Pinocchio emit for any
-    static reference. Other relocation types (`R_BPF_64_32` for inter-
-    function `call` offsets, `R_BPF_64_Relative` for sBPF v3) are not
-    yet processed; programs that rely on them will mis-execute.
+  Coverage:
+  - `.text` bytes are extracted via `extractText`. `.rodata` and
+    `.data.rel.ro` are mapped into `Mem` at their VAs by the runner
+    (`Runner.lean`), so table-driven code reads its constants.
+  - Relocations applied by `applyRelocations`: `R_BPF_64_64` (patches an
+    `lddw` immediate to a symbol's runtime address), `R_BPF_64_RELATIVE`
+    (both the in-`.text` lddw form and the `.data.rel.ro` form), and
+    `R_BPF_64_32` (inter-function `call` offsets → murmur3 hash).
+
+  Known divergences from agave (tracked in docs/SOUNDNESS_AUDIT_*.md):
+  - No SBPF version / `e_machine` gate: any input is parsed as V0.
+  - `applyRel32` hashes the symbol NAME for defined internal functions,
+    whereas agave hashes the target PC bytes; the raw decoder then treats
+    an internal-call hash as a slot offset. The qedlift proof path
+    sidesteps both by resolving call targets through solana-sbpf.
 -/
 
 import SVM.SBPF.Decode
@@ -65,7 +68,16 @@ structure SectionHeader where
 /-! ## Header parsing -/
 
 /-- Parse the ELF64 header. Returns `none` if the file is too short, the
-    magic is wrong, the class is not 64-bit, or the endianness is not LE. -/
+    magic is wrong, the class is not 64-bit, the endianness is not LE, the
+    machine is not BPF/SBPF, or the SBPF version (`e_flags`) is not V0.
+
+    The `e_machine` and `e_flags` gates (C3) are load-time fail-closed
+    checks: agave maps `e_flags` 0..4 to SBPF V0..V4 and rejects versions
+    it doesn't enable, and requires `e_machine ∈ {EM_BPF, EM_SBPF}`. This
+    model only faithfully implements V0 (decode + execute assume V0
+    opcode/call/sign-extension semantics), so a non-V0 or non-BPF binary
+    is rejected rather than silently mis-executed as V0. See
+    docs/SOUNDNESS_AUDIT_* (C3). -/
 def parseHeader (bytes : ByteArray) : Option Header :=
   if bytes.size < 64 then none
   else if readU8 bytes 0 ≠ 0x7f then none  -- magic
@@ -74,6 +86,16 @@ def parseHeader (bytes : ByteArray) : Option Header :=
   else if readU8 bytes 3 ≠ 0x46 then none  -- 'F'
   else if readU8 bytes 4 ≠ 2 then none     -- ei_class = ELFCLASS64
   else if readU8 bytes 5 ≠ 1 then none     -- ei_data = ELFDATA2LSB
+  -- e_machine (offset 18): EM_BPF = 247 or EM_SBPF = 263.
+  else if readU16LE bytes 18 ≠ 247 ∧ readU16LE bytes 18 ≠ 263 then none
+  -- e_flags (offset 48): SBPF version. Only V0 (0) is modeled.
+  else if readU32LE bytes 48 ≠ 0 then none
+  -- M1: section-table structural validation — fail closed on a malformed
+  -- header rather than read past the file via zero-fill. `e_shstrndx`
+  -- must index a real section, and the section header table must lie
+  -- within the file. See docs/SOUNDNESS_AUDIT_* (M1).
+  else if readU16LE bytes 62 ≥ readU16LE bytes 60 then none      -- shstrndx ≥ shnum
+  else if readU64LE bytes 40 + readU16LE bytes 60 * readU16LE bytes 58 > bytes.size then none
   else some {
     entry     := readU64LE bytes 24
     shoff     := readU64LE bytes 40

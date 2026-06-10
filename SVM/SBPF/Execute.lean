@@ -341,17 +341,27 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
     -- restore them (LLVM treats those as callee-saved). V1/V2 leave
     -- r10 to the program — not modeled yet. r10 is updated via direct
     -- record syntax (not `RegFile.set`) so the user-visible no-op
-    -- axiom for r10 writes is preserved.
-    let frame : CallFrame := {
-      retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
-      savedR8 := rf.r8, savedR9 := rf.r9, savedR10 := rf.r10 }
-    { s with pc := target
-             regs := { rf with r10 := rf.r10 + 0x1000 }
-             callStack := frame :: s.callStack }
+    -- lemma for r10 writes (`RegFile.set_r10`, a theorem) is preserved.
+    -- Call-depth limit (H4): the 65th nested frame aborts with
+    -- `CallDepthExceeded` in solana-sbpf. Fail closed at MAX_CALL_DEPTH.
+    if s.callStack.length ≥ MAX_CALL_DEPTH then
+      { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED }
+    else
+      let frame : CallFrame := {
+        retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
+        savedR8 := rf.r8, savedR9 := rf.r9, savedR10 := rf.r10 }
+      { s with pc := target
+               regs := { rf with r10 := rf.r10 + 0x1000 }
+               callStack := frame :: s.callStack }
 
-  | .callx reg =>
-    -- Tail-call / panic-path style: jump only, no callStack push.
-    { s with pc := rf.get reg }
+  | .callx _reg =>
+    -- Indirect call. Real sBPF V0 pushes a frame, translates the
+    -- register value as a virtual address to a logical PC, and checks
+    -- call depth; none of that is modeled (and the target-register
+    -- field differs across SBPF versions). Rather than fabricate a bare
+    -- jump — which could prove a false exit code — we fail closed.
+    -- See docs/SOUNDNESS_AUDIT_*.md (C2).
+    { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION }
 
   | .exit =>
     match s.callStack with
@@ -448,13 +458,18 @@ User code cannot write to r10: `RegFile.set .r10 v = rf` is a no-op
 this file). User-visible ALU and load instructions all go through
 `RegFile.set`, so as far as user code can see r10 is constant from
 entry. The runtime, on the other hand, *does* update r10 when
-allocating frames — `.call_local` decrements by 0x1000, `.exit`
+allocating frames — `.call_local` bumps it by 0x1000, `.exit`
 restores from the saved value on the call stack. Those use direct
-record syntax, not `RegFile.set`, so the no-op axiom is untouched. -/
+record syntax, not `RegFile.set`, so the no-op lemma is untouched. -/
 
 @[simp] theorem execSyscall_preserves_r10 (sc : Syscall) (s : State) :
     (execSyscall sc s).regs.r10 = s.regs.r10 := by
-  cases sc <;> simp [execSyscall]
+  -- Every syscall body preserves r10 in every branch (no syscall writes
+  -- r10). `simp` unfolds the bodies (incl. commitOptional); `repeat' split`
+  -- breaks any residual `if`/`match` guards (e.g. validate's nested
+  -- curve-id ifs, Pda/Poseidon's Option match) so each leaf closes.
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
 
 /-- Whether an instruction is `.call_local` — the only `step` arm that
     *pushes* onto `callStack`. The `.exit` arm with non-empty `callStack`
@@ -477,7 +492,8 @@ def Insn.isCallLocal : Insn → Bool
     `regs`/`mem`/`log`/`returnData`. -/
 @[simp] theorem execSyscall_preserves_callStack (sc : Syscall) (s : State) :
     (execSyscall sc s).callStack = s.callStack := by
-  cases sc <;> first | rfl | simp [execSyscall]
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
 
 /-! ## Conditional r10 frame lemmas (#32 item 4)
 
@@ -584,7 +600,8 @@ match-case to surface the underlying record-update. -/
 
 @[simp] theorem execSyscall_preserves_regions (sc : Syscall) (s : State) :
     (execSyscall sc s).regions = s.regions := by
-  cases sc <;> first | rfl | simp [execSyscall]
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
 
 @[simp] theorem step_preserves_regions (insn : Insn) (s : State) :
     (step insn s).regions = s.regions := by
@@ -771,16 +788,20 @@ abbrev Step := State → PUnit × State
 
   -- Internal call — see step's `.call_local` arm.
   | .call_local target =>
-    let frame : CallFrame := {
-      retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
-      savedR8 := rf.r8, savedR9 := rf.r9, savedR10 := rf.r10 }
-    ((), { s with pc := target
-                  regs := { rf with r10 := rf.r10 + 0x1000 }
-                  callStack := frame :: s.callStack })
+    -- Call-depth limit (H4) — mirror of step's `.call_local` guard.
+    if s.callStack.length ≥ MAX_CALL_DEPTH then
+      ((), { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED })
+    else
+      let frame : CallFrame := {
+        retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
+        savedR8 := rf.r8, savedR9 := rf.r9, savedR10 := rf.r10 }
+      ((), { s with pc := target
+                    regs := { rf with r10 := rf.r10 + 0x1000 }
+                    callStack := frame :: s.callStack })
 
-  -- Indirect call — see step's `.callx` arm.
-  | .callx reg =>
-    ((), { s with pc := rf.get reg })
+  -- Indirect call — see step's `.callx` arm (fail closed, C2).
+  | .callx _reg =>
+    ((), { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION })
 
   -- Exit
   | .exit =>

@@ -67,8 +67,12 @@ def sol_panic_hash                     : Nat := hashString "sol_panic_"
 -- Allocator
 def sol_alloc_free_hash                : Nat := hashString "sol_alloc_free_"
 
--- Hashing (additions)
-def sol_sha512_hash                    : Nat := hashString "sol_sha512"
+-- Hashing (additions). NOTE: `sol_sha512` is DEFINED in the SDK
+-- (`solana-define-syscall`) but is NOT registered by agave's loader (it
+-- appears in neither the registry nor any feature-gated registration), so
+-- a program that calls it is rejected on-chain. We therefore deliberately
+-- do NOT give it a hash entry: an unregistered hash resolves to
+-- `.unknown` in `fromHash` and fails closed, matching agave.
 def sol_poseidon_hash                  : Nat := hashString "sol_poseidon"
 
 -- Sysvar additions
@@ -128,7 +132,6 @@ def fromHash (h : Nat) : Syscall :=
   else if h = abort_hash                    then .abort
   else if h = sol_panic_hash                then .sol_panic_
   else if h = sol_alloc_free_hash           then .sol_alloc_free_
-  else if h = sol_sha512_hash               then .sol_sha512
   else if h = sol_poseidon_hash             then .sol_poseidon
   else if h = sol_get_fees_sysvar_hash      then .sol_get_fees_sysvar
   else if h = sol_get_epoch_rewards_sysvar_hash  then .sol_get_epoch_rewards_sysvar

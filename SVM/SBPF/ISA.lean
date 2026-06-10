@@ -181,12 +181,11 @@ inductive Insn
   -- Internal call (`call <imm32>` with `src = 1`, opcode 0x85). The
   -- 32-bit immediate is a signed slot-offset from the next
   -- instruction; the decoder resolves it to an absolute logical PC.
-  -- Semantics: push the return PC onto `State.callStack`, jump to
-  -- target. `.exit` pops the stack instead of terminating when the
-  -- stack is non-empty. Callee-saved register preservation (r6–r9 /
-  -- r10) is *not* modeled — programs that rely on r6–r9 surviving
-  -- across the call will misbehave (real sBPF writes those + r10 to
-  -- the new frame; full frame modeling is Phase D).
+  -- Semantics: push a call frame (return PC + saved r6–r9 + saved r10)
+  -- onto `State.callStack`, bump r10 by one V0 frame (0x1000), and jump
+  -- to target. `.exit` pops the frame — restoring r6–r9 and r10 — instead
+  -- of terminating, when the stack is non-empty. Callee-saved frame
+  -- preservation IS modeled (see `Execute.lean` `.call_local` / `.exit`).
   | call_local (target : Nat)
   -- Indirect call (`callx <reg>`, opcode 0x8d) — call target is the
   -- runtime value of `reg`, interpreted as a logical PC. Cargo-built

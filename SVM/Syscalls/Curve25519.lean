@@ -148,13 +148,15 @@ caller still pays *something*. -/
   let curveId  := s.regs.r1
   let pointA   := s.regs.r2
   let pointB   := readBytes s.mem pointA 32
-  let errCode  : Nat :=
-    if curveId = CURVE25519_EDWARDS then
-      if validateEdwards pointB then 0 else 1
-    else if curveId = CURVE25519_RISTRETTO then
-      if validateRistretto pointB then 0 else 1
-    else 2
-  { s with regs := s.regs.set .r0 errCode }
+  if curveId = CURVE25519_EDWARDS then
+    { s with regs := s.regs.set .r0 (if validateEdwards pointB then 0 else 1) }
+  else if curveId = CURVE25519_RISTRETTO then
+    { s with regs := s.regs.set .r0 (if validateRistretto pointB then 0 else 1) }
+  else
+    -- Unsupported curve_id: agave aborts with `InvalidAttribute` when
+    -- `abort_on_invalid_curve` is active (it is, under all_enabled).
+    -- Fail closed rather than return r0:=2. See docs/SOUNDNESS_AUDIT_* (M7).
+    { s with exitCode := some ERR_INVALID_ATTRIBUTE }
 
 /-- Execute `sol_curve_group_op`.
     ABI: r1 = curve_id, r2 = op_id (0=ADD/1=SUB/2=MUL),
@@ -164,19 +166,23 @@ caller still pays *something*. -/
   let opId    := s.regs.r2
   let leftB   := readBytes s.mem s.regs.r3 32
   let rightB  := readBytes s.mem s.regs.r4 32
-  let result : Option ByteArray :=
-    if curveId = CURVE25519_EDWARDS then
-      if opId = OP_ADD then edwardsAdd leftB rightB
-      else if opId = OP_SUB then edwardsSub leftB rightB
-      else if opId = OP_MUL then edwardsMul leftB rightB
-      else none
-    else if curveId = CURVE25519_RISTRETTO then
-      if opId = OP_ADD then ristrettoAdd leftB rightB
-      else if opId = OP_SUB then ristrettoSub leftB rightB
-      else if opId = OP_MUL then ristrettoMul leftB rightB
-      else none
-    else none
-  commitOptional s s.regs.r5 32 result
+  -- Unsupported curve_id aborts with `InvalidAttribute` under
+  -- `abort_on_invalid_curve` (active in all_enabled — agave-syscalls
+  -- lib.rs:1119). A valid curve with a failed/invalid op returns Ok(1)
+  -- (commitOptional none), unchanged. See docs/SOUNDNESS_AUDIT_* (M7).
+  if curveId = CURVE25519_EDWARDS then
+    commitOptional s s.regs.r5 32
+      (if opId = OP_ADD then edwardsAdd leftB rightB
+       else if opId = OP_SUB then edwardsSub leftB rightB
+       else if opId = OP_MUL then edwardsMul leftB rightB
+       else none)
+  else if curveId = CURVE25519_RISTRETTO then
+    commitOptional s s.regs.r5 32
+      (if opId = OP_ADD then ristrettoAdd leftB rightB
+       else if opId = OP_SUB then ristrettoSub leftB rightB
+       else if opId = OP_MUL then ristrettoMul leftB rightB
+       else none)
+  else { s with exitCode := some ERR_INVALID_ATTRIBUTE }
 
 /-- Execute `sol_curve_multiscalar_mul`.
     ABI: r1 = curve_id, r2 = `*const PodScalar*`,
@@ -184,14 +190,20 @@ caller still pays *something*. -/
 @[simp] def execMSM (s : State) : State :=
   let curveId   := s.regs.r1
   let pointsLen := s.regs.r4
-  let scalarsB  := readBytes s.mem s.regs.r2 (32 * pointsLen)
-  let pointsB   := readBytes s.mem s.regs.r3 (32 * pointsLen)
-  let result : Option ByteArray :=
-    if pointsLen = 0 ∨ pointsLen > 512 then none
-    else if curveId = CURVE25519_EDWARDS then edwardsMSM scalarsB pointsB
-    else if curveId = CURVE25519_RISTRETTO then ristrettoMSM scalarsB pointsB
-    else none
-  commitOptional s s.regs.r5 32 result
+  -- Agave aborts with `InvalidLength` when points_len > 512
+  -- (agave-syscalls lib.rs:1258). Fail closed. (n = 0 and compute
+  -- failures return Ok(1) on chain, so they stay in-band.) See M9.
+  if pointsLen > 512 then
+    { s with exitCode := some ERR_INVALID_LENGTH }
+  else
+    let scalarsB  := readBytes s.mem s.regs.r2 (32 * pointsLen)
+    let pointsB   := readBytes s.mem s.regs.r3 (32 * pointsLen)
+    let result : Option ByteArray :=
+      if pointsLen = 0 then none
+      else if curveId = CURVE25519_EDWARDS then edwardsMSM scalarsB pointsB
+      else if curveId = CURVE25519_RISTRETTO then ristrettoMSM scalarsB pointsB
+      else none
+    commitOptional s s.regs.r5 32 result
 
 end Curve25519
 end SVM.SBPF

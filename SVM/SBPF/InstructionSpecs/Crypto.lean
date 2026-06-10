@@ -36,7 +36,10 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     (h_step_mem  : ∀ s : State, s.regs.get r = rV →
         (step (.call sc) s).mem = s.mem)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
-    (h_step_exit : ∀ s : State, s.exitCode = none →
+    -- Pinned on `r = rV` (H4/M9): syscalls that fail closed for *some*
+    -- inputs (e.g. `sol_curve_multiscalar_mul` with n > 512) still
+    -- preserve `exitCode = none` on the pinned input the spec is about.
+    (h_step_exit : ∀ s : State, s.regs.get r = rV → s.exitCode = none →
         (step (.call sc) s).exitCode = none)
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
@@ -112,7 +115,7 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
-    rw [hstep_eq]; exact h_step_exit s hex
+    rw [hstep_eq]; exact h_step_exit s hs_regs_r hex
   have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
     rw [hstep_eq]; exact h_step_cu s
   -- Assemble Q ** R.
@@ -233,51 +236,15 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     -- Witness for Q.
     · refine ⟨h_r0_new, h_r_new, hd_r0_r_new, rfl, rfl, rfl⟩
 
-/-! ## Tier-1 triple: `sol_curve_validate_point` (unsupported curve_id)
+/-! ## `sol_curve_validate_point` (unsupported curve_id) — fails closed
 
-Pinning `r1 = 42` (any value ≠ EDWARDS=0, ≠ RISTRETTO=1) forces
-`errCode = 2`. Memory is untouched, regs.r2 / r3 / mem / pc are
-unaffected at the SL level since they are owned by the frame `R`.
-
-Trust statement: none required — the executor's match-on-curveId
-shortcircuits before reaching any FFI call. (The opaque
-`Curve25519.validateEdwards` / `validateRistretto` are not called
-on this path.) -/
-
-theorem call_sol_curve_validate_point_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat) (h_unsup : r1V ≠ 0 ∧ r1V ≠ 1)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_curve_validate_point) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_curve_validate_point))
-      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
-      ((.r0 ↦ᵣ 2) ** (.r1 ↦ᵣ r1V)) := by
-  apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_validate_point .r1 r1V 2 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
-  · -- regs
-    intro s hr1
-    have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
-    simp only [step, execSyscall, Curve25519.execValidate,
-               Curve25519.CURVE25519_EDWARDS, Curve25519.CURVE25519_RISTRETTO]
-    rw [hr1', if_neg h_unsup.1, if_neg h_unsup.2]
-  · -- mem
-    intro s _
-    simp [step, execSyscall, Curve25519.execValidate]
-  · -- pc
-    intro s
-    simp [step, execSyscall, Curve25519.execValidate]
-  · -- exitCode preservation
-    intro s hex
-    simp [step, execSyscall, Curve25519.execValidate]
-    exact hex
-  · -- returnData unchanged
-    intro s
-    simp [step, execSyscall, Curve25519.execValidate]
-  · -- callStack unchanged
-    intro s
-    simp [step, execSyscall, Curve25519.execValidate]
-  · -- cuConsumed bound
-    exact h_step_cu
+For an unsupported curve_id (≠ EDWARDS=0, ≠ RISTRETTO=1) `execValidate`
+now aborts with `ERR_INVALID_ATTRIBUTE`, matching agave when
+`abort_on_invalid_curve` is active (it is, under `FeatureSet::all_enabled`
+— agave-syscalls lib.rs:999). The former "writes r0 := 2" triple was
+removed: it was provable over a behaviour the chain rejects (M7). A
+`cuTripleAbortsWithin` spec for this arm can be added on demand by
+mirroring `call_abort_aborts_spec`. -/
 
 /-! ## Tier-1 triple: `sol_secp256k1_recover` (invalid recovery_id)
 
@@ -313,7 +280,7 @@ theorem call_sol_secp256k1_recover_invalid_recid_spec
     intro s
     simp [step, execSyscall, Secp256k1.exec]
   · -- exitCode preservation
-    intro s hex
+    intro s _ hex
     simp only [step, execSyscall, Secp256k1.exec]
     show s.exitCode = none
     exact hex
@@ -326,79 +293,12 @@ theorem call_sol_secp256k1_recover_invalid_recid_spec
   · -- cuConsumed bound
     exact h_step_cu
 
-/-! ## Tier-1 triple: `sol_curve_group_op` (unsupported curve_id)
+/-! ## `sol_curve_group_op` (unsupported curve_id) - fails closed
 
-Pinning `r1 = curveId` with curveId ≠ EDWARDS, ≠ RISTRETTO forces
-`result = none`, hence `commitOptional` returns `{r0:=1, mem unchanged}`.
-No FFI call happens on this path.
-
-Trust statement: none required for this branch. -/
-
-theorem call_sol_curve_group_op_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat) (h_unsup : r1V ≠ 0 ∧ r1V ≠ 1)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_curve_group_op) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_curve_group_op))
-      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
-      ((.r0 ↦ᵣ 1) ** (.r1 ↦ᵣ r1V)) := by
-  apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_group_op .r1 r1V 1 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
-  · -- regs
-    intro s hr1
-    have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
-    simp only [step, execSyscall, Curve25519.execGroupOp, commitOptional,
-               Curve25519.CURVE25519_EDWARDS, Curve25519.CURVE25519_RISTRETTO]
-    rw [hr1', if_neg h_unsup.1, if_neg h_unsup.2]
-  · -- mem
-    intro s hr1
-    have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
-    simp only [step, execSyscall, Curve25519.execGroupOp, commitOptional,
-               Curve25519.CURVE25519_EDWARDS, Curve25519.CURVE25519_RISTRETTO]
-    rw [hr1', if_neg h_unsup.1, if_neg h_unsup.2]
-  · -- pc
-    intro s
-    show (step (Insn.call Syscall.sol_curve_group_op) s).pc = s.pc + 1
-    rfl
-  · -- exitCode preservation
-    intro s hex
-    show (step (Insn.call Syscall.sol_curve_group_op) s).exitCode = none
-    simp only [step, execSyscall, Curve25519.execGroupOp]
-    -- The result option (Edwards/Ristretto add/sub/mul / none) is opaque,
-    -- but commitOptional preserves exitCode regardless of arm.
-    generalize h_res :
-        (if s.regs.r1 = Curve25519.CURVE25519_EDWARDS then
-            if s.regs.r2 = Curve25519.OP_ADD then
-              Curve25519.edwardsAdd (readBytes s.mem s.regs.r3 32)
-                                     (readBytes s.mem s.regs.r4 32)
-            else if s.regs.r2 = Curve25519.OP_SUB then
-              Curve25519.edwardsSub (readBytes s.mem s.regs.r3 32)
-                                     (readBytes s.mem s.regs.r4 32)
-            else if s.regs.r2 = Curve25519.OP_MUL then
-              Curve25519.edwardsMul (readBytes s.mem s.regs.r3 32)
-                                     (readBytes s.mem s.regs.r4 32)
-            else none
-          else if s.regs.r1 = Curve25519.CURVE25519_RISTRETTO then
-            if s.regs.r2 = Curve25519.OP_ADD then
-              Curve25519.ristrettoAdd (readBytes s.mem s.regs.r3 32)
-                                       (readBytes s.mem s.regs.r4 32)
-            else if s.regs.r2 = Curve25519.OP_SUB then
-              Curve25519.ristrettoSub (readBytes s.mem s.regs.r3 32)
-                                       (readBytes s.mem s.regs.r4 32)
-            else if s.regs.r2 = Curve25519.OP_MUL then
-              Curve25519.ristrettoMul (readBytes s.mem s.regs.r3 32)
-                                       (readBytes s.mem s.regs.r4 32)
-            else none
-          else none) = res
-    cases res <;> (simp [commitOptional]; exact hex)
-  · -- returnData unchanged
-    intro s
-    simp [step, execSyscall, Curve25519.execGroupOp]
-  · -- callStack unchanged
-    intro s
-    simp [step, execSyscall, Curve25519.execGroupOp]
-  · -- cuConsumed bound
-    exact h_step_cu
+An unsupported curve_id now aborts (`ERR_INVALID_ATTRIBUTE`) in
+`execGroupOp`, matching agave under `abort_on_invalid_curve`; the former
+"r0 := 1" triple was removed (it was provable-over). A valid curve with a
+failed/invalid op still returns r0 := 1 (commitOptional none). See M7. -/
 
 /-! ## Tier-1 triple: `sol_curve_multiscalar_mul` (zero-length input)
 
@@ -418,40 +318,37 @@ theorem call_sol_curve_multiscalar_mul_zero_n_spec
       ((.r0 ↦ᵣ 1) ** (.r4 ↦ᵣ 0)) := by
   apply cuTripleWithin_syscall_writes_r0_only_pinned
     .sol_curve_multiscalar_mul .r4 0 1 pc nCu (by decide : (.r4 : Reg) ≠ .r0)
-  · -- regs
+  · -- regs (pinned r4 = 0 ⇒ no n>512 abort; result none ⇒ r0 := 1)
     intro s hr4
     have hr4' : s.regs.r4 = 0 := by show s.regs.get .r4 = 0; exact hr4
-    simp only [step, execSyscall, Curve25519.execMSM, commitOptional]
-    rw [hr4', if_pos (Or.inl rfl)]
+    simp [step, execSyscall, Curve25519.execMSM, commitOptional, hr4']
   · -- mem
     intro s hr4
     have hr4' : s.regs.r4 = 0 := by show s.regs.get .r4 = 0; exact hr4
-    simp only [step, execSyscall, Curve25519.execMSM, commitOptional]
-    rw [hr4', if_pos (Or.inl rfl)]
+    simp [step, execSyscall, Curve25519.execMSM, commitOptional, hr4']
   · -- pc
     intro s
     show (step (Insn.call Syscall.sol_curve_multiscalar_mul) s).pc = s.pc + 1
     rfl
-  · -- exitCode preservation
-    intro s hex
-    show (step (Insn.call Syscall.sol_curve_multiscalar_mul) s).exitCode = none
+  · -- exitCode preservation (pinned r4 = 0 excludes the n>512 abort)
+    intro s hr4 hex
+    have hr4' : s.regs.r4 = 0 := by show s.regs.get .r4 = 0; exact hr4
+    simp [step, execSyscall, Curve25519.execMSM, commitOptional, hr4', hex]
+  · -- returnData unchanged. `commitOptional` never touches returnData
+    -- (either branch), and neither does the n>512 abort.
+    intro s
+    have hco : ∀ (a l : Nat) (r : Option ByteArray) (st : State),
+        (commitOptional st a l r).returnData = st.returnData := fun a l r st => by
+      cases r <;> simp [commitOptional]
     simp only [step, execSyscall, Curve25519.execMSM]
-    generalize h_res :
-        (if s.regs.r4 = 0 ∨ s.regs.r4 > 512 then none
-          else if s.regs.r1 = Curve25519.CURVE25519_EDWARDS then
-            Curve25519.edwardsMSM (readBytes s.mem s.regs.r2 (32 * s.regs.r4))
-                                   (readBytes s.mem s.regs.r3 (32 * s.regs.r4))
-          else if s.regs.r1 = Curve25519.CURVE25519_RISTRETTO then
-            Curve25519.ristrettoMSM (readBytes s.mem s.regs.r2 (32 * s.regs.r4))
-                                     (readBytes s.mem s.regs.r3 (32 * s.regs.r4))
-          else none) = res
-    cases res <;> (simp [commitOptional]; exact hex)
-  · -- returnData unchanged
+    split <;> simp [hco]
+  · -- callStack unchanged (commitOptional + abort both preserve it)
     intro s
-    simp [step, execSyscall, Curve25519.execMSM]
-  · -- callStack unchanged
-    intro s
-    simp [step, execSyscall, Curve25519.execMSM]
+    have hco : ∀ (a l : Nat) (r : Option ByteArray) (st : State),
+        (commitOptional st a l r).callStack = st.callStack := fun a l r st => by
+      cases r <;> simp [commitOptional]
+    simp only [step, execSyscall, Curve25519.execMSM]
+    split <;> simp [hco]
   · -- cuConsumed bound
     exact h_step_cu
 
@@ -497,7 +394,7 @@ theorem call_sol_curve_decompress_unsupported_spec
     show (step (Insn.call Syscall.sol_curve_decompress) s).pc = s.pc + 1
     rfl
   · -- exitCode preservation
-    intro s hex
+    intro s _ hex
     show (step (Insn.call Syscall.sol_curve_decompress) s).exitCode = none
     simp only [step, execSyscall, Bls12_381.execDecompress]
     generalize h_res :
@@ -555,7 +452,7 @@ theorem call_sol_curve_pairing_map_unsupported_spec
     show (step (Insn.call Syscall.sol_curve_pairing_map) s).pc = s.pc + 1
     rfl
   · -- exitCode preservation
-    intro s hex
+    intro s _ hex
     show (step (Insn.call Syscall.sol_curve_pairing_map) s).exitCode = none
     simp only [step, execSyscall, Bls12_381.execPairing]
     generalize h_res :

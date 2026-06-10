@@ -1634,27 +1634,11 @@ example : Sha512.hash ⟨#[0x61, 0x62, 0x63]⟩ = ⟨#[
   0x45, 0x4d, 0x44, 0x23, 0x64, 0x3c, 0xe8, 0x0e,
   0x2a, 0x9a, 0xc9, 0x4f, 0xa5, 0x4c, 0xa4, 0x9f ]⟩ := by native_decide
 
-/-- Runner demo: identical shape to the sha256 demo but 64-byte output;
-    we exit with the first byte of `sha512("abc")` = `0xdd`. -/
-def sha512Demo : ByteArray :=
-  let h := SyscallHash.sol_sha512_hash
-  ⟨#[
-    -- mov64 r2, 1
-    0xb7, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
-    -- mov64 r3, r1
-    0xbf, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    -- add64 r3, 64
-    0x07, 0x03, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00
-  ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
-    -- ldxb r0, [r3 + 0]
-    0x71, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    -- exit
-    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-  ]⟩
-
-example :
-    Runner.runForExit sha512Demo { input := sha256DemoInput } = some 0xdd := by
-  native_decide
+-- NOTE: there is intentionally no `runForExit` demo calling a `sol_sha512`
+-- syscall: `sol_sha512` is defined in the SDK but NOT registered by agave's
+-- loader, so no on-chain program can invoke it (its hash resolves to
+-- `.unknown` and fails closed). The two `Sha512.hash` checks above cover the
+-- bridge directly.
 
 /-! ## Demo 34 — `sol_poseidon` (BN254 x^5)
 

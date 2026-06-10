@@ -14,7 +14,12 @@ pushed onto the call stack. PC moves to `target`. -/
 
 theorem call_local_spec
     (target : Nat) (cs : List CallFrame)
-    (r6V r7V r8V r9V r10V : Nat) (pc : Nat) :
+    (r6V r7V r8V r9V r10V : Nat) (pc : Nat)
+    -- Call-depth bound (H4): the push only happens below MAX_CALL_DEPTH.
+    -- A trailing autoParam so existing (qedlift-emitted) call sites,
+    -- which pass a concrete `cs`, discharge it automatically.
+    (hDepth : cs.length < MAX_CALL_DEPTH := by
+      simp only [List.length_cons, List.length_nil, MAX_CALL_DEPTH]; omega) :
     cuTripleWithin 1 0 pc target
       (CodeReq.singleton pc (.call_local target))
       ((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
@@ -124,12 +129,14 @@ theorem call_local_spec
   have hstep_eq : executeFn fetch s 1 = step (.call_local target) s := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+  have hnotdepth : ¬ (s.callStack.length ≥ MAX_CALL_DEPTH) := by
+    rw [hs_cs]; omega
   have hexec : executeFn fetch s 1 =
       { s with pc := target
                regs := { s.regs with r10 := s.regs.r10 + 0x1000 }
                callStack := ⟨s.pc + 1, s.regs.r6, s.regs.r7,
                              s.regs.r8, s.regs.r9, s.regs.r10⟩ :: s.callStack } := by
-    rw [hstep_eq]; rfl
+    rw [hstep_eq]; simp only [step, if_neg hnotdepth]
   -- Phase 4: hR non-overlap.
   have hd_PR_regs := hd_PR.regs
   have hd_PR_cs := hd_PR.callStack
