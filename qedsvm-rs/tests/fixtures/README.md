@@ -35,6 +35,17 @@ cp target/deploy/qedsvm_<name>.so ../<name>.so
 
 Requires the Solana toolchain (cargo-build-sbf) on PATH.
 
+## `halfword_store.so` (936 bytes)
+
+All three halfword memory instructions in one straight line: `ldxh`
+reads the u16 at account 0's `data[0..2]` (hand-parsed input layout,
+data at `input+96`), `stxh` writes back `value + 1`, and `sth`
+(ST_H_IMM, opcode 0x6a) stores the constant `0x1234` at `data[2..4]`.
+The only fixture exercising 16-bit stores. Source in
+`halfword_store_src/` (no `solana_program` dep, `byte_increment_src/`
+style). Used by `diff_mollusk.rs` and lifted end-to-end as
+`Generated.HalfwordStoreLifted` (the real-bytecode `sth_spec` pin).
+
 ## `cpi_caller.so` / `cpi_increment_caller.so`
 
 Two CPI fixtures, both from `cargo-build-sbf`:
