@@ -4,7 +4,7 @@ This is the module boundary that downstream consumers (qedgen / QEDGen/solana-sk
 
 ```lean
 require qedsvm from git
-  "https://github.com/QEDGen/qedsvm.git" @ "v0.3.0"
+  "https://github.com/QEDGen/qedsvm.git" @ "v0.4.0"
 ```
 
 The rule is one line: **`lean_lib SVM` is the frozen surface; `lean_lib Examples` is never API.** Everything importable under the `SVM` namespace is public, with one flagged exception (the bridging predicates, below). `examples/lean/` holds one-time proofs and generated lift demos; nothing in `SVM` imports from it, and nothing in it is stable.
@@ -57,4 +57,4 @@ If you are integrating today: state obligations via `AsmRefinesFieldUpdate` and 
 
 ## Versioning
 
-Pre-1.0: pin an exact tag (`@ "v0.3.0"`). Within the frozen surface above, breaking changes bump the minor version and get a new tag; the bridging predicates flagged as evolving may change or disappear without a major signal until #86 lands. `lean_lib Examples` and the Rust bins may change at any time.
+Pre-1.0: pin an exact tag (`@ "v0.4.0"`). Within the frozen surface above, breaking changes bump the minor version and get a new tag; the bridging predicates flagged as evolving may change or disappear without a major signal until #86 lands. `lean_lib Examples` and the Rust bins may change at any time.
