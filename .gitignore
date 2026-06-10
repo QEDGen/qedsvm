@@ -3,6 +3,7 @@ build/
 # docs/ is local scratch space by default; the public reference docs are
 # tracked explicitly. `docs/*` (not `docs/`) so the negations below re-include.
 docs/*
+!docs/API.md
 !docs/PIPELINE.md
 !docs/COVERAGE.md
 !docs/MIR.md
