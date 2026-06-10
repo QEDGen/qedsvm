@@ -152,6 +152,69 @@ fn slot_to_logical(analysis: &Analysis, slot: usize) -> Option<usize> {
     analysis.instructions.binary_search_by(|i| i.ptr.cmp(&slot)).ok()
 }
 
+/// Classify a constant error-exit block. Three tail shapes, all
+/// "set r0 to a constant, then reach `exit` with nothing in between":
+///
+///   1. `…; mov64/lddw r0, imm; exit`        (exit carried in-block)
+///   2. `…; mov64/lddw r0, imm; ja tgt`      where `tgt` is a bare-exit
+///      block (pinocchio routes every error landing in an arm through
+///      one shared `exit`)
+///   3. `…; mov64/lddw r0, imm` falling through into a bare-exit block
+///
+/// Returns the exit code as the u64 the machine puts in r0
+/// (`toU64 imm` — sign-extension wraps, matching the Lean side).
+/// Each shape is collapsed in one `apply` by the matching lemma in
+/// `SVM/SBPF/InstructionSpecs/Terminating.lean`:
+/// `errorExit{,_lddw}_spec` (shapes 1/3) / `errorExitJa{,_lddw}_spec`
+/// (shape 2).
+fn error_exit_code(analysis: &Analysis, b: &CfgNode) -> Option<u64> {
+    let r = &b.instructions;
+    // Does the block's single destination start with a bare `exit`?
+    let dest_is_exit = || -> bool {
+        if b.destinations.len() != 1 { return false; }
+        analysis.cfg_nodes.get(&b.destinations[0])
+            .map(|d| analysis.instructions[d.instructions.start].opc == ebpf::EXIT)
+            .unwrap_or(false)
+    };
+    if r.end == r.start { return None; }
+    let last = &analysis.instructions[r.end - 1];
+    // Where does the backward scan for the r0 setter begin?
+    let scan_end = if last.opc == ebpf::EXIT || last.opc == ebpf::JA {
+        // Exit carried in-block, or jump to a shared bare-exit block.
+        if last.opc == ebpf::JA && !dest_is_exit() { return None; }
+        r.end - 1
+    } else {
+        // Fall-through into a bare-exit block.
+        if !dest_is_exit() { return None; }
+        r.end
+    };
+    // Last write to r0 inside the block. Real error landings interleave
+    // spills/cleanup between the setter and the terminator
+    // (`lddw r0, c; stxdw …; ja exit`), so "the insn right before the
+    // jump" is too shallow. Register-writing instruction classes are
+    // LD/LDX/ALU64/ALU32 (a store's `dst` is the base register of a
+    // memory write, and a compare-jump's `dst` is read-only); `call`
+    // clobbers r0 with a computed value, so it ends the scan.
+    for idx in (r.start..scan_end).rev() {
+        let insn = &analysis.instructions[idx];
+        if insn.opc == ebpf::CALL_IMM || insn.opc == ebpf::CALL_REG {
+            return None; // r0 is a call result, not a constant
+        }
+        let class = insn.opc & 0x07;
+        let writes_reg = matches!(class, 0x00 | 0x01 | 0x04 | 0x07);
+        if writes_reg && insn.dst == 0 {
+            return match insn.opc {
+                // Analysis merges the lddw high half
+                // (`augment_lddw_unchecked`), so `imm` is the full
+                // 64-bit value for LD_DW_IMM.
+                ebpf::MOV64_IMM | ebpf::LD_DW_IMM => Some(insn.imm as u64),
+                _ => None, // r0 written, but not from a constant
+            };
+        }
+    }
+    None // r0 inherited from a predecessor block
+}
+
 /// Parse a `.pcs` trace file: one decimal logical PC per line, `#`
 /// comments and blank lines ignored. Returns the PC set.
 fn load_trace(path: &Path) -> Result<BTreeSet<usize>, String> {
@@ -460,6 +523,23 @@ fn emit_lean<W: std::io::Write>(
                  b.instructions.start, b.instructions.end, dests, sep)?;
     }
     writeln!(out, "  ]")?;
+    writeln!(out)?;
+
+    // Constant-exit blocks (no trace needed — static shape).
+    let const_exits: Vec<(usize, u64)> = arm_blocks.iter()
+        .filter_map(|b| error_exit_code(analysis, b)
+            .map(|code| (b.instructions.start, code)))
+        .collect();
+    writeln!(out, "/-- Blocks that exit with a CONSTANT r0 (directly, or via a jump /")?;
+    writeln!(out, "    fall-through to a shared bare-`exit` block), as")?;
+    writeln!(out, "    `(blockStartPc, exitCode)`. Code 0 entries are the success")?;
+    writeln!(out, "    funnels; nonzero entries are constant error landings. Each is")?;
+    writeln!(out, "    discharged in one `apply` of `errorExit{{,Ja}}{{,_lddw}}_spec`")?;
+    writeln!(out, "    (InstructionSpecs/Terminating.lean). -/")?;
+    writeln!(out, "def constExitBlocks : List (Nat × Nat) :=")?;
+    writeln!(out, "  [{}]", const_exits.iter()
+        .map(|(pc, code)| format!("({}, {})", pc, code))
+        .collect::<Vec<_>>().join(", "))?;
     writeln!(out)?;
 
     // Happy-path tagging (when a trace was supplied).
@@ -871,6 +951,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      blocks with exits outside the function: {}",
                          exiting.len());
 
+                // --- constant-exit blocks (static shape) ----------------
+                let (n_zero, n_nonzero) = arm_blocks.iter()
+                    .filter_map(|b| error_exit_code(&analysis, b))
+                    .fold((0usize, 0usize), |(z, nz), code|
+                        if code == 0 { (z + 1, nz) } else { (z, nz + 1) });
+                println!("      constant-exit blocks: {} success (code 0), {} error",
+                         n_zero, n_nonzero);
+
                 // --- happy-path tagging (when --trace given) ------------
                 if let Some(t) = trace_pcs.as_ref() {
                     let happy = arm_blocks.iter()
@@ -954,5 +1042,43 @@ mod tests {
             .count();
         assert_eq!(happy, 27,
             "happy-path tagging drifted: expected 27 on-trace blocks, got {}", happy);
+
+        // Constant-exit classification inside the arm slice: p_token's
+        // transfer errors return COMPUTED r0 through call boundaries, so
+        // the only constant-exit blocks are the nine r0=0 success
+        // funnels (`mov64 r0, 0; … ; ja <shared exit>`). A nonzero hit
+        // here would mean the detector started tagging computed codes.
+        let codes: Vec<u64> = arm_blocks.iter()
+            .filter_map(|b| error_exit_code(&analysis, b))
+            .collect();
+        assert_eq!(codes.len(), 9, "constant-exit block count drifted");
+        assert!(codes.iter().all(|&c| c == 0),
+            "transfer arm has no constant nonzero exits; got {:?}", codes);
+    }
+
+    /// The constant ERROR landings live in the entrypoint prelude:
+    /// shape 1 (`lddw r0, 19<<32; exit` — the dispatch-mismatch exit at
+    /// logical 196..198) and shape 2 (`lddw r0, 10<<32; ja <bare exit>`
+    /// at logical 124..126). Pins `error_exit_code` against both real
+    /// shapes, codes included.
+    #[test]
+    fn entrypoint_error_landings_classify() {
+        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let loader = Arc::new(BuiltinProgram::new_mock());
+        let executable: Executable<NoopCtx> =
+            Executable::load(&bytes, loader).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&executable).expect("analyse p_token.so");
+
+        let block_containing = |logical: usize| -> &CfgNode {
+            analysis.cfg_nodes.values()
+                .find(|b| b.instructions.start <= logical && logical < b.instructions.end)
+                .expect("block containing pc")
+        };
+        // Shape 1: dispatch-mismatch `lddw r0, 19<<32; exit`.
+        assert_eq!(error_exit_code(&analysis, block_containing(196)),
+            Some(19u64 << 32), "dispatch-mismatch landing misclassified");
+        // Shape 2: prelude landing `lddw r0, 10<<32; ja <bare exit>`.
+        assert_eq!(error_exit_code(&analysis, block_containing(124)),
+            Some(10u64 << 32), "prelude ja-landing misclassified");
     }
 }

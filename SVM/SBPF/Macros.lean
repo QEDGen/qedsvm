@@ -244,6 +244,35 @@ theorem halfword_store_imm_macro_spec_auto (baseAddr oldH0 oldH1 : Nat) :
                   rt.containsWritable (effectiveAddr baseAddr 2) 2 = true) := by
   sl_block_auto
 
+/-! ## Error-exit collapse — the one-`apply` discharge
+
+The error-path collapse lemmas (`InstructionSpecs/Terminating.lean`)
+discharge a constant-exit landing in a single `exact`. Worked here on
+both real idioms qedrecover tags as `constExitBlocks`: the in-block
+form (`mov64 r0, c; exit`) and the shared-exit form
+(`lddw r0, c; ja tgt` with a bare `exit` at `tgt` — pinocchio's
+`ProgramError` encoding `c <<< 32` rides the lddw variant). -/
+
+/-- Dispatch-mismatch landing, in-block form: aborts with code 5. -/
+theorem error_exit_macro_spec (vR0Old : Nat) :
+    cuTripleAbortsWithin 2 0 10
+      ((CodeReq.singleton 10 (.mov64 .r0 (.imm 5))).union
+        (CodeReq.singleton 11 .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 5) :=
+  errorExit_spec 5 vR0Old 10
+
+/-- Shared-exit landing, pinocchio shape: `lddw r0, 19 <<< 32; ja 90`
+    with the bare `exit` at 90. Aborts with `toU64 (19 <<< 32)`. -/
+theorem error_exit_ja_macro_spec (vR0Old : Nat) :
+    cuTripleAbortsWithin 3 0 10
+      (((CodeReq.singleton 10 (.lddw .r0 (19 <<< 32))).union
+        (CodeReq.singleton 11 (.ja 90))).union
+        (CodeReq.singleton 90 .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 (19 <<< 32)) :=
+  errorExitJa_lddw_spec (19 <<< 32) vR0Old 10 90 (by omega) (by omega)
+
 /-! ## lamport_transfer via `sl_block_auto` — bounds via residual goals
 
 Same theorem as `lamport_transfer_macro_spec` above. `sl_block_auto`
