@@ -805,3 +805,43 @@ pub extern "C" fn lean_secp256r1_verify(
         Err(_) => 0,
     }
 }
+
+// ───────────────────────────────────────────────────────────────────
+// PC trace hook — target of `SVM/SBPF/Runner.lean`'s `traceStep`
+// (`@[extern "lean_qedsvm_trace_step"]`). When `QEDSVM_TRACE_OUT` is
+// set, every interpreter step appends one decimal logical PC per line
+// to that file (truncated at first use, so each run yields a fresh
+// trace). Unset: a single cached-None check, effectively free. This
+// is the automated producer of the `.pcs` files `qedlift --trace` and
+// `qedrecover --trace` consume; see `scripts/capture_trace.sh`.
+// ───────────────────────────────────────────────────────────────────
+
+fn trace_out() -> &'static Option<std::sync::Mutex<std::fs::File>> {
+    static TRACE_OUT: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
+        std::sync::OnceLock::new();
+    TRACE_OUT.get_or_init(|| {
+        let path = std::env::var_os("QEDSVM_TRACE_OUT")?;
+        match std::fs::File::create(&path) {
+            Ok(f) => Some(std::sync::Mutex::new(f)),
+            Err(e) => {
+                eprintln!(
+                    "qedsvm: QEDSVM_TRACE_OUT={}: {} (tracing disabled)",
+                    path.to_string_lossy(),
+                    e
+                );
+                None
+            }
+        }
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn lean_qedsvm_trace_step(pc: usize, f: lean_obj_arg) -> lean_obj_res {
+    if let Some(file) = trace_out() {
+        use std::io::Write as _;
+        if let Ok(mut g) = file.lock() {
+            let _ = writeln!(g, "{}", pc);
+        }
+    }
+    unsafe { lean_ffi::lean_apply_unit(f) }
+}

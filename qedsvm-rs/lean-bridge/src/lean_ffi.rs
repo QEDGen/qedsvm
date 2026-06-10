@@ -71,6 +71,20 @@ extern "C" {
     fn leanrt_box(v: usize) -> lean_obj_res;
 }
 
+extern "C" {
+    /// Apply a Lean closure to one argument. Unlike the `static inline`
+    /// accessors above, this is a real exported symbol of the Lean
+    /// runtime, so it needs no `lean_glue.c` wrapper. Consumes both
+    /// `f` and `a` (ownership transfers in).
+    fn lean_apply_1(f: lean_obj_arg, a: lean_obj_arg) -> lean_obj_res;
+}
+
+/// Apply a Lean closure `f : Unit → α` to `()`. Used by extern hooks
+/// that wrap a thunk (`dbgTrace`-shaped functions).
+pub unsafe fn lean_apply_unit(f: lean_obj_arg) -> lean_obj_res {
+    unsafe { lean_apply_1(f, leanrt_box(0)) }
+}
+
 // Re-export under Lean's familiar names for the rest of the crate.
 pub unsafe fn lean_alloc_sarray(elem_size: u32, size: usize, capacity: usize) -> lean_obj_res {
     unsafe { leanrt_alloc_sarray(elem_size, size, capacity) }

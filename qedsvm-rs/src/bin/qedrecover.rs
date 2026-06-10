@@ -111,18 +111,27 @@ struct Args {
     so:      PathBuf,
     overlay: PathBuf,
     output:  Option<PathBuf>,
+    /// Happy-path execution trace (`.pcs`, one decimal logical PC per
+    /// line, `#` comments ignored — the format `scripts/capture_trace.sh`
+    /// produces). When given, blocks containing a traced PC are tagged
+    /// happy-path in the emitted metadata. Applies to the single
+    /// overlay-claimed instruction; ambiguous (rejected) when the
+    /// overlay claims more than one.
+    trace:   Option<PathBuf>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut so:      Option<PathBuf> = None;
     let mut overlay: Option<PathBuf> = None;
     let mut output:  Option<PathBuf> = None;
+    let mut trace:   Option<PathBuf> = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--so"      => so      = Some(it.next().ok_or("--so needs a path")?.into()),
             "--overlay" => overlay = Some(it.next().ok_or("--overlay needs a path")?.into()),
             "--output"  => output  = Some(it.next().ok_or("--output needs a path")?.into()),
+            "--trace"   => trace   = Some(it.next().ok_or("--trace needs a path")?.into()),
             other       => return Err(format!("unknown arg: {}", other)),
         }
     }
@@ -130,7 +139,37 @@ fn parse_args() -> Result<Args, String> {
         so:      so.ok_or("missing --so")?,
         overlay: overlay.ok_or("missing --overlay")?,
         output,
+        trace,
     })
+}
+
+/// Convert a slot PC (raw insn-slot index — `cfg_nodes` keys, jump
+/// targets) to a logical PC (index into `analysis.instructions`, the
+/// numbering Lean decode / qedlift / `.pcs` traces use). The two
+/// spaces agree up to the first `lddw` (two slots, one element) and
+/// drift after it. `None` when the slot isn't an instruction start.
+fn slot_to_logical(analysis: &Analysis, slot: usize) -> Option<usize> {
+    analysis.instructions.binary_search_by(|i| i.ptr.cmp(&slot)).ok()
+}
+
+/// Parse a `.pcs` trace file: one decimal logical PC per line, `#`
+/// comments and blank lines ignored. Returns the PC set.
+fn load_trace(path: &Path) -> Result<BTreeSet<usize>, String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("--trace {}: {}", path.display(), e))?;
+    let mut pcs = BTreeSet::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') { continue; }
+        let pc: usize = line.parse().map_err(|_| format!(
+            "--trace {}: line {}: not a decimal PC ({:?})",
+            path.display(), i + 1, line))?;
+        pcs.insert(pc);
+    }
+    if pcs.is_empty() {
+        return Err(format!("--trace {}: no PCs found", path.display()));
+    }
+    Ok(pcs)
 }
 
 // -----------------------------------------------------------------------------
@@ -173,7 +212,13 @@ fn discriminator_load_opc(format: &str) -> Option<u8> {
 /// compare-jumps over the SAME loaded register (subsequent arms in
 /// the same dispatcher cluster, which reuse the load).
 ///
-/// Returns `(load_pc, jump_pc, arm_entry_pc)`.
+/// Returns `(load_pc, jump_pc, arm_entry_pc)`. PC spaces differ by
+/// element: `load_pc`/`jump_pc` are indices into `instructions`
+/// (logical space — lddw is one element, the numbering Lean decode,
+/// qedlift, and `.pcs` traces use), while `arm_entry_pc` is a raw
+/// insn-slot PC (lddw is two slots — the space `cfg_nodes` keys and
+/// jump offsets live in), ready to feed `slice_cfg`. Convert with
+/// `slot_to_logical` for reporting.
 fn find_dispatch_arm(
     instructions: &[ebpf::Insn],
     start_pc: usize,
@@ -218,13 +263,18 @@ fn find_dispatch_arm(
                 let is_jne = cur.opc == ebpf::JNE32_IMM
                           || cur.opc == ebpf::JNE64_IMM;
                 if is_jeq {
-                    // Taken-branch arm entry = target.
-                    let target = (pc as i64) + (k as i64) + 1 + (cur.off as i64);
+                    // Taken-branch arm entry = target. `off` is
+                    // slot-relative, so the base must be the insn's
+                    // slot (`cur.ptr`), NOT its vec index — mixing the
+                    // spaces shifts the target by the number of lddw's
+                    // before it (this was a real bug: p_token transfer's
+                    // arm came back as 309 instead of slot 336).
+                    let target = (cur.ptr as i64) + 1 + (cur.off as i64);
                     return Some((pc, pc + k, target as usize));
                 }
                 if is_jne {
-                    // Not-taken-branch arm entry = next pc.
-                    return Some((pc, pc + k, pc + k + 1));
+                    // Not-taken-branch arm entry = the next slot.
+                    return Some((pc, pc + k, cur.ptr + 1));
                 }
             }
         }
@@ -302,17 +352,24 @@ fn emit_lean<W: std::io::Write>(
     overlay:    &Overlay,
     ovix:       &OverlayIx,
     idl_ix:     &IdlInstruction,
+    analysis:   &Analysis,
     disc_value: i64,
     disc_size:  usize,
     load_pc:    usize,
     jeq_pc:     usize,
-    arm_entry:  usize,
+    arm_entry_logical: usize,
     arm_blocks: &[&CfgNode],
+    trace:      Option<&BTreeSet<usize>>,
 ) -> std::io::Result<()> {
     let module = format!("QedRecover.{}", pascal(&ovix.name));
     let total_insns: usize = arm_blocks.iter()
         .map(|b| b.instructions.end - b.instructions.start)
         .sum();
+    // A block is on the happy path iff the trace executed any PC in it.
+    let on_trace = |b: &CfgNode| -> bool {
+        trace.is_some_and(|t|
+            t.range(b.instructions.start..b.instructions.end).next().is_some())
+    };
 
     writeln!(out, "/-")?;
     writeln!(out, "  Recovered metadata for the `{}` instruction in `{}`.",
@@ -324,11 +381,22 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "    overlay: {}", args.overlay.display())?;
     writeln!(out, "    idl:     {}", overlay.idl)?;
     writeln!(out)?;
-    writeln!(out, "  Happy/sad-path tagging is NOT yet applied — that requires a")?;
-    writeln!(out, "  mollusk execution trace (M3c-full, separate workstream). Until")?;
-    writeln!(out, "  then, `reachableBlocks` lists every block reachable from the")?;
-    writeln!(out, "  arm entry within its enclosing function — both happy and sad.")?;
+    if trace.is_some() {
+        writeln!(out, "  Happy-path tagging applied from an execution trace")?;
+        writeln!(out, "  (`--trace`, captured via scripts/capture_trace.sh).")?;
+        writeln!(out, "  `happyPathBlocks` lists the block-start PCs the trace")?;
+        writeln!(out, "  executed; the remaining `reachableBlocks` entries were not")?;
+        writeln!(out, "  on the traced path (error handlers and untaken branches).")?;
+    } else {
+        writeln!(out, "  Happy/sad-path tagging NOT applied (no `--trace` given).")?;
+        writeln!(out, "  `reachableBlocks` lists every block reachable from the arm")?;
+        writeln!(out, "  entry within its enclosing function — both happy and sad.")?;
+    }
     writeln!(out, "-/")?;
+    writeln!(out)?;
+    // Long literal lists (a correctly-rooted slice can be thousands of
+    // blocks) blow Lean's default elaborator recursion depth.
+    writeln!(out, "set_option maxRecDepth 65536")?;
     writeln!(out)?;
     writeln!(out, "namespace {}", module)?;
     writeln!(out)?;
@@ -361,24 +429,30 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "def discriminatorWidth : Nat := {}", disc_size)?;
     writeln!(out)?;
 
-    // Recovered PCs (sbpf analysis-PC space — insn slots, not byte offsets).
-    writeln!(out, "/-- Recovered dispatcher site in solana-sbpf analysis-PC space.")?;
-    writeln!(out, "    Note: this is an *insn-slot* index — `lddw` is 16 bytes but")?;
-    writeln!(out, "    1 slot, so analysis PC ≠ byte offset / 8. -/")?;
+    // Recovered PCs (logical space: index into the decoded instruction
+    // array, `lddw` = one element — the numbering Lean's
+    // `Decode.decodeProgram`, qedlift, and `.pcs` traces all use).
+    writeln!(out, "/-- Recovered dispatcher site, in logical PC space (decoded-array")?;
+    writeln!(out, "    index, `lddw` = one element — matches Lean decode, qedlift,")?;
+    writeln!(out, "    and `.pcs` trace numbering). -/")?;
     writeln!(out, "def dispatchLoadPc : Nat := {}", load_pc)?;
     writeln!(out, "def dispatchJeqPc  : Nat := {}", jeq_pc)?;
-    writeln!(out, "def armEntryPc     : Nat := {}", arm_entry)?;
+    writeln!(out, "def armEntryPc     : Nat := {}", arm_entry_logical)?;
     writeln!(out)?;
 
-    // Reachable blocks.
+    // Reachable blocks. `CfgNode.instructions` ranges are already
+    // logical; destinations are slot-space cfg keys, so convert them
+    // (a key that doesn't resolve to an instruction start is emitted
+    // as-is — it cannot match any block start, failing loudly).
     writeln!(out, "/-- Reachable basic blocks from the arm entry, bounded to the")?;
     writeln!(out, "    enclosing function. Entries are `(startPc, endPc, destinations)`")?;
-    writeln!(out, "    where `endPc` is exclusive and destinations are block-start PCs. -/")?;
+    writeln!(out, "    where `endPc` is exclusive and destinations are block-start PCs.")?;
+    writeln!(out, "    All PCs logical (same space as the other defs here). -/")?;
     writeln!(out, "def reachableBlocks : List (Nat × Nat × List Nat) :=")?;
     writeln!(out, "  [")?;
     for (i, b) in arm_blocks.iter().enumerate() {
         let dests = b.destinations.iter()
-            .map(|d| d.to_string())
+            .map(|&d| slot_to_logical(analysis, d).unwrap_or(d).to_string())
             .collect::<Vec<_>>()
             .join(", ");
         let sep = if i + 1 < arm_blocks.len() { "," } else { "" };
@@ -387,6 +461,25 @@ fn emit_lean<W: std::io::Write>(
     }
     writeln!(out, "  ]")?;
     writeln!(out)?;
+
+    // Happy-path tagging (when a trace was supplied).
+    if let Some(t) = trace {
+        let happy: Vec<usize> = arm_blocks.iter()
+            .filter(|b| on_trace(b))
+            .map(|b| b.instructions.start)
+            .collect();
+        writeln!(out, "/-- Block-start PCs the execution trace passed through — the")?;
+        writeln!(out, "    happy path of this instruction, in block order. Blocks in")?;
+        writeln!(out, "    `reachableBlocks` but not here were never executed by the")?;
+        writeln!(out, "    trace (error handlers / untaken branches). -/")?;
+        writeln!(out, "def happyPathBlocks : List Nat :=")?;
+        writeln!(out, "  [{}]", happy.iter()
+            .map(|p| p.to_string()).collect::<Vec<_>>().join(", "))?;
+        writeln!(out)?;
+        writeln!(out, "/-- Number of PCs in the source trace. -/")?;
+        writeln!(out, "def tracePcCount : Nat := {}", t.len())?;
+        writeln!(out)?;
+    }
 
     writeln!(out, "/-- Sanity-check totals. -/")?;
     writeln!(out, "def blockCount        : Nat := {}", arm_blocks.len())?;
@@ -593,8 +686,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(r) => {
                 recovered_ok += 1;
                 let dpc = format!("{}/{}", r.load_pc, r.jeq_pc);
+                let arm_logical = slot_to_logical(&analysis, r.arm_entry)
+                    .unwrap_or(r.arm_entry);
                 println!("  {:24}  {:>4}  {:>15}  {:>6}  {:>5}  {:>5}  {}",
-                         idl_ix.name, r.disc_value, dpc, r.arm_entry,
+                         idl_ix.name, r.disc_value, dpc, arm_logical,
                          r.arm_blocks.len(), r.arm_insns, claim);
                 // Optional per-instruction extras when overlay names this
                 // instruction (i.e., the project is actively claiming it):
@@ -625,6 +720,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let claimed: Vec<&OverlayIx> = overlay.instructions.iter()
         .filter(|o| o.refines.is_some())
         .collect();
+    let trace_pcs = match args.trace.as_ref() {
+        Some(p) => {
+            if claimed.len() != 1 {
+                return Err(format!(
+                    "--trace is per-instruction but the overlay claims {} \
+                     instructions; narrow the overlay to one",
+                    claimed.len()).into());
+            }
+            // Trace PCs are logical indices — the same space as
+            // `CfgNode.instructions` ranges, so tagging compares
+            // directly (no slot conversion).
+            Some(load_trace(p)?)
+        }
+        None => None,
+    };
     if !claimed.is_empty() {
         println!("=== detailed view (overlay-claimed) ===");
     }
@@ -718,14 +828,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                          disc_format, disc_value);
             }
             Some((load_pc, jeq_pc, arm_entry)) => {
-                // sbpf analysis-PC space ≠ disasm byte offset.
-                // `lddw` is 16 bytes but 1 PC slot, so byte/8 ≠ PC.
-                // We report PCs as-is and emit them downstream
-                // (Lean stays in the same numbering).
+                // `load_pc`/`jeq_pc` are logical (decoded-array index);
+                // `arm_entry` is a slot PC (the space cfg_nodes/slicing
+                // use). Report the logical arm entry alongside.
+                let arm_entry_logical = slot_to_logical(&analysis, arm_entry)
+                    .unwrap_or(arm_entry);
                 println!("    dispatch:");
                 println!("      discriminator load:  pc {}", load_pc);
                 println!("      jeq imm={}:           pc {}", disc_value, jeq_pc);
-                println!("      → arm entry:         pc {}", arm_entry);
+                println!("      → arm entry:         pc {} (slot {})",
+                         arm_entry_logical, arm_entry);
 
                 // Constrain the slice to the enclosing function so
                 // shared library helpers (account parsing, codec
@@ -759,13 +871,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      blocks with exits outside the function: {}",
                          exiting.len());
 
+                // --- happy-path tagging (when --trace given) ------------
+                if let Some(t) = trace_pcs.as_ref() {
+                    let happy = arm_blocks.iter()
+                        .filter(|b| t.range(b.instructions.start..b.instructions.end)
+                                     .next().is_some())
+                        .count();
+                    println!("      happy-path blocks (on trace): {}/{} ({} traced PCs)",
+                             happy, arm_blocks.len(), t.len());
+                }
+
                 // --- M3c-minimal: emit Lean metadata --------------------
                 let disc_size = number_size(disc_format).unwrap_or(1);
                 if let Some(path) = &args.output {
                     let mut f = std::fs::File::create(path)?;
                     emit_lean(&mut f, &args, &overlay, ovix, idl_ix,
-                              disc_value, disc_size,
-                              load_pc, jeq_pc, arm_entry, &arm_blocks)?;
+                              &analysis, disc_value, disc_size,
+                              load_pc, jeq_pc, arm_entry_logical, &arm_blocks,
+                              trace_pcs.as_ref())?;
                     println!();
                     println!("=== emitted Lean metadata ===");
                     println!("  output: {}", path.display());
@@ -775,12 +898,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let stdout = std::io::stdout();
                     let mut lock = stdout.lock();
                     emit_lean(&mut lock, &args, &overlay, ovix, idl_ix,
-                              disc_value, disc_size,
-                              load_pc, jeq_pc, arm_entry, &arm_blocks)?;
+                              &analysis, disc_value, disc_size,
+                              load_pc, jeq_pc, arm_entry_logical, &arm_blocks,
+                              trace_pcs.as_ref())?;
                 }
             }
         }
     }
 
     Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Tests
+// -----------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the PC-space discipline of dispatcher recovery on the real
+    /// p_token binary. `find_dispatch_arm` must compute the arm-entry
+    /// jump target in SLOT space (insn.ptr + 1 + off) — computing it
+    /// from the vec index was a real bug that put transfer's arm at
+    /// 309 (mid-dispatcher code) instead of slot 336 / logical 304,
+    /// rooting the CFG slice at the wrong block. Logical 304 is
+    /// ground truth: the captured execution trace
+    /// (tests/fixtures/p_token_transfer.pcs) jumps 199 -> 304.
+    #[test]
+    fn transfer_arm_entry_spaces() {
+        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let loader = Arc::new(BuiltinProgram::new_mock());
+        let executable: Executable<NoopCtx> =
+            Executable::load(&bytes, loader).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&executable).expect("analyse p_token.so");
+
+        let (load_pc, jeq_pc, arm_entry_slot) = find_dispatch_arm(
+            &analysis.instructions, 0, ebpf::LD_B_REG, 3,
+        ).expect("find transfer dispatch arm");
+
+        assert_eq!((load_pc, jeq_pc), (198, 199), "dispatcher site moved");
+        assert_eq!(arm_entry_slot, 336, "arm entry must be a slot PC");
+        assert_eq!(slot_to_logical(&analysis, arm_entry_slot), Some(304),
+            "slot 336 must resolve to logical 304 (the PC the trace jumps to)");
+
+        // The slice rooted at the slot entry must contain the blocks the
+        // happy-path trace executes (in logical space).
+        let func_set = function_block_set(&analysis, arm_entry_slot);
+        let arm_blocks = slice_cfg(&analysis, arm_entry_slot, Some(&func_set));
+        let trace = load_trace(Path::new("tests/fixtures/p_token_transfer.pcs"))
+            .expect("load transfer trace");
+        let happy = arm_blocks.iter()
+            .filter(|b| trace.range(b.instructions.start..b.instructions.end)
+                         .next().is_some())
+            .count();
+        assert_eq!(happy, 27,
+            "happy-path tagging drifted: expected 27 on-trace blocks, got {}", happy);
+    }
 }

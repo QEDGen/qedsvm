@@ -121,8 +121,8 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
         have hnc : Insn.isCpiCall insn = false := h s.pc insn hf
         have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 =
                     (executeFnCpiWithFuel registry fetch (step insn s) fuel').1 := by
-          simp only [executeFnCpiWithFuel, hex, hf, TRACE_STEPS, Bool.false_eq_true,
-                     if_false]
+          simp only [executeFnCpiWithFuel, hex, hf, Runner.traceStep,
+                     TRACE_STEPS, Bool.false_eq_true, if_false]
           congr 1
           cases insn with
           | call sc => cases sc <;> first | rfl | (simp [Insn.isCpiCall] at hnc)

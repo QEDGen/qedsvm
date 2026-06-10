@@ -1,5 +1,5 @@
 # p_token TransferChecked (discriminant 12) happy-path trace.
-# Captured via TRACE_STEPS + p_token_transfer_checked_matches_mollusk.
+# Regenerate: scripts/capture_trace.sh p_token_transfer_checked_matches_mollusk <this file>
 # Inputs: amount=250, src=1000, dst=0, decimals=9. 105 PCs, all unique.
 198
 199

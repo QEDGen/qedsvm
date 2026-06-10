@@ -1,12 +1,9 @@
 # p_token Transfer (discriminant 3) happy-path execution trace.
 # One decimal logical PC per line, in execution order.
 #
-# Captured from the Lean reference VM: flip TRACE_STEPS:=true in
-# SVM/SBPF/Runner.lean, then
-#   cargo test --features diff-mollusk --test diff_mollusk \
-#     p_token_transfer_matches_mollusk -- --nocapture --exact 2>raw.txt
-#   grep "^STEP " raw.txt | awk '{print $2}' | sed 's/pc=//' \
-#     | while read h; do printf '%d\n' "0x$h"; done
+# Captured from the Lean reference VM (regenerate in one command):
+#   scripts/capture_trace.sh p_token_transfer_matches_mollusk \
+#     qedsvm-rs/tests/fixtures/p_token_transfer.pcs
 # Inputs: amount=250, source balance=1000, dest balance=0 (see the test).
 # 76 PCs = 75 executed CU + the terminal exit. Consumed by
 # `qedlift --trace` to lift the real happy path (incl. balance debit/credit).

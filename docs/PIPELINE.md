@@ -88,10 +88,10 @@ In the production path, qedgen emits the overlay and sidecar from source-level a
 
 They are meant to compose. qedrecover's `discriminatorValue`, `armEntryPc`, and `cuBudget` are exactly what target qedlift (`--target-disc` and the budget assertion), and the `.pcs` trace narrows qedrecover's full reachable-block slice down to the one real happy path.
 
-## Current seams (where this is still a demo, not one command)
+## Former seams (each now closed)
 
-1. **qedlift does not read `qedmeta.toml` yet.** It re-derives discriminators straight from the IDL, so qedrecover and qedlift run in parallel rather than strictly piped. Wiring qedlift to consume the sidecar is the join point.
-2. **Trace capture is manual.** Flip `TRACE_STEPS := true` in `SVM/SBPF/Runner.lean`, run the matching `diff_mollusk` test with `--nocapture`, and post-process the `STEP pc=` lines into a `.pcs` file. The exact recipe is in the header comment of each `.pcs`.
-3. **Happy/sad-path tagging in qedrecover is pending** (needs the same mollusk trace). Until then `reachableBlocks` lists both.
+1. **qedlift reads `qedmeta.toml`** (closed 2026-06-02). `qedlift --qedmeta <toml>` drives targeting (`{discriminator.value, name, cu_budget}` per in-scope instruction) from the qedrecover sidecar instead of manual `--target-disc`/`--arm-name` flags.
+2. **Trace capture is one command** (closed 2026-06-10). `scripts/capture_trace.sh <diff_mollusk_test> <out.pcs>` runs the test with `QEDSVM_TRACE_OUT` set; the Lean reference VM's runtime `traceStep` hook (`SVM/SBPF/Runner.lean` -> lean-bridge) writes decimal PCs directly. No source edits, no rebuild, no stderr post-processing (the old flip-`TRACE_STEPS` ritual survives only as a reg-dump debug knob).
+3. **Happy/sad-path tagging works** (closed 2026-06-10). `qedrecover --trace <pcs>` tags on-trace blocks: the emitted metadata gains `happyPathBlocks`, separating the executed happy path from error handlers and untaken branches in `reachableBlocks`. (Closing this also surfaced and fixed a slot/logical PC-space mixing bug in dispatcher recovery — see the `transfer_arm_entry_spaces` pin test.)
 
-These are consistent with qedrecover/qedlift being the lifting front-end that moves into qedgen long-term; qedgen is expected to emit the overlay/sidecar at compile time and own the one-command path. See the [README](../README.md) and [ROADMAP](../ROADMAP.md).
+The remaining gap to "one command" is orchestration only: scope (qedrecover) -> trace (capture_trace.sh) -> prove (qedlift) still run as three invocations. That composition belongs to qedgen long-term; qedgen is expected to emit the overlay/sidecar at compile time and own the one-command path. See the [README](../README.md) and [ROADMAP](../ROADMAP.md).
