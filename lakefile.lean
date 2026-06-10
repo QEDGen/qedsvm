@@ -109,6 +109,10 @@ lean_lib Examples where
     -- corollary restating the heap cells via the `heapBumpPtr`/`heapBlock`
     -- SL predicates (a clean allocation claim).
     `Generated.HeapAllocLifted,
+    -- HalfwordStore: all three halfword memory ops (ldxh / stxh / sth)
+    -- in one straight line — the ST_H_IMM (sth_spec) pin on real
+    -- cargo-build-sbf bytecode. Same fixture diff-tests vs mollusk.
+    `Generated.HalfwordStoreLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

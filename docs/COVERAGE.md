@@ -37,8 +37,7 @@ are few and named.
 | `div` / `mod` (64/32, imm+reg) | 🟡 | Modeled in the executor; carries a `divisor != 0` side hypothesis, so no `sl_block_auto` auto-dispatch. Rides the emitted `sl_block_iter` manual-spec path. |
 | Loads `ldxb/h/w/dw`, `lddw` | ✅ | Width-specific value bounds surfaced as side conditions. |
 | Stores, reg source `stxb/h/w/dw` | ✅ | |
-| Stores, imm source `stb/stw/stdw` | ✅ | Wired at `SpecGen.lean` via the `st{b,w,dw}_spec` wrappers. |
-| Store imm halfword `sth` (ST_H_IMM) | ❌ | Hard error: `SpecGen.lean:204` ("sth_spec is unmodelled"). |
+| Stores, imm source `stb/sth/stw/stdw` | ✅ | Wired at `SpecGen.lean` via the `st{b,h,w,dw}_spec` wrappers. All four widths; the `sth`/ST_H_IMM gap closed 2026-06-10 (pinned by `halfword_store.so`: diff-test + lift). |
 | Unconditional jump `ja` | ✅ | |
 | Conditional jumps `jeq`/`jne`, imm src, not-taken | ✅ | Auto-dispatch at `SpecGen.lean:337-345`. |
 | Conditional jumps, taken branch | 🟡 | Emitted via `sl_block_iter` (`use_block_iter` when any branch is taken or a call is present). |

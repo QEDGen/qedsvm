@@ -513,6 +513,24 @@ mod layout_tests {
             "HeapAllocLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
     }
+
+    /// Pins the halfword path on real cargo-build-sbf bytecode: ldxh /
+    /// stxh and the ST_H_IMM dispatch (`sth_spec`) in one straight line.
+    #[test]
+    fn halfword_store_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/halfword_store.so");
+        let ctx = load_binary(so).expect("load halfword_store.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse halfword_store.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("HalfwordStore".to_string()),
+            None, None, None).expect("lift halfword_store.so");
+
+        let on_disk =
+            std::fs::read_to_string("../examples/lean/Generated/HalfwordStoreLifted.lean")
+                .expect("read HalfwordStoreLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "HalfwordStoreLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -578,11 +596,11 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
     let offl = lean_off(off);
     Ok(match insn.opc {
         LD_B_REG    => format!(".ldx .byte {} {} {}",     reg(dst), reg(src), offl),
-        LD_H_REG    => format!(".ldx .halfword {} {} {}", reg(dst), reg(src), offl),
+        LD_H_REG    => format!(".ldx .half {} {} {}", reg(dst), reg(src), offl),
         LD_W_REG    => format!(".ldx .word {} {} {}",     reg(dst), reg(src), offl),
         LD_DW_REG   => format!(".ldx .dword {} {} {}",    reg(dst), reg(src), offl),
         ST_B_REG    => format!(".stx .byte {} {} {}",     reg(dst), offl, reg(src)),
-        ST_H_REG    => format!(".stx .halfword {} {} {}", reg(dst), offl, reg(src)),
+        ST_H_REG    => format!(".stx .half {} {} {}", reg(dst), offl, reg(src)),
         ST_W_REG    => format!(".stx .word {} {} {}",     reg(dst), offl, reg(src)),
         ST_DW_REG   => format!(".stx .dword {} {} {}",    reg(dst), offl, reg(src)),
         ADD64_IMM   => format!(".add64 {} (.imm ({}))",     reg(dst), imm),
@@ -592,6 +610,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         LSH64_IMM   => format!(".lsh64 {} (.imm ({}))",     reg(dst), imm),
         LD_DW_IMM   => format!(".lddw {} ({})",             reg(dst), imm),
         ST_B_IMM    => format!(".st .byte {} {} ({})",      reg(dst), offl, imm),
+        ST_H_IMM    => format!(".st .half {} {} ({})",      reg(dst), offl, imm),
         ST_W_IMM    => format!(".st .word {} {} ({})",      reg(dst), offl, imm),
         ST_DW_IMM   => format!(".st .dword {} {} ({})",     reg(dst), offl, imm),
         ADD64_REG   => format!(".add64 {} (.reg {})",     reg(dst), reg(src)),
@@ -819,6 +838,9 @@ enum Expr {
     /// `lsh64_imm_spec` (logical left shift by immediate, modulo 64,
     /// truncated to 64 bits).
     LshU64Imm(Box<Expr>, i64),
+    /// `toU64 imm % 2 ^ (2 * 8)` — the halfword value `st .half`
+    /// writes. Matches `sth_spec`'s post.
+    StHalfImm(i64),
     /// `toU64 imm % 2 ^ (4 * 8)` — the word value `st .word` writes.
     /// Rendered to match `stw_spec`'s post exactly (the machine's
     /// `writeByWidth` truncates to 32 bits).
@@ -862,6 +884,10 @@ impl Expr {
             Expr::LshU64Imm(a, imm) => {
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
                 format!("({} <<< (toU64 {} % 64)) % U64_MODULUS", a.atom_lean(), imm_lean)
+            }
+            Expr::StHalfImm(imm) => {
+                let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
+                format!("toU64 {} % 2 ^ (2 * 8)", imm_lean)
             }
             Expr::StWordImm(imm) => {
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
@@ -1650,6 +1676,21 @@ fn spec_call_for(
                 hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
             )
         }
+        ST_H_IMM => {
+            // sth_spec baseReg off imm baseAddr oldHalfVal pc
+            let base_addr = reg_val_lean(dst);
+            let key_addr = base_addr.clone();
+            let old_v = state.mem.iter()
+                .find(|c| c.addr_base.to_lean() == key_addr
+                       && c.addr_off == off
+                       && c.width as u8 == Width::Halfword as u8)
+                .map(|c| c.value.atom_lean())
+                .unwrap_or_else(|| format!("oldMemH_{}", state.fresh));
+            format!(
+                "have {} := sth_spec {} {} {} ({}) ({}) {}",
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
+            )
+        }
         ST_W_IMM => {
             // stw_spec baseReg off imm baseAddr oldWordVal pc
             let base_addr = reg_val_lean(dst);
@@ -2094,6 +2135,10 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             // Write a constant byte (toU64 imm % 256) at [dst + off].
             state.write_mem(dst, off, Width::Byte,
                 Expr::Mod(Box::new(Expr::ToU64(Box::new(Expr::Const(imm)))), 256));
+        }
+        ST_H_IMM => {
+            // Write a constant halfword (toU64 imm % 2^16) at [dst + off].
+            state.write_mem(dst, off, Width::Halfword, Expr::StHalfImm(imm));
         }
         ST_W_IMM => {
             // Write a constant word (toU64 imm % 2^32) at [dst + off].
@@ -4816,8 +4861,8 @@ fn lift_one(
         let is_complex = |e: &Expr| matches!(e,
             Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::WrapMul(..) | Expr::NatAdd(..) |
             Expr::Mod(..) | Expr::AndU64Imm(..) | Expr::LshU64Imm(..) |
-            Expr::RshU64Imm(..) | Expr::StWordImm(..) | Expr::StDwordImm(..) |
-            Expr::Raw(..));
+            Expr::RshU64Imm(..) | Expr::StHalfImm(..) | Expr::StWordImm(..) |
+            Expr::StDwordImm(..) | Expr::Raw(..));
         let mut seen = std::collections::BTreeSet::new();
         let mut gens = Vec::new();
         for atom in pre.iter().chain(post.iter()) {

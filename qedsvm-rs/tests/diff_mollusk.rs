@@ -44,6 +44,11 @@ const INCREMENTER_SO: &[u8] = include_bytes!("fixtures/incrementer.so");
 /// 0x300000000 and writes + reads an allocated block. Exercises the
 /// program heap as ordinary memory (no syscall allocator).
 const HEAP_ALLOC_SO: &[u8] = include_bytes!("fixtures/heap_alloc.so");
+/// Halfword memory ops in one straight line: ldxh (u16 load), stxh
+/// (register halfword store), and sth/ST_H_IMM (immediate halfword
+/// store) against account 0's data. The only fixture exercising the
+/// 16-bit width on the store side.
+const HALFWORD_STORE_SO: &[u8] = include_bytes!("fixtures/halfword_store.so");
 /// SPL Token program. Real on-chain binary (134 KB, vendored from
 /// blueshift-gg/sbpf — see `fixtures/README.md` for provenance).
 /// Exercises sysvar getters, deeper syscall surface, and the full
@@ -394,6 +399,80 @@ fn incrementer_program_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for incrementer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Halfword-width memory ops: ldxh reads the u16 at account 0's
+/// data[0..2], stxh writes back value+1, and sth (ST_H_IMM, opcode
+/// 0x6a) stores the constant 0x1234 at data[2..4]. The only fixture
+/// covering 16-bit stores; pre-populated with 0x00ff so the ldxh/stxh
+/// increment carries across the byte boundary (0x00ff -> 0x0100),
+/// catching any byte/halfword width confusion in either engine.
+#[test]
+fn halfword_store_program_matches_mollusk() {
+    let program_id = pid(70);
+    let acct_key = pid(71);
+    let lamports = 1_000_000u64;
+    let mut data: Vec<u8> = vec![0u8; 16];
+    data[..2].copy_from_slice(&0x00ffu16.to_le_bytes());
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, HALFWORD_STORE_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs halfword_store");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        HALFWORD_STORE_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
+
+    let (fs_key, fs_acct) = &fs_r.resulting_accounts[0];
+    let (m_key, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(fs_key, &acct_key);
+    assert_eq!(m_key, &acct_key);
+
+    // The write-back claim: data[0..2] = 0x0100 (carried increment),
+    // data[2..4] = 0x1234 (the ST_H_IMM constant).
+    let mut want = vec![0u8; 16];
+    want[..2].copy_from_slice(&0x0100u16.to_le_bytes());
+    want[2..4].copy_from_slice(&0x1234u16.to_le_bytes());
+    assert_eq!(fs_acct.data(), want.as_slice(),
+        "qedsvm halfword writes wrong: got {:?}", fs_acct.data());
+    assert_eq!(m_acct.data.as_slice(), want.as_slice(),
+        "mollusk halfword writes wrong: got {:?}", m_acct.data);
+
+    assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
+    assert_eq!(fs_acct.owner(), &m_acct.owner, "owner diverged");
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for halfword_store: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }
