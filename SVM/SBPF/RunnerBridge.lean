@@ -24,31 +24,10 @@ def Insn.isCpiCall : Insn → Bool
   | .call .sol_invoke_signed_c => true
   | _                          => false
 
-/-- Whether an instruction is `.call_local` — the only `step` arm that
-    *pushes* onto `callStack`. The `.exit` arm with non-empty `callStack`
-    *pops*, but the run starts with `callStack = []` and never grows it
-    unless a `.call_local` is fetched along the way. -/
-def Insn.isCallLocal : Insn → Bool
-  | .call_local _ => true
-  | _             => false
-
--- `commitOptional_preserves_callStack` lives in `Machine.lean` (moved
--- there during lift #3 so it's in scope for `InstructionSpecs.lean` —
--- RunnerBridge imports CPSSpec downstream of InstructionSpecs).
-
-/-- `execTryFind` preserves `callStack` in both match arms. Companion
-    to `execTryFind_preserves_regions` at `Pda.lean:193`. -/
-@[simp] theorem execTryFind_preserves_callStack (s : State) :
-    (Pda.execTryFind s).callStack = s.callStack := by
-  simp only [Pda.execTryFind]
-  split <;> simp
-
-/-- `execSyscall` never modifies `callStack`. The CPI-stub
-    `Cpi.exec` just sets `r0 := 0`; all other syscalls touch only
-    `regs`/`mem`/`log`/`returnData`. -/
-@[simp] theorem execSyscall_preserves_callStack (sc : Syscall) (s : State) :
-    (execSyscall sc s).callStack = s.callStack := by
-  cases sc <;> first | rfl | simp [execSyscall]
+-- `Insn.isCallLocal`, `execTryFind_preserves_callStack`, and
+-- `execSyscall_preserves_callStack` live in `Execute.lean` (moved
+-- there for the conditional r10 lemmas, issue #32 item 4 — same
+-- precedent as `commitOptional_preserves_callStack` in `Machine.lean`).
 
 namespace Runner
 
