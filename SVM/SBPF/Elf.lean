@@ -90,6 +90,12 @@ def parseHeader (bytes : ByteArray) : Option Header :=
   else if readU16LE bytes 18 ≠ 247 ∧ readU16LE bytes 18 ≠ 263 then none
   -- e_flags (offset 48): SBPF version. Only V0 (0) is modeled.
   else if readU32LE bytes 48 ≠ 0 then none
+  -- M1: section-table structural validation — fail closed on a malformed
+  -- header rather than read past the file via zero-fill. `e_shstrndx`
+  -- must index a real section, and the section header table must lie
+  -- within the file. See docs/SOUNDNESS_AUDIT_* (M1).
+  else if readU16LE bytes 62 ≥ readU16LE bytes 60 then none      -- shstrndx ≥ shnum
+  else if readU64LE bytes 40 + readU16LE bytes 60 * readU16LE bytes 58 > bytes.size then none
   else some {
     entry     := readU64LE bytes 24
     shoff     := readU64LE bytes 40

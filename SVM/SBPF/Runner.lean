@@ -759,11 +759,16 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
               match headerOpt with
               | none => baseMem
               | some h =>
+                -- Load the callee's .text into its program region too (M2).
+                let mText := match textSecOpt with
+                  | some textSec =>
+                    loadBytesAt baseMem textBytes (Elf.relocateSecAddr textSec.addr)
+                  | none => baseMem
                 let m1 := match Elf.findSection calleeBytes h Elf.rodataName with
                   | some sec =>
-                    loadBytesAt baseMem (Elf.extractSection calleeBytes sec)
+                    loadBytesAt mText (Elf.extractSection calleeBytes sec)
                       (Elf.relocateSecAddr sec.addr)
-                  | none => baseMem
+                  | none => mText
                 match Elf.findSection calleeBytes h Elf.dataRelRoName with
                 | some sec =>
                   let raw       := Elf.extractSection calleeBytes sec
@@ -929,10 +934,16 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
+        -- Load the (relocated) .text into the program region so an `ldx`
+        -- into it reads the real bytecode, not a fabricated 0 (M2). Real
+        -- programs read .text only for adjacent constants/jump tables;
+        -- valid fixtures are unaffected (they don't read .text), and this
+        -- now matches agave, which maps .text into the program region.
+        let memText := loadBytesAt baseMem textBytes (Elf.relocateSecAddr textSec.addr)
         let mem₁ := match Elf.findSection elfBytes header Elf.rodataName with
-          | some sec => loadBytesAt baseMem (Elf.extractSection elfBytes sec)
+          | some sec => loadBytesAt memText (Elf.extractSection elfBytes sec)
               (Elf.relocateSecAddr sec.addr)
-          | none => baseMem
+          | none => memText
         let mem := match Elf.findSection elfBytes header Elf.dataRelRoName with
           | some sec =>
             let raw       := Elf.extractSection elfBytes sec
@@ -990,10 +1001,16 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
+        -- Load the (relocated) .text into the program region so an `ldx`
+        -- into it reads the real bytecode, not a fabricated 0 (M2). Real
+        -- programs read .text only for adjacent constants/jump tables;
+        -- valid fixtures are unaffected (they don't read .text), and this
+        -- now matches agave, which maps .text into the program region.
+        let memText := loadBytesAt baseMem textBytes (Elf.relocateSecAddr textSec.addr)
         let mem₁ := match Elf.findSection elfBytes header Elf.rodataName with
-          | some sec => loadBytesAt baseMem (Elf.extractSection elfBytes sec)
+          | some sec => loadBytesAt memText (Elf.extractSection elfBytes sec)
               (Elf.relocateSecAddr sec.addr)
-          | none => baseMem
+          | none => memText
         -- Map `.data.rel.ro` (read-only-after-relocation) if present.
         -- This is where the linker parks static structures whose fields
         -- include pointers — jump tables, `&'static` references, vtables.
