@@ -710,6 +710,14 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
       lamportsRefAddr := p.lamportsRefAddr,
       ownerPtr := p.ownerPtr, dataPtr := p.dataPtr,
       dataLenRefAddr := p.dataLenRefAddr })
+  -- M6 invoke-depth limit: agave caps the instruction stack height at 5
+  -- (top level = height 1, so at most 4 nested CPIs); a fifth-level
+  -- invoke fails with `CallDepth` before dispatch. Counts builtins too.
+  if s.invokeDepth + 1 > 4 then
+    { s with regs := s.regs.set .r0 1
+             pc   := s.pc + 1
+             cuConsumed := s.cuConsumed + Cpi.cu }
+  else
   if aliasedWritability then
     { s with regs := s.regs.set .r0 1
              pc   := s.pc + 1
@@ -841,10 +849,17 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 pc          := entryPc
                 exitCode    := none
                 log         := s.log
-                returnData  := ByteArray.empty
+                -- Return data is TRANSACTION-wide in agave: cleared only
+                -- between top-level instructions, never on CPI entry. The
+                -- callee inherits the caller's buffer (so its
+                -- get_return_data sees prior data) and the caller takes
+                -- `subFinal.returnData` back — if the callee never set it,
+                -- that IS the caller's own data, not a wipe (M6).
+                returnData  := s.returnData
                 cuBudget    := fuel'
                 progIdBytes := pidBytesIn
-                origPrivs   := parseInputPrivileges subInput }
+                origPrivs   := parseInputPrivileges subInput
+                invokeDepth := s.invokeDepth + 1 }
             let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
               (fetchFromArray calleeInsns) subS fuel'
             -- M6 read-only protection: agave re-verifies every account

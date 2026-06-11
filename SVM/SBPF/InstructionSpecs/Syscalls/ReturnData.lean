@@ -1318,18 +1318,23 @@ theorem cuTripleWithin_syscall_silent
 
 /-! ## Syscall: `sol_remaining_compute_units`
 
-Opaque in our model: `execRemainingComputeUnits s := s` (no register,
-memory, or returnData change). At the SL level, the syscall is silent
-— just advances pc by 1 and consumes its base CU charge. -/
+H7: `execRemainingComputeUnits` writes the REAL remaining compute budget
+to `r0` (`cuBudget − (cuConsumed + 1 + Misc.cu)`, H5 total metering).
+The meter fields (`cuBudget`/`cuConsumed`) are SILENT in `PartialState`,
+so the SL-level postcondition cannot pin the value — the honest spec is
+existential: `r0` was overwritten with SOME value. A lift can therefore
+no longer prove "`r0` preserved" across this syscall (which would be
+false on chain), but also cannot claim to know the returned budget. -/
 
 theorem call_sol_remaining_compute_units_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .sol_remaining_compute_units) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    ∀ r0Old, cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_remaining_compute_units))
-      emp
-      emp :=
-  cuTripleWithin_syscall_silent .sol_remaining_compute_units pc nCu
+      (.r0 ↦ᵣ r0Old)
+      (fun h => ∃ v, h = PartialState.singletonReg .r0 v) :=
+  cuTripleWithin_syscall_writes_r0_fn .sol_remaining_compute_units
+    (fun s => s.cuBudget - (s.cuConsumed + 1 + Misc.cu)) pc nCu
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
     (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])

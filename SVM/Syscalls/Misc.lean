@@ -1,6 +1,6 @@
 -- Miscellaneous syscalls that don't fit elsewhere:
 --   `sol_alloc_free_`           (deprecated; modern programs ship their own allocator)
---   `sol_remaining_compute_units` (opaque to our model)
+--   `sol_remaining_compute_units` (writes the real remaining budget to r0 — H7)
 --   `sol_get_stack_height`      (top-level = depth 1 — we don't model CPI)
 --   `sol_get_processed_sibling_instruction` (we don't track sibling instrs)
 --   `sol_get_sysvar`            (generic sysvar lookup — base cost only)
@@ -48,9 +48,18 @@ def cu : Nat := 100
   let (newR0, newHeapNext) := allocFreeStep s.heapNext s.regs.r1 s.regs.r2
   { s with regs := s.regs.set .r0 newR0, heapNext := newHeapNext }
 
-/-- `sol_remaining_compute_units`: opaque to our model. The program
-    sees r0 unchanged (an "opaque runtime value"). -/
-@[simp] def execRemainingComputeUnits (s : State) : State := s
+/-- `sol_remaining_compute_units`: returns the REAL remaining compute
+    budget in r0 (H7, unlocked by H5 total metering). agave consumes
+    `syscall_base_cost` (100) first, then returns `get_remaining()`;
+    the rbpf meter at that point already includes the call instruction
+    itself. In our model `s.cuConsumed` at body time covers everything
+    BEFORE this instruction, so remaining =
+    `cuBudget − (cuConsumed + 1 [this insn's baseline] + 100 [base])`,
+    saturating at 0 (Nat subtraction). Pre-H5 this was a fail-open
+    no-op (r0 left unchanged — a lift could prove "r0 preserved"
+    across the syscall, which is false on chain). -/
+@[simp] def execRemainingComputeUnits (s : State) : State :=
+  { s with regs := s.regs.set .r0 (s.cuBudget - (s.cuConsumed + 1 + cu)) }
 
 /-- `sol_get_stack_height`: top-level invocation depth = 1. -/
 @[simp] def execGetStackHeight (s : State) : State :=

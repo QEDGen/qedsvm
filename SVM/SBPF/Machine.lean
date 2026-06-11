@@ -153,6 +153,12 @@ structure State where
       "no recorded privileges" (every CPI signer/writable clamps off
       unless PDA-derived). See docs/SOUNDNESS_AUDIT_* (C5). -/
   origPrivs : List (ByteArray × Bool × Bool) := []
+  /-- CPI invocation depth of THIS state's program: 0 at top level,
+      `caller + 1` for a CPI callee (set on the sub-state in
+      `executeFnCpiWithFuel`). agave caps the instruction stack height
+      at 5 (top level = height 1), i.e. at most 4 nested CPIs; the
+      runner's CPI dispatch fails closed past that (M6). -/
+  invokeDepth : Nat := 0
   deriving Inhabited
 
 /-- Is the machine still running? -/

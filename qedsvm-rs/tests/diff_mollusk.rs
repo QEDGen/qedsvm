@@ -64,6 +64,11 @@ const INCREMENTER_SO: &[u8] = include_bytes!("fixtures/incrementer.so");
 /// 0x300000000 and writes + reads an allocated block. Exercises the
 /// program heap as ordinary memory (no syscall allocator).
 const HEAP_ALLOC_SO: &[u8] = include_bytes!("fixtures/heap_alloc.so");
+/// Calls `sol_remaining_compute_units()` and writes the returned u64
+/// (LE) into accounts[0].data[0..8]. The empirical anchor for H7: the
+/// 8-byte cross-engine data equality pins qedsvm's remaining-budget
+/// formula against rbpf's real meter.
+const REMAINING_CU_SO: &[u8] = include_bytes!("fixtures/remaining_cu.so");
 /// Halfword memory ops in one straight line: ldxh (u16 load), stxh
 /// (register halfword store), and sth/ST_H_IMM (immediate halfword
 /// store) against account 0's data. The only fixture exercising the
@@ -620,6 +625,87 @@ fn heap_alloc_program_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for heap_alloc: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Empirical anchor for H7 (`sol_remaining_compute_units`): the program
+/// calls the syscall and writes the returned u64 LE into
+/// accounts[0].data[0..8]. Both engines run with the SAME explicit CU
+/// budget; the byte-identical data assertion pins qedsvm's
+/// remaining-budget formula (`cuBudget − (cuConsumed + 1 + 100)`)
+/// against rbpf's real meter (which syncs through the call insn, then
+/// consumes `syscall_base_cost` = 100 before `get_remaining()`).
+#[test]
+fn remaining_cu_program_matches_mollusk() {
+    let program_id = pid(80);
+    let acct_key = pid(81);
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+    const BUDGET: u64 = 1_400_000;
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(BUDGET);
+    fs.add_program(&program_id, REMAINING_CU_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs remaining_cu");
+
+    let mut m = Mollusk::default();
+    m.compute_budget.compute_unit_limit = BUDGET;
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        REMAINING_CU_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
+
+    let (fs_key, fs_acct) = &fs_r.resulting_accounts[0];
+    let (m_key, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(fs_key, &acct_key);
+    assert_eq!(m_key, &acct_key);
+
+    // THE assertion: the 8-byte remaining-CU value must be
+    // byte-identical across engines. Surface both values on failure so
+    // a divergence shows exactly what each meter reported.
+    let fs_remaining = u64::from_le_bytes(fs_acct.data()[..8].try_into().unwrap());
+    let m_remaining = u64::from_le_bytes(m_acct.data[..8].try_into().unwrap());
+    eprintln!(
+        "remaining_cu: ours={} mollusk={} (budget={}, consumed ours={} mollusk={})",
+        fs_remaining, m_remaining, BUDGET,
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+    assert_eq!(fs_remaining, m_remaining,
+        "remaining-CU value diverged: ours={} mollusk={} (budget={})",
+        fs_remaining, m_remaining, BUDGET);
+    assert_eq!(fs_acct.data(), m_acct.data.as_slice(), "data diverged");
+
+    assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
+    assert_eq!(fs_acct.owner(), &m_acct.owner, "owner diverged");
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for remaining_cu: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }

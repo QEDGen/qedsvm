@@ -1,0 +1,17 @@
+[package]
+name = "qedsvm-remaining-cu"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# No solana-program — hand-written entrypoint mirroring halfword_store_src/
+# so LLVM emits the tightest possible .text (syscall/store/exit).
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
