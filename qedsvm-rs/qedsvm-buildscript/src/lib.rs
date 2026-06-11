@@ -198,6 +198,12 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
             continue;
         }
         println!("cargo:rustc-link-arg={}", path.display());
+        // Relink when a freshly `lake build`-ed Lean dylib changes, so
+        // `cargo test` never silently diff-tests the previously-linked
+        // (stale) semantics. Does NOT force a `lake build` itself — the
+        // developer/CI must still run it; CI does so before the diff
+        // suite. This closes the stale-LINK half of M14.
+        println!("cargo:rerun-if-changed={}", path.display());
         count += 1;
     }
     if count == 0 {
@@ -236,6 +242,7 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
         return Err(Error::LeanBridgeArchiveMissing(leanbridge_a));
     }
     println!("cargo:rustc-link-arg={}", leanbridge_a.display());
+    println!("cargo:rerun-if-changed={}", leanbridge_a.display());
 
     // libleanbridge.a's objects reference Lean runtime symbols in
     // libleanshared / libLake_shared. cargo strips

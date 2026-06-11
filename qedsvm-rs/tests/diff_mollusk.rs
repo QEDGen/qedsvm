@@ -18,6 +18,26 @@
 //!     cp target/deploy/qedsvm_noop.so ../noop.so
 //!
 //! Run:  cargo test --features diff-mollusk
+//!
+//! Diff target & known limits (M14):
+//!   * Reference engine: `mollusk-svm` over agave with
+//!     `FeatureSet::all_enabled()` (a future/pre-release feature set,
+//!     not the mainnet-active gate set). Fixtures here therefore assert
+//!     the model matches all-features-on agave, not today's cluster.
+//!   * The Lean semantics are linked from `.lake/build`; this harness
+//!     does NOT run `lake build`. Run `lake build` before `cargo test`
+//!     (CI does, before this suite) or the linked dylib is stale. The
+//!     buildscript now emits `rerun-if-changed` on the linked Lean
+//!     dylibs so a fresh `lake build` always forces a relink.
+//!   * Precompiles can't be diff-tested against agave (dependency
+//!     conflict) and use sibling crates asserted-equivalent in comments;
+//!     crypto syscalls are same-crate-vs-same-crate (no independent
+//!     signal). Cross-engine error-CODE comparison is not yet wired
+//!     (our r0 sentinels have no agave `InstructionError` mapping, and
+//!     the malicious-path codes diverge by design — see M6/L1); most
+//!     fixtures compare Success/Failure axis + account state + (where
+//!     deterministic) logs. `assert_no_poststate_backstop` guards the
+//!     one masking hazard that matters (M13).
 
 #![cfg(feature = "diff-mollusk")]
 
@@ -178,6 +198,38 @@ fn pid(seed: u64) -> Pubkey {
     let mut b = [0u8; 32];
     b[..8].copy_from_slice(&seed.to_le_bytes());
     Pubkey::from(b)
+}
+
+/// M13: the Rust post-state backstop must never fire on a diff fixture.
+/// A `Some(_)` means the Lean VM returned `Success` over a post-state
+/// agave's invariants forbid (lamport conservation, read-only
+/// modification, data-growth, rent) and `validate_post_state` silently
+/// downgraded it to `ERR_INVALID_POSTSTATE`. That downgrade can make a
+/// Lean-VM soundness bug masquerade as a benign cross-engine
+/// `Failure`/`Failure` match, hiding exactly the bug class the diff
+/// exists to catch. Asserting `None` proves the VM reproduced agave's
+/// invariant itself rather than leaning on the shell to rescue it.
+fn assert_no_poststate_backstop(fs_r: &qedsvm::InstructionResult) {
+    assert!(
+        fs_r.poststate_violation.is_none(),
+        "Lean VM relied on the Rust post-state backstop ({:?}); this can mask a \
+         model soundness bug behind ERR_INVALID_POSTSTATE",
+        fs_r.poststate_violation,
+    );
+}
+
+/// L10: resolve a resulting account by key instead of indexing
+/// positionally (`resulting_accounts[0]`), which silently reads the
+/// wrong slot if the engine ever reorders the list. Panics (not a wrong
+/// silent read) if the key is absent.
+fn fs_acct_by_key<'a>(
+    fs_r: &'a qedsvm::InstructionResult,
+    key: &Pubkey,
+) -> &'a AccountSharedData {
+    fs_r.resulting_accounts.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, a)| a)
+        .unwrap_or_else(|| panic!("account {key} absent from qedsvm resulting_accounts"))
 }
 
 /// Both engines accept the real cargo-build-sbf-produced ELF and
@@ -1540,8 +1592,11 @@ fn cpi_caller_forwards_account_to_incrementer() {
     expected[..8].copy_from_slice(&1u64.to_le_bytes());
 
     // resulting_accounts is in the same order as `ix.accounts`: the
-    // writable account first, then the callee program account.
-    let (_, fs_acct) = &fs_r.resulting_accounts[0];
+    // writable account first, then the callee program account. Look it up
+    // by key (L10) and confirm the write-back came from the VM, not the
+    // post-state backstop (M13).
+    assert_no_poststate_backstop(&fs_r);
+    let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
     assert_eq!(fs_acct.data(), expected.as_slice(),
         "qedsvm: increment not visible after CPI; got {:?}", fs_acct.data());
 
@@ -1622,8 +1677,10 @@ fn cpi_readonly_account_not_committed_by_callee() {
     ]);
 
     // The read-only account's data MUST remain its original zeros on BOTH
-    // engines: agave blocks the escalation, we clamp + roll back.
-    let (_, fs_acct) = &fs_r.resulting_accounts[0];
+    // engines: agave blocks the escalation, we clamp + roll back. And the
+    // VM must reach that state itself, not via the post-state backstop.
+    assert_no_poststate_backstop(&fs_r);
+    let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
     assert_eq!(fs_acct.data(), data.as_slice(),
         "qedsvm: read-only account was modified across CPI (M6 leak); got {:?}",
         fs_acct.data());
@@ -2160,6 +2217,9 @@ fn system_transfer_cpi_matches_mollusk() {
         "qedsvm: expected Success, got {:?}", fs_r.program_result);
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
+    // Lamport conservation here must hold in the VM itself, not via the
+    // Rust backstop downgrading a mint to ERR_INVALID_POSTSTATE (M13).
+    assert_no_poststate_backstop(&fs_r);
 
     // Lamport equality between the two engines on each account.
     assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len(),

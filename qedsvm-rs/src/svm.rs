@@ -167,6 +167,22 @@ pub struct InstructionResult {
     /// Post-execution accounts, one entry per `AccountMeta` in the
     /// instruction (matching Mollusk's `resulting_accounts`).
     pub resulting_accounts: Vec<(Pubkey, AccountSharedData)>,
+    /// `Some(e)` iff the Lean VM returned `Success` but the Rust
+    /// post-state backstop (`validate_post_state`) caught an invariant
+    /// violation and downgraded the result to
+    /// `Failure { ERR_INVALID_POSTSTATE }` (M13). For a SOUND VM on
+    /// honest input this is always `None`: the violations the backstop
+    /// checks (lamport conservation, read-only modification, data-growth
+    /// overflow, rent state) are properties agave guarantees and the
+    /// Lean model should reproduce *itself*, not lean on the shell to
+    /// rescue. A `Some` here therefore means one of two things — a real
+    /// program error the model failed to surface, or a Lean-VM SOUNDNESS
+    /// bug (e.g. minted lamports) — and either way it must NOT hide
+    /// behind a coincidentally-matching `Failure`/`Failure` in a diff
+    /// test. Cross-engine fixtures assert this is `None` so the backstop
+    /// can never silently mask the very VM-bug class the diff exists to
+    /// surface. See `tests/diff_mollusk.rs::assert_no_poststate_backstop`.
+    pub poststate_violation: Option<PostStateError>,
 }
 
 /// Errors that prevent `process_instruction` from even attempting to
@@ -338,6 +354,7 @@ impl Svm {
                 logs: vec![],
                 return_data: vec![],
                 resulting_accounts: accounts.to_vec(),
+                poststate_violation: None,
             });
         }
 
@@ -358,6 +375,9 @@ impl Svm {
                 logs: vec![],
                 return_data: vec![],
                 resulting_accounts: accounts.to_vec(),
+                // Pre-exec loader rejection (sysvar marked writable):
+                // the VM never ran, so there is no Success to mask.
+                poststate_violation: None,
             });
         }
 
@@ -417,15 +437,20 @@ impl Svm {
         // (we don't write back to the caller's accounts), so the
         // invariants don't apply. Any violation downgrades the
         // outcome to `Failure { exit_code: ERR_INVALID_POSTSTATE }`.
-        let program_result = if matches!(program_result, ProgramResult::Success) {
-            match validate_post_state(instruction, &canonical_accounts, &resulting_accounts,
-                                       self.enforce_rent_state) {
-                Ok(()) => program_result,
-                Err(_) => ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE },
-            }
-        } else {
-            program_result
-        };
+        let (program_result, poststate_violation) =
+            if matches!(program_result, ProgramResult::Success) {
+                match validate_post_state(instruction, &canonical_accounts, &resulting_accounts,
+                                           self.enforce_rent_state) {
+                    Ok(()) => (program_result, None),
+                    // Record WHICH invariant the backstop caught so a
+                    // diff test can assert the Lean VM never relied on it
+                    // (M13). Downgrade the outcome as before.
+                    Err(e) => (ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE },
+                               Some(e)),
+                }
+            } else {
+                (program_result, None)
+            };
 
         Ok(InstructionResult {
             program_result,
@@ -433,6 +458,7 @@ impl Svm {
             logs: raw.logs,
             return_data: raw.return_data,
             resulting_accounts,
+            poststate_violation,
         })
     }
 

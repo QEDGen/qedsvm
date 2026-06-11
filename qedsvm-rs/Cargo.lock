@@ -1995,6 +1995,7 @@ dependencies = [
 name = "qedsvm"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "cc",
  "ed25519-dalek",
  "libsecp256k1 0.7.2",
@@ -2004,6 +2005,8 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "sha3",
  "solana-account 3.4.0",
  "solana-account 4.3.0",
  "solana-account-info",

@@ -118,6 +118,13 @@ ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 libsecp256k1 = "0.7.2"
 openssl = "0.10"
 rand = "0.8"
+# Crypto SHAPE-axiom pins (L7): exact versions the `lean-bridge`
+# crypto externs wrap, so `tests/crypto_size_pins.rs` asserts the
+# output sizes the `CryptoTrust.lean` size axioms (trusted under
+# `native_decide`) claim. Cargo unifies these with the bridge member.
+sha2 = { version = "0.10.8", default-features = false }
+sha3 = "0.10.8"
+blake3 = "1.8.5"
 
 [features]
 diff-mollusk = ["dep:mollusk-svm", "dep:mollusk-account", "dep:mollusk-pubkey"]
