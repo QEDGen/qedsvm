@@ -41,6 +41,36 @@
   the `tokenAcctBalance` predicate shift the bytecode realises. The
   synthetic-anchor version is the first proven instance of that lowering.
   (The retired Direction-A MIR layer is documented in `docs/MIR.md`.)
+
+  ## SCOPE — what these theorems do NOT claim (H10)
+
+  These are partial-correctness separation-logic triples over the
+  HAPPY PATH of a TWO-account transfer. Read the names ("balance_spec",
+  "preserves_supply") narrowly:
+
+  * HAPPY PATH ONLY. They say nothing about failure paths — insufficient
+    funds, non-signer, frozen account, wrong/mismatched mint, delegate
+    rules. Those arms are out of scope, NOT proven to error-and-preserve.
+    (`_h_sameMint : True` is a no-op placeholder: unchecked Transfer
+    doesn't enforce same-mint, so the theorem cannot and does not claim
+    it.)
+  * TWO ACCOUNTS, not a global invariant. `preserves_supply` is the
+    arithmetic `(preA-x)+(preB+x)=preA+preB` for the source/destination
+    pair — it characterises the post-state of the triples below (those
+    accounts' balance atoms are literally `preA-amount`/`preB+amount`),
+    NOT a total-supply conservation over ALL token accounts.
+  * NO-OVERFLOW REGION EXCLUDED. `h_noOverflow : preB + x < 2^64` carves
+    out exactly the range where SPL returns `Overflow` and the model
+    wraps; behaviour at/over the boundary is not covered.
+  * PARTIAL CORRECTNESS WITHIN A CU WINDOW. The triple's post includes
+    `exitCode = none` (still running) inside the proven window; it is not
+    a whole-transaction total-correctness statement.
+  * TOKEN-TAIL OPAQUE. The 93-byte account tail is carried as one `rest`
+    blob (see L11) — delegate/state/is_native fields are not decoded, so
+    frozen/delegate behaviour is structurally out of scope.
+
+  What IS proven is exactly true; this block exists so the theorem NAMES
+  aren't over-read as functional correctness.
 -/
 
 import SVM.Solana.TokenAccount
@@ -140,10 +170,14 @@ theorem p_token_transfer_balance_spec
 
 /-! ## Sanity check — high-level effect is balance-preserving.
 
-    Pure arithmetic property, proven directly. Used downstream to
-    establish that the spec doesn't accidentally create or destroy
-    tokens. Composes with `p_token_transfer_balance_spec` to derive
-    the standard "total supply invariant" theorem. -/
+    Pure arithmetic property, proven directly. This is the TWO-ACCOUNT
+    conservation for the source/destination pair: it is exactly the
+    relationship between the post-state balance atoms the triples below
+    expose (`preA - amount` and `preB + amount`), so it characterises
+    those theorems' post-states rather than standing apart from them.
+    It is NOT a global total-supply invariant over all token accounts,
+    and it is happy-path only — see the SCOPE block at the top of this
+    file (H10). -/
 
 theorem p_token_transfer_preserves_supply
     (x preA preB : Nat) (_h_funds : x ≤ preA)

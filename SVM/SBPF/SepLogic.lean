@@ -497,9 +497,19 @@ the `↦Bytes32` assertion that PDA / hash-family syscall specs need.
 
 Unlike the `U16`/`U32`/`U64` atoms (which carry a Nat decoded LE),
 this atom carries an opaque `ByteArray` payload — bytes are indexed,
-not integer-decoded. Callers are expected to keep `bs.size = 32`;
-larger arrays have their tail ignored, smaller arrays fall through
-to `bs.get!`'s default (zero). -/
+not integer-decoded.
+
+CALLER OBLIGATION (L4): this atom unconditionally owns 32 bytes, so it
+is only faithful when `bs.size = 32`. A SHORTER `bs` silently claims
+zero in the `[bs.size, 32)` tail (via `bs.get!`'s default) — i.e. it
+STRENGTHENS the assertion with phantom zero bytes a caller may not
+intend; a LONGER `bs` has its tail ignored. Every current use is a
+hash- or PDA-family output whose 32-byte length is guaranteed by the
+crypto SIZE axioms (`CryptoTrust.lean`), themselves now pinned Rust-side
+in `qedsvm-rs/tests/crypto_size_pins.rs` (L7) — so the invariant holds
+for all shipped specs. Any NEW use over a variable-length array must
+establish `bs.size = 32` at the spec entry point before relying on the
+tail. -/
 
 /-- Partial state owning 32 consecutive memory bytes whose contents are
     `bs`. A single conditional, not 32 unrolled `if`s — keeps both the
@@ -1153,7 +1163,15 @@ def regIs (r : Reg) (v : Nat) : Assertion :=
 
 @[inherit_doc] notation:50 r " ↦ᵣ " v => regIs r v
 
-/-- Memory byte at `a` holds value `v` (treated mod 256), and that's all we own. -/
+/-- Memory byte at `a` holds value `v`, and that's all we own. NOTE (L3):
+    `singletonMem` stores `v` RAW (not reduced mod 256), so this atom is
+    faithful to a real 8-bit cell only when `v < 256`. Every `step` byte
+    store writes a truncated value (`_ % 256`), so the well-formed range
+    is what is ever produced; `v ≥ 256` is representable but never
+    reached. Decode-equality specs carry the `v < 256` guard explicitly.
+    (Canonicalising the definition to `v % 256` is deferred — it would
+    ripple through `singletonMem_mem` and every byte-level spec for a
+    not-unsound LOW finding.) -/
 def memByteIs (a v : Nat) : Assertion :=
   fun h => h = PartialState.singletonMem a v
 

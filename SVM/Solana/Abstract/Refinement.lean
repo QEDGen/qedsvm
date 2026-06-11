@@ -36,6 +36,28 @@ open SVM.SBPF
 open SVM.Solana
 open SVM.Pubkey
 
+/-! ## SCOPE of the `AsmRefines*` obligations (H10)
+
+  Each `AsmRefines{TokenTransfer,TokenMintTo,TokenBurn}` is a PARTIAL-
+  CORRECTNESS `cuTripleWithinMem` over the HAPPY PATH of the operation,
+  framed over a fixed SMALL SET of accounts (a source/destination pair,
+  or a mint plus one account). They state exactly the balance/supply
+  SHIFT on those atoms and nothing more. They deliberately do NOT claim:
+
+  * failure-path behaviour (insufficient funds, non-signer, frozen,
+    wrong/mismatched mint, delegate rules) — out of scope, not proven to
+    error-and-preserve;
+  * a global supply invariant over ALL token accounts — only the framed
+    atoms are constrained; `setupPre`/`setupPost` and the residual `rr`
+    are opaque;
+  * total correctness — the post asserts `exitCode = none` within the
+    proven CU window, not whole-transaction termination;
+  * any field of the 93-byte token tail beyond `amount`/`supply` (L11).
+
+  The frame rule makes "untouched framed cells preserved" sound for what
+  is framed; it says nothing about cells outside the frame. Read the
+  names as "the balance shift refines", not "the program is correct". -/
+
 /-! ## tokenTransfer
 
 A bytecode-level refinement of a token transfer is an asm Hoare triple in
