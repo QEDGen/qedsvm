@@ -672,6 +672,56 @@ match-case to surface the underlying record-update. -/
         | none => rfl
         | some insn => rw [ih (chargeCu (step insn s))]; simpa using step_preserves_regions insn s
 
+/-! ## cuBudget invariance (H5)
+
+`cuBudget` is set once at state creation and never mutated by execution —
+neither by `step` (no arm mentions it), nor by any syscall body, nor by
+`chargeCu` (which only bumps `cuConsumed`). The budget side-condition in
+`cuTripleWithin` survives sequential composition because of exactly this:
+the intermediate state's budget equals the initial one. -/
+
+/-- `execTryFind` preserves `cuBudget` in both match arms. Companion to
+    `execTryFind_preserves_regions` / `_callStack` — `simp` needs it at
+    the PDA leaf of the blanket syscall lemma below. -/
+@[simp] theorem execTryFind_preserves_cuBudget (s : State) :
+    (Pda.execTryFind s).cuBudget = s.cuBudget := by
+  simp only [Pda.execTryFind]
+  split <;> simp
+
+@[simp] theorem execSyscall_preserves_cuBudget (sc : Syscall) (s : State) :
+    (execSyscall sc s).cuBudget = s.cuBudget := by
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
+
+@[simp] theorem step_preserves_cuBudget (insn : Insn) (s : State) :
+    (step insn s).cuBudget = s.cuBudget := by
+  cases insn <;>
+    first
+    | rfl
+    | (simp only [step]; rfl)
+    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; cases s.callStack <;> rfl)
+    | (simp only [step]; exact execSyscall_preserves_cuBudget _ _)
+
+@[simp] theorem executeFn_preserves_cuBudget
+    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
+    (executeFn fetch s fuel).cuBudget = s.cuBudget := by
+  induction fuel generalizing s with
+  | zero => rfl
+  | succ n ih =>
+    unfold executeFn
+    cases h : s.exitCode with
+    | some _ => rfl
+    | none =>
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · rw [if_pos h_over]
+      · rw [if_neg h_over]
+        cases hf : fetch s.pc with
+        | none => rfl
+        | some insn =>
+          rw [ih (chargeCu (step insn s))]
+          simpa using step_preserves_cuBudget insn s
+
 /-! ## Paired execution (for tactic automation)
 
 `execInsn` and `execSegment` mirror `step` and `executeFn` exactly but

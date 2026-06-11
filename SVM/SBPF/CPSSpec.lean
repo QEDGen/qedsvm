@@ -8,16 +8,26 @@
 
     For every pc-free frame R and every `fetch` satisfying the code
     requirement `cr`, starting from any state where (P ** R) holds,
-    pc = entry, and exitCode = none, there exists k ≤ nSteps such that
-    `executeFn fetch s k` ends with pc = exit, exitCode = none,
-    `cuConsumed` increased by at most `nCu`, and (Q ** R) holds.
+    pc = entry, exitCode = none, and the remaining compute budget covers
+    the window (`s.cuConsumed + nSteps + nCu ≤ s.cuBudget`), there exists
+    k ≤ nSteps such that `executeFn fetch s k` ends with pc = exit,
+    exitCode = none, `cuConsumed` increased by at most `nSteps + nCu`,
+    and (Q ** R) holds.
 
   The bound is **two indices**: `nSteps` counts instructions executed
-  (1 fuel per step) and `nCu` upper-bounds the syscall surcharge
-  accumulated in `s.cuConsumed`. Total agave-CU consumption is
-  `nSteps + nCu`. For non-syscall code `nCu = 0`. Compose two triples
-  and both bounds add; a whole program's CU bound is the sum of its
-  macros'.
+  (each charges 1 baseline CU into `s.cuConsumed` — H5 total metering)
+  and `nCu` upper-bounds the syscall surcharge. Total agave-CU
+  consumption is `nSteps + nCu`. For non-syscall code `nCu = 0`. Compose
+  two triples and both bounds add; a whole program's CU bound is the sum
+  of its macros'.
+
+  The budget side-condition (H5) is what makes the triple sound against
+  the VM's fail-closed budget halt: `executeFn` stops (exitCode = none,
+  surfaced as OutOfBudget) the moment `cuConsumed` exceeds `cuBudget`,
+  so "execution reaches exit still running" is only true when the window
+  provably fits in the remaining budget. Sequential composition splits
+  the budget via `executeFn_preserves_cuBudget` + the first segment's
+  cuConsumed bound.
 
   Frame rule is baked into the definition (universal R). Triples therefore
   only describe the resources their code actually reads or writes.
@@ -268,10 +278,11 @@ def cuTripleWithin (nSteps nCu : Nat) (entry exit_ : Nat) (cr : CodeReq)
   ∀ (R : Assertion), R.pcFree →
   ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
   ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    s.cuConsumed + nSteps + nCu ≤ s.cuBudget →
     ∃ k, k ≤ nSteps ∧
       (executeFn fetch s k).pc = exit_ ∧
       (executeFn fetch s k).exitCode = none ∧
-      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nCu ∧
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu ∧
       (Q ** R).holdsFor (executeFn fetch s k)
 
 /-! ## Structural rules -/
@@ -284,11 +295,11 @@ theorem cuTripleWithin_weaken {nSteps nCu : Nat} {entry exit_ : Nat} {cr : CodeR
     (hpost : ∀ h, Q h → Q' h)
     (h : cuTripleWithin nSteps nCu entry exit_ cr P Q) :
     cuTripleWithin nSteps nCu entry exit_ cr P' Q' := by
-  intro R hR fetch hcr s hP'R hpc hex
+  intro R hR fetch hcr s hP'R hpc hex hbud
   have hPR : (P ** R).holdsFor s := by
     obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
     exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
-  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex
+  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex hbud
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   obtain ⟨hp, hcompat, h1, h2, hd, hu, hQ1, hR2⟩ := hQR
   exact ⟨hp, hcompat, h1, h2, hd, hu, hpost h1 hQ1, hR2⟩
@@ -300,9 +311,9 @@ theorem cuTripleWithin_mono_nSteps {nSteps nSteps' nCu : Nat} {entry exit_ : Nat
     (hle : nSteps ≤ nSteps')
     (h : cuTripleWithin nSteps nCu entry exit_ cr P Q) :
     cuTripleWithin nSteps' nCu entry exit_ cr P Q := by
-  intro R hR fetch hcr s hPR hpc hex
-  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex
-  exact ⟨k, Nat.le_trans hk hle, hpc', hex', hcu, hQR⟩
+  intro R hR fetch hcr s hPR hpc hex hbud
+  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex (by omega)
+  exact ⟨k, Nat.le_trans hk hle, hpc', hex', by omega, hQR⟩
 
 /-- Monotonicity in the syscall-CU bound: a triple with surcharge bound
     `M` is also one with bound `M' ≥ M`. -/
@@ -311,10 +322,9 @@ theorem cuTripleWithin_mono_nCu {nSteps nCu nCu' : Nat} {entry exit_ : Nat}
     (hle : nCu ≤ nCu')
     (h : cuTripleWithin nSteps nCu entry exit_ cr P Q) :
     cuTripleWithin nSteps nCu' entry exit_ cr P Q := by
-  intro R hR fetch hcr s hPR hpc hex
-  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex
-  refine ⟨k, hk, hpc', hex', ?_, hQR⟩
-  exact Nat.le_trans hcu (Nat.add_le_add_left hle _)
+  intro R hR fetch hcr s hPR hpc hex hbud
+  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex (by omega)
+  exact ⟨k, hk, hpc', hex', by omega, hQR⟩
 
 /-- Cast a triple's `nSteps` / `nCu` / `exit_` to definitionally-equal
     Nat expressions. Used by `sl_block_iter` to coerce the iteratively
@@ -333,7 +343,7 @@ theorem cuTripleWithin_cast {nSteps nSteps' nCu nCu' entry exit_ exit_' : Nat}
 theorem cuTripleWithin_refl {entry : Nat} {P Q : Assertion}
     (h : ∀ hp, P hp → Q hp) :
     cuTripleWithin 0 0 entry entry CodeReq.empty P Q := by
-  intro R _ _ _ s hPR hpc hex
+  intro R _ _ _ s hPR hpc hex _
   refine ⟨0, Nat.le_refl 0, ?_, ?_, ?_, ?_⟩
   · simp [hpc]
   · simp [hex]
@@ -354,21 +364,26 @@ theorem cuTripleWithin_seq {N1 N2 M1 M2 : Nat} {pc1 pc2 pc3 : Nat}
     (h1 : cuTripleWithin N1 M1 pc1 pc2 cr1 P Q)
     (h2 : cuTripleWithin N2 M2 pc2 pc3 cr2 Q R) :
     cuTripleWithin (N1 + N2) (M1 + M2) pc1 pc3 (cr1.union cr2) P R := by
-  intro F hF fetch hcr s hPF hpc hex
+  intro F hF fetch hcr s hPF hpc hex hbud
   have hcr1 := CodeReq.SatisfiedBy_of_union_left hcr
   have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
-  obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ := h1 F hF fetch hcr1 s hPF hpc hex
+  obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
+    h1 F hF fetch hcr1 s hPF hpc hex (by omega)
+  -- Budget split (H5): the intermediate state's budget is unchanged
+  -- (`executeFn_preserves_cuBudget`) and its cuConsumed grew by at most
+  -- N1 + M1, so the remainder N2 + M2 still fits.
+  have hbud_mid : (executeFn fetch s k1).cuConsumed + N2 + M2
+      ≤ (executeFn fetch s k1).cuBudget := by
+    rw [executeFn_preserves_cuBudget]; omega
   obtain ⟨k2, hk2, hpc_end, hex_end, hcu2, hRF⟩ :=
-    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid
+    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid hbud_mid
   refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_, ?_, ?_, ?_⟩
   · rw [executeFn_compose]; exact hpc_end
   · rw [executeFn_compose]; exact hex_end
-  · -- Chain cuConsumed: (s after k1+k2).cu ≤ (s after k1).cu + M2 ≤ s.cu + M1 + M2
+  · -- Chain cuConsumed through the midpoint bound.
     rw [executeFn_compose]
-    calc (executeFn fetch (executeFn fetch s k1) k2).cuConsumed
-        ≤ (executeFn fetch s k1).cuConsumed + M2 := hcu2
-      _ ≤ (s.cuConsumed + M1) + M2 := Nat.add_le_add_right hcu1 M2
-      _ = s.cuConsumed + (M1 + M2) := by omega
+    have := hcu2
+    omega
   · rw [executeFn_compose]; exact hRF
 
 /-- Explicit frame rule (right): adding a pc-free assertion `F` to both
@@ -379,11 +394,11 @@ theorem cuTripleWithin_frame_right (F : Assertion) (hF : F.pcFree)
     {N M : Nat} {pc1 pc2 : Nat} {cr : CodeReq} {P Q : Assertion}
     (h : cuTripleWithin N M pc1 pc2 cr P Q) :
     cuTripleWithin N M pc1 pc2 cr (P ** F) (Q ** F) := by
-  intro R hR fetch hcr s hPFR hpc hex
+  intro R hR fetch hcr s hPFR hpc hex hbud
   have hFR_pcfree : (F ** R).pcFree := pcFree_sepConj hF hR
   have hP_FR : (P ** (F ** R)).holdsFor s := holdsFor_sepConj_assoc.mp hPFR
   obtain ⟨k, hk, hpc', hex', hcu, hQFR⟩ :=
-    h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex
+    h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex hbud
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact holdsFor_sepConj_assoc.mpr hQFR
 
@@ -436,11 +451,12 @@ def cuTripleWithinMem (nSteps nCu : Nat) (entry exit_ : Nat) (cr : CodeReq)
   ∀ (R : Assertion), R.pcFree →
   ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
   ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    s.cuConsumed + nSteps + nCu ≤ s.cuBudget →
     rr s.regions →
     ∃ k, k ≤ nSteps ∧
       (executeFn fetch s k).pc = exit_ ∧
       (executeFn fetch s k).exitCode = none ∧
-      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nCu ∧
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu ∧
       (Q ** R).holdsFor (executeFn fetch s k)
 
 /-- Every non-memory triple is also a memory triple with no region
@@ -449,8 +465,8 @@ theorem cuTripleWithin.toMem {nSteps nCu entry exit_ : Nat} {cr : CodeReq}
     {P Q : Assertion}
     (h : cuTripleWithin nSteps nCu entry exit_ cr P Q) :
     cuTripleWithinMem nSteps nCu entry exit_ cr P Q (fun _ => True) := by
-  intro R hR fetch hcr s hPR hpc hex _
-  exact h R hR fetch hcr s hPR hpc hex
+  intro R hR fetch hcr s hPR hpc hex hbud _
+  exact h R hR fetch hcr s hPR hpc hex hbud
 
 /-- Sequential composition for memory triples: both bounds sum, code reqs
     union, region conditions conjunct. Uses `executeFn_preserves_regions`
@@ -462,24 +478,23 @@ theorem cuTripleWithinMem_seq {N1 N2 M1 M2 : Nat} {pc1 pc2 pc3 : Nat}
     (h2 : cuTripleWithinMem N2 M2 pc2 pc3 cr2 Q R rr2) :
     cuTripleWithinMem (N1 + N2) (M1 + M2) pc1 pc3 (cr1.union cr2) P R
       (fun rt => rr1 rt ∧ rr2 rt) := by
-  intro F hF fetch hcr s hPF hpc hex h_reg
+  intro F hF fetch hcr s hPF hpc hex hbud h_reg
   obtain ⟨hreg1, hreg2⟩ := h_reg
   have hcr1 := CodeReq.SatisfiedBy_of_union_left hcr
   have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
   obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
-    h1 F hF fetch hcr1 s hPF hpc hex hreg1
+    h1 F hF fetch hcr1 s hPF hpc hex (by omega) hreg1
   have h_reg_mid : rr2 (executeFn fetch s k1).regions := by
     rw [executeFn_preserves_regions]; exact hreg2
+  have hbud_mid : (executeFn fetch s k1).cuConsumed + N2 + M2
+      ≤ (executeFn fetch s k1).cuBudget := by
+    rw [executeFn_preserves_cuBudget]; omega
   obtain ⟨k2, hk2, hpc_end, hex_end, hcu2, hRF⟩ :=
-    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid h_reg_mid
+    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid hbud_mid h_reg_mid
   refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_, ?_, ?_, ?_⟩
   · rw [executeFn_compose]; exact hpc_end
   · rw [executeFn_compose]; exact hex_end
-  · rw [executeFn_compose]
-    calc (executeFn fetch (executeFn fetch s k1) k2).cuConsumed
-        ≤ (executeFn fetch s k1).cuConsumed + M2 := hcu2
-      _ ≤ (s.cuConsumed + M1) + M2 := Nat.add_le_add_right hcu1 M2
-      _ = s.cuConsumed + (M1 + M2) := by omega
+  · rw [executeFn_compose]; omega
   · rw [executeFn_compose]; exact hRF
 
 /-- Frame rule for memory triples (right). -/
@@ -488,11 +503,11 @@ theorem cuTripleWithinMem_frame_right (F : Assertion) (hF : F.pcFree)
     {rr : Memory.RegionTable → Prop}
     (h : cuTripleWithinMem N M pc1 pc2 cr P Q rr) :
     cuTripleWithinMem N M pc1 pc2 cr (P ** F) (Q ** F) rr := by
-  intro R hR fetch hcr s hPFR hpc hex h_reg
+  intro R hR fetch hcr s hPFR hpc hex hbud h_reg
   have hFR_pcfree : (F ** R).pcFree := pcFree_sepConj hF hR
   have hP_FR : (P ** (F ** R)).holdsFor s := holdsFor_sepConj_assoc.mp hPFR
   obtain ⟨k, hk, hpc', hex', hcu, hQFR⟩ :=
-    h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex h_reg
+    h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex hbud h_reg
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact holdsFor_sepConj_assoc.mpr hQFR
 
@@ -515,12 +530,12 @@ theorem cuTripleWithinMem_weaken {nSteps nCu : Nat} {entry exit_ : Nat}
     (h_rr  : ∀ rt, rr' rt → rr rt)
     (h : cuTripleWithinMem nSteps nCu entry exit_ cr P Q rr) :
     cuTripleWithinMem nSteps nCu entry exit_ cr P' Q' rr' := by
-  intro R hR fetch hcr s hP'R hpc hex h_reg'
+  intro R hR fetch hcr s hP'R hpc hex hbud h_reg'
   have hPR : (P ** R).holdsFor s := by
     obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
     exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
   obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ :=
-    h R hR fetch hcr s hPR hpc hex (h_rr _ h_reg')
+    h R hR fetch hcr s hPR hpc hex hbud (h_rr _ h_reg')
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   obtain ⟨hp, hcompat, h1, h2, hd, hu, hQ1, hR2⟩ := hQR
   exact ⟨hp, hcompat, h1, h2, hd, hu, hpost h1 hQ1, hR2⟩
@@ -560,7 +575,7 @@ theorem cuTripleWithinMem_frame_left (F : Assertion) (hF : F.pcFree)
     {rr : Memory.RegionTable → Prop}
     (h : cuTripleWithinMem N M pc1 pc2 cr P Q rr) :
     cuTripleWithinMem N M pc1 pc2 cr (F ** P) (F ** Q) rr := by
-  intro R hR fetch hcr s hPFR hpc hex h_reg
+  intro R hR fetch hcr s hPFR hpc hex hbud h_reg
   -- F ** P ** R → P ** F ** R via comm; apply frame_right; then swap back.
   have h' := cuTripleWithinMem_frame_right F hF h
   -- h' : cuTripleWithinMem N M pc1 pc2 cr (P ** F) (Q ** F) rr
@@ -573,7 +588,8 @@ theorem cuTripleWithinMem_frame_left (F : Assertion) (hF : F.pcFree)
         · rintro ⟨h1, h2, hd, hu, hPF, hRsat⟩
           exact ⟨h1, h2, hd, hu, (sepConj_comm h1).mp hPF, hRsat⟩)
     exact this.mp hPFR
-  obtain ⟨k, hk, hpc', hex', hcu, hQFR⟩ := h' R hR fetch hcr s hPFR' hpc hex h_reg
+  obtain ⟨k, hk, hpc', hex', hcu, hQFR⟩ :=
+    h' R hR fetch hcr s hPFR' hpc hex hbud h_reg
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   have : ((Q ** F) ** R).holdsFor (executeFn fetch s k) ↔
          ((F ** Q) ** R).holdsFor (executeFn fetch s k) :=
@@ -656,10 +672,11 @@ def cuTripleWithinBranch (nSteps nCu : Nat) (entry exitT exitF : Nat)
   ∀ (R : Assertion), R.pcFree →
   ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
   ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    s.cuConsumed + nSteps + nCu ≤ s.cuBudget →
     ∃ k, k ≤ nSteps ∧
       (executeFn fetch s k).pc = (if cond then exitT else exitF) ∧
       (executeFn fetch s k).exitCode = none ∧
-      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nCu ∧
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu ∧
       (Q ** R).holdsFor (executeFn fetch s k)
 
 /-- Bridge: an existing `cuTripleWithin` with an `if cond then pcT else
@@ -669,8 +686,8 @@ theorem cuTripleWithin.toBranch {N M : Nat} {pc pcT pcF : Nat} {cr : CodeReq}
     {P Q : Assertion} {cond : Prop} [Decidable cond]
     (h : cuTripleWithin N M pc (if cond then pcT else pcF) cr P Q) :
     cuTripleWithinBranch N M pc pcT pcF cond cr P Q := by
-  intro R hR fetch hcr s hPR hpc hex
-  exact h R hR fetch hcr s hPR hpc hex
+  intro R hR fetch hcr s hPR hpc hex hbud
+  exact h R hR fetch hcr s hPR hpc hex hbud
 
 /-- Frame rule (right) for the branch triple. Same shape as
     `cuTripleWithin_frame_right`: adding a pc-free assertion `F` to
@@ -680,11 +697,11 @@ theorem cuTripleWithinBranch_frame_right (F : Assertion) (hF : F.pcFree)
     {cond : Prop} [Decidable cond]
     (h : cuTripleWithinBranch N M pc pcT pcF cond cr P Q) :
     cuTripleWithinBranch N M pc pcT pcF cond cr (P ** F) (Q ** F) := by
-  intro R hR fetch hcr s hPFR hpc hex
+  intro R hR fetch hcr s hPFR hpc hex hbud
   have hFR_pcfree : (F ** R).pcFree := pcFree_sepConj hF hR
   have hP_FR : (P ** (F ** R)).holdsFor s := holdsFor_sepConj_assoc.mp hPFR
   obtain ⟨k, hk, hpc', hex', hcu, hQFR⟩ :=
-    h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex
+    h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex hbud
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact holdsFor_sepConj_assoc.mpr hQFR
 
@@ -698,11 +715,11 @@ theorem cuTripleWithinBranch_weaken {N M : Nat} {pc pcT pcF : Nat}
     (hpost : ∀ h, Q h → Q' h)
     (h : cuTripleWithinBranch N M pc pcT pcF cond cr P Q) :
     cuTripleWithinBranch N M pc pcT pcF cond cr P' Q' := by
-  intro R hR fetch hcr s hP'R hpc hex
+  intro R hR fetch hcr s hP'R hpc hex hbud
   have hPR : (P ** R).holdsFor s := by
     obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
     exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
-  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex
+  obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex hbud
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   obtain ⟨hp, hcompat, h1, h2, hd, hu, hQ1, hR2⟩ := hQR
   exact ⟨hp, hcompat, h1, h2, hd, hu, hpost h1 hQ1, hR2⟩
@@ -745,7 +762,12 @@ theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
     cuTripleWithin (N0 + max NT NF) (M0 + max MT MF) pc0 pcJoin
       ((crBr.union crT).union crF)
       P (if cond then Rt else Rf) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
+  -- max facts surfaced for omega (which doesn't reason about `max`).
+  have hmaxNT := Nat.le_max_left NT NF
+  have hmaxNF := Nat.le_max_right NT NF
+  have hmaxMT := Nat.le_max_left MT MF
+  have hmaxMF := Nat.le_max_right MT MF
   -- Split the union: fetch satisfies crBr, crT, crF individually.
   have hcr_brT : (crBr.union crT).SatisfiedBy fetch :=
     CodeReq.SatisfiedBy_of_union_left hcr
@@ -758,7 +780,13 @@ theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
     CodeReq.SatisfiedBy_of_union_right hd_brT hcr_brT
   -- Step 1: run the branch.
   obtain ⟨k0, hk0, hpc_mid, hex_mid, hcu0, hQR⟩ :=
-    h_br R hRfree fetch hcr_br s hPR hpc hex
+    h_br R hRfree fetch hcr_br s hPR hpc hex (by omega)
+  -- Budget left for either follow-up chain (H5).
+  have hbud_mid : ∀ n m, n ≤ max NT NF → m ≤ max MT MF →
+      (executeFn fetch s k0).cuConsumed + n + m
+        ≤ (executeFn fetch s k0).cuBudget := by
+    intro n m hn hm
+    rw [executeFn_preserves_cuBudget]; omega
   -- Step 2: run the appropriate follow-up branch.
   by_cases hcond : cond
   · -- True branch: pc_mid = pcT.
@@ -766,20 +794,14 @@ theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
       rw [hpc_mid]; simp [hcond]
     obtain ⟨k1, hk1, hpc_end, hex_end, hcu1, hRtR⟩ :=
       h_T R hRfree fetch hcr_T (executeFn fetch s k0) hQR hpc_mid' hex_mid
+        (hbud_mid NT MT hmaxNT hmaxMT)
     refine ⟨k0 + k1, ?_, ?_, ?_, ?_, ?_⟩
     · -- k0 + k1 ≤ N0 + max NT NF
       apply Nat.add_le_add hk0
       exact Nat.le_trans hk1 (Nat.le_max_left NT NF)
     · rw [executeFn_compose]; exact hpc_end
     · rw [executeFn_compose]; exact hex_end
-    · rw [executeFn_compose]
-      calc (executeFn fetch (executeFn fetch s k0) k1).cuConsumed
-          ≤ (executeFn fetch s k0).cuConsumed + MT := hcu1
-        _ ≤ (s.cuConsumed + M0) + MT := Nat.add_le_add_right hcu0 MT
-        _ ≤ s.cuConsumed + (M0 + max MT MF) := by
-              rw [Nat.add_assoc]
-              exact Nat.add_le_add_left
-                (Nat.add_le_add_left (Nat.le_max_left MT MF) M0) _
+    · rw [executeFn_compose]; omega
     · rw [executeFn_compose]
       simp only [hcond, if_true]
       exact hRtR
@@ -788,19 +810,13 @@ theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
       rw [hpc_mid]; simp [hcond]
     obtain ⟨k1, hk1, hpc_end, hex_end, hcu1, hRfR⟩ :=
       h_F R hRfree fetch hcr_F (executeFn fetch s k0) hQR hpc_mid' hex_mid
+        (hbud_mid NF MF hmaxNF hmaxMF)
     refine ⟨k0 + k1, ?_, ?_, ?_, ?_, ?_⟩
     · apply Nat.add_le_add hk0
       exact Nat.le_trans hk1 (Nat.le_max_right NT NF)
     · rw [executeFn_compose]; exact hpc_end
     · rw [executeFn_compose]; exact hex_end
-    · rw [executeFn_compose]
-      calc (executeFn fetch (executeFn fetch s k0) k1).cuConsumed
-          ≤ (executeFn fetch s k0).cuConsumed + MF := hcu1
-        _ ≤ (s.cuConsumed + M0) + MF := Nat.add_le_add_right hcu0 MF
-        _ ≤ s.cuConsumed + (M0 + max MT MF) := by
-              rw [Nat.add_assoc]
-              exact Nat.add_le_add_left
-                (Nat.add_le_add_left (Nat.le_max_right MT MF) M0) _
+    · rw [executeFn_compose]; omega
     · rw [executeFn_compose]
       simp only [hcond, if_false]
       exact hRfR
@@ -865,16 +881,18 @@ theorem cuTripleWithinMem.toExec {N M entry exit_ : Nat} {cr : CodeReq}
     (h : cuTripleWithinMem N M entry exit_ cr P Q rr)
     {fetch : Nat → Option Insn} (hcr : cr.SatisfiedBy fetch)
     {s : State} (hP : P.holdsFor s) (hpc : s.pc = entry)
-    (hex : s.exitCode = none) (h_reg : rr s.regions) :
+    (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + N + M ≤ s.cuBudget)
+    (h_reg : rr s.regions) :
     ∃ k, k ≤ N ∧
       (executeFn fetch s k).pc = exit_ ∧
       (executeFn fetch s k).exitCode = none ∧
-      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + M ∧
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + N + M ∧
       Q.holdsFor (executeFn fetch s k) := by
   have hP_emp : (P ** emp).holdsFor s :=
     (holdsFor_iff_pointwise sepConj_emp_right).mpr hP
   obtain ⟨k, hk, hpc', hex', hcu, hQ_emp⟩ :=
-    h emp pcFree_emp fetch hcr s hP_emp hpc hex h_reg
+    h emp pcFree_emp fetch hcr s hP_emp hpc hex hbud h_reg
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact (holdsFor_iff_pointwise sepConj_emp_right).mp hQ_emp
 
@@ -886,13 +904,14 @@ theorem cuTripleWithin.toExec {N M entry exit_ : Nat} {cr : CodeReq}
     (h : cuTripleWithin N M entry exit_ cr P Q)
     {fetch : Nat → Option Insn} (hcr : cr.SatisfiedBy fetch)
     {s : State} (hP : P.holdsFor s) (hpc : s.pc = entry)
-    (hex : s.exitCode = none) :
+    (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + N + M ≤ s.cuBudget) :
     ∃ k, k ≤ N ∧
       (executeFn fetch s k).pc = exit_ ∧
       (executeFn fetch s k).exitCode = none ∧
-      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + M ∧
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + N + M ∧
       Q.holdsFor (executeFn fetch s k) :=
-  h.toMem.toExec hcr hP hpc hex trivial
+  h.toMem.toExec hcr hP hpc hex hbud trivial
 
 /-! ## Terminating triple — abort / panic / success-exit
 
@@ -923,9 +942,10 @@ def cuTripleAbortsWithin (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
   ∀ (R : Assertion), R.pcFree →
   ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
   ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    s.cuConsumed + nSteps + nCu ≤ s.cuBudget →
     ∃ k, k ≤ nSteps ∧
       (executeFn fetch s k).exitCode = some errCode ∧
-      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nCu
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu
 
 /-- Rule of consequence (pre-weakening) for aborting triples. There is no
     post to weaken — abort triples have no post. -/
@@ -935,11 +955,11 @@ theorem cuTripleAbortsWithin_weaken {nSteps nCu : Nat} {entry : Nat}
     (hpre : ∀ h, P' h → P h)
     (h : cuTripleAbortsWithin nSteps nCu entry cr P errCode) :
     cuTripleAbortsWithin nSteps nCu entry cr P' errCode := by
-  intro R hR fetch hcr s hP'R hpc hex
+  intro R hR fetch hcr s hP'R hpc hex hbud
   have hPR : (P ** R).holdsFor s := by
     obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
     exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
-  exact h R hR fetch hcr s hPR hpc hex
+  exact h R hR fetch hcr s hPR hpc hex hbud
 
 /-- Monotonicity in the step bound: an aborting triple with bound `N` is
     also one with bound `N' ≥ N`. -/
@@ -949,9 +969,9 @@ theorem cuTripleAbortsWithin_mono_nSteps {nSteps nSteps' nCu : Nat}
     (hle : nSteps ≤ nSteps')
     (h : cuTripleAbortsWithin nSteps nCu entry cr P errCode) :
     cuTripleAbortsWithin nSteps' nCu entry cr P errCode := by
-  intro R hR fetch hcr s hPR hpc hex
-  obtain ⟨k, hk, hex', hcu⟩ := h R hR fetch hcr s hPR hpc hex
-  exact ⟨k, Nat.le_trans hk hle, hex', hcu⟩
+  intro R hR fetch hcr s hPR hpc hex hbud
+  obtain ⟨k, hk, hex', hcu⟩ := h R hR fetch hcr s hPR hpc hex (by omega)
+  exact ⟨k, Nat.le_trans hk hle, hex', by omega⟩
 
 /-- Sequencing into abort: a non-terminating triple `P { c₁ } Q` chained
     with an aborting triple `Q { c₂ } aborts` yields an aborting triple
@@ -970,20 +990,19 @@ theorem cuTripleAbortsWithin_seq_abort {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
     (h1 : cuTripleWithin N1 M1 pc1 pc2 cr1 P Q)
     (h2 : cuTripleAbortsWithin N2 M2 pc2 cr2 Q errCode) :
     cuTripleAbortsWithin (N1 + N2) (M1 + M2) pc1 (cr1.union cr2) P errCode := by
-  intro F hF fetch hcr s hPF hpc hex
+  intro F hF fetch hcr s hPF hpc hex hbud
   have hcr1 := CodeReq.SatisfiedBy_of_union_left hcr
   have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
   obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
-    h1 F hF fetch hcr1 s hPF hpc hex
+    h1 F hF fetch hcr1 s hPF hpc hex (by omega)
+  have hbud_mid : (executeFn fetch s k1).cuConsumed + N2 + M2
+      ≤ (executeFn fetch s k1).cuBudget := by
+    rw [executeFn_preserves_cuBudget]; omega
   obtain ⟨k2, hk2, hex_end, hcu2⟩ :=
-    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid
+    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid hbud_mid
   refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_, ?_⟩
   · rw [executeFn_compose]; exact hex_end
-  · rw [executeFn_compose]
-    calc (executeFn fetch (executeFn fetch s k1) k2).cuConsumed
-        ≤ (executeFn fetch s k1).cuConsumed + M2 := hcu2
-      _ ≤ (s.cuConsumed + M1) + M2 := Nat.add_le_add_right hcu1 M2
-      _ = s.cuConsumed + (M1 + M2) := by omega
+  · rw [executeFn_compose]; omega
 
 /-- Frame rule (right) for aborting triples: adding a pc-free assertion
     `F` to the precondition preserves the triple. Since there is no
@@ -992,10 +1011,10 @@ theorem cuTripleAbortsWithin_frame_right (F : Assertion) (hF : F.pcFree)
     {N M : Nat} {pc : Nat} {cr : CodeReq} {P : Assertion} {errCode : Nat}
     (h : cuTripleAbortsWithin N M pc cr P errCode) :
     cuTripleAbortsWithin N M pc cr (P ** F) errCode := by
-  intro R hR fetch hcr s hPFR hpc hex
+  intro R hR fetch hcr s hPFR hpc hex hbud
   have hFR_pcfree : (F ** R).pcFree := pcFree_sepConj hF hR
   have hP_FR : (P ** (F ** R)).holdsFor s := holdsFor_sepConj_assoc.mp hPFR
-  exact h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex
+  exact h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex hbud
 
 /-- Frame rule (left) for aborting triples. -/
 theorem cuTripleAbortsWithin_frame_left (F : Assertion) (hF : F.pcFree)
@@ -1023,10 +1042,11 @@ def cuTripleAbortsWithinMem (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
   ∀ (R : Assertion), R.pcFree →
   ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
   ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    s.cuConsumed + nSteps + nCu ≤ s.cuBudget →
     rr s.regions →
     ∃ k, k ≤ nSteps ∧
       (executeFn fetch s k).exitCode = some errCode ∧
-      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nCu
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu
 
 /-- Every non-memory aborting triple is also a memory aborting triple
     with no region requirement. Lets pure abort specs (e.g.
@@ -1035,8 +1055,8 @@ theorem cuTripleAbortsWithin.toMem {nSteps nCu entry : Nat} {cr : CodeReq}
     {P : Assertion} {errCode : Nat}
     (h : cuTripleAbortsWithin nSteps nCu entry cr P errCode) :
     cuTripleAbortsWithinMem nSteps nCu entry cr P (fun _ => True) errCode := by
-  intro R hR fetch hcr s hPR hpc hex _
-  exact h R hR fetch hcr s hPR hpc hex
+  intro R hR fetch hcr s hPR hpc hex hbud _
+  exact h R hR fetch hcr s hPR hpc hex hbud
 
 /-- Memory-aware sequencing into abort: a memory triple `P { c₁ } Q`
     chained with a memory-aware aborting triple `Q { c₂ } aborts`
@@ -1055,23 +1075,23 @@ theorem cuTripleWithinMem_seq_abort {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
     (h2 : cuTripleAbortsWithinMem N2 M2 pc2 cr2 Q rr2 errCode) :
     cuTripleAbortsWithinMem (N1 + N2) (M1 + M2) pc1 (cr1.union cr2) P
       (fun rt => rr1 rt ∧ rr2 rt) errCode := by
-  intro F hF fetch hcr s hPF hpc hex h_reg
+  intro F hF fetch hcr s hPF hpc hex hbud h_reg
   obtain ⟨hreg1, hreg2⟩ := h_reg
   have hcr1 := CodeReq.SatisfiedBy_of_union_left hcr
   have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
   obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
-    h1 F hF fetch hcr1 s hPF hpc hex hreg1
+    h1 F hF fetch hcr1 s hPF hpc hex (by omega) hreg1
   have h_reg_mid : rr2 (executeFn fetch s k1).regions := by
     rw [executeFn_preserves_regions]; exact hreg2
+  have hbud_mid : (executeFn fetch s k1).cuConsumed + N2 + M2
+      ≤ (executeFn fetch s k1).cuBudget := by
+    rw [executeFn_preserves_cuBudget]; omega
   obtain ⟨k2, hk2, hex_end, hcu2⟩ :=
-    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid h_reg_mid
+    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid hbud_mid
+      h_reg_mid
   refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_, ?_⟩
   · rw [executeFn_compose]; exact hex_end
-  · rw [executeFn_compose]
-    calc (executeFn fetch (executeFn fetch s k1) k2).cuConsumed
-        ≤ (executeFn fetch s k1).cuConsumed + M2 := hcu2
-      _ ≤ (s.cuConsumed + M1) + M2 := Nat.add_le_add_right hcu1 M2
-      _ = s.cuConsumed + (M1 + M2) := by omega
+  · rw [executeFn_compose]; omega
 
 /-- Rule of consequence for memory-aware aborting triples: strengthen
     the pre, and strengthen `rr` (caller's stronger region claim implies
@@ -1083,11 +1103,11 @@ theorem cuTripleAbortsWithinMem_weaken {nSteps nCu : Nat} {entry : Nat}
     (h_rr  : ∀ rt, rr' rt → rr rt)
     (h : cuTripleAbortsWithinMem nSteps nCu entry cr P rr errCode) :
     cuTripleAbortsWithinMem nSteps nCu entry cr P' rr' errCode := by
-  intro R hR fetch hcr s hP'R hpc hex h_reg'
+  intro R hR fetch hcr s hP'R hpc hex hbud h_reg'
   have hPR : (P ** R).holdsFor s := by
     obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
     exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
-  exact h R hR fetch hcr s hPR hpc hex (h_rr _ h_reg')
+  exact h R hR fetch hcr s hPR hpc hex hbud (h_rr _ h_reg')
 
 /-- Variant where the abort tail is a non-Mem triple (most common: the
     abort tail is `.exit`, which has no memory ops). Discharges by
@@ -1103,7 +1123,7 @@ theorem cuTripleWithinMem_seq_abort_pure {N1 N2 M1 M2 : Nat}
     cuTripleAbortsWithinMem (N1 + N2) (M1 + M2) pc1 (cr1.union cr2) P
       rr1 errCode := by
   have h := cuTripleWithinMem_seq_abort hd h1 h2.toMem
-  intro F hF fetch hcr s hPF hpc hex h_reg
-  exact h F hF fetch hcr s hPF hpc hex ⟨h_reg, trivial⟩
+  intro F hF fetch hcr s hPF hpc hex hbud h_reg
+  exact h F hF fetch hcr s hPF hpc hex hbud ⟨h_reg, trivial⟩
 
 end SVM.SBPF
