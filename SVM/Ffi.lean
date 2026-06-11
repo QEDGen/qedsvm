@@ -108,14 +108,13 @@ def runElfBuffer (elf input : ByteArray) (cuBudget : UInt64) : ByteArray :=
   let cfg : Runner.RunConfig := { input := input, cuBudget := cuBudget.toNat }
   match Runner.runElfWithFuel elf cfg with
   | none => encodeElfError
-  | some (s, fuelRemaining) =>
-    -- `fuelRemaining ≤ cuBudget.toNat` by construction of
-    -- `executeFnCpiWithFuel`. Total reported CU = step count
-    -- (cuBudget - fuelRemaining) + extra syscall overhead
-    -- (s.cuConsumed); the latter is bumped by `step`'s `.call`
-    -- arm via `SVM.SBPF.syscallCu`.
-    let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
-    encodeRun s input.size (UInt64.ofNat consumed)
+  | some (s, _fuelRemaining) =>
+    -- H5 total metering: `s.cuConsumed` IS the total CU (baseline
+    -- 1/instruction charged by `chargeCu` in the execution loop +
+    -- syscall surcharges from `step`'s `.call` arm). The old
+    -- `(cuBudget - fuelRemaining) + s.cuConsumed` would now
+    -- double-count the baselines.
+    encodeRun s input.size (UInt64.ofNat s.cuConsumed)
 
 /-! ## Multi-program registry (for CPI)
 
@@ -191,9 +190,9 @@ def runWithRegistry (elf input registry : ByteArray) (cuBudget : UInt64)
       programRegistry := parseRegistry registry }
   match Runner.runElfWithFuel elf cfg with
   | none => encodeElfError
-  | some (s, fuelRemaining) =>
-    let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
-    encodeRun s input.size (UInt64.ofNat consumed)
+  | some (s, _fuelRemaining) =>
+    -- H5 total metering: s.cuConsumed is the total CU (see runElfBuffer).
+    encodeRun s input.size (UInt64.ofNat s.cuConsumed)
 
 /-- Variant of `runWithRegistry` that additionally threads the
     top-level program-id into `State.progIdBytes`. Needed for
@@ -211,9 +210,9 @@ def runWithRegistryAndPid
       progIdBytes     := pidBytes }
   match Runner.runElfWithFuel elf cfg with
   | none => encodeElfError
-  | some (s, fuelRemaining) =>
-    let consumed := (cuBudget.toNat - fuelRemaining) + s.cuConsumed
-    encodeRun s input.size (UInt64.ofNat consumed)
+  | some (s, _fuelRemaining) =>
+    -- H5 total metering: s.cuConsumed is the total CU (see runElfBuffer).
+    encodeRun s input.size (UInt64.ofNat s.cuConsumed)
 
 /-! ## Top-level precompile dispatch
 
