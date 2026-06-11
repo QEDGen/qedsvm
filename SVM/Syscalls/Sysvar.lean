@@ -24,6 +24,13 @@ namespace Sysvar
     minimal field bytes. -/
 def cu : Nat := 100
 
+/-- `sol_get_sysvar` (the SIMD-0127 generic accessor) charges
+    `sysvar_base_cost (100) + 32/cpi_bytes_per_unit (32/250 = 0) +
+    max(length/cpi_bytes_per_unit, mem_op_base_cost (10))` — agave
+    `SyscallGetSysvar` (agave-syscalls 4.0 sysvar.rs). Length is r4. -/
+@[simp] def cuGetSysvar (s : State) : Nat :=
+  cu + Nat.max (s.regs.r4 / 250) 10
+
 /-- Per-sysvar CU = `base + size_of::<T>()`. Rust `size_of` includes
     trailing alignment padding, so e.g. `Rent` (u64 + f64 + u8) is
     24 bytes, not 17. Mirrors

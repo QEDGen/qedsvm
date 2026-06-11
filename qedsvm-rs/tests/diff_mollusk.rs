@@ -189,6 +189,11 @@ const CPI_SET_RETURN_DATA_CALLEE_SO: &[u8] =
 /// Source in `cpi_get_return_data_pubkey_src/`.
 const CPI_GET_RETURN_DATA_PUBKEY_SO: &[u8] =
     include_bytes!("fixtures/cpi_get_return_data_pubkey.so");
+/// Probes the SIMD-0127 `sol_get_sysvar` surface (rent/clock/
+/// epoch_schedule/slot_hashes slices, unknown id, length overrun) and
+/// dumps every r0 + buffer into accounts[0].data (H7).
+/// Source in `sysvar_probe_src/`.
+const SYSVAR_PROBE_SO: &[u8] = include_bytes!("fixtures/sysvar_probe.so");
 /// Outer layer of a 3-program CPI chain. Forwards accounts[0] through
 /// `cpi_increment_caller.so` to `incrementer.so` (depth 2).
 /// Source in `cpi_depth_2_outer_src/`.
@@ -1344,6 +1349,22 @@ fn p_token_initialize_mint2_matches_mollusk() {
         "qedsvm: expected Success on p-token InitializeMint2, got {:?}", fs_r.program_result);
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success on p-token InitializeMint2, got {:?}", m_r.program_result);
+    // Full-equality referee (enabled by the H7 `sol_get_sysvar` fix:
+    // pinocchio's Rent::get crosses the generic accessor on this path,
+    // so pre-fix the engines diverged in CU and were only compared on
+    // Success/Success).
+    assert_no_poststate_backstop(&fs_r);
+    let (_, fs_mint) = &fs_r.resulting_accounts[0];
+    let (_, ml_mint) = &m_r.resulting_accounts[0];
+    assert_eq!(fs_mint.data(), ml_mint.data.as_slice(),
+        "Mint data diverged after p-token InitializeMint2");
+    assert_eq!(fs_mint.lamports(), ml_mint.lamports, "lamports diverged");
+    assert_eq!(fs_mint.owner(), &ml_mint.owner, "owner diverged");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for p-token InitializeMint2: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
 }
 
 /// SPL Token `Transfer` (discriminant 3). Moves 250 lamports of a
@@ -3075,6 +3096,84 @@ fn cpi_get_return_data_setter_pubkey_matches_mollusk() {
         "qedsvm: setter pubkey/data mismatch (got {:?})", fs_data.data());
     assert_eq!(ml_data.data.as_slice(), &expected,
         "mollusk: setter pubkey/data mismatch (got {:?})", ml_data.data);
+}
+
+/// H7 pin: the SIMD-0127 generic `sol_get_sysvar` accessor. The probe
+/// program reads rent (full + an offset slice + a length overrun),
+/// clock, epoch_schedule, the slot_hashes length prefix, and an
+/// unknown id, dumping every r0 and buffer into accounts[0].data.
+/// Both engines must agree byte-for-byte (in-band error codes 1/2
+/// included) and on CU (the length-dependent
+/// `sysvar_base + max(len/250, mem_op_base)` formula).
+#[test]
+fn sysvar_probe_matches_mollusk() {
+    let program_id = pid(240);
+    let data_key = pid(241);
+
+    let data = vec![0u8; 128];
+    let pre_fs = AccountSharedData::from(Account {
+        lamports: 2_000_000, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_ml = mollusk_account::Account {
+        lamports: 2_000_000, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(data_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, SYSVAR_PROBE_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(data_key, pre_fs)])
+        .expect("qedsvm runs sysvar probe");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SYSVAR_PROBE_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(data_key, pre_ml)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on sysvar probe, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on sysvar probe, got {:?}", m_r.program_result);
+    assert_no_poststate_backstop(&fs_r);
+
+    let (_, fs_data) = &fs_r.resulting_accounts[0];
+    let (_, ml_data) = &m_r.resulting_accounts[0];
+    assert_eq!(fs_data.data(), ml_data.data.as_slice(),
+        "sysvar probe data diverged:\n ours    = {:?}\n mollusk = {:?}",
+        fs_data.data(), ml_data.data);
+
+    // Spot-pin the layout so a silently-zero probe can't pass: rent
+    // bytes, the in-band error codes, and the slot_hashes 512-entry
+    // length prefix.
+    let d = ml_data.data.as_slice();
+    assert_eq!(d[0], 0, "rent r0");
+    assert_eq!(&d[1..18],
+        &[0x98, 0x0d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x32],
+        "rent bytes");
+    assert_eq!(&d[19..28], &[0, 0, 0, 0, 0, 0, 0, 0x40, 0x32],
+        "rent offset-8 slice");
+    assert_eq!(d[69], 2, "unknown id must be SYSVAR_NOT_FOUND (2)");
+    assert_eq!(d[70], 1, "rent len-18 must be OFFSET_LENGTH_EXCEEDS_SYSVAR (1)");
+    assert_eq!(&d[72..80], &[0x80, 0x97, 0x06, 0, 0, 0, 0, 0],
+        "epoch_schedule slots_per_epoch");
+    assert_eq!(&d[106..114], &[0x00, 0x02, 0, 0, 0, 0, 0, 0],
+        "slot_hashes length prefix (512)");
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for sysvar probe: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
 }
 
 /// 3-program CPI chain: outer → cpi_increment_caller → incrementer.

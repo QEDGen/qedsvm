@@ -125,6 +125,12 @@ rand = "0.8"
 sha2 = { version = "0.10.8", default-features = false }
 sha3 = "0.10.8"
 blake3 = "1.8.5"
+# Sysvar-buffer pins (H7): `tests/sysvar_buffer_pins.rs` asserts the
+# bincode serialization of mollusk's default sysvars equals the byte
+# contents baked into `SVM/Syscalls/SysvarData.lean` (what
+# `sol_get_sysvar` serves). Same version mollusk/agave use to fill the
+# sysvar cache.
+bincode = "1.3.3"
 
 [features]
 diff-mollusk = ["dep:mollusk-svm", "dep:mollusk-account", "dep:mollusk-pubkey"]

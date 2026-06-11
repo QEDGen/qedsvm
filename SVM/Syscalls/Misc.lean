@@ -3,10 +3,13 @@
 --   `sol_remaining_compute_units` (writes the real remaining budget to r0 — H7)
 --   `sol_get_stack_height`      (top-level = depth 1 — we don't model CPI)
 --   `sol_get_processed_sibling_instruction` (we don't track sibling instrs)
---   `sol_get_sysvar`            (generic sysvar lookup — base cost only)
+--   `sol_get_sysvar`            (generic sysvar slice accessor, SIMD-0127 —
+--                                serves the baked mollusk-default buffers
+--                                from `SVM/Syscalls/SysvarData.lean`)
 --   `.unknown _`                (any imm hash that doesn't match a known syscall)
 
 import SVM.SBPF.Machine
+import SVM.Syscalls.SysvarData
 
 namespace SVM.SBPF
 namespace Misc
@@ -70,10 +73,54 @@ def cu : Nat := 100
 @[simp] def execProcessedSibling (s : State) : State :=
   { s with regs := s.regs.set .r0 0 }
 
-/-- `sol_get_sysvar` (generic lookup): return 0 (success, no data
-    surfaced — the per-sysvar getters are the modeled path). -/
+/-- `sol_get_sysvar(sysvar_id_addr = r1, var_addr = r2, offset = r3,
+    length = r4)` — the SIMD-0127 generic sysvar accessor. Faithful to
+    agave's `SyscallGetSysvar` (agave-syscalls 4.0, the diff-baseline
+    version), in ITS check order:
+
+    1. `var_addr ≥ MM_INPUT_START` → instruction failure
+       (`SyscallError::InvalidPointer`; the
+       `syscall_parameter_address_restrictions` feature is active under
+       `FeatureSet::all_enabled()`). Modeled as `ERR_ACCESS_VIOLATION`.
+    2. memory translation of `[var_addr, var_addr+length)` (writable)
+       and the 32-byte id (readable) — NOT modeled (H6, the global
+       syscall-translation gap).
+    3. `offset + length` / `var_addr + length` overflowing u64 →
+       instruction failure (`ArithmeticOverflow`). Modeled as
+       `ERR_INVALID_LENGTH`.
+    4. id not in the sysvar cache → r0 := 2 (`SYSVAR_NOT_FOUND`,
+       in-band; agave does NOT abort here).
+    5. `offset + length > buf.size` → r0 := 1
+       (`OFFSET_LENGTH_EXCEEDS_SYSVAR`, in-band).
+    6. else copy `buf[offset..offset+length)` to `*var_addr`, r0 := 0.
+
+    The served buffers are the mollusk defaults baked in
+    `SVM/Syscalls/SysvarData.lean` (Rust-pinned). CU is the
+    length-dependent `Sysvar.cuGetSysvar`, charged via `syscallCu`.
+    H7: pre-fix this returned r0 := 0 WITHOUT writing the buffer — a
+    lift could prove the output buffer unchanged across the call, false
+    on chain. -/
 @[simp] def execGetSysvar (s : State) : State :=
-  { s with regs := s.regs.set .r0 0 }
+  let idA  := s.regs.r1
+  let outA := s.regs.r2
+  let off  := s.regs.r3
+  let len  := s.regs.r4
+  if outA ≥ Memory.INPUT_START then
+    { s with exitCode := some ERR_ACCESS_VIOLATION }
+  else if off + len ≥ U64_MODULUS ∨ outA + len ≥ U64_MODULUS then
+    { s with exitCode := some ERR_INVALID_LENGTH }
+  else
+    match SysvarData.sysvarBuffer (readBytes s.mem idA 32) with
+    | none => { s with regs := s.regs.set .r0 2 }
+    | some buf =>
+      if off + len > buf.size then
+        { s with regs := s.regs.set .r0 1 }
+      else
+        let mem' : Memory.Mem := fun a =>
+          if a ≥ outA ∧ a - outA < len then
+            (buf.get! (off + (a - outA))).toNat
+          else s.mem a
+        { s with regs := s.regs.set .r0 0, mem := mem' }
 
 /-- Unknown / unregistered syscall hash. Agave rejects the program
     (`UnknownSyscall`); we fail closed with the same effect rather than

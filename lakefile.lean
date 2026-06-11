@@ -148,10 +148,19 @@ lean_lib Examples where
     -- CloseAccount: first arm whose happy path crosses a host syscall
     -- (`sol_memset_` zeroing the account data). qedlift threads it via
     -- `call_sol_memset_spec` (a `↦Bytes` blob + surfaced CU/size hyps).
-    `Generated.PTokenCloseAccountTracedLifted,
-    -- InitializeMint2: crosses sol_get_sysvar + 7 nested call_locals +
-    -- spilled registers + the densest ALU/jump mix. First lift to
-    -- exercise the full call_local machinery; builds after the
-    -- sl_block_iter discharge perf fix (O(n²) → O(n)).
-    `Generated.PTokenInitializeMint2TracedLifted
+    `Generated.PTokenCloseAccountTracedLifted
+    -- InitializeMint2's traced lift is RETIRED pending regeneration
+    -- (soundness audit H7): its happy path crosses `sol_get_sysvar`,
+    -- which the model now implements faithfully (fills the output
+    -- buffer with the cached sysvar bytes), so the old lift — traced
+    -- against the zero-filling stub — proves a frame the chain
+    -- violates AND walks branch outcomes (the soft-float rent math)
+    -- the real bytes flip. It was also VACUOUS as emitted: the
+    -- 7-byte tail-zeroing idiom (`stw [r10-4]; stw [r10-7]`) produced
+    -- two overlapping `↦U32` pre-atoms, making the sepConj
+    -- unsatisfiable. Regeneration needs qedlift's walker to alias
+    -- syscall-written regions and overlapping accesses at byte
+    -- granularity; tracked with the qedlift emitter follow-ups (H8).
+    -- The runtime path keeps full coverage via the
+    -- `p_token_initialize_mint2_matches_mollusk` diff test.
   ]

@@ -4478,10 +4478,34 @@ fn lift_one(
                             continue;
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
-                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter, "call_sol_get_sysvar_spec", ".sol_get_sysvar", "GetSysvar");
-                            ti += 1;
-                            continue;
+                            // FAIL CLOSED (soundness audit H7). The model's
+                            // `sol_get_sysvar` now WRITES the output buffer
+                            // (`buf[r3..r3+r4)` of the cached sysvar to *r2)
+                            // and its CU is length-dependent, so the old
+                            // r0-only emission would frame memory the real
+                            // syscall mutates — a false-on-chain claim.
+                            // A faithful emission must thread the new
+                            // `call_sol_get_sysvar_spec` (id Bytes32 atom
+                            // from rodata, output blob, concrete slice) AND
+                            // alias the written region into the walker's
+                            // cell map so post-syscall loads read the
+                            // sysvar bytes. That cell-aliasing machinery is
+                            // the same feature needed to fix the walker's
+                            // OVERLAPPING-access vacuity (e.g. the 7-byte
+                            // tail-zeroing idiom `stw [r10-4]; stw [r10-7]`
+                            // emits overlapping `↦U32` pre-atoms, making
+                            // the emitted sepConj unsatisfiable). Until
+                            // both land, refuse to lift across this
+                            // syscall rather than emit an unsound or
+                            // vacuous theorem.
+                            return Err(format!(
+                                "call_imm at pc {pc_iter} is `sol_get_sysvar`: lifting \
+                                 across it is temporarily unsupported — the model now \
+                                 fills the output buffer (H7 fix), and emitting the \
+                                 pre-H7 r0-only shape would claim memory is unchanged \
+                                 where the chain writes it. Needs the buffer-write \
+                                 emission for `call_sol_get_sysvar_spec` (planned: \
+                                 walker cell-aliasing of syscall-written regions).").into());
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_log_") {
                             emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,

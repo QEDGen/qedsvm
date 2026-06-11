@@ -80,15 +80,16 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_invoke_signed | .sol_invoke_signed_c    => Cpi.cu
   -- Sysvars — agave charges `sysvar_base_cost + size_of::<T>()`,
   -- so each typed sysvar getter has its own constant. `sol_get_sysvar`
-  -- (the size-parameterized generic) and `sol_get_epoch_stake` (which
-  -- doesn't fetch a struct) stay on the bare base cost.
+  -- (the size-parameterized generic) charges the length-dependent
+  -- `cuGetSysvar`; `sol_get_epoch_stake` (which doesn't fetch a
+  -- struct) stays on the bare base cost.
   | .sol_get_clock_sysvar                        => Sysvar.cuClock
   | .sol_get_rent_sysvar                         => Sysvar.cuRent
   | .sol_get_epoch_schedule_sysvar               => Sysvar.cuEpochSchedule
   | .sol_get_last_restart_slot                   => Sysvar.cuLastRestartSlot
   | .sol_get_fees_sysvar                         => Sysvar.cuFees
   | .sol_get_epoch_rewards_sysvar                => Sysvar.cuEpochRewards
-  | .sol_get_sysvar                              => Sysvar.cu
+  | .sol_get_sysvar                              => Sysvar.cuGetSysvar s
   | .sol_get_epoch_stake                         => Sysvar.cu
   -- Return data — per-byte, see `ReturnData.cuSet` / `ReturnData.cuGet`.
   | .sol_set_return_data                         => ReturnData.cuSet s
