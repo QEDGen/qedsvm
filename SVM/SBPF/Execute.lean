@@ -409,22 +409,30 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
     `regions` is the memory map the program runs under — `.ldx`/`.st`/`.stx`
     check accesses against this table and trap with `ERR_ACCESS_VIOLATION`
     on a miss. -/
-@[simp] def initState (inputAddr : Nat) (mem : Mem) (regions : RegionTable) : State where
+@[simp] def initState (inputAddr : Nat) (mem : Mem) (regions : RegionTable)
+    (cuBudget : Nat := 200000) : State where
   regs := { r1 := inputAddr, r10 := STACK_START + 0x1000 }
   mem := mem
   regions := regions
   pc := 0
+  cuBudget := cuBudget
 
 /-- Two-pointer initial state for SIMD-0321 programs.
     r1 = input buffer, r2 = instruction data pointer.
     `entryPc` allows starting at a non-zero entrypoint (e.g. when error
-    handlers are laid out before the entrypoint). -/
+    handlers are laid out before the entrypoint).
+
+    `cuBudget` defaults to the per-instruction transaction default
+    (200k, matching `Runner.RunConfig`): spec-side concrete runs are
+    now budget-metered (H5), so a default of 0 would halt after one
+    instruction. -/
 @[simp] def initState2 (inputAddr insnAddr : Nat) (mem : Mem) (regions : RegionTable)
-    (entryPc : Nat := 0) : State where
+    (entryPc : Nat := 0) (cuBudget : Nat := 200000) : State where
   regs := { r1 := inputAddr, r2 := insnAddr, r10 := STACK_START + 0x1000 }
   mem := mem
   regions := regions
   pc := entryPc
+  cuBudget := cuBudget
 
 /-! ## Execution unrolling lemmas -/
 

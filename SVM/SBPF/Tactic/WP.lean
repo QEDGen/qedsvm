@@ -42,7 +42,7 @@ macro_rules
       repeat (
         unfold execSegment;
         dsimp (config := { failIfUnchanged := false })
-          [initState, execInsn, Width.bytes,
+          [initState, execInsn, chargeCu, Width.bytes,
            RegFile.get, RegFile.set, resolveSrc, readByWidth, $[$fetch],*];
         simp (config := { failIfUnchanged := false }) [*, $[$extras],*]);
       rfl))
@@ -62,7 +62,7 @@ macro_rules
   | `(tactic| wp_step [$[$fetch:simpLemma],*] [$[$extras:simpLemma],*]) => `(tactic| (
       unfold execSegment;
       dsimp (config := { failIfUnchanged := false })
-        [initState, execInsn, Width.bytes,
+        [initState, execInsn, chargeCu, Width.bytes,
          RegFile.get, RegFile.set, resolveSrc, readByWidth, $[$fetch],*];
       simp (config := { failIfUnchanged := false }) [*, $[$extras],*]))
 
@@ -311,9 +311,9 @@ private theorem wp_exec_from_using_phase_lemma
     (executeFn phaseSplitProg (initState inputAddr mem rt) 4).exitCode
       = some 0 := by
   have hphase : executeFn phaseSplitProg (initState inputAddr mem rt) 1
-      = step (.mov64 .r2 (.imm 7)) (initState inputAddr mem rt) := by
+      = chargeCu (step (.mov64 .r2 (.imm 7)) (initState inputAddr mem rt)) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step _ _ 0 _ rfl rfl, executeFn_zero]
+        executeFn_step _ _ 0 _ rfl (Nat.zero_le _) rfl, executeFn_zero]
   wp_exec_from 1 3 using hphase
   wp_exec [phaseSplitProg, step] []
 
