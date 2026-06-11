@@ -106,6 +106,13 @@ structure State where
   /-- Side channel: return-data buffer set by `sol_set_return_data` and
       read by `sol_get_return_data`. -/
   returnData : ByteArray := ByteArray.empty
+  /-- 32-byte program id of the program that last called
+      `sol_set_return_data`. Transaction-wide alongside `returnData`
+      (agave initializes the pair to `(Pubkey::default(), [])`, hence
+      the 32-zero default), inherited/committed across CPI exactly like
+      `returnData`. Written by `sol_get_return_data` into `*pubkey_out`
+      (H7 — previously a fabricated 32-zero placeholder). -/
+  returnDataProgId : ByteArray := ⟨Array.replicate 32 0⟩
   /-- Internal call / return stack. Each `.call_local` pushes a
       `CallFrame` capturing the return PC, current `r10`, and the
       callee-saved scratch registers r6–r9, then bumps `r10` by

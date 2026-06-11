@@ -141,6 +141,7 @@ theorem call_sol_set_return_data_spec
   have hexec : executeFn fetch s 1 =
       chargeCu { s with regs := s.regs.set .r0 0
                         returnData := bsIn
+                        returnDataProgId := s.progIdBytes
                         pc := s.pc + 1
                         cuConsumed := s.cuConsumed
                           + syscallCu .sol_set_return_data s } := by
@@ -499,13 +500,23 @@ theorem call_sol_set_return_data_spec
 /-! ## Syscall: `sol_get_return_data` (refined via `returnDataIs`)
 
 `sol_get_return_data(out, maxLen, pubkeyOut)`: copies up to `maxLen`
-bytes of returnData to `*out`, writes 32 zero-bytes (program-id
-placeholder) to `*pubkeyOut`, returns the ACTUAL data length in `r0`.
-With lift #2, the spec owns both output buffers and `returnDataIs`
-(read-only); the post-state has `r0 = rd.size`, the buffers
-overwritten, returnData unchanged.
+bytes of returnData to `*out`, writes the SETTER's 32-byte program id
+(`State.returnDataProgId`) to `*pubkeyOut`, returns the ACTUAL data
+length in `r0`. With lift #2, the spec owns both output buffers and
+`returnDataIs` (read-only); the post-state has `r0 = rd.size`, the
+buffers overwritten, returnData unchanged.
 
-This is the **exact-fit case**: `rd.size = maxLen`. The `h_disj`
+H7: `returnDataProgId` is SILENT in `PartialState` (like the CU meter
+fields), so the SL-level post cannot pin the pubkey bytes — the honest
+spec is existential over the 32 bytes written to `*pubkeyOut`. Pinning
+the setter id would need a `PartialState` lift of `returnDataProgId`
+(deferred; the diff suite pins the value cross-engine instead). The
+pre-H7 spec claimed 32 ZERO bytes — false on chain.
+
+This is the **exact-fit case**: `rd.size = maxLen`, and `hNonEmpty`
+requires the buffer non-empty so the copy branch is taken (agave
+writes NOTHING when `min(maxLen, len) = 0`; a copyLen-0 spec would
+have a different frame, all-buffers-unchanged). The `h_disj`
 hypothesis captures that the output and pubkey buffers don't overlap;
 implicit in the sepConj precondition but accepted as an explicit
 hypothesis here to keep the proof tractable (deriving non-overlap
@@ -517,6 +528,7 @@ theorem call_sol_get_return_data_spec
     (hRdSize : rd.size = maxLen)
     (hOutSize : bsOut.size = maxLen)
     (_hPkSize : pkOld.size = 32)
+    (hNonEmpty : 0 < rd.size)
     (h_disj : outA + maxLen ≤ pkA ∨ pkA + 32 ≤ outA)
     (hCu : ∀ s : State,
         (step (.call .sol_get_return_data) s).cuConsumed ≤ s.cuConsumed + nCu) :
@@ -524,9 +536,10 @@ theorem call_sol_get_return_data_spec
       (CodeReq.singleton pc (.call .sol_get_return_data))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ outA) ** (.r2 ↦ᵣ maxLen) ** (.r3 ↦ᵣ pkA) **
         (outA ↦Bytes bsOut) ** (pkA ↦Bytes32 pkOld) ** returnDataIs rd)
-      ((.r0 ↦ᵣ rd.size) ** (.r1 ↦ᵣ outA) ** (.r2 ↦ᵣ maxLen) ** (.r3 ↦ᵣ pkA) **
-        (outA ↦Bytes rd) ** (pkA ↦Bytes32 (zerosByteArray 32)) **
-        returnDataIs rd) := by
+      (fun h => ∃ pkNew : ByteArray,
+        ((.r0 ↦ᵣ rd.size) ** (.r1 ↦ᵣ outA) ** (.r2 ↦ᵣ maxLen) ** (.r3 ↦ᵣ pkA) **
+          (outA ↦Bytes rd) ** (pkA ↦Bytes32 pkNew) **
+          returnDataIs rd) h) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 7-atom precondition. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -696,33 +709,50 @@ theorem call_sol_get_return_data_spec
       chargeCu (step (.call .sol_get_return_data) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have h_copyLen : (if rd.size ≤ maxLen then rd.size else maxLen) = rd.size := by
+    rw [if_pos (by rw [hRdSize]; exact Nat.le_refl _)]
+  -- The copy length is non-zero (hNonEmpty), so `execGet` takes the
+  -- write branch, not the agave `length == 0` no-op branch.
+  have h_copy_ne :
+      ¬ ((if s.returnData.size ≤ s.regs.r2
+            then s.returnData.size else s.regs.r2) = 0) := by
+    rw [hs_rd, hs_r2_field, h_copyLen]
+    omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 rd.size := by
     rw [hstep_eq]; show ((ReturnData.execGet s).regs) = s.regs.set .r0 rd.size
-    simp only [ReturnData.execGet, hs_rd]
+    simp only [ReturnData.execGet]
+    simp only [if_neg h_copy_ne]
+    simp only [hs_rd]
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; rfl
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; show (ReturnData.execGet s).exitCode = none
-    simp only [ReturnData.execGet]; exact hex
+    simp only [ReturnData.execGet]
+    split <;> split <;> exact hex
   have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
-    rw [hstep_eq]; rfl
-  have h_copyLen : (if rd.size ≤ maxLen then rd.size else maxLen) = rd.size := by
-    rw [if_pos (by rw [hRdSize]; exact Nat.le_refl _)]
+    rw [hstep_eq]; show (ReturnData.execGet s).returnData = s.returnData
+    simp only [ReturnData.execGet]
+    split <;> split <;> rfl
   have hexec_mem_at_out (i : Nat) (hi : i < rd.size) :
       (executeFn fetch s 1).mem (outA + i) = (rd.get! i).toNat := by
     rw [hstep_eq]
     show ((ReturnData.execGet s).mem) (outA + i) = (rd.get! i).toNat
     simp only [ReturnData.execGet]
+    simp only [if_neg h_copy_ne]
     rw [Mem_read_default, hs_r1_field, hs_r3_field, hs_r2_field, hs_rd, h_copyLen]
     rw [if_pos ⟨Nat.le_add_right _ _, by omega⟩,
         show outA + i - outA = i from by omega]
   have hexec_mem_at_pk (i : Nat) (hi : i < 32) :
-      (executeFn fetch s 1).mem (pkA + i) = 0 := by
+      (executeFn fetch s 1).mem (pkA + i)
+        = (s.returnDataProgId.get! i).toNat := by
     rw [hstep_eq]
-    show ((ReturnData.execGet s).mem) (pkA + i) = 0
+    show ((ReturnData.execGet s).mem) (pkA + i)
+        = (s.returnDataProgId.get! i).toNat
     simp only [ReturnData.execGet]
+    simp only [if_neg h_copy_ne]
     rw [Mem_read_default, hs_r1_field, hs_r3_field, hs_r2_field, hs_rd, h_copyLen]
-    rw [if_neg, if_pos ⟨Nat.le_add_right _ _, by omega⟩]
+    rw [if_neg, if_pos ⟨Nat.le_add_right _ _, by omega⟩,
+        show pkA + i - pkA = i from by omega]
     rintro ⟨h1, h2⟩
     rcases h_pk_out_disj i hi with h | h
     · omega
@@ -735,6 +765,7 @@ theorem call_sol_get_return_data_spec
     rw [hstep_eq]
     show ((ReturnData.execGet s).mem) a = s.mem a
     simp only [ReturnData.execGet]
+    simp only [if_neg h_copy_ne]
     rw [Mem_read_default, hs_r1_field, hs_r3_field, hs_r2_field, hs_rd, h_copyLen]
     rw [if_neg, if_neg]
     · rintro ⟨h1, h2⟩
@@ -786,7 +817,10 @@ theorem call_sol_get_return_data_spec
   let h_r3_new : PartialState := PartialState.singletonReg .r3 pkA
   let h_out_new : PartialState := PartialState.singletonMemBytes outA rd
   let h_pk_new : PartialState :=
-    PartialState.singletonMem32Bytes pkA (zerosByteArray 32)
+    -- The pubkey-out buffer's post value is the setter id carried by
+    -- the CONCRETE state (`s.returnDataProgId`, silent in
+    -- PartialState) — it becomes the witness of the existential post.
+    PartialState.singletonMem32Bytes pkA s.returnDataProgId
   let h_rd_new : PartialState := PartialState.singletonReturnData rd
   let h_T5_new : PartialState := h_pk_new.union h_rd_new
   let h_T4_new : PartialState := h_out_new.union h_T5_new
@@ -984,31 +1018,35 @@ theorem call_sol_get_return_data_spec
     apply PartialState.union_mem_of_left_some
     exact PartialState.singletonMemBytes_mem_at outA rd i hi
   have h_P_new_mem_at_pk (i : Nat) (hi : i < 32) :
-      h_P_new.mem (pkA + i) = some 0 := by
+      h_P_new.mem (pkA + i) = some (s.returnDataProgId.get! i).toNat := by
     have h_pk_outside_out : pkA + i < outA ∨ pkA + i ≥ outA + rd.size := by
       rcases h_pk_out_disj i hi with h | h
       · left; exact h
       · right; rw [hRdSize]; exact h
-    show (h_r0_new.union h_T1_new).mem (pkA + i) = some 0
+    show (h_r0_new.union h_T1_new).mem (pkA + i)
+        = some (s.returnDataProgId.get! i).toNat
     rw [PartialState.union_mem_of_left_none
           (PartialState.singletonReg_mem (pkA + i))]
-    show (h_r1_new.union h_T2_new).mem (pkA + i) = some 0
+    show (h_r1_new.union h_T2_new).mem (pkA + i)
+        = some (s.returnDataProgId.get! i).toNat
     rw [PartialState.union_mem_of_left_none
           (PartialState.singletonReg_mem (pkA + i))]
-    show (h_r2_new.union h_T3_new).mem (pkA + i) = some 0
+    show (h_r2_new.union h_T3_new).mem (pkA + i)
+        = some (s.returnDataProgId.get! i).toNat
     rw [PartialState.union_mem_of_left_none
           (PartialState.singletonReg_mem (pkA + i))]
-    show (h_r3_new.union h_T4_new).mem (pkA + i) = some 0
+    show (h_r3_new.union h_T4_new).mem (pkA + i)
+        = some (s.returnDataProgId.get! i).toNat
     rw [PartialState.union_mem_of_left_none
           (PartialState.singletonReg_mem (pkA + i))]
-    show (h_out_new.union h_T5_new).mem (pkA + i) = some 0
+    show (h_out_new.union h_T5_new).mem (pkA + i)
+        = some (s.returnDataProgId.get! i).toNat
     rw [PartialState.union_mem_of_left_none
           (PartialState.singletonMemBytes_mem_outside outA rd (pkA + i) h_pk_outside_out)]
-    show (h_pk_new.union h_rd_new).mem (pkA + i) = some 0
+    show (h_pk_new.union h_rd_new).mem (pkA + i)
+        = some (s.returnDataProgId.get! i).toNat
     apply PartialState.union_mem_of_left_some
-    show (PartialState.singletonMem32Bytes pkA (zerosByteArray 32)).mem (pkA + i) = some 0
-    rw [PartialState.singletonMem32Bytes_mem_at pkA (zerosByteArray 32) i hi]
-    rw [zerosByteArray_get! 32 i hi]; rfl
+    exact PartialState.singletonMem32Bytes_mem_at pkA s.returnDataProgId i hi
   have h_P_new_mem_outside (a : Nat)
       (h_out_addr : a < outA ∨ a ≥ outA + rd.size)
       (h_pk_addr : a < pkA ∨ a ≥ pkA + 32) :
@@ -1026,7 +1064,7 @@ theorem call_sol_get_return_data_spec
           (PartialState.singletonMemBytes_mem_outside outA rd a h_out_addr)]
     show (h_pk_new.union h_rd_new).mem a = none
     rw [PartialState.union_mem_of_left_none
-          (PartialState.singletonMem32Bytes_mem_outside pkA (zerosByteArray 32) a h_pk_addr)]
+          (PartialState.singletonMem32Bytes_mem_outside pkA s.returnDataProgId a h_pk_addr)]
     exact PartialState.singletonReturnData_mem a
   have h_P_new_pc : h_P_new.pc = none := by
     show (h_r0_new.union h_T1_new).pc = none
@@ -1109,8 +1147,11 @@ theorem call_sol_get_return_data_spec
     show (step (.call .sol_get_return_data) s).cuConsumed + 1
         ≤ s.cuConsumed + 1 + nCu
     have := hCu s; omega
-  · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
-            ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
+  · -- The existential post is witnessed by the concrete state's setter
+    -- id: `pkNew := s.returnDataProgId` (h_pk_new is built over it).
+    refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
+            ⟨s.returnDataProgId,
+             h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
              h_r2_new, h_T3_new, hd_r2_T3_new, rfl, rfl,
              h_r3_new, h_T4_new, hd_r3_T4_new, rfl, rfl,
@@ -1174,7 +1215,8 @@ theorem call_sol_get_return_data_spec
           rw [h_eq] at hva ⊢
           rw [PartialState.union_mem_of_left_some
                 (h_P_new_mem_at_pk _ h_lt)] at hva
-          have hveq : v = 0 := (Option.some.inj hva).symm
+          have hveq : v = (s.returnDataProgId.get! (a - pkA)).toNat :=
+            (Option.some.inj hva).symm
           rw [hexec_mem_at_pk _ h_lt, hveq]
         · have h_out_addr : a < outA ∨ a ≥ outA + rd.size := by
             rcases Nat.lt_or_ge a outA with h | h
@@ -1216,7 +1258,10 @@ theorem call_sol_get_return_data_spec
         rw [← hu_PR, PartialState.union_callStack_of_left_none h_P_cs_pre]
         exact hva
       have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
-        rw [hstep_eq]; rfl
+        rw [hstep_eq]
+        show (ReturnData.execGet s).callStack = s.callStack
+        simp only [ReturnData.execGet]
+        split <;> split <;> rfl
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
 

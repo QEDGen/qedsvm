@@ -183,6 +183,12 @@ const CPI_GET_RETURN_DATA_CALLER_SO: &[u8] =
 /// Source in `cpi_set_return_data_callee_src/`.
 const CPI_SET_RETURN_DATA_CALLEE_SO: &[u8] =
     include_bytes!("fixtures/cpi_set_return_data_callee.so");
+/// Caller that invokes a callee, then writes sol_get_return_data's
+/// PUBKEY output (the setter's program id) into accounts[0].data[0..32]
+/// and the data bytes after it (H7).
+/// Source in `cpi_get_return_data_pubkey_src/`.
+const CPI_GET_RETURN_DATA_PUBKEY_SO: &[u8] =
+    include_bytes!("fixtures/cpi_get_return_data_pubkey.so");
 /// Outer layer of a 3-program CPI chain. Forwards accounts[0] through
 /// `cpi_increment_caller.so` to `incrementer.so` (depth 2).
 /// Source in `cpi_depth_2_outer_src/`.
@@ -2990,6 +2996,85 @@ fn cpi_returns_data_propagates() {
         "qedsvm: return_data not propagated (got {:?})", fs_data.data());
     assert_eq!(ml_data.data.as_slice(), &expected,
         "mollusk: return_data not propagated (got {:?})", ml_data.data);
+}
+
+/// H7 pin: `sol_get_return_data` writes the SETTER's program id (the
+/// CPI callee that called sol_set_return_data) into *pubkey_out — not
+/// the caller's id and not a zero placeholder. The caller copies the
+/// returned (pubkey, data) pair into accounts[0].data[0..36]; both
+/// engines must produce the callee's id followed by the payload,
+/// byte-identically.
+#[test]
+fn cpi_get_return_data_setter_pubkey_matches_mollusk() {
+    let caller_id = pid(230);
+    let callee_id = pid(231);
+    let data_key  = pid(232);
+
+    let data: Vec<u8> = vec![0u8; 36];
+    let data_pre_fs = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: caller_id, executable: false, rent_epoch: 0,
+    });
+    let data_pre_ml = mollusk_account::Account {
+        lamports: 1_000_000, data: data.clone(),
+        owner: caller_id, executable: false, rent_epoch: 0,
+    };
+
+    let callee_program_fs = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_ml = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(data_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_GET_RETURN_DATA_PUBKEY_SO);
+    fs.add_program(&callee_id, CPI_SET_RETURN_DATA_CALLEE_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (data_key, data_pre_fs),
+        (callee_id, callee_program_fs),
+    ]).expect("qedsvm runs CPI get_return_data pubkey round-trip");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_GET_RETURN_DATA_PUBKEY_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_SET_RETURN_DATA_CALLEE_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (data_key, data_pre_ml),
+        (callee_id, callee_program_ml),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert_no_poststate_backstop(&fs_r);
+
+    let (_, fs_data) = &fs_r.resulting_accounts[0];
+    let (_, ml_data) = &m_r.resulting_accounts[0];
+    let mut expected = [0u8; 36];
+    expected[..32].copy_from_slice(callee_id.as_ref());
+    expected[32..].copy_from_slice(&[0xAB, 0xCD, 0xEF, 0x12]);
+    assert_eq!(fs_data.data(), &expected,
+        "qedsvm: setter pubkey/data mismatch (got {:?})", fs_data.data());
+    assert_eq!(ml_data.data.as_slice(), &expected,
+        "mollusk: setter pubkey/data mismatch (got {:?})", ml_data.data);
 }
 
 /// 3-program CPI chain: outer → cpi_increment_caller → incrementer.

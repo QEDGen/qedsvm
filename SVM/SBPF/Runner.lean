@@ -753,6 +753,7 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
                pc         := s.pc + 1
                log        := subFinal.log
                returnData := subFinal.returnData
+               returnDataProgId := subFinal.returnDataProgId
                cuConsumed := s.cuConsumed + Cpi.cu
                                           + subFinal.cuConsumed }
 
@@ -854,8 +855,10 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 -- callee inherits the caller's buffer (so its
                 -- get_return_data sees prior data) and the caller takes
                 -- `subFinal.returnData` back — if the callee never set it,
-                -- that IS the caller's own data, not a wipe (M6).
+                -- that IS the caller's own data, not a wipe (M6). The
+                -- setter id travels with the buffer (H7).
                 returnData  := s.returnData
+                returnDataProgId := s.returnDataProgId
                 cuBudget    := fuel'
                 progIdBytes := pidBytesIn
                 origPrivs   := parseInputPrivileges subInput
