@@ -113,8 +113,12 @@ def runElfBuffer (elf input : ByteArray) (cuBudget : UInt64) : ByteArray :=
     -- 1/instruction charged by `chargeCu` in the execution loop +
     -- syscall surcharges from `step`'s `.call` arm). The old
     -- `(cuBudget - fuelRemaining) + s.cuConsumed` would now
-    -- double-count the baselines.
-    encodeRun s input.size (UInt64.ofNat s.cuConsumed)
+    -- double-count the baselines. Clamped to the budget: on a
+    -- surcharge overrun the in-model meter can exceed the budget by
+    -- the final instruction's cost, whereas agave drains the meter to
+    -- exactly `budget` (`ComputeBudgetExceeded`); `min` reproduces the
+    -- drained reading and is the identity on every in-budget run.
+    encodeRun s input.size (UInt64.ofNat (min s.cuConsumed cuBudget.toNat))
 
 /-! ## Multi-program registry (for CPI)
 
@@ -191,8 +195,8 @@ def runWithRegistry (elf input registry : ByteArray) (cuBudget : UInt64)
   match Runner.runElfWithFuel elf cfg with
   | none => encodeElfError
   | some (s, _fuelRemaining) =>
-    -- H5 total metering: s.cuConsumed is the total CU (see runElfBuffer).
-    encodeRun s input.size (UInt64.ofNat s.cuConsumed)
+    -- H5 total metering, clamped to the budget (see runElfBuffer).
+    encodeRun s input.size (UInt64.ofNat (min s.cuConsumed cuBudget.toNat))
 
 /-- Variant of `runWithRegistry` that additionally threads the
     top-level program-id into `State.progIdBytes`. Needed for
@@ -211,8 +215,8 @@ def runWithRegistryAndPid
   match Runner.runElfWithFuel elf cfg with
   | none => encodeElfError
   | some (s, _fuelRemaining) =>
-    -- H5 total metering: s.cuConsumed is the total CU (see runElfBuffer).
-    encodeRun s input.size (UInt64.ofNat s.cuConsumed)
+    -- H5 total metering, clamped to the budget (see runElfBuffer).
+    encodeRun s input.size (UInt64.ofNat (min s.cuConsumed cuBudget.toNat))
 
 /-! ## Top-level precompile dispatch
 

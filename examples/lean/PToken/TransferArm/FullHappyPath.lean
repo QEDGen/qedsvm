@@ -567,7 +567,7 @@ theorem p_token_transfer_full_happy_path_terminates
       h_amt_ne_0 h_auth_ne_0 h_close_ne_1
   -- h_full : cuTripleWithinMem 75 0 0 75 fullHappyPathCr <pre> <post> <rr>
   -- Drop into the unfolded `cuTripleAbortsWithinMem` definition.
-  intro F hF fetch hcr s hPF hpc hex h_reg
+  intro F hF fetch hcr s hPF hpc hex hbud h_reg
   -- Split the CodeReq: the union is fullHappyPathCr (PCs 0..74) plus
   -- the singleton exit at PC 75. These are disjoint by PC range.
   have hd_cr : fullHappyPathCr.Disjoint (CodeReq.singleton 75 .exit) := by
@@ -588,7 +588,7 @@ theorem p_token_transfer_full_happy_path_terminates
     cuTripleWithinMem_frame_right (callStackIs []) (pcFree_callStackIs _) h_full
   -- Apply h_full_framed at s with universal R = F.
   obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
-    h_full_framed F hF fetch hcr_full s hPF hpc hex h_reg
+    h_full_framed F hF fetch hcr_full s hPF hpc hex (by omega) h_reg
   -- hQF : ((FullHappyPath.post ** callStackIs []) ** F).holdsFor mid.
   -- Reshape via two assoc.mp's to peel off (.r0 ↦ᵣ toU64 0):
   --   (FullHappyPath.post ** callStackIs []) ** F
@@ -617,6 +617,13 @@ theorem p_token_transfer_full_happy_path_terminates
       rw [← hu_post_csF, PartialState.union_callStack_of_left_none h_post_full_cs]
       exact h_csF_cs
     exact hcompat_mid.callStack [] hp_mid_cs
+  -- The witness state stays within budget: the 75-step prefix consumed
+  -- ≤ 75 CU (hcu1) against the 76-CU side-condition (hbud); the budget
+  -- itself is preserved along the trace.
+  have hbud_mid : (executeFn fetch s k1).cuConsumed + 1 ≤
+      (executeFn fetch s k1).cuBudget := by
+    rw [executeFn_preserves_cuBudget]
+    omega
   -- Invoke exit_aborts_spec with R = PostRest ** (callStackIs [] ** F).
   -- The R is determined by unification with hQF'; the pcFree side
   -- condition is discharged by recursively applying pcFree_sepConj
@@ -625,7 +632,7 @@ theorem p_token_transfer_full_happy_path_terminates
   have exit_result : ∃ k, k ≤ 1 ∧
       (executeFn fetch (executeFn fetch s k1) k).exitCode = some (toU64 0) := by
     refine exit_aborts_spec (toU64 0) 75 _ ?_ fetch hcr_exit
-      (executeFn fetch s k1) hQF' hpc_mid hex_mid hmid_cs
+      (executeFn fetch s k1) hQF' hpc_mid hex_mid hbud_mid hmid_cs
     -- pcFree of R: walk pcFree_sepConj across the nested ** structure,
     -- discharging each atom by its pcFree lemma, and the trailing F via hF.
     repeat (first
@@ -641,8 +648,8 @@ theorem p_token_transfer_full_happy_path_terminates
     have : k1 + k2 ≤ 75 + 1 := Nat.add_le_add hk1 hk2
     omega
   · rw [executeFn_compose]; exact hex_end
-  · -- cuConsumed: k1 segment consumes ≤ 0, k2 segment (which is .exit)
-    -- consumes ≤ 0 since .exit doesn't bump cuConsumed.
+  · -- cuConsumed: k1 segment consumes ≤ 75 baseline CU (hcu1); the k2
+    -- segment (which is `.exit`) consumes 1 baseline CU and no surcharge.
     rw [executeFn_compose]
     rcases Nat.eq_or_lt_of_le hk2 with hk2_eq | hk2_lt
     · subst hk2_eq
@@ -650,21 +657,22 @@ theorem p_token_transfer_full_happy_path_terminates
         rw [hpc_mid]
         exact hcr_exit 75 _ CodeReq.singleton_self
       have hexec1 : executeFn fetch (executeFn fetch s k1) 1
-          = step .exit (executeFn fetch s k1) := by
+          = chargeCu (step .exit (executeFn fetch s k1)) := by
         rw [show (1 : Nat) = 0 + 1 from rfl,
-            executeFn_step fetch (executeFn fetch s k1) 0 _ hex_mid hfetch_exit,
+            executeFn_step fetch (executeFn fetch s k1) 0 _ hex_mid
+              (by omega) hfetch_exit,
             executeFn_zero]
       have hstep_exit : step .exit (executeFn fetch s k1) =
           { (executeFn fetch s k1) with
               exitCode := some ((executeFn fetch s k1).regs.get .r0) } := by
         simp only [step, hmid_cs]
       rw [hexec1, hstep_exit]
-      show (executeFn fetch s k1).cuConsumed ≤ s.cuConsumed + 0
-      exact hcu1
+      show (executeFn fetch s k1).cuConsumed + 1 ≤ s.cuConsumed + 76 + 0
+      omega
     · have hk2_0 : k2 = 0 := by omega
       subst hk2_0
       rw [executeFn_zero]
-      show (executeFn fetch s k1).cuConsumed ≤ s.cuConsumed + 0
-      exact hcu1
+      show (executeFn fetch s k1).cuConsumed ≤ s.cuConsumed + 76 + 0
+      omega
 
 end Examples.PTokenTransferFullHappyPath

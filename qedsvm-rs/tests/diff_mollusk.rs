@@ -374,6 +374,47 @@ fn logger_program_matches_mollusk() {
     );
 }
 
+/// H5 surcharge-overrun boundary: run the logger with a budget too
+/// small for `sol_log_`'s ~100-CU surcharge. The Lean VM's mid-run
+/// meter crosses the budget DURING the syscall (not at a per-step
+/// fuel boundary), so this exercises exactly the new fail-closed
+/// budget halt + the wire-level `min(cuConsumed, budget)` clamp that
+/// mirrors agave draining the meter to the full budget on
+/// `ComputeBudgetExceeded`. Both engines must (a) NOT succeed and
+/// (b) report the SAME consumed CU (= the full budget).
+#[test]
+fn logger_surcharge_overrun_matches_mollusk() {
+    let program_id = pid(60);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    const TINY_BUDGET: u64 = 50;
+
+    let mut fs = Svm::default().with_cu_budget(TINY_BUDGET);
+    fs.add_program(&program_id, LOGGER_SO);
+    let fs_r = fs.process_instruction(&ix, &[]).expect("qedsvm runs logger");
+
+    let mut m = Mollusk::default();
+    m.compute_budget.compute_unit_limit = TINY_BUDGET;
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        LOGGER_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::OutOfBudget),
+        "qedsvm: expected OutOfBudget on surcharge overrun, got {:?}",
+        fs_r.program_result);
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected a failure on surcharge overrun, got Success");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "consumed-CU diverged at the surcharge-overrun boundary: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+    assert_eq!(fs_r.compute_units_consumed, TINY_BUDGET,
+        "expected the meter drained to the full budget");
+}
+
 /// First fixture that actually *mutates* account data. Reads a u64
 /// from `accounts[0].data[0..8]`, adds 1, writes it back. Validates
 /// that qedsvm's `deserialize_account_writes` picks up the

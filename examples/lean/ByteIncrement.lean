@@ -141,7 +141,8 @@ theorem byteIncrement_macro_witness
         (Runner.initialState cfg).regions.containsRange
           (effectiveAddr baseAddr 0) 1 = true ∧
         (Runner.initialState cfg).regions.containsWritable
-          (effectiveAddr baseAddr 0) 1 = true) :
+          (effectiveAddr baseAddr 0) 1 = true)
+    (hbudget : 3 ≤ cfg.cuBudget) :
     ∃ k, k ≤ 3 ∧
       let sk := executeFn (fetchFromArray byteIncrementInsns)
                           (Runner.initialState cfg) k
@@ -155,6 +156,8 @@ theorem byteIncrement_macro_witness
       byteIncrement_cr_satisfied hP
       (Runner.initialState_pc cfg)
       (Runner.initialState_exitCode cfg)
+      (by simp only [Runner.initialState_cuConsumed,
+                     Runner.initialState_cuBudget]; omega)
       hregions
   exact ⟨k, hk, hpc', hex', hQ⟩
 
@@ -196,7 +199,8 @@ theorem byteIncrement_run_terminates
       ((.r2 ↦ᵣ wrapAdd (oldByte % 256) (toU64 1)) ** (.r1 ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr 0 ↦ₘ
           (wrapAdd (oldByte % 256) (toU64 1) % 256))).holdsFor s_witness ∧
-      Runner.run byteIncrementBytes cfg = some (step Insn.exit s_witness) ∧
+      Runner.run byteIncrementBytes cfg =
+        some (chargeCu (step Insn.exit s_witness)) ∧
       (step Insn.exit s_witness).exitCode = some s_witness.regs.r0 :=
   run_terminates_with_spec_mem
     byteIncrement_decodes byteIncrement_cr_satisfied byteIncrement_exit_at_3
@@ -318,7 +322,8 @@ theorem byteIncrementSo_macro_witness
         (Runner.initialState cfg).regions.containsRange
           (effectiveAddr baseAddr 0) 1 = true ∧
         (Runner.initialState cfg).regions.containsWritable
-          (effectiveAddr baseAddr 0) 1 = true) :
+          (effectiveAddr baseAddr 0) 1 = true)
+    (hbudget : 3 ≤ cfg.cuBudget) :
     ∃ k, k ≤ 3 ∧
       let sk := executeFn (fetchFromArray byteIncrementSoInsns)
                           (Runner.initialState cfg) k
@@ -332,14 +337,17 @@ theorem byteIncrementSo_macro_witness
       byteIncrementSo_cr_satisfied hP
       (Runner.initialState_pc cfg)
       (Runner.initialState_exitCode cfg)
+      (by simp only [Runner.initialState_cuConsumed,
+                     Runner.initialState_cuBudget]; omega)
       hregions
   exact ⟨k, hk, hpc', hex', hQ⟩
 
-/-- Helper: `step mov` then `step .exit` from a `callStack`-empty state
-    halts with `exitCode = some 0`. Factored out to avoid simp's
-    elaboration of the giant `executeFn` term in the demo proof. -/
+/-- Helper: `step mov` (CU-charged) then `step .exit` from a
+    `callStack`-empty state halts with `exitCode = some 0`. Factored out
+    to avoid simp's elaboration of the giant `executeFn` term in the
+    demo proof. -/
 private theorem step_exit_after_mov_r0_zero (s : State) (h : s.callStack = []) :
-    (step Insn.exit (step (.mov64 .r0 (.imm 0)) s)).exitCode = some 0 := by
+    (step Insn.exit (chargeCu (step (.mov64 .r0 (.imm 0)) s))).exitCode = some 0 := by
   simp [step, h, RegFile.set, RegFile.get, toU64]
 
 /-! ### Session 3b's terminated-run theorem
@@ -398,79 +406,100 @@ theorem byteIncrementSo_run_terminates
     ∃ k, k ≤ 3 ∧
       let s_witness := executeFn (fetchFromArray byteIncrementSoInsns)
                                  (Runner.initialState cfg) k
-      let s_mov := step (.mov64 .r0 (.imm 0)) s_witness
+      let s_mov := chargeCu (step (.mov64 .r0 (.imm 0)) s_witness)
       s_witness.pc = 3 ∧
       ((.r2 ↦ᵣ wrapAdd (oldByte % 256) (toU64 1)) ** (.r1 ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr 0 ↦ₘ
           (wrapAdd (oldByte % 256) (toU64 1) % 256))).holdsFor s_witness ∧
-      Runner.run byteIncrementSoText cfg = some (step Insn.exit s_mov) ∧
+      Runner.run byteIncrementSoText cfg =
+        some (chargeCu (step Insn.exit s_mov)) ∧
       (step Insn.exit s_mov).exitCode = some 0 := by
   -- Step 1: macro witness at pc=3.
-  obtain ⟨k, hk, hpc, hex, hQ⟩ :=
+  obtain ⟨k, hk, hpc, hex, hQ, hcuW⟩ :=
     run_reaches_spec_mem byteIncrementSoInsns cfg byteIncrementSo_cr_satisfied
       (byte_increment_macro_spec baseAddr vR2Old oldByte) hP hregions
+      (by omega)
   -- callStack invariant along the trace.
   have hcs_witness : (executeFn (fetchFromArray byteIncrementSoInsns)
                   (Runner.initialState cfg) k).callStack = [] :=
     executeFn_callStack_empty (fetchFromArray byteIncrementSoInsns)
       (Runner.initialState cfg) k (Runner.initialState_callStack cfg)
       (fetchFromArray_property_of_mem byteIncrementSo_noCallLocal)
+  -- Witness state stays within budget (needed for per-step unfolds).
+  have h_wbud : (executeFn (fetchFromArray byteIncrementSoInsns)
+        (Runner.initialState cfg) k).cuConsumed ≤
+      (executeFn (fetchFromArray byteIncrementSoInsns)
+        (Runner.initialState cfg) k).cuBudget := by
+    rw [executeFn_preserves_cuBudget]
+    simp only [Runner.initialState_cuBudget]
+    omega
   refine ⟨k, hk, hpc, hQ, ?_, ?_⟩
-  · -- Runner.run byteIncrementSoText cfg = some (step .exit (step mov s_witness))
+  · -- Runner.run byteIncrementSoText cfg
+    --   = some (chargeCu (step .exit (chargeCu (step mov s_witness))))
     -- Chain:
-    --   executeFn fetch s_witness 1                = step mov s_witness         (mov at pc=3)
-    --   executeFn fetch (step mov s_witness) 1     = step .exit (step mov s_w)  (exit at pc=4)
-    --   executeFn fetch (initialState) (k+2)       = step .exit (step mov s_w)  (compose)
-    --   executeFn fetch (initialState) cfg.cuBudget = step .exit (step mov s_w) (halted)
-    --   executeFnCpi = executeFn                    (bridge via noCpi)
+    --   executeFn fetch s_witness 1            = chargeCu (step mov s_witness)         (mov at pc=3)
+    --   executeFn fetch (chargeCu (step mov s_witness)) 1
+    --                                          = chargeCu (step .exit (chargeCu ...))  (exit at pc=4)
+    --   executeFn fetch (initialState) (k+2)   = chargeCu (step .exit ...)             (compose)
+    --   executeFn fetch (initialState) cfg.cuBudget = chargeCu (step .exit ...)        (halted)
+    --   executeFnCpi = executeFn                (bridge via noCpi)
     --   Runner.run = some (executeFnCpi ... cuBudget) (unfold)
     have h_step_mov : executeFn (fetchFromArray byteIncrementSoInsns) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) 1 =
-                     step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) := by
+                     chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) := by
       have hf : (fetchFromArray byteIncrementSoInsns) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).pc =
                 some (.mov64 .r0 (.imm 0)) := by
         rw [hpc]; exact byteIncrementSo_mov_at_3
       rw [executeFn_step (fetchFromArray byteIncrementSoInsns) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) 0
-            (.mov64 .r0 (.imm 0)) hex hf]
+            (.mov64 .r0 (.imm 0)) hex h_wbud hf]
       simp [executeFn]
-    -- step mov increments pc to 4 and preserves exitCode = none.
-    have hpc_smov : (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).pc = 4 := by
-      simp only [step, hpc]
-    have hex_smov : (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).exitCode = none := by
-      simp only [step, hex]
+    -- step mov (CU-charged) increments pc to 4 and preserves exitCode = none.
+    have hpc_smov : (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).pc = 4 := by
+      simp only [chargeCu, step, hpc]
+    have hex_smov : (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).exitCode = none := by
+      simp only [chargeCu, step, hex]
+    -- The charged mov state is still within budget (one baseline CU on
+    -- top of the witness's ≤ 3, against budget ≥ 5).
+    have h_bud_smov : (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).cuConsumed ≤
+        (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).cuBudget := by
+      show (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).cuConsumed + 1 ≤
+        (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).cuBudget
+      rw [executeFn_preserves_cuBudget]
+      simp only [Runner.initialState_cuBudget]
+      omega
     have h_step_exit : executeFn (fetchFromArray byteIncrementSoInsns)
-        (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) 1 =
-        step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) := by
+        (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))) 1 =
+        chargeCu (step Insn.exit (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)))) := by
       have hf : (fetchFromArray byteIncrementSoInsns)
-                (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).pc = some Insn.exit := by
+                (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).pc = some Insn.exit := by
         rw [hpc_smov]; exact byteIncrementSo_exit_at_4
       rw [executeFn_step (fetchFromArray byteIncrementSoInsns)
-            (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) 0 Insn.exit hex_smov hf]
+            (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))) 0 Insn.exit hex_smov h_bud_smov hf]
       simp [executeFn]
     -- step .exit halts (callStack = []).
-    have h_exit_halted : (step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).exitCode =
-        some ((step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)).regs.get Reg.r0) := by
-      simp only [step, hcs_witness]
-    -- Compose: executeFn fetch (initialState) (k+2) = step .exit (step mov s_witness).
+    have h_exit_halted : (step Insn.exit (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)))).exitCode =
+        some ((chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).regs.get Reg.r0) := by
+      simp only [chargeCu, step, hcs_witness]
+    -- Compose: executeFn fetch (initialState) (k+2) = chargeCu (step .exit (chargeCu (step mov s_witness))).
     have h_kp2 : executeFn (fetchFromArray byteIncrementSoInsns)
                   (Runner.initialState cfg) (k + 2) =
-                  step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) := by
+                  chargeCu (step Insn.exit (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)))) := by
       have h_k1 : executeFn (fetchFromArray byteIncrementSoInsns)
                     (Runner.initialState cfg) (k + 1) =
-                    step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k) := by
+                    chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) := by
         rw [executeFn_compose, h_step_mov]
       have : k + 2 = (k + 1) + 1 := by omega
       rw [this, executeFn_compose, h_k1, h_step_exit]
     -- Past the halt, additional fuel is a no-op.
     have h_halted_after_kp2 : ∀ m,
         executeFn (fetchFromArray byteIncrementSoInsns)
-          (step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))) m =
-          step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) := by
+          (chargeCu (step Insn.exit (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))))) m =
+          chargeCu (step Insn.exit (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)))) := by
       intro m
       exact executeFn_halted (fetchFromArray byteIncrementSoInsns) _ m _ h_exit_halted
     have h_kp2_le : k + 2 ≤ cfg.cuBudget := by omega
     have h_full : executeFn (fetchFromArray byteIncrementSoInsns)
                     (Runner.initialState cfg) cfg.cuBudget =
-                  step Insn.exit (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)) := by
+                  chargeCu (step Insn.exit (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)))) := by
       have h_eq : cfg.cuBudget = (k + 2) + (cfg.cuBudget - (k + 2)) :=
         (Nat.add_sub_cancel' h_kp2_le).symm
       rw [h_eq, executeFn_compose (fetchFromArray byteIncrementSoInsns)
@@ -490,7 +519,7 @@ theorem byteIncrementSo_run_terminates
     show some _ = some _
     congr 1
     rw [h_bridge, h_full]
-  · -- Goal: (step .exit (step mov X)).exitCode = some 0.
+  · -- Goal: (step .exit (chargeCu (step mov X))).exitCode = some 0.
     -- Discharge via the helper lemma using hcs_witness.
     exact step_exit_after_mov_r0_zero
       (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k)
