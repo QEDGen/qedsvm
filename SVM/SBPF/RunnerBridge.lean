@@ -52,6 +52,7 @@ private theorem stepBody_eq_step_of_noCpi
   | call sc => cases sc <;> first | rfl | (simp [Insn.isCpiCall] at hnc)
   | _ => rfl
 
+set_option maxHeartbeats 1600000 in
 /-- `executeFnCpi ≡ executeFn` on programs that never invoke CPI.
 
     Concretely: if the fetch function never produces an instruction that
@@ -86,30 +87,37 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
         executeFn_halted fetch s (fuel' + 1) code hex
       rw [hlhs, hrhs]
     | none =>
-      cases hf : fetch s.pc with
-      | none =>
-        -- Invalid PC: both write ERR_INVALID_PC and halt.
-        have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 =
-            { s with exitCode := some ERR_INVALID_PC } := by
-          simp only [executeFnCpiWithFuel, hex, hf]
-        have hrhs : executeFn fetch s (fuel' + 1) =
-            { s with exitCode := some ERR_INVALID_PC } := by
-          simp only [executeFn, hex, hf]
-        rw [hlhs, hrhs]
-      | some insn =>
-        have hnc : Insn.isCpiCall insn = false := h s.pc insn hf
-        have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 =
-                    (executeFnCpiWithFuel registry fetch (step insn s) fuel').1 := by
-          simp only [executeFnCpiWithFuel, hex, hf, Runner.traceStep,
-                     TRACE_STEPS, Bool.false_eq_true, if_false]
-          congr 1
-          cases insn with
-          | call sc => cases sc <;> first | rfl | (simp [Insn.isCpiCall] at hnc)
-          | _ => rfl
-        have hrhs : executeFn fetch s (fuel' + 1) = executeFn fetch (step insn s) fuel' :=
-          executeFn_step fetch s fuel' insn hex hf
-        rw [hlhs, hrhs]
-        exact ih (step insn s)
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · -- H5 budget halt: both steppers return `s` unchanged.
+        have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 = s := by
+          simp only [executeFnCpiWithFuel, hex, if_pos h_over]
+        rw [hlhs, executeFn_overBudget fetch s (fuel' + 1) hex h_over]
+      · cases hf : fetch s.pc with
+        | none =>
+          -- Invalid PC: both write ERR_INVALID_PC and halt.
+          have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 =
+              { s with exitCode := some ERR_INVALID_PC } := by
+            simp only [executeFnCpiWithFuel, hex, if_neg h_over, hf]
+          have hrhs : executeFn fetch s (fuel' + 1) =
+              { s with exitCode := some ERR_INVALID_PC } := by
+            simp only [executeFn, hex, if_neg h_over, hf]
+          rw [hlhs, hrhs]
+        | some insn =>
+          have hnc : Insn.isCpiCall insn = false := h s.pc insn hf
+          have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 =
+                      (executeFnCpiWithFuel registry fetch
+                        (chargeCu (step insn s)) fuel').1 := by
+            simp only [executeFnCpiWithFuel, hex, if_neg h_over, hf,
+                       Runner.traceStep, TRACE_STEPS, Bool.false_eq_true, if_false]
+            congr 1
+            cases insn with
+            | call sc => cases sc <;> first | rfl | (simp [Insn.isCpiCall] at hnc)
+            | _ => rfl
+          have hrhs : executeFn fetch s (fuel' + 1) =
+              executeFn fetch (chargeCu (step insn s)) fuel' :=
+            executeFn_step fetch s fuel' insn hex (Nat.le_of_not_lt h_over) hf
+          rw [hlhs, hrhs]
+          exact ih (chargeCu (step insn s))
 
 /-- Lift a "for all members of an Array Insn" property to a "for all
     fetch lookups" property. Used to discharge the fetch-form
@@ -194,13 +202,16 @@ theorem executeFn_callStack_empty (fetch : Nat → Option Insn) (s : State) (k :
     cases hex : s.exitCode with
     | some _ => exact h_cs
     | none =>
-      cases hf : fetch s.pc with
-      | none => exact h_cs
-      | some insn =>
-        have hncl : Insn.isCallLocal insn = false := h_safe s.pc insn hf
-        have h_step : (step insn s).callStack = [] :=
-          step_callStack_empty_preserved insn s h_cs hncl
-        exact ih (step insn s) h_step
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · rw [if_pos h_over]; exact h_cs
+      · rw [if_neg h_over]
+        cases hf : fetch s.pc with
+        | none => exact h_cs
+        | some insn =>
+          have hncl : Insn.isCallLocal insn = false := h_safe s.pc insn hf
+          have h_step : (step insn s).callStack = [] :=
+            step_callStack_empty_preserved insn s h_cs hncl
+          exact ih (chargeCu (step insn s)) (by simpa using h_step)
 
 /-! ## End-to-end soundness: cuTripleWithin lifts to Runner.run
 
@@ -224,19 +235,22 @@ theorem run_reaches_spec
     (insns : Array Insn) (cfg : RunConfig)
     (hcr : cr.SatisfiedBy (fetchFromArray insns))
     (htrip : cuTripleWithin N 0 0 exit_ cr P Q)
-    (hP : P.holdsFor (initialState cfg)) :
+    (hP : P.holdsFor (initialState cfg))
+    (hbudget : N ≤ cfg.cuBudget) :
     ∃ k, k ≤ N ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).pc = exit_ ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).exitCode = none ∧
-      Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) := by
+      Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) ∧
+      (executeFn (fetchFromArray insns) (initialState cfg) k).cuConsumed ≤ N := by
   -- Instantiate the triple with R = emp; coerce P ⇔ P ** emp on holdsFor.
   have hPemp : (P ** emp).holdsFor (initialState cfg) := by
     rcases hP with ⟨hp, hcompat, hPhp⟩
     exact ⟨hp, hcompat, (sepConj_emp_right hp).mpr hPhp⟩
-  obtain ⟨k, hk, hpc, hex, _hcu, hQemp⟩ :=
+  obtain ⟨k, hk, hpc, hex, hcu, hQemp⟩ :=
     htrip emp pcFree_emp (fetchFromArray insns) hcr (initialState cfg) hPemp
           (initialState_pc cfg) (initialState_exitCode cfg)
-  refine ⟨k, hk, hpc, hex, ?_⟩
+          (by simp only [initialState_cuConsumed, initialState_cuBudget]; omega)
+  refine ⟨k, hk, hpc, hex, ?_, by simpa using hcu⟩
   rcases hQemp with ⟨hp, hcompat, hQhp⟩
   exact ⟨hp, hcompat, (sepConj_emp_right hp).mp hQhp⟩
 
@@ -251,14 +265,18 @@ theorem run_reaches_spec_mem
     (hcr : cr.SatisfiedBy (fetchFromArray insns))
     (htrip : cuTripleWithinMem N 0 0 exit_ cr P Q rr)
     (hP : P.holdsFor (initialState cfg))
-    (hregions : rr (initialState cfg).regions) :
+    (hregions : rr (initialState cfg).regions)
+    (hbudget : N ≤ cfg.cuBudget) :
     ∃ k, k ≤ N ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).pc = exit_ ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).exitCode = none ∧
-      Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) := by
-  obtain ⟨k, hk, hpc, hex, _hcu, hQ⟩ :=
-    htrip.toExec hcr hP (initialState_pc cfg) (initialState_exitCode cfg) hregions
-  exact ⟨k, hk, hpc, hex, hQ⟩
+      Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) ∧
+      (executeFn (fetchFromArray insns) (initialState cfg) k).cuConsumed ≤ N := by
+  obtain ⟨k, hk, hpc, hex, hcu, hQ⟩ :=
+    htrip.toExec hcr hP (initialState_pc cfg) (initialState_exitCode cfg)
+      (by simp only [initialState_cuConsumed, initialState_cuBudget]; omega)
+      hregions
+  exact ⟨k, hk, hpc, hex, hQ, by simpa using hcu⟩
 
 /-- Shared core: given a Form-A-style k-step witness state at the
     `Insn.exit` slot, plus the no-CPI / no-call_local / budget
@@ -276,12 +294,13 @@ private theorem run_terminates_after_witness
     (hk : k ≤ N)
     (hpc : (executeFn (fetchFromArray insns) (initialState cfg) k).pc = exit_)
     (hex : (executeFn (fetchFromArray insns) (initialState cfg) k).exitCode = none)
-    (hQ : Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k)) :
+    (hQ : Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k))
+    (hcuW : (executeFn (fetchFromArray insns) (initialState cfg) k).cuConsumed ≤ N) :
     let s_witness := executeFn (fetchFromArray insns) (initialState cfg) k
     s_witness.pc = exit_ ∧
     s_witness.exitCode = none ∧
     Q.holdsFor s_witness ∧
-    Runner.run bs cfg = some (step Insn.exit s_witness) ∧
+    Runner.run bs cfg = some (chargeCu (step Insn.exit s_witness)) ∧
     (step Insn.exit s_witness).exitCode = some s_witness.regs.r0 := by
   -- callStack stays empty along the trace from initialState (no `.call_local`).
   have hcs : (executeFn (fetchFromArray insns) (initialState cfg) k).callStack = [] :=
@@ -293,27 +312,37 @@ private theorem run_terminates_after_witness
         (step Insn.exit (executeFn (fetchFromArray insns) (initialState cfg) k)).exitCode =
           some ((executeFn (fetchFromArray insns) (initialState cfg) k).regs.get Reg.r0) := by
       simp only [step, hcs]
+    have h_wbud : (executeFn (fetchFromArray insns) (initialState cfg) k).cuConsumed
+        ≤ (executeFn (fetchFromArray insns) (initialState cfg) k).cuBudget := by
+      rw [executeFn_preserves_cuBudget]
+      simp only [initialState_cuBudget]
+      omega
     have h_one_step : executeFn (fetchFromArray insns)
         (executeFn (fetchFromArray insns) (initialState cfg) k) 1 =
-        step Insn.exit (executeFn (fetchFromArray insns) (initialState cfg) k) := by
+        chargeCu (step Insn.exit
+          (executeFn (fetchFromArray insns) (initialState cfg) k)) := by
       have hf : (fetchFromArray insns)
           (executeFn (fetchFromArray insns) (initialState cfg) k).pc = some Insn.exit := by
         rw [hpc]; exact hexit_fetch
       rw [executeFn_step (fetchFromArray insns)
-          (executeFn (fetchFromArray insns) (initialState cfg) k) 0 Insn.exit hex hf]
+          (executeFn (fetchFromArray insns) (initialState cfg) k) 0 Insn.exit hex h_wbud hf]
       simp [executeFn]
     have h_k1 : executeFn (fetchFromArray insns) (initialState cfg) (k + 1) =
-                step Insn.exit (executeFn (fetchFromArray insns) (initialState cfg) k) := by
+                chargeCu (step Insn.exit
+                  (executeFn (fetchFromArray insns) (initialState cfg) k)) := by
       rw [executeFn_compose (fetchFromArray insns) (initialState cfg) k 1, h_one_step]
     have h_halted_after_k1 : ∀ m,
         executeFn (fetchFromArray insns)
-          (step Insn.exit (executeFn (fetchFromArray insns) (initialState cfg) k)) m =
-          step Insn.exit (executeFn (fetchFromArray insns) (initialState cfg) k) := by
+          (chargeCu (step Insn.exit
+            (executeFn (fetchFromArray insns) (initialState cfg) k))) m =
+          chargeCu (step Insn.exit
+            (executeFn (fetchFromArray insns) (initialState cfg) k)) := by
       intro m
       exact executeFn_halted (fetchFromArray insns) _ m _ h_step_exit_halted
     have h_kp1_le : k + 1 ≤ cfg.cuBudget := Nat.le_trans (Nat.add_le_add_right hk 1) hbudget
     have h_full : executeFn (fetchFromArray insns) (initialState cfg) cfg.cuBudget =
-                  step Insn.exit (executeFn (fetchFromArray insns) (initialState cfg) k) := by
+                  chargeCu (step Insn.exit
+                    (executeFn (fetchFromArray insns) (initialState cfg) k)) := by
       have h_eq : cfg.cuBudget = (k + 1) + (cfg.cuBudget - (k + 1)) :=
         (Nat.add_sub_cancel' h_kp1_le).symm
       rw [h_eq, executeFn_compose (fetchFromArray insns) (initialState cfg) (k + 1)
@@ -365,11 +394,12 @@ theorem run_terminates_with_spec
       s_witness.pc = exit_ ∧
       s_witness.exitCode = none ∧
       Q.holdsFor s_witness ∧
-      Runner.run bs cfg = some (step Insn.exit s_witness) ∧
+      Runner.run bs cfg = some (chargeCu (step Insn.exit s_witness)) ∧
       (step Insn.exit s_witness).exitCode = some s_witness.regs.r0 := by
-  obtain ⟨k, hk, hpc, hex, hQ⟩ := run_reaches_spec insns cfg hcr htrip hP
+  obtain ⟨k, hk, hpc, hex, hQ, hcuW⟩ :=
+    run_reaches_spec insns cfg hcr htrip hP (by omega)
   exact ⟨k, hk, run_terminates_after_witness hdecode hexit_fetch hnoCpi hnoCallLocal
-    hbudget hk hpc hex hQ⟩
+    hbudget hk hpc hex hQ hcuW⟩
 
 /-- **Form B-mem (terminated run, memory-region variant):** Mirrors
     `run_terminates_with_spec` but takes a `cuTripleWithinMem` plus
@@ -394,12 +424,12 @@ theorem run_terminates_with_spec_mem
       s_witness.pc = exit_ ∧
       s_witness.exitCode = none ∧
       Q.holdsFor s_witness ∧
-      Runner.run bs cfg = some (step Insn.exit s_witness) ∧
+      Runner.run bs cfg = some (chargeCu (step Insn.exit s_witness)) ∧
       (step Insn.exit s_witness).exitCode = some s_witness.regs.r0 := by
-  obtain ⟨k, hk, hpc, hex, hQ⟩ :=
-    run_reaches_spec_mem insns cfg hcr htrip hP hregions
+  obtain ⟨k, hk, hpc, hex, hQ, hcuW⟩ :=
+    run_reaches_spec_mem insns cfg hcr htrip hP hregions (by omega)
   exact ⟨k, hk, run_terminates_after_witness hdecode hexit_fetch hnoCpi hnoCallLocal
-    hbudget hk hpc hex hQ⟩
+    hbudget hk hpc hex hQ hcuW⟩
 
 end Runner
 end SVM.SBPF

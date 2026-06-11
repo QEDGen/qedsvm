@@ -734,23 +734,19 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
                pc := s.pc + 1
                cuConsumed := s.cuConsumed + Cpi.cu }
     | some (subFinal, newMem, subFuelRemaining) =>
-      -- Tier-2 #7 — proportional CU split. The caller's
-      -- meter absorbs the callee's spend in two parts:
-      --   * `subFinal.cuConsumed`: callee's syscall extras
-      --     (already bumped into the callee's State during
-      --     its own execution).
-      --   * `fuel' - subFuelRemaining`: the callee's step
-      --     count (each callee step decremented its local
-      --     fuel by one; the diff equals the number of
-      --     callee steps).
+      -- H5 total metering: `subFinal.cuConsumed` is now the callee's
+      -- TOTAL spend (per-step baselines charged by chargeCu inside the
+      -- callee's own loop + its syscall surcharges), so the caller
+      -- absorbs exactly `Cpi.cu + subFinal.cuConsumed`. The old
+      -- `+ (fuel' - subFuelRemaining)` step-count proxy would now
+      -- double-count the callee's baselines.
       { s with regs       := s.regs.set .r0 (subFinal.exitCode.getD 1)
                mem        := newMem
                pc         := s.pc + 1
                log        := subFinal.log
                returnData := subFinal.returnData
                cuConsumed := s.cuConsumed + Cpi.cu
-                                          + subFinal.cuConsumed
-                                          + (fuel' - subFuelRemaining) }
+                                          + subFinal.cuConsumed }
 
 /-- CU-accounting variant of `executeFnCpi`. Returns the final state
     plus the remaining fuel — `cuConsumed = initial_fuel - returned_fuel`.
@@ -771,6 +767,12 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
     match s.exitCode with
     | some _ => (s, fuel)
     | none =>
+      -- H5 budget halt — mirrors `executeFn` exactly so the
+      -- RunnerBridge equality stays a structural induction. An
+      -- over-budget running state halts with `exitCode = none`
+      -- (surfaced as OutOfBudget on the wire).
+      if s.cuConsumed > s.cuBudget then (s, fuel)
+      else
       match fetch s.pc with
       | none => ({ s with exitCode := some ERR_INVALID_PC }, fuel')
       | some insn =>
@@ -938,9 +940,9 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
         traceStep (USize.ofNat s.pc) fun _ =>
           if TRACE_STEPS then
             dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
-            executeFnCpiWithFuel registry fetch s' fuel'
+            executeFnCpiWithFuel registry fetch (chargeCu s') fuel'
           else
-            executeFnCpiWithFuel registry fetch s' fuel'
+            executeFnCpiWithFuel registry fetch (chargeCu s') fuel'
 
 /-- Original signature, preserved for existing callers (demos +
     `Runner.run` / `Runner.runElf`). A thin wrapper around
@@ -972,6 +974,12 @@ def initialState (cfg : RunConfig) : State :=
 
 @[simp] theorem initialState_callStack (cfg : RunConfig) :
     (initialState cfg).callStack = [] := rfl
+
+@[simp] theorem initialState_cuConsumed (cfg : RunConfig) :
+    (initialState cfg).cuConsumed = 0 := rfl
+
+@[simp] theorem initialState_cuBudget (cfg : RunConfig) :
+    (initialState cfg).cuBudget = cfg.cuBudget := rfl
 
 /-- Decode `bytes` and run for up to `cfg.cuBudget` compute units. Returns
     the final machine state, or `none` if decoding fails.

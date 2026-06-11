@@ -332,6 +332,7 @@ theorem byte_increment_macro_executeFn
     (hP : ((.r2 ↦ᵣ vR2Old) ** (.r1 ↦ᵣ baseAddr) **
             (effectiveAddr baseAddr 0 ↦ₘ oldByte)).holdsFor s)
     (hpc : s.pc = 0) (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + 3 + 0 ≤ s.cuBudget)
     (h_reg : s.regions.containsRange (effectiveAddr baseAddr 0) 1 = true ∧
              s.regions.containsWritable (effectiveAddr baseAddr 0) 1 = true) :
     ∃ k, k ≤ 3 ∧
@@ -341,7 +342,7 @@ theorem byte_increment_macro_executeFn
         (effectiveAddr baseAddr 0 ↦ₘ (wrapAdd (oldByte % 256) (toU64 1) % 256))).holdsFor
         (executeFn fetch s k) := by
   obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
-    (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec hcr hP hpc hex h_reg
+    (byte_increment_macro_spec baseAddr vR2Old oldByte).toExec hcr hP hpc hex hbud h_reg
   exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## Lamport transfer — first real Solana primitive (Phase D)
@@ -428,6 +429,7 @@ theorem lamport_transfer_macro_executeFn
             (effectiveAddr srcPtr 0 ↦U64 srcLam) **
             (effectiveAddr dstPtr 0 ↦U64 dstLam)).holdsFor s)
     (hpc : s.pc = 0) (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + 6 + 0 ≤ s.cuBudget)
     (h_reg :
       ((s.regions.containsRange (effectiveAddr srcPtr 0) 8 = true ∧
         s.regions.containsWritable (effectiveAddr srcPtr 0) 8 = true) ∧
@@ -443,7 +445,7 @@ theorem lamport_transfer_macro_executeFn
         (executeFn fetch s k) := by
   obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
     (lamport_transfer_macro_spec srcPtr dstPtr amount vR4 vR5 srcLam dstLam
-        hSrcLam hDstLam).toExec hcr hP hpc hex h_reg
+        hSrcLam hDstLam).toExec hcr hP hpc hex hbud h_reg
   exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## 16-byte memcpy via 2x u64 dword (Phase D)
@@ -542,6 +544,7 @@ theorem u64_memcpy_16_macro_executeFn
             (effectiveAddr dstPtr 0 ↦U64 d0) **
             (effectiveAddr dstPtr 8 ↦U64 d1)).holdsFor s)
     (hpc : s.pc = 0) (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + 4 + 0 ≤ s.cuBudget)
     (h_reg :
       ((s.regions.containsRange (effectiveAddr srcPtr 0) 8 = true ∧
         s.regions.containsWritable (effectiveAddr dstPtr 0) 8 = true) ∧
@@ -558,7 +561,7 @@ theorem u64_memcpy_16_macro_executeFn
         (executeFn fetch s k) := by
   obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
     (u64_memcpy_16_macro_spec srcPtr dstPtr vR3 v0 v1 d0 d1 hv0 hv1).toExec
-      hcr hP hpc hex h_reg
+      hcr hP hpc hex hbud h_reg
   exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## If-else macro (Phase E foundation)
@@ -794,7 +797,8 @@ theorem pda_n0_macro_executeFn
     (hP : ((.r0 ↦ᵣ vR0) ** (.r2 ↦ᵣ vR2) ** (.r3 ↦ᵣ vR3) ** (.r4 ↦ᵣ vR4) **
             (toU64 r3V_imm ↦Bytes32 pidBytes) **
             (toU64 r4V_imm ↦Bytes32 outOldBytes)).holdsFor s)
-    (hpc : s.pc = 0) (hex : s.exitCode = none) :
+    (hpc : s.pc = 0) (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + 4 + nCu ≤ s.cuBudget) :
     ∃ k, k ≤ 4 ∧
       (executeFn fetch s k).pc = 4 ∧
       (executeFn fetch s k).exitCode = none ∧
@@ -807,7 +811,7 @@ theorem pda_n0_macro_executeFn
         (executeFn fetch s k) := by
   obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
     (pda_n0_macro_spec vR0 vR2 vR3 vR4 r3V_imm r4V_imm pidBytes outOldBytes
-        nCu hpid hCu).toExec hcr hP hpc hex
+        nCu hpid hCu).toExec hcr hP hpc hex hbud
   exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## PDA derivation macro (n=1) — Session 2 deliverable
@@ -900,7 +904,8 @@ theorem pda_n1_macro_executeFn
             (seedPtr ↦Bytes seedBytes) **
             (toU64 r3V_imm ↦Bytes32 pidBytes) **
             (toU64 r4V_imm ↦Bytes32 outOldBytes)).holdsFor s)
-    (hpc : s.pc = 0) (hex : s.exitCode = none) :
+    (hpc : s.pc = 0) (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + 5 + nCu ≤ s.cuBudget) :
     ∃ k, k ≤ 5 ∧
       (executeFn fetch s k).pc = 5 ∧
       (executeFn fetch s k).exitCode = none ∧
@@ -918,7 +923,7 @@ theorem pda_n1_macro_executeFn
   obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
     (pda_n1_macro_spec vR0 vR1 vR2 vR3 vR4 r1V_imm r3V_imm r4V_imm seedPtr
       seedBytes pidBytes outOldBytes nCu hpid hseed_lt hslen_lt hCu).toExec
-        hcr hP hpc hex
+        hcr hP hpc hex hbud
   exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## PDA n=1 stack-VmSlice macro (Session 2B)
@@ -1083,6 +1088,7 @@ theorem pda_n1_stack_macro_executeFn
             (toU64 seed_imm ↦Bytes seedBytes) **
             (toU64 pid_imm ↦Bytes32 pidBytes)).holdsFor s)
     (hpc : s.pc = 0) (hex : s.exitCode = none)
+    (hbud : s.cuConsumed + 11 + nCu ≤ s.cuBudget)
     (h_reg :
       s.regions.containsWritable (Memory.effectiveAddr descAddr 0) 8 = true ∧
       s.regions.containsWritable (Memory.effectiveAddr descAddr 8) 8 = true) :
@@ -1107,7 +1113,7 @@ theorem pda_n1_stack_macro_executeFn
   obtain ⟨k, hk, hpc', hex', _, hQ⟩ :=
     (pda_n1_stack_macro_spec vR0 vR1 vR2 vR3 vR4 vR5 r10V seed_imm pid_imm
       vSlotPtr_old vSlotLen_old seedBytes pidBytes outOldBytes descAddr outAddr
-      nCu hDesc hOut hpid hslen_lt hCu).toExec hcr hP hpc hex h_reg
+      nCu hDesc hOut hpid hslen_lt hCu).toExec hcr hP hpc hex hbud h_reg
   exact ⟨k, hk, hpc', hex', hQ⟩
 
 /-! ## SpecGen extension smoke tests

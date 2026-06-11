@@ -28,12 +28,15 @@ the fetch function and error code. -/
 
 theorem error_exit (fetch : Nat → Option Insn) (s : State) (errorCode : Int)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 2 ≤ s.cuBudget)
     (h_cs : s.callStack = [])
     (h_f1 : fetch s.pc = some (.mov32 .r0 (.imm errorCode)))
     (h_f2 : fetch (s.pc + 1) = some .exit) :
     (executeFn fetch s 2).exitCode = some (toU64 errorCode % U32_MODULUS) := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
   simp [executeFn, step, resolveSrc, RegFile.get, RegFile.set,
-        h_exit, h_cs, h_f1, h_f2]
+        h_exit, h_cs, h_f1, h_f2, hnb0, hnb1]
 
 /-! ## Duplicate marker check: ldx byte + jne
 
@@ -51,17 +54,21 @@ theorem dup_pass (fetch : Nat → Option Insn) (s : State)
     (dstReg addrReg : Reg) (off : Int) (dupImm : Int) (target : Nat)
     (h_dstA_ne_r10 : dstReg ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 2 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .byte dstReg addrReg off))
     (h_f2 : fetch (s.pc + 1) = some (.jne dstReg (.imm dupImm) target))
     (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get addrReg) off) 1 = true)
     (h_eq : readU8 s.mem (effectiveAddr (s.regs.get addrReg) off) = toU64 dupImm) :
     let s' := executeFn fetch s 2
     s'.exitCode = none ∧ s'.pc = s.pc + 2 ∧ s'.mem = s.mem ∧
-    (∀ r, r ≠ dstReg → s'.regs.get r = s.regs.get r) := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    (∀ r, r ≠ dstReg → s'.regs.get r = s.regs.get r) ∧
+    s'.cuConsumed = s.cuConsumed + 2 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
-    h_exit, h_f1, h_f2, h_b1, h_eq, if_true]
-  refine ⟨trivial, by simp, trivial, fun r hr => ?_⟩
+    h_exit, h_f1, h_f2, h_b1, h_eq, hnb0, hnb1, if_true, if_false]
+  refine ⟨trivial, by simp, trivial, fun r hr => ?_, by first | trivial | omega, trivial⟩
   simp only [RegFile.get_set_diff _ _ _ _ hr]
 
 set_option maxHeartbeats 800000 in
@@ -69,17 +76,21 @@ theorem dup_fail (fetch : Nat → Option Insn) (s : State)
     (dstReg addrReg : Reg) (off : Int) (dupImm : Int) (target : Nat)
     (h_dstA_ne_r10 : dstReg ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 2 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .byte dstReg addrReg off))
     (h_f2 : fetch (s.pc + 1) = some (.jne dstReg (.imm dupImm) target))
     (h_b1 : s.regions.containsRange (effectiveAddr (s.regs.get addrReg) off) 1 = true)
     (h_ne : readU8 s.mem (effectiveAddr (s.regs.get addrReg) off) ≠ toU64 dupImm) :
     let s' := executeFn fetch s 2
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
-    (∀ r, r ≠ dstReg → s'.regs.get r = s.regs.get r) := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    (∀ r, r ≠ dstReg → s'.regs.get r = s.regs.get r) ∧
+    s'.cuConsumed = s.cuConsumed + 2 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
-    h_exit, h_f1, h_f2, h_b1, if_true]
-  refine ⟨trivial, if_pos h_ne, trivial, fun r hr => ?_⟩
+    h_exit, h_f1, h_f2, h_b1, hnb0, hnb1, if_true, if_false]
+  refine ⟨trivial, if_pos h_ne, trivial, fun r hr => ?_, by first | trivial | omega, trivial⟩
   simp only [RegFile.get_set_diff _ _ _ _ hr]
 
 /-! ## Chunk comparison: ldx + ldx + jne (memory vs memory)
@@ -98,6 +109,7 @@ theorem chunk_eq_mem (fetch : Nat → Option Insn) (s : State)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 3 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA offA))
     (h_f2 : fetch (s.pc + 1) = some (.ldx .dword dstB srcB offB))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
@@ -108,14 +120,18 @@ theorem chunk_eq_mem (fetch : Nat → Option Insn) (s : State)
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = s.pc + 3 ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstA → r ≠ dstB → s'.regs.get r = s.regs.get r) ∧
-    s'.callStack = s.callStack := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    s'.callStack = s.callStack ∧
+    s'.cuConsumed = s.cuConsumed + 3 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  have hnb2 : ¬ s.cuConsumed + 1 + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_srcB_ne_dstA,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_b1, h_b2, h_eq, if_true]
-  refine ⟨trivial, by simp, trivial, ?_, trivial⟩
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_b2, h_eq, hnb0, hnb1, hnb2, if_true, if_false]
+  refine ⟨trivial, by simp, trivial, ?_, trivial, by first | trivial | omega, trivial⟩
   intro r hr1 hr2
   simp only [RegFile.get_set_diff _ _ _ _ hr2, RegFile.get_set_diff _ _ _ _ hr1]
 
@@ -127,6 +143,7 @@ theorem chunk_ne_mem (fetch : Nat → Option Insn) (s : State)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 3 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA offA))
     (h_f2 : fetch (s.pc + 1) = some (.ldx .dword dstB srcB offB))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
@@ -136,14 +153,18 @@ theorem chunk_ne_mem (fetch : Nat → Option Insn) (s : State)
             readU64 s.mem (effectiveAddr (s.regs.get srcB) offB)) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
-    s'.callStack = s.callStack := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    s'.callStack = s.callStack ∧
+    s'.cuConsumed = s.cuConsumed + 3 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  have hnb2 : ¬ s.cuConsumed + 1 + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_srcB_ne_dstA,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_b1, h_b2, if_true]
-  exact ⟨trivial, if_pos h_ne, trivial, trivial⟩
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_b2, hnb0, hnb1, hnb2, if_true, if_false]
+  exact ⟨trivial, if_pos h_ne, trivial, trivial, by first | trivial | omega, trivial⟩
 
 /-! ## Chunk comparison: ldx + lddw + jne (memory vs 64-bit immediate)
 
@@ -162,6 +183,7 @@ theorem chunk_eq_imm (fetch : Nat → Option Insn) (s : State)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 3 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.lddw dstB val))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
@@ -170,13 +192,17 @@ theorem chunk_eq_imm (fetch : Nat → Option Insn) (s : State)
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = s.pc + 3 ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstA → r ≠ dstB → s'.regs.get r = s.regs.get r) ∧
-    s'.callStack = s.callStack := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    s'.callStack = s.callStack ∧
+    s'.cuConsumed = s.cuConsumed + 3 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  have hnb2 : ¬ s.cuConsumed + 1 + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_b1, h_eq, if_true]
-  refine ⟨trivial, by simp, trivial, ?_, trivial⟩
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_eq, hnb0, hnb1, hnb2, if_true, if_false]
+  refine ⟨trivial, by simp, trivial, ?_, trivial, by first | trivial | omega, trivial⟩
   intro r hr1 hr2
   simp only [RegFile.get_set_diff _ _ _ _ hr2, RegFile.get_set_diff _ _ _ _ hr1]
 
@@ -187,6 +213,7 @@ theorem chunk_ne_imm (fetch : Nat → Option Insn) (s : State)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 3 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.lddw dstB val))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
@@ -194,13 +221,17 @@ theorem chunk_ne_imm (fetch : Nat → Option Insn) (s : State)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) ≠ toU64 val) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
-    s'.callStack = s.callStack := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    s'.callStack = s.callStack ∧
+    s'.cuConsumed = s.cuConsumed + 3 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  have hnb2 : ¬ s.cuConsumed + 1 + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_b1, if_true]
-  exact ⟨trivial, if_pos h_ne, trivial, trivial⟩
+    h_exit, h_f1, h_f2, h_f3, h_b1, hnb0, hnb1, hnb2, if_true, if_false]
+  exact ⟨trivial, if_pos h_ne, trivial, trivial, by first | trivial | omega, trivial⟩
 
 /-! ## Chunk comparison: ldx + mov32 + jne (memory vs 32-bit immediate)
 
@@ -214,6 +245,7 @@ theorem chunk_eq_imm32 (fetch : Nat → Option Insn) (s : State)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 3 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.mov32 dstB (.imm val)))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
@@ -222,13 +254,17 @@ theorem chunk_eq_imm32 (fetch : Nat → Option Insn) (s : State)
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = s.pc + 3 ∧ s'.mem = s.mem ∧
     (∀ r, r ≠ dstA → r ≠ dstB → s'.regs.get r = s.regs.get r) ∧
-    s'.callStack = s.callStack := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    s'.callStack = s.callStack ∧
+    s'.cuConsumed = s.cuConsumed + 3 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  have hnb2 : ¬ s.cuConsumed + 1 + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_b1, h_eq, if_true]
-  refine ⟨trivial, by simp, trivial, ?_, trivial⟩
+    h_exit, h_f1, h_f2, h_f3, h_b1, h_eq, hnb0, hnb1, hnb2, if_true, if_false]
+  refine ⟨trivial, by simp, trivial, ?_, trivial, by first | trivial | omega, trivial⟩
   intro r hr1 hr2
   simp only [RegFile.get_set_diff _ _ _ _ hr2, RegFile.get_set_diff _ _ _ _ hr1]
 
@@ -239,6 +275,7 @@ theorem chunk_ne_imm32 (fetch : Nat → Option Insn) (s : State)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 3 ≤ s.cuBudget)
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.mov32 dstB (.imm val)))
     (h_f3 : fetch (s.pc + 2) = some (.jne dstA (.reg dstB) target))
@@ -246,13 +283,17 @@ theorem chunk_ne_imm32 (fetch : Nat → Option Insn) (s : State)
     (h_ne : readU64 s.mem (effectiveAddr (s.regs.get srcA) off) ≠ toU64 val % U32_MODULUS) :
     let s' := executeFn fetch s 3
     s'.exitCode = none ∧ s'.pc = target ∧ s'.mem = s.mem ∧
-    s'.callStack = s.callStack := by
-  simp only [executeFn, step, Width.bytes, readByWidth, resolveSrc,
+    s'.callStack = s.callStack ∧
+    s'.cuConsumed = s.cuConsumed + 3 ∧ s'.cuBudget = s.cuBudget := by
+  have hnb0 : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb1 : ¬ s.cuConsumed + 1 > s.cuBudget := by omega
+  have hnb2 : ¬ s.cuConsumed + 1 + 1 > s.cuBudget := by omega
+  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
-    h_exit, h_f1, h_f2, h_f3, h_b1, if_true]
-  exact ⟨trivial, if_pos h_ne, trivial, trivial⟩
+    h_exit, h_f1, h_f2, h_f3, h_b1, hnb0, hnb1, hnb2, if_true, if_false]
+  exact ⟨trivial, if_pos h_ne, trivial, trivial, by first | trivial | omega, trivial⟩
 
 /-! ## Composition: chunk mismatch → error exit
 
@@ -267,6 +308,7 @@ theorem chunk_ne_mem_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 5 ≤ s.cuBudget)
     (h_cs : s.callStack = [])
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA offA))
     (h_f2 : fetch (s.pc + 1) = some (.ldx .dword dstB srcB offB))
@@ -280,11 +322,11 @@ theorem chunk_ne_mem_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_fuel : n ≥ 5) :
     (executeFn fetch s n).exitCode = some (toU64 errorCode % U32_MODULUS) := by
   rw [show n = 5 + (n - 5) from by omega, executeFn_compose]
-  obtain ⟨he, hp, _, hcs⟩ := chunk_ne_mem fetch s dstA dstB srcA srcB offA offB target
+  obtain ⟨he, hp, _, hcs, hcu, hbu⟩ := chunk_ne_mem fetch s dstA dstB srcA srcB offA offB target
     h_dstA_ne_dstB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10
-    h_exit h_f1 h_f2 h_f3 h_b1 h_b2 h_ne
+    h_exit (by omega) h_f1 h_f2 h_f3 h_b1 h_b2 h_ne
   rw [show (5 : Nat) = 3 + 2 from rfl, executeFn_compose]
-  have h5 := error_exit fetch _ errorCode he (by rw [hcs]; exact h_cs)
+  have h5 := error_exit fetch _ errorCode he (by omega) (by rw [hcs]; exact h_cs)
     (by rwa [hp]) (by rwa [hp])
   rw [executeFn_halted _ _ _ _ h5]
   exact h5
@@ -300,6 +342,7 @@ theorem chunk_ne_imm_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 5 ≤ s.cuBudget)
     (h_cs : s.callStack = [])
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.lddw dstB val))
@@ -311,11 +354,11 @@ theorem chunk_ne_imm_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_fuel : n ≥ 5) :
     (executeFn fetch s n).exitCode = some (toU64 errorCode % U32_MODULUS) := by
   rw [show n = 5 + (n - 5) from by omega, executeFn_compose]
-  obtain ⟨he, hp, _, hcs⟩ := chunk_ne_imm fetch s dstA dstB srcA off val target
+  obtain ⟨he, hp, _, hcs, hcu, hbu⟩ := chunk_ne_imm fetch s dstA dstB srcA off val target
     h_dstA_ne_dstB h_dstA_ne_r10 h_dstB_ne_r10
-    h_exit h_f1 h_f2 h_f3 h_b1 h_ne
+    h_exit (by omega) h_f1 h_f2 h_f3 h_b1 h_ne
   rw [show (5 : Nat) = 3 + 2 from rfl, executeFn_compose]
-  have h5 := error_exit fetch _ errorCode he (by rw [hcs]; exact h_cs)
+  have h5 := error_exit fetch _ errorCode he (by omega) (by rw [hcs]; exact h_cs)
     (by rwa [hp]) (by rwa [hp])
   rw [executeFn_halted _ _ _ _ h5]
   exact h5
@@ -326,6 +369,7 @@ theorem chunk_ne_imm32_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_dstA_ne_r10 : dstA ≠ .r10)
     (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_exit : s.exitCode = none)
+    (h_bud : s.cuConsumed + 5 ≤ s.cuBudget)
     (h_cs : s.callStack = [])
     (h_f1 : fetch s.pc = some (.ldx .dword dstA srcA off))
     (h_f2 : fetch (s.pc + 1) = some (.mov32 dstB (.imm val)))
@@ -337,11 +381,11 @@ theorem chunk_ne_imm32_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_fuel : n ≥ 5) :
     (executeFn fetch s n).exitCode = some (toU64 errorCode % U32_MODULUS) := by
   rw [show n = 5 + (n - 5) from by omega, executeFn_compose]
-  obtain ⟨he, hp, _, hcs⟩ := chunk_ne_imm32 fetch s dstA dstB srcA off val target
+  obtain ⟨he, hp, _, hcs, hcu, hbu⟩ := chunk_ne_imm32 fetch s dstA dstB srcA off val target
     h_dstA_ne_dstB h_dstA_ne_r10 h_dstB_ne_r10
-    h_exit h_f1 h_f2 h_f3 h_b1 h_ne
+    h_exit (by omega) h_f1 h_f2 h_f3 h_b1 h_ne
   rw [show (5 : Nat) = 3 + 2 from rfl, executeFn_compose]
-  have h5 := error_exit fetch _ errorCode he (by rw [hcs]; exact h_cs)
+  have h5 := error_exit fetch _ errorCode he (by omega) (by rw [hcs]; exact h_cs)
     (by rwa [hp]) (by rwa [hp])
   rw [executeFn_halted _ _ _ _ h5]
   exact h5
@@ -372,7 +416,8 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
     (h_dstA_ne_r10 : dstA ≠ .r10) (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_srcA_ne_dstA : srcA ≠ dstA) (h_srcA_ne_dstB : srcA ≠ dstB)
     (h_srcB_ne_dstB : srcB ≠ dstB)
-    (h_exit : s.exitCode = none) (h_cs : s.callStack = []) (h_pc : s.pc = pc)
+    (h_exit : s.exitCode = none) (h_bud : s.cuConsumed + 14 ≤ s.cuBudget)
+    (h_cs : s.callStack = []) (h_pc : s.pc = pc)
     (hf0 : fetch pc = some (.ldx .dword dstA srcA offA0))
     (hf1 : fetch (pc + 1) = some (.ldx .dword dstB srcB offB0))
     (hf2 : fetch (pc + 2) = some (.jne dstA (.reg dstB) target))
@@ -408,16 +453,16 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
   by_cases h_eq0 : a0 = b0
   · simp [h_eq0] at h_ne
     rw [show (14 : Nat) = 3 + 11 from rfl, executeFn_compose]
-    obtain ⟨he1, hp1, hm1, hreg1, hcs1⟩ := chunk_eq_mem fetch s dstA dstB srcA srcB offA0 offB0 target
-      h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 h_exit
+    obtain ⟨he1, hp1, hm1, hreg1, hcs1, hcu1, hbu1⟩ := chunk_eq_mem fetch s dstA dstB srcA srcB offA0 offB0 target
+      h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 h_exit (by omega)
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
       hbA0 hbB0
       (by rw [ha0, hb0]; exact h_eq0)
     by_cases h_eq1 : a1 = b1
     · simp [h_eq1] at h_ne
       rw [show (11 : Nat) = 3 + 8 from rfl, executeFn_compose]
-      obtain ⟨he2, hp2, hm2, hreg2, hcs2⟩ := chunk_eq_mem fetch _ dstA dstB srcA srcB offA1 offB1 target
-        h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he1
+      obtain ⟨he2, hp2, hm2, hreg2, hcs2, hcu2, hbu2⟩ := chunk_eq_mem fetch _ dstA dstB srcA srcB offA1 offB1 target
+        h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he1 (by omega)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
         (by simp only [hp1, h_pc]; exact hf5)
@@ -430,8 +475,8 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
       by_cases h_eq2 : a2 = b2
       · simp [h_eq2] at h_ne
         rw [show (8 : Nat) = 3 + 5 from rfl, executeFn_compose]
-        obtain ⟨he3, hp3, hm3, hreg3, hcs3⟩ := chunk_eq_mem fetch _ dstA dstB srcA srcB offA2 offB2 target
-          h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he2
+        obtain ⟨he3, hp3, hm3, hreg3, hcs3, hcu3, hbu3⟩ := chunk_eq_mem fetch _ dstA dstB srcA srcB offA2 offB2 target
+          h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he2 (by omega)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
           (by simp only [hp2, hp1, h_pc]; exact hf8)
@@ -447,7 +492,7 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
                   hreg2 srcB h_srcB_ne_dstA h_srcB_ne_dstB,
                   hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB, hb2]; exact h_eq2)
         exact chunk_ne_mem_error fetch _ 5 dstA dstB srcA srcB offA3 offB3 target errorCode
-          h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he3
+          h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he3 (by omega)
           (by rw [hcs3, hcs2, hcs1]; exact h_cs)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf9)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf10)
@@ -469,7 +514,7 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
                   hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB, hb3]; exact h_ne)
           hfe1 hfe2 (by omega)
       · exact chunk_ne_mem_error fetch _ 8 dstA dstB srcA srcB offA2 offB2 target errorCode
-          h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he2
+          h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he2 (by omega)
           (by rw [hcs2, hcs1]; exact h_cs)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
@@ -487,7 +532,7 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
                   hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB, hb2]; exact h_eq2)
           hfe1 hfe2 (by omega)
     · exact chunk_ne_mem_error fetch _ 11 dstA dstB srcA srcB offA1 offB1 target errorCode
-        h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he1
+        h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 he1 (by omega)
         (by rw [hcs1]; exact h_cs)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
@@ -500,7 +545,7 @@ theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)
                 hreg1 srcB h_srcB_ne_dstA h_srcB_ne_dstB, hb1]; exact h_eq1)
         hfe1 hfe2 (by omega)
   · exact chunk_ne_mem_error fetch s 14 dstA dstB srcA srcB offA0 offB0 target errorCode
-      h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 h_exit h_cs
+      h_ne_AB h_srcB_ne_dstA h_dstA_ne_r10 h_dstB_ne_r10 h_exit (by omega) h_cs
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
       hbA0 hbB0
       (by rw [ha0, hb0]; exact h_eq0) hfe1 hfe2 (by omega)
@@ -514,7 +559,8 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
     (h_ne_AB : dstA ≠ dstB)
     (h_dstA_ne_r10 : dstA ≠ .r10) (h_dstB_ne_r10 : dstB ≠ .r10)
     (h_srcA_ne_dstA : srcA ≠ dstA) (h_srcA_ne_dstB : srcA ≠ dstB)
-    (h_exit : s.exitCode = none) (h_cs : s.callStack = []) (h_pc : s.pc = pc)
+    (h_exit : s.exitCode = none) (h_bud : s.cuConsumed + 14 ≤ s.cuBudget)
+    (h_cs : s.callStack = []) (h_pc : s.pc = pc)
     -- Chunks 0-2: ldx + lddw + jne; chunk 3: ldx + mov32 + jne
     (hf0 : fetch pc = some (.ldx .dword dstA srcA offA0))
     (hf1 : fetch (pc + 1) = some (.lddw dstB val0))
@@ -545,16 +591,16 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
   by_cases h_eq0 : a0 = b0
   · simp [h_eq0] at h_ne
     rw [show (14 : Nat) = 3 + 11 from rfl, executeFn_compose]
-    obtain ⟨he1, hp1, hm1, hreg1, hcs1⟩ := chunk_eq_imm fetch s dstA dstB srcA offA0 val0 target
-      h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 h_exit
+    obtain ⟨he1, hp1, hm1, hreg1, hcs1, hcu1, hbu1⟩ := chunk_eq_imm fetch s dstA dstB srcA offA0 val0 target
+      h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 h_exit (by omega)
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
       hbA0
       (by rw [ha0, hb0]; exact h_eq0)
     by_cases h_eq1 : a1 = b1
     · simp [h_eq1] at h_ne
       rw [show (11 : Nat) = 3 + 8 from rfl, executeFn_compose]
-      obtain ⟨he2, hp2, hm2, hreg2, hcs2⟩ := chunk_eq_imm fetch _ dstA dstB srcA offA1 val1 target
-        h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he1
+      obtain ⟨he2, hp2, hm2, hreg2, hcs2, hcu2, hbu2⟩ := chunk_eq_imm fetch _ dstA dstB srcA offA1 val1 target
+        h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he1 (by omega)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
         (by simp only [hp1, h_pc]; exact hf5)
@@ -564,8 +610,8 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
       by_cases h_eq2 : a2 = b2
       · simp [h_eq2] at h_ne
         rw [show (8 : Nat) = 3 + 5 from rfl, executeFn_compose]
-        obtain ⟨he3, hp3, hm3, hreg3, hcs3⟩ := chunk_eq_imm fetch _ dstA dstB srcA offA2 val2 target
-          h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he2
+        obtain ⟨he3, hp3, hm3, hreg3, hcs3, hcu3, hbu3⟩ := chunk_eq_imm fetch _ dstA dstB srcA offA2 val2 target
+          h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he2 (by omega)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
           (by simp only [hp2, hp1, h_pc]; exact hf8)
@@ -576,7 +622,7 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
                   hreg2 srcA h_srcA_ne_dstA h_srcA_ne_dstB,
                   hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha2, hb2]; exact h_eq2)
         exact chunk_ne_imm32_error fetch _ 5 dstA dstB srcA offA3 val3 target errorCode
-          h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he3
+          h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he3 (by omega)
           (by rw [hcs3, hcs2, hcs1]; exact h_cs)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf9)
           (by simp only [hp3, hp2, hp1, h_pc]; exact hf10)
@@ -591,7 +637,7 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
                   hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha3, hb3]; exact h_ne)
           hfe1 hfe2 (by omega)
       · exact chunk_ne_imm_error fetch _ 8 dstA dstB srcA offA2 val2 target errorCode
-          h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he2
+          h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he2 (by omega)
           (by rw [hcs2, hcs1]; exact h_cs)
           (by simp only [hp2, hp1, h_pc]; exact hf6)
           (by simp only [hp2, hp1, h_pc]; exact hf7)
@@ -604,7 +650,7 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
                   hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha2, hb2]; exact h_eq2)
           hfe1 hfe2 (by omega)
     · exact chunk_ne_imm_error fetch _ 11 dstA dstB srcA offA1 val1 target errorCode
-        h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he1
+        h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 he1 (by omega)
         (by rw [hcs1]; exact h_cs)
         (by simp only [hp1, h_pc]; exact hf3)
         (by simp only [hp1, h_pc]; exact hf4)
@@ -614,7 +660,7 @@ theorem pubkey_compare_imm (fetch : Nat → Option Insn) (s : State)
         (by rw [hm1, hreg1 srcA h_srcA_ne_dstA h_srcA_ne_dstB, ha1, hb1]; exact h_eq1)
         hfe1 hfe2 (by omega)
   · exact chunk_ne_imm_error fetch s 14 dstA dstB srcA offA0 val0 target errorCode
-      h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 h_exit h_cs
+      h_ne_AB h_dstA_ne_r10 h_dstB_ne_r10 h_exit (by omega) h_cs
       (by rw [h_pc]; exact hf0) (by rw [h_pc]; exact hf1) (by rw [h_pc]; exact hf2)
       hbA0
       (by rw [ha0, hb0]; exact h_eq0) hfe1 hfe2 (by omega)
