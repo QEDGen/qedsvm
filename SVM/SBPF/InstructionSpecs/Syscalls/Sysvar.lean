@@ -289,7 +289,7 @@ theorem call_sol_get_last_restart_slot_spec
       (CodeReq.singleton pc (.call .sol_get_last_restart_slot))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 vOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 0)) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 3-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
@@ -331,19 +331,21 @@ theorem call_sol_get_last_restart_slot_spec
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
     rfl
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
     exact hex
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-    exact h_step_cu s
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show (step (.call .sol_get_last_restart_slot) s).cuConsumed + 1 ≤
+      s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
     rfl
   -- Memory writes: 8 zero bytes at r1V; unchanged outside. `step` unfolds
   -- through `execSyscall .sol_get_last_restart_slot s = Sysvar.execLastRestartSlot s`
@@ -352,14 +354,16 @@ theorem call_sol_get_last_restart_slot_spec
   have hexec_mem_in (i : Nat) (hi : i < 8) :
       (executeFn fetch s 1).mem (r1V + i) = 0 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show (step (.call .sol_get_last_restart_slot) s).mem (r1V + i) = 0
     simp only [step, execSyscall, Sysvar.execLastRestartSlot, Sysvar.zeroFillR1]
     rw [Mem_read_default, hs_r1_field,
         if_pos ⟨Nat.le_add_right _ _, by omega⟩]
   have hexec_mem_out (a : Nat) (h : a < r1V ∨ a ≥ r1V + 8) :
       (executeFn fetch s 1).mem a = s.mem a := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show (step (.call .sol_get_last_restart_slot) s).mem a = s.mem a
     simp only [step, execSyscall, Sysvar.execLastRestartSlot, Sysvar.zeroFillR1]
     rw [Mem_read_default, hs_r1_field]
     have hneg : ¬(a ≥ r1V ∧ a - r1V < 8) := by
@@ -564,7 +568,7 @@ theorem call_sol_get_last_restart_slot_spec
         exact hva
       have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
         rw [show (1 : Nat) = 0 + 1 from rfl,
-            executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+            executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
         rfl
       rw [hexec_rd]
       exact hcompat.returnData rd hp_rd
@@ -578,7 +582,7 @@ theorem call_sol_get_last_restart_slot_spec
         exact hva
       have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
         rw [show (1 : Nat) = 0 + 1 from rfl,
-            executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+            executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
         rfl
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
@@ -597,7 +601,7 @@ theorem call_sol_get_fees_sysvar_spec
       (CodeReq.singleton pc (.call .sol_get_fees_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 vOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦U64 0)) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 3-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
@@ -638,31 +642,35 @@ theorem call_sol_get_fees_sysvar_spec
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
     rfl
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
     exact hex
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-    exact h_step_cu s
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show (step (.call .sol_get_fees_sysvar) s).cuConsumed + 1 ≤
+      s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
     rfl
   have hexec_mem_in (i : Nat) (hi : i < 8) :
       (executeFn fetch s 1).mem (r1V + i) = 0 := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show (step (.call .sol_get_fees_sysvar) s).mem (r1V + i) = 0
     simp only [step, execSyscall, Sysvar.execFees, Sysvar.zeroFillR1]
     rw [Mem_read_default, hs_r1_field,
         if_pos ⟨Nat.le_add_right _ _, by omega⟩]
   have hexec_mem_out (a : Nat) (h : a < r1V ∨ a ≥ r1V + 8) :
       (executeFn fetch s 1).mem a = s.mem a := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show (step (.call .sol_get_fees_sysvar) s).mem a = s.mem a
     simp only [step, execSyscall, Sysvar.execFees, Sysvar.zeroFillR1]
     rw [Mem_read_default, hs_r1_field]
     have hneg : ¬(a ≥ r1V ∧ a - r1V < 8) := by
@@ -862,7 +870,7 @@ theorem call_sol_get_fees_sysvar_spec
         exact hva
       have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
         rw [show (1 : Nat) = 0 + 1 from rfl,
-            executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+            executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
         rfl
       rw [hexec_rd]
       exact hcompat.returnData rd hp_rd
@@ -876,7 +884,7 @@ theorem call_sol_get_fees_sysvar_spec
         exact hva
       have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
         rw [show (1 : Nat) = 0 + 1 from rfl,
-            executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+            executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
         rfl
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs

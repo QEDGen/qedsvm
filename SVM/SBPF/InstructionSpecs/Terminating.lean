@@ -34,7 +34,7 @@ theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .abort))
       emp ERR_ABORT := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   -- emp pre: h1 = empty.
   rw [hP1, PartialState.union_empty_left] at hu
@@ -42,15 +42,16 @@ theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
   clear hP1 h1
   have hfetch : fetch s.pc = some (.call .abort) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call .abort) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .abort) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec : executeFn fetch s 1 =
-      { (Abort.execAbort s) with pc := s.pc + 1
-                                 cuConsumed := (Abort.execAbort s).cuConsumed
-                                   + syscallCu .abort s } := by
+      chargeCu { (Abort.execAbort s) with
+                 pc := s.pc + 1
+                 cuConsumed := (Abort.execAbort s).cuConsumed
+                   + syscallCu .abort s } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
   refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
@@ -58,7 +59,9 @@ theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
     -- post: exitCode = some ERR_ABORT
     show (Abort.execAbort s).exitCode = some ERR_ABORT
     rfl
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call .abort) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
 
 /-- `.call .sol_panic_`: unconditional abort with logging of the message
     pointed to by r1/r2 (file/line in r3/r4/r5 are diagnostic and silent
@@ -74,29 +77,32 @@ theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_panic_))
       emp ERR_ABORT := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   rw [hP1, PartialState.union_empty_left] at hu
   rw [hP1] at hd
   clear hP1 h1
   have hfetch : fetch s.pc = some (.call .sol_panic_) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call .sol_panic_) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .sol_panic_) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec : executeFn fetch s 1 =
-      { (Abort.execPanic s) with pc := s.pc + 1
-                                 cuConsumed := (Abort.execPanic s).cuConsumed
-                                   + syscallCu .sol_panic_ s } := by
+      chargeCu { (Abort.execPanic s) with
+                 pc := s.pc + 1
+                 cuConsumed := (Abort.execPanic s).cuConsumed
+                   + syscallCu .sol_panic_ s } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
   refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
   · rw [hexec]
     show (Abort.execPanic s).exitCode = some ERR_ABORT
     rfl
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call .sol_panic_) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
 
 /-- `Insn.exit` with empty callStack: the success-exit instruction sets
     `exitCode := some (r0)`, picking up the program's return value from
@@ -118,9 +124,9 @@ theorem exit_aborts_spec (vR0 pc : Nat) :
     ∀ (fetch : Nat → Option Insn),
       (CodeReq.singleton pc .exit).SatisfiedBy fetch →
     ∀ (s : State), ((.r0 ↦ᵣ vR0) ** R).holdsFor s → s.pc = pc →
-        s.exitCode = none → s.callStack = [] →
+        s.exitCode = none → s.cuConsumed + 1 ≤ s.cuBudget → s.callStack = [] →
       ∃ k, k ≤ 1 ∧ (executeFn fetch s k).exitCode = some vR0 := by
-  intro R hRfree fetch hcr s hPR hpc hex hcs
+  intro R hRfree fetch hcr s hPR hpc hex hbud hcs
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
@@ -131,9 +137,9 @@ theorem exit_aborts_spec (vR0 pc : Nat) :
   have hs_regs_r0 : s.regs.get .r0 = vR0 := hcr_regs .r0 vR0 hp_regs_r0
   have hfetch : fetch s.pc = some .exit := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hexec : executeFn fetch s 1 = step .exit s := by
+  have hexec : executeFn fetch s 1 = chargeCu (step .exit s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
   have hstep : step .exit s = { s with exitCode := some (s.regs.get .r0) } := by
     simp only [step, hcs]
@@ -152,7 +158,7 @@ theorem exit_aborts_spec (vR0 pc : Nat) :
 theorem exit_aborts_spec_cuTriple (vR0 pc : Nat) :
     cuTripleAbortsWithin 1 0 pc (CodeReq.singleton pc .exit)
       ((.r0 ↦ᵣ vR0) ** callStackIs []) vR0 := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- Destructure ((.r0 ↦ᵣ vR0) ** callStackIs []) ** R.
   obtain ⟨hp, hcompat, h_PQ, h_R, hd_PQR, hu_PQR, h_PQ_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_cs, hd_r0_cs, hu_r0_cs, h_r0_pred, h_cs_pred⟩ := h_PQ_sat
@@ -181,7 +187,7 @@ theorem exit_aborts_spec_cuTriple (vR0 pc : Nat) :
       ⟨h_r0, h_cs, hd_r0_cs, hu_r0_cs, h_r0_pred, h_cs_pred⟩, h_R_sat⟩
   obtain ⟨k, hk, hexc⟩ :=
     exit_aborts_spec vR0 pc (callStackIs [] ** R) hRfree' fetch hcr s hPR'
-      hpc hex hcs
+      hpc hex (by omega) hcs
   -- exit_aborts_spec gives k ≤ 1 and exitCode = some vR0. We need to
   -- bound cuConsumed delta ≤ 0. `.exit` does not bump cuConsumed
   -- (only the `.call` syscall arm does — see Execute.lean), so for
@@ -191,22 +197,22 @@ theorem exit_aborts_spec_cuTriple (vR0 pc : Nat) :
   rcases Nat.eq_or_lt_of_le hk with hk_eq | hk_lt
   · -- k = 1
     subst hk_eq
-    show (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 0
+    show (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + 0
     have hfetch : fetch s.pc = some .exit := by
       rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-    have hexec1 : executeFn fetch s 1 = step .exit s := by
+    have hexec1 : executeFn fetch s 1 = chargeCu (step .exit s) := by
       rw [show (1 : Nat) = 0 + 1 from rfl,
-          executeFn_step fetch s 0 _ hex hfetch,
+          executeFn_step fetch s 0 _ hex (by omega) hfetch,
           executeFn_zero]
     have hstep : step .exit s = { s with exitCode := some (s.regs.get .r0) } := by
       simp only [step, hcs]
     rw [hexec1, hstep]
-    show s.cuConsumed ≤ s.cuConsumed + 0
+    show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0
     omega
   · -- k < 1, so k = 0
     have hk0 : k = 0 := by omega
     subst hk0
-    show (executeFn fetch s 0).cuConsumed ≤ s.cuConsumed + 0
+    show (executeFn fetch s 0).cuConsumed ≤ s.cuConsumed + 1 + 0
     rw [executeFn_zero]; omega
 
 /-! ## Error-exit collapse — `mov64 r0, err; exit` / `lddw r0, err; exit`

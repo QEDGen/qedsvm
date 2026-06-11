@@ -29,7 +29,7 @@ theorem ldxdw_spec
       ((dst ↦ᵣ v) ** (src ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦U64 v))
       (fun rt => rt.containsRange (effectiveAddr baseAddr off) 8 = true) := by
-  intro R hRfree fetch hcr s hPR hpc hex h_region
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   -- Destructure the four-level partial-state split.
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_dst, h_SM, hd_dst_SM, hu_dst_SM, h_dst_pred, h_SM_sat⟩ := h_P_sat
@@ -166,9 +166,9 @@ theorem ldxdw_spec
   have hfetch : fetch s.pc = some (.ldx .dword dst src off) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set dst v, pc := s.pc + 1 } := by
+      chargeCu { s with regs := s.regs.set dst v, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, hs_regs_src, Width.bytes, if_pos h_region,
                Memory.readByWidth, h_readU64]
@@ -193,7 +193,7 @@ theorem ldxdw_spec
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg dst v).union
@@ -509,7 +509,7 @@ theorem ldxdw_same_spec
       ((r ↦ᵣ baseAddr) ** (effectiveAddr baseAddr off ↦U64 v))
       ((r ↦ᵣ v) ** (effectiveAddr baseAddr off ↦U64 v))
       (fun rt => rt.containsRange (effectiveAddr baseAddr off) 8 = true) := by
-  intro R hRfree fetch hcr s hPR hpc hex h_region
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   -- Destructure the three-level partial-state split (2 atoms instead of 3).
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_reg, h_mem, hd_reg_mem, hu_reg_mem, h_reg_pred, h_mem_pred⟩ := h_P_sat
@@ -595,9 +595,9 @@ theorem ldxdw_same_spec
   have hfetch : fetch s.pc = some (.ldx .dword r r off) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set r v, pc := s.pc + 1 } := by
+      chargeCu { s with regs := s.regs.set r v, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, hs_regs_r, Width.bytes, if_pos h_region,
                Memory.readByWidth, h_readU64]
@@ -618,7 +618,7 @@ theorem ldxdw_same_spec
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg r v).union

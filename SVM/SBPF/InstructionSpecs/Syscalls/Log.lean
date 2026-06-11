@@ -218,28 +218,30 @@ theorem call_sol_unknown_aborts_spec (hash : Nat) (pc : Nat) (nCu : Nat)
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call (.unknown hash)))
       emp ERR_UNSUPPORTED_INSTRUCTION := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   rw [hP1, PartialState.union_empty_left] at hu
   rw [hP1] at hd
   clear hP1 h1
   have hfetch : fetch s.pc = some (.call (.unknown hash)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call (.unknown hash)) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call (.unknown hash)) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-  have hexec : executeFn fetch s 1 =
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 = chargeCu
       { (Misc.execUnknown s) with pc := s.pc + 1
                                   cuConsumed := (Misc.execUnknown s).cuConsumed
                                     + syscallCu (.unknown hash) s } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
     simp only [step, execSyscall]
   refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
   · rw [hexec]
     show (Misc.execUnknown s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
     rfl
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call (.unknown hash)) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
 
 
 end SVM.SBPF

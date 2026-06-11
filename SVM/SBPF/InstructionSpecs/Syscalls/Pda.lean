@@ -38,7 +38,7 @@ theorem call_create_program_address_n0_spec
         (r3V ↦Bytes32 pidBytes) **
         (r4V ↦Bytes32 (match Pda.createProgramAddress [] pidBytes with
                        | some bs => bs | none => outOldBytes))) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 6-atom (P ** R) layered split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
@@ -254,11 +254,11 @@ theorem call_create_program_address_n0_spec
   let s' : State := commitOptional s r4V 32 (Pda.createProgramAddress [] pidBytes)
   have hs'_def : s' = commitOptional s r4V 32 (Pda.createProgramAddress [] pidBytes) := rfl
   have hexec : executeFn fetch s 1 =
-      { s' with pc := s.pc + 1
-                cuConsumed := s'.cuConsumed + syscallCu .sol_create_program_address s } := by
+      chargeCu { s' with pc := s.pc + 1
+                         cuConsumed := s'.cuConsumed + syscallCu .sol_create_program_address s } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-    show ({ Pda.execCreate s with
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show chargeCu ({ Pda.execCreate s with
             pc := s.pc + 1
             cuConsumed := (Pda.execCreate s).cuConsumed
                           + syscallCu .sol_create_program_address s }) = _
@@ -323,13 +323,17 @@ theorem call_create_program_address_n0_spec
   have h_post_exitCode :
       (commitOptional s r4V 32 (Pda.createProgramAddress [] pidBytes)).exitCode = s.exitCode := by
     cases Pda.createProgramAddress [] pidBytes <;> rfl
-  have hstep_eq : executeFn fetch s 1 = step (.call .sol_create_program_address) s := by
+  have hstep_eq : executeFn fetch s 1
+      = chargeCu (step (.call .sol_create_program_address) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; show _ = none; rw [h_post_exitCode]; exact hex
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call .sol_create_program_address) s).cuConsumed + 1
+        ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
   · rw [hexec]
     -- ===== h_R cannot own any of P's affected slots. =====
     have hd_PR_regs := hd_PR.regs
@@ -765,7 +769,7 @@ theorem call_create_program_address_n1_spec
         (r3V ↦Bytes32 pidBytes) **
         (r4V ↦Bytes32 (match Pda.createProgramAddress [seedBytes] pidBytes with
                        | some bs => bs | none => outOldBytes))) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 10-atom (P ** R) layered split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_a0, h_T1, hd_a0_T1, hu_a0_T1, h_a0_pred, h_T1_sat⟩ := h_P_sat
@@ -1493,11 +1497,11 @@ theorem call_create_program_address_n1_spec
   let s' : State := commitOptional s r4V 32 (Pda.createProgramAddress [seedBytes] pidBytes)
   have hs'_def : s' = commitOptional s r4V 32 (Pda.createProgramAddress [seedBytes] pidBytes) := rfl
   have hexec : executeFn fetch s 1 =
-      { s' with pc := s.pc + 1
-                cuConsumed := s'.cuConsumed + syscallCu .sol_create_program_address s } := by
+      chargeCu { s' with pc := s.pc + 1
+                         cuConsumed := s'.cuConsumed + syscallCu .sol_create_program_address s } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-    show ({ Pda.execCreate s with
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show chargeCu ({ Pda.execCreate s with
             pc := s.pc + 1
             cuConsumed := (Pda.execCreate s).cuConsumed
                           + syscallCu .sol_create_program_address s }) = _
@@ -1562,13 +1566,17 @@ theorem call_create_program_address_n1_spec
   let h_T2_new : PartialState := h_a2_new.union h_T3_new
   let h_T1_new : PartialState := h_a1_new.union h_T2_new
   let h_P_new : PartialState := h_a0_new.union h_T1_new
-  have hstep_eq : executeFn fetch s 1 = step (.call .sol_create_program_address) s := by
+  have hstep_eq : executeFn fetch s 1
+      = chargeCu (step (.call .sol_create_program_address) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; show _ = none; rw [h_post_exitCode]; exact hex
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call .sol_create_program_address) s).cuConsumed + 1
+        ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
   · rw [hexec]
     -- ===== h_R non-ownership facts. =====
     have h_R_no_r0 : h_R.regs .r0 = none := by

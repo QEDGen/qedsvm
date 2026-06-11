@@ -82,7 +82,7 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
       ((dst ↦ᵣ vNew) ** (src ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦ₘ byteVal))
       (fun rt => rt.containsRange (effectiveAddr baseAddr off) 1 = true) := by
-  intro R hRfree fetch hcr s hPR hpc hex h_region
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_dst, h_SM, hd_dst_SM, hu_dst_SM, h_dst_pred, h_SM_sat⟩ := h_P_sat
   obtain ⟨h_src, h_mem, hd_src_mem, hu_src_mem, h_src_pred, h_mem_pred⟩ := h_SM_sat
@@ -138,9 +138,9 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
   have hfetch : fetch s.pc = some insn := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
+      chargeCu { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero,
         h_step s hs_regs_dst hs_regs_src hs_mem_addr h_region]
   have hd_PR_regs := hd_PR.regs
@@ -161,7 +161,7 @@ theorem cuTripleWithinMem_load_byte_via_reg_addr
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg dst vNew).union
@@ -386,7 +386,7 @@ theorem ldxb_same_spec
       ((r ↦ᵣ baseAddr) ** (effectiveAddr baseAddr off ↦ₘ byteVal))
       ((r ↦ᵣ (byteVal % 256)) ** (effectiveAddr baseAddr off ↦ₘ byteVal))
       (fun rt => rt.containsRange (effectiveAddr baseAddr off) 1 = true) := by
-  intro R hRfree fetch hcr s hPR hpc hex h_region
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_reg, h_mem, hd_reg_mem, hu_reg_mem, h_reg_pred, h_mem_pred⟩ := h_P_sat
   rw [h_reg_pred] at hu_reg_mem hd_reg_mem
@@ -410,9 +410,9 @@ theorem ldxb_same_spec
   have hfetch : fetch s.pc = some (.ldx .byte r r off) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set r (byteVal % 256), pc := s.pc + 1 } := by
+      chargeCu { s with regs := s.regs.set r (byteVal % 256), pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, hs_regs_r, Width.bytes, if_pos h_region,
                Memory.readByWidth, Memory.readU8, hs_mem_0]
@@ -430,7 +430,7 @@ theorem ldxb_same_spec
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg r (byteVal % 256)).union
@@ -581,7 +581,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
       ((baseReg ↦ᵣ baseAddr) ** (valReg ↦ᵣ vSrc) **
         (effectiveAddr baseAddr off ↦ₘ newByteVal))
       (fun rt => rt.containsWritable (effectiveAddr baseAddr off) 1 = true) := by
-  intro R hRfree fetch hcr s hPR hpc hex h_region
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_base, h_VM, hd_base_VM, hu_base_VM, h_base_pred, h_VM_sat⟩ := h_P_sat
   obtain ⟨h_val, h_mem, hd_val_mem, hu_val_mem, h_val_pred, h_mem_pred⟩ := h_VM_sat
@@ -636,10 +636,11 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
   have hfetch : fetch s.pc = some insn := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with mem := Memory.writeU8 s.mem (effectiveAddr baseAddr off) newByteVal,
-               pc := s.pc + 1 } := by
+      chargeCu { s with
+                 mem := Memory.writeU8 s.mem (effectiveAddr baseAddr off) newByteVal,
+                 pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero,
         h_step s hs_regs_base hs_regs_val h_region]
   have hd_PR_regs := hd_PR.regs
@@ -660,7 +661,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg baseReg baseAddr).union
@@ -911,7 +912,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
       ((baseReg ↦ᵣ baseAddr) **
         (effectiveAddr baseAddr off ↦ₘ newByteVal))
       (fun rt => rt.containsWritable (effectiveAddr baseAddr off) 1 = true) := by
-  intro R hRfree fetch hcr s hPR hpc hex h_region
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   -- 2-level destructure: hp = h_P ⊎ h_R, h_P = h_base ⊎ h_mem.
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_base, h_mem, hd_base_mem, hu_base_mem, h_base_pred, h_mem_pred⟩ := h_P_sat
@@ -936,10 +937,11 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
   have hfetch : fetch s.pc = some insn := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with mem := Memory.writeU8 s.mem (effectiveAddr baseAddr off) newByteVal,
-               pc := s.pc + 1 } := by
+      chargeCu { s with
+                 mem := Memory.writeU8 s.mem (effectiveAddr baseAddr off) newByteVal,
+                 pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero,
         h_step s hs_regs_base h_region]
   have hd_PR_regs := hd_PR.regs
@@ -956,7 +958,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨_, ?_,
             (PartialState.singletonReg baseReg baseAddr).union

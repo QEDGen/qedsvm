@@ -76,7 +76,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes
         (CodeReq.singleton pc (.call sc))
         ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsOld))
         ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsNew)) := by
-  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex
+  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud
   let N : Nat := bsNew.size
   -- ==== Phase 1: destructure the 3-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -116,15 +116,17 @@ theorem cuTripleWithin_syscall_writesR1Bytes
   -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
-    rw [hstep_eq]; exact h_step_cu s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
+    rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]; exact h_step_regs s
   have hexec_mem_in (i : Nat) (hi : i < N) :
@@ -374,7 +376,7 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
          ** (r1V ↦Bytes bsOld))
         ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
          ** (r1V ↦Bytes bsNew)) := by
-  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex
+  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud
   let N : Nat := bsNew.size
   -- ==== Phase 1: destructure the 5-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -462,15 +464,17 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
   -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
-    rw [hstep_eq]; exact h_step_cu s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
+    rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]; exact h_step_regs s
   have hexec_mem_in (i : Nat) (hi : i < N) :
@@ -897,7 +901,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
          ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld))
         ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
          ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
-  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex
+  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 6-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
@@ -1042,21 +1046,24 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hex
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
-    rw [hstep_eq]; exact h_step_cu s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
+    rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]; exact h_step_regs s
   -- Compose the in-range mem fact with the source-bytes value.
   have hexec_mem_in (i : Nat) (hi : i < r3V) :
       (executeFn fetch s 1).mem (r1V + i) = (srcBytes.get! i).toNat := by
     rw [hstep_eq, ← hs_r1_field]
+    show (step (.call sc) s).mem (s.regs.r1 + i) = (srcBytes.get! i).toNat
     have h1 := h_step_mem_in s hs_r2_field hs_r3_field i hi
     rw [hs_r2_field] at h1
     rw [h1, hs_mem_src i hi]
@@ -1677,7 +1684,7 @@ theorem call_sol_memcmp_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V)
        ** (r1V ↦Bytes p1Bytes) ** (r2V ↦Bytes p2Bytes)
        ** (r4V ↦U32 (memcmpResultU32 p1Bytes p2Bytes r3V))) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   let cmpResult := memcmpResultU32 p1Bytes p2Bytes r3V
   -- ==== Phase 1: 8-atom destructure. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -1879,19 +1886,22 @@ theorem call_sol_memcmp_spec
   -- ==== Phase 3: fetch + step projections ====
   have hfetch : fetch s.pc = some (.call .sol_memcmp) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call .sol_memcmp) s := by
+  have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .sol_memcmp) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
-    rw [hstep_eq]; exact hCu s
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
+    rw [hstep_eq]
+    show (step (.call .sol_memcmp) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
   -- Compute (step .sol_memcmp s) symbolically using execCmp_fold_eq.
   -- The mem' is writeU32 s.mem r4V cmpResult; the regs.r0 := 0.
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
-    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp]
+    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
-    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp]; exact hex
+    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]; exact hex
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
-    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp]
+    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]
   -- The mem after step equals writeU32 s.mem s.regs.r4 cmpResult, where cmpResult
   -- is the i32-encoded comparison value derived from execCmp's fold. The fold
   -- equality lemma (execCmp_fold_eq) converts the s.mem-based fold to memcmpFold
@@ -1900,7 +1910,7 @@ theorem call_sol_memcmp_spec
       (executeFn fetch s 1).mem =
         Memory.writeU32 s.mem r4V cmpResult := by
     rw [hstep_eq]
-    simp only [step, execSyscall, MemOps.execCmp]
+    simp only [step, execSyscall, MemOps.execCmp, chargeCu]
     -- Convert all s.regs.{r1, r2, r3, r4} → fixed parameter values
     rw [hs_r4_field, hs_r1_field, hs_r2_field, hs_r3_field]
     show Memory.writeU32 s.mem r4V _ = Memory.writeU32 s.mem r4V cmpResult
@@ -2693,7 +2703,7 @@ theorem call_sol_memcmp_spec
         rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
         exact hva
       have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
-        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch]
+        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb]
       rw [hexec_rd]
       exact hcompat.returnData rd hp_rd
     · intro cs hva
@@ -2705,7 +2715,7 @@ theorem call_sol_memcmp_spec
         rw [← hu_PR, PartialState.union_callStack_of_left_none h_P_cs]
         exact hva
       have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
-        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch]
+        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb]
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
 

@@ -51,7 +51,7 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
       (CodeReq.singleton pc (.call sc))
       ((.r0 ↦ᵣ r0Old) ** (r ↦ᵣ rV))
       ((.r0 ↦ᵣ vNew) ** (r ↦ᵣ rV)) := by
-  intro r0Old R hRfree fetch hcr s hPR hpc hex
+  intro r0Old R hRfree fetch hcr s hPR hpc hex hbud
   -- Destructure ((.r0 ↦ᵣ r0Old) ** (r ↦ᵣ rV)) ** R.
   obtain ⟨hp, hcompat, hP, hR, hd_PR, hu_PR, hPsat, hRsat⟩ := hPR
   obtain ⟨h_r0, h_r, hd_r0_r, hu_r0_r, h_r0_pred, h_r_pred⟩ := hPsat
@@ -104,9 +104,9 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
   -- Execute one step.
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 vNew := by
     rw [hstep_eq]; exact h_step_regs s hs_regs_r
@@ -116,8 +116,10 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; exact h_step_exit s hs_regs_r hex
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
-    rw [hstep_eq]; exact h_step_cu s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
+    rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   -- Assemble Q ** R.
   let h_r0_new : PartialState := PartialState.singletonReg .r0 vNew
   let h_r_new : PartialState := PartialState.singletonReg r rV

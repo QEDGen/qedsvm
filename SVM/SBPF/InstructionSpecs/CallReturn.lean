@@ -27,7 +27,7 @@ theorem call_local_spec
       ((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
         (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ (r10V + 0x1000)) **
         callStackIs (⟨pc + 1, r6V, r7V, r8V, r9V, r10V⟩ :: cs)) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- Phase 1: destructure 6-atom precondition.
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r6, h_T1, hd_r6_T1, hu_r6_T1, h_r6_pred, h_T1_sat⟩ := h_P_sat
@@ -126,12 +126,12 @@ theorem call_local_spec
   -- Phase 3: executeFn.
   have hfetch : fetch s.pc = some (.call_local target) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call_local target) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call_local target) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hnotdepth : ¬ (s.callStack.length ≥ MAX_CALL_DEPTH) := by
     rw [hs_cs]; omega
-  have hexec : executeFn fetch s 1 =
+  have hexec : executeFn fetch s 1 = chargeCu
       { s with pc := target
                regs := { s.regs with r10 := s.regs.r10 + 0x1000 }
                callStack := ⟨s.pc + 1, s.regs.r6, s.regs.r7,
@@ -385,9 +385,9 @@ theorem call_local_spec
       callStack := Or.inr h_R_no_cs }
   -- Phase 9: assemble.
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
-  · rw [hexec]
+  · rw [hexec]; rfl
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r6_new, h_T1_new, hd_r6_T1_new, rfl, rfl,
              h_r7_new, h_T2_new, hd_r7_T2_new, rfl, rfl,
@@ -430,6 +430,7 @@ theorem call_local_spec
       · rw [PartialState.union_regs_of_left_none
               (h_P_new_regs_other r h6 h7 h8 h9 h10)] at hvr
         rw [hexec]
+        show ({ s.regs with r10 := s.regs.r10 + 0x1000 }).get r = v
         have h_get_eq :
             ({ s.regs with r10 := s.regs.r10 + 0x1000 }).get r = s.regs.get r := by
           cases r <;> first | rfl | (exfalso; first | exact h6 rfl | exact h7 rfl |
@@ -525,7 +526,7 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
       ((.r6 ↦ᵣ frame.savedR6) ** (.r7 ↦ᵣ frame.savedR7) **
         (.r8 ↦ᵣ frame.savedR8) ** (.r9 ↦ᵣ frame.savedR9) **
         (.r10 ↦ᵣ frame.savedR10) ** callStackIs cs) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- Phase 1: destructure 6-atom precondition.
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r6, h_T1, hd_r6_T1, hu_r6_T1, h_r6_pred, h_T1_sat⟩ := h_P_sat
@@ -609,11 +610,11 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
   -- Phase 3: executeFn.
   have hfetch : fetch s.pc = some .exit := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step .exit s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step .exit s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   -- Show the non-empty branch of the match runs.
-  have hexec : executeFn fetch s 1 =
+  have hexec : executeFn fetch s 1 = chargeCu
       { s with pc := frame.retPc
                regs := { s.regs with
                          r6 := frame.savedR6, r7 := frame.savedR7,
@@ -621,7 +622,7 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
                          r10 := frame.savedR10 }
                callStack := cs } := by
     rw [hstep_eq]
-    show (match s.callStack with
+    show chargeCu (match s.callStack with
           | frame :: rest =>
               { s with pc := frame.retPc
                        regs := { s.regs with
@@ -878,9 +879,9 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
       callStack := Or.inr h_R_no_cs }
   -- Phase 9: assemble.
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
-  · rw [hexec]
+  · rw [hexec]; rfl
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r6_new, h_T1_new, hd_r6_T1_new, rfl, rfl,
              h_r7_new, h_T2_new, hd_r7_T2_new, rfl, rfl,
@@ -918,6 +919,9 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
       · rw [PartialState.union_regs_of_left_none
               (h_P_new_regs_other r h6 h7 h8 h9 h10)] at hvr
         rw [hexec]
+        show ({ s.regs with r6 := frame.savedR6, r7 := frame.savedR7,
+                            r8 := frame.savedR8, r9 := frame.savedR9,
+                            r10 := frame.savedR10 }).get r = v
         have h_get_eq :
             ({ s.regs with r6 := frame.savedR6, r7 := frame.savedR7,
                            r8 := frame.savedR8, r9 := frame.savedR9,
@@ -988,7 +992,7 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
     · intro csq hva
       rw [PartialState.union_callStack_of_left_some h_P_new_cs] at hva
       have hcs_eq : csq = cs := (Option.some.inj hva).symm
-      rw [hexec, hcs_eq]
+      rw [hexec, hcs_eq]; rfl
 
 
 end SVM.SBPF

@@ -24,7 +24,7 @@ theorem cuTripleWithin_1reg_cjump
         step insn s = { s with pc := if cond then target else s.pc + 1 }) :
     cuTripleWithin 1 0 pc (if cond then target else pc + 1)
       (CodeReq.singleton pc insn) (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
@@ -38,16 +38,16 @@ theorem cuTripleWithin_1reg_cjump
   have hfetch : fetch s.pc = some insn := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with pc := if cond then target else s.pc + 1 } := by
+      chargeCu { s with pc := if cond then target else s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero, h_step s hs_regs_dst]
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
     show (if cond then target else s.pc + 1) = if cond then target else pc + 1
     rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨(PartialState.singletonReg dst vDst).union hR, ?_,
             PartialState.singletonReg dst vDst, hR, hd, rfl, rfl, hRsat⟩
@@ -113,7 +113,7 @@ theorem cuTripleWithin_2reg_cjump
       (CodeReq.singleton pc insn)
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
       ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, hPQ, hR, hd_PQR, hu_PQR, hPQ_pred, hR_sat⟩ := hPR
   obtain ⟨h_dst, h_src, hd_dst_src, hu_PQ, h_dst_eq, h_src_eq⟩ := hPQ_pred
   rw [h_dst_eq] at hu_PQ hd_dst_src
@@ -146,16 +146,16 @@ theorem cuTripleWithin_2reg_cjump
   have hfetch : fetch s.pc = some insn := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with pc := if cond then target else s.pc + 1 } := by
+      chargeCu { s with pc := if cond then target else s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero, h_step s hs_regs_dst hs_regs_src]
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
     show (if cond then target else s.pc + 1) = if cond then target else pc + 1
     rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨hp, ?_,
             (PartialState.singletonReg dst vDst).union

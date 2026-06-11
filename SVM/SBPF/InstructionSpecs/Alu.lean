@@ -22,7 +22,7 @@ theorem cuTripleWithin_1reg_write
     cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn)
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ vNew) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
@@ -36,10 +36,10 @@ theorem cuTripleWithin_1reg_write
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
   have hs_regs_dst : s.regs.get dst = vOld := hcr_regs dst vOld hp_regs_dst
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
+      chargeCu { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
     have hstep := h_step s hs_regs_dst
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 insn hex hfetch,
+        executeFn_step fetch s 0 insn hex (by omega) hfetch,
         executeFn_zero, hstep]
   have hR_no_dst : hR.regs dst = none := by
     rcases hd_regs dst with h | h
@@ -56,7 +56,7 @@ theorem cuTripleWithin_1reg_write
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨(PartialState.singletonReg dst vNew).union hR, ?_,
             PartialState.singletonReg dst vNew, hR, ?_, rfl, rfl, hRsat⟩
@@ -138,7 +138,7 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.imm imm)))
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ toU64 imm) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- 1. Destructure (dst ↦ᵣ vOld) ** R for state s.
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   -- hreg : h1 = singletonReg dst vOld  →  rewrite h1 throughout.
@@ -150,10 +150,11 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
   -- 2. Fetch resolves to the mov64 instruction at PC.
   have hfetch : fetch s.pc = some (.mov64 dst (.imm imm)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  -- 3. Single-step executeFn.
+  -- 3. Single-step executeFn (in budget, so the H5 halt doesn't fire).
+  have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set dst (toU64 imm), pc := s.pc + 1 } := by
-    simp [executeFn, step, hex, hfetch]
+      chargeCu { s with regs := s.regs.set dst (toU64 imm), pc := s.pc + 1 } := by
+    simp [executeFn, step, hex, hfetch, hnb]
   -- 4. hR doesn't own dst.
   have hR_no_dst : hR.regs dst = none := by
     rcases hd_regs dst with h | h
@@ -183,8 +184,8 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     rw [hpc]
   · -- s'.exitCode = none
     rw [hexec]; exact hex
-  · -- (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 0
-    rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · -- (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + 0
+    rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · -- ((dst ↦ᵣ toU64 imm) ** R).holdsFor s'
     rw [hexec]
     refine ⟨(PartialState.singletonReg dst (toU64 imm)).union hR, ?_,
@@ -277,7 +278,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
     cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ v) ** (src ↦ᵣ v)) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- 1. Destructure the precondition layers.
   obtain ⟨hp, hcompat, hPQ, hR, hd_PQR, hu_PQR, hPQ_pred, hR_sat⟩ := hPR
   obtain ⟨h_dst, h_src, hd_dst_src, hu_PQ, h_dst_eq, h_src_eq⟩ := hPQ_pred
@@ -329,11 +330,12 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
   -- 6. Fetch and step.
   have hfetch : fetch s.pc = some (.mov64 dst (.reg src)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set dst v, pc := s.pc + 1 } := by
+      chargeCu { s with regs := s.regs.set dst v, pc := s.pc + 1 } := by
     have h0 : executeFn fetch s 1 =
-        { s with regs := s.regs.set dst (s.regs.get src), pc := s.pc + 1 } := by
-      simp [executeFn, step, hex, hfetch]
+        chargeCu { s with regs := s.regs.set dst (s.regs.get src), pc := s.pc + 1 } := by
+      simp [executeFn, step, hex, hfetch, hnb]
     rw [h0, hs_regs_src]
   -- 7. hp's mem = hR's mem (neither singletonReg owns memory).
   have hp_mem : ∀ a, hp.mem a = hR.mem a := by
@@ -345,7 +347,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨((PartialState.singletonReg dst v).union
               (PartialState.singletonReg src v)).union hR, ?_,
@@ -605,7 +607,7 @@ theorem cuTripleWithin_2reg_write
     cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn)
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ vNew) ** (src ↦ᵣ v)) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, hPQ, hR, hd_PQR, hu_PQR, hPQ_pred, hR_sat⟩ := hPR
   obtain ⟨h_dst, h_src, hd_dst_src, hu_PQ, h_dst_eq, h_src_eq⟩ := hPQ_pred
   rw [h_dst_eq] at hu_PQ hd_dst_src
@@ -653,9 +655,9 @@ theorem cuTripleWithin_2reg_write
   have hfetch : fetch s.pc = some insn := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
+      chargeCu { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 insn hex hfetch,
+        executeFn_step fetch s 0 insn hex (by omega) hfetch,
         executeFn_zero, h_step s hs_regs_dst hs_regs_src]
   have hp_mem : ∀ a, hp.mem a = hR.mem a := by
     intro a
@@ -665,7 +667,7 @@ theorem cuTripleWithin_2reg_write
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · rw [hexec]; show s.cuConsumed ≤ s.cuConsumed + 0; omega
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
   · rw [hexec]
     refine ⟨((PartialState.singletonReg dst vNew).union
               (PartialState.singletonReg src v)).union hR, ?_,

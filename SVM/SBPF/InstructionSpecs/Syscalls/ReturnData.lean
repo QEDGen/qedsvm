@@ -23,7 +23,7 @@ theorem call_sol_set_return_data_spec
         (r1V ↦Bytes bsIn) ** returnDataIs rdOld)
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) **
         (r1V ↦Bytes bsIn) ** returnDataIs bsIn) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 5-atom layered precondition. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
@@ -139,14 +139,14 @@ theorem call_sol_set_return_data_spec
   have hfetch : fetch s.pc = some (.call .sol_set_return_data) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hexec : executeFn fetch s 1 =
-      { s with regs := s.regs.set .r0 0
-               returnData := bsIn
-               pc := s.pc + 1
-               cuConsumed := s.cuConsumed
-                 + syscallCu .sol_set_return_data s } := by
+      chargeCu { s with regs := s.regs.set .r0 0
+                        returnData := bsIn
+                        pc := s.pc + 1
+                        cuConsumed := s.cuConsumed
+                          + syscallCu .sol_set_return_data s } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-    show ({ ReturnData.execSet s with
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    show chargeCu ({ ReturnData.execSet s with
             pc := s.pc + 1
             cuConsumed := (ReturnData.execSet s).cuConsumed
                           + syscallCu .sol_set_return_data s }) = _
@@ -395,12 +395,16 @@ theorem call_sol_set_return_data_spec
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
-  · -- CU bound: executeFn fetch s 1 = step (.call .sol_set_return_data) s,
-    -- and hCu provides the bound for step.
-    have hstep : executeFn fetch s 1 = step (.call .sol_set_return_data) s := by
+  · -- CU bound: executeFn fetch s 1 = chargeCu (step (.call .sol_set_return_data) s),
+    -- and hCu provides the bound for step (pre-chargeCu).
+    have hstep : executeFn fetch s 1 =
+        chargeCu (step (.call .sol_set_return_data) s) := by
       rw [show (1 : Nat) = 0 + 1 from rfl,
-          executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
-    rw [hstep]; exact hCu s
+          executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    rw [hstep]
+    show (step (.call .sol_set_return_data) s).cuConsumed + 1
+        ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
@@ -483,7 +487,7 @@ theorem call_sol_set_return_data_spec
     · intro rd hva
       rw [PartialState.union_returnData_of_left_some h_P_new_rd] at hva
       have hrd_eq : rd = bsIn := (Option.some.inj hva).symm
-      rw [hexec, hrd_eq]
+      rw [hexec, hrd_eq]; rfl
     · intro cs hva
       rw [PartialState.union_callStack_of_left_none h_P_new_cs] at hva
       have hp_cs : hp.callStack = some cs := by
@@ -523,7 +527,7 @@ theorem call_sol_get_return_data_spec
       ((.r0 ↦ᵣ rd.size) ** (.r1 ↦ᵣ outA) ** (.r2 ↦ᵣ maxLen) ** (.r3 ↦ᵣ pkA) **
         (outA ↦Bytes rd) ** (pkA ↦Bytes32 (zerosByteArray 32)) **
         returnDataIs rd) := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   -- ==== Phase 1: destructure the 7-atom precondition. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
@@ -688,9 +692,10 @@ theorem call_sol_get_return_data_spec
   -- ==== Phase 4: executeFn produces the expected post state. ====
   have hfetch : fetch s.pc = some (.call .sol_get_return_data) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call .sol_get_return_data) s := by
+  have hstep_eq : executeFn fetch s 1 =
+      chargeCu (step (.call .sol_get_return_data) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 rd.size := by
     rw [hstep_eq]; show ((ReturnData.execGet s).regs) = s.regs.set .r0 rd.size
     simp only [ReturnData.execGet, hs_rd]
@@ -1100,7 +1105,10 @@ theorem call_sol_get_return_data_spec
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call .sol_get_return_data) s).cuConsumed + 1
+        ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
   · refine ⟨h_P_new.union h_R, ?_, h_P_new, h_R, hd_PnewR, rfl,
             ⟨h_r0_new, h_T1_new, hd_r0_T1_new, rfl, rfl,
              h_r1_new, h_T2_new, hd_r1_T2_new, rfl, rfl,
@@ -1237,7 +1245,7 @@ theorem cuTripleWithin_syscall_silent
       (CodeReq.singleton pc (.call sc))
       emp
       emp := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, hP, hR, _, hu, hPemp, hRsat⟩ := hPR
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
@@ -1246,9 +1254,9 @@ theorem cuTripleWithin_syscall_silent
   have hcm_cs := hcompat.callStack
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs := by
     rw [hstep_eq]; exact h_step_regs s
@@ -1262,8 +1270,10 @@ theorem cuTripleWithin_syscall_silent
     rw [hstep_eq]; exact h_step_returnData s
   have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
     rw [hstep_eq]; exact h_step_callStack s
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
-    rw [hstep_eq]; exact h_step_cu s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
+    rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   -- hp = empty.union h_R = h_R; transport hcompat to (executeFn fetch s 1).
   have hP_empty : hP = PartialState.empty := hPemp
   have hp_eq : hp = hR := by

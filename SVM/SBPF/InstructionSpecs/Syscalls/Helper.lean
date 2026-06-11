@@ -33,7 +33,7 @@ theorem cuTripleWithin_syscall_writes_r0_only
       (CodeReq.singleton pc (.call sc))
       (.r0 ↦ᵣ r0Old)
       (.r0 ↦ᵣ vNew) := by
-  intro r0Old R hRfree fetch hcr s hPR hpc hex
+  intro r0Old R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
   rw [hreg] at hu hd
   clear hreg h1
@@ -44,9 +44,9 @@ theorem cuTripleWithin_syscall_writes_r0_only
   have hd_regs := hd.regs
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call sc) s := by
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 vNew := by
     rw [hstep_eq]; exact h_step_regs s
@@ -60,8 +60,10 @@ theorem cuTripleWithin_syscall_writes_r0_only
     rw [hstep_eq]; exact h_step_returnData s
   have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
     rw [hstep_eq]; exact h_step_callStack s
-  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + nCu := by
-    rw [hstep_eq]; exact h_step_cu s
+  have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
+    rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := h_step_cu s; omega
   have hR_no_r0 : hR.regs .r0 = none := by
     rcases hd_regs .r0 with h | h
     · rw [PartialState.singletonReg_regs_self] at h; nomatch h
@@ -157,28 +159,31 @@ theorem call_sol_invoke_signed_aborts_spec (pc : Nat) (nCu : Nat)
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed))
       emp ERR_UNSUPPORTED_INSTRUCTION := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   rw [hP1, PartialState.union_empty_left] at hu
   rw [hP1] at hd
   clear hP1 h1
   have hfetch : fetch s.pc = some (.call .sol_invoke_signed) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call .sol_invoke_signed) s := by
+  have hstep_eq : executeFn fetch s 1 =
+      chargeCu (step (.call .sol_invoke_signed) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec : executeFn fetch s 1 =
-      { (Cpi.exec s) with pc := s.pc + 1
-                          cuConsumed := (Cpi.exec s).cuConsumed
-                            + syscallCu .sol_invoke_signed s } := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+      chargeCu { (Cpi.exec s) with pc := s.pc + 1
+                                   cuConsumed := (Cpi.exec s).cuConsumed
+                                     + syscallCu .sol_invoke_signed s } := by
+    rw [hstep_eq]
     simp only [step, execSyscall]
   refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
   · rw [hexec]
     show (Cpi.exec s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
     rfl
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call .sol_invoke_signed) s).cuConsumed + 1
+      ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
 
 theorem call_sol_invoke_signed_c_aborts_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
@@ -186,27 +191,30 @@ theorem call_sol_invoke_signed_c_aborts_spec (pc : Nat) (nCu : Nat)
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed_c))
       emp ERR_UNSUPPORTED_INSTRUCTION := by
-  intro R hRfree fetch hcr s hPR hpc hex
+  intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   rw [hP1, PartialState.union_empty_left] at hu
   rw [hP1] at hd
   clear hP1 h1
   have hfetch : fetch s.pc = some (.call .sol_invoke_signed_c) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = step (.call .sol_invoke_signed_c) s := by
+  have hstep_eq : executeFn fetch s 1 =
+      chargeCu (step (.call .sol_invoke_signed_c) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec : executeFn fetch s 1 =
-      { (Cpi.exec s) with pc := s.pc + 1
-                          cuConsumed := (Cpi.exec s).cuConsumed
-                            + syscallCu .sol_invoke_signed_c s } := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex hfetch, executeFn_zero]
+      chargeCu { (Cpi.exec s) with pc := s.pc + 1
+                                   cuConsumed := (Cpi.exec s).cuConsumed
+                                     + syscallCu .sol_invoke_signed_c s } := by
+    rw [hstep_eq]
     simp only [step, execSyscall]
   refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
   · rw [hexec]
     show (Cpi.exec s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
     rfl
-  · rw [hstep_eq]; exact hCu s
+  · rw [hstep_eq]
+    show (step (.call .sol_invoke_signed_c) s).cuConsumed + 1
+      ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
 
 end SVM.SBPF
