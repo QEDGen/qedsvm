@@ -378,7 +378,21 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
 
 abbrev Program := Array Insn
 
-/-- Execute using a function-based instruction fetch (O(1) per step). -/
+/-- Charge one instruction's BASELINE compute unit. `cuConsumed` is the
+    TOTAL CU meter (baseline 1/instruction + the syscall surcharge `step`
+    already adds), so the budget check below sees the real agave-CU total.
+    Only `cuConsumed` changes — every other field (and every `step_*`
+    projection lemma) is untouched. -/
+@[simp] def chargeCu (s : State) : State :=
+  { s with cuConsumed := s.cuConsumed + 1 }
+
+/-- Execute using a function-based instruction fetch (O(1) per step).
+
+    Fails CLOSED on compute-budget overrun (H5): before each instruction,
+    if `cuConsumed` (total CU so far) already exceeds `cuBudget`, halt and
+    return the over-budget state with `exitCode = none` — surfaced as
+    `OutOfBudget` on the wire, matching agave's `ComputeBudgetExceeded`.
+    The check is idempotent (a resumed over-budget state re-halts). -/
 def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
   match fuel with
   | 0 => s
@@ -386,9 +400,10 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
     match s.exitCode with
     | some _ => s
     | none =>
-      match fetch s.pc with
+      if s.cuConsumed > s.cuBudget then s
+      else match fetch s.pc with
       | none => { s with exitCode := some ERR_INVALID_PC }
-      | some insn => executeFn fetch (step insn s) fuel'
+      | some insn => executeFn fetch (chargeCu (step insn s)) fuel'
 
 /-- Create an initial machine state with r1 pointing to the input buffer.
     `regions` is the memory map the program runs under — `.ldx`/`.st`/`.stx`
@@ -424,11 +439,22 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
     executeFn fetch s 0 = s := by
   simp [executeFn]
 
+/-- An over-budget running state is a fixed point of `executeFn`: the
+    budget check halts immediately, for any fuel. Companion to
+    `executeFn_halted` (which covers `exitCode = some`). -/
+theorem executeFn_overBudget (fetch : Nat → Option Insn) (s : State) (n : Nat)
+    (h_run : s.exitCode = none) (h_over : s.cuConsumed > s.cuBudget) :
+    executeFn fetch s n = s := by
+  cases n with
+  | zero => simp [executeFn]
+  | succ n => simp [executeFn, h_run, if_pos h_over]
+
 theorem executeFn_step (fetch : Nat → Option Insn) (s : State) (n : Nat) (insn : Insn)
     (h_running : s.exitCode = none)
+    (h_budget : s.cuConsumed ≤ s.cuBudget)
     (h_fetch : fetch s.pc = some insn) :
-    executeFn fetch s (n + 1) = executeFn fetch (step insn s) n := by
-  simp [executeFn, h_running, h_fetch]
+    executeFn fetch s (n + 1) = executeFn fetch (chargeCu (step insn s)) n := by
+  simp [executeFn, h_running, h_fetch, Nat.not_lt.mpr h_budget]
 
 /-- Composability of deterministic execution: running n+m steps is the same as
     running n steps then running m steps from the resulting state. -/
@@ -437,19 +463,32 @@ theorem executeFn_compose (fetch : Nat → Option Insn) (s : State) (n m : Nat) 
   induction n generalizing s with
   | zero => simp [executeFn]
   | succ n ih =>
-    rw [Nat.succ_add]
-    simp only [executeFn]
-    split
-    · -- halted: exitCode = some _
-      rename_i h_halted
-      simp [executeFn_halted, h_halted]
-    · -- running: exitCode = none
-      split
-      · -- invalid PC: fetch returns none → sets exitCode, then halted for m steps
-        simp [executeFn_halted]
-      · -- valid instruction
-        rename_i insn h_fetch
-        exact ih (step insn s)
+    cases h_ec : s.exitCode with
+    | some code =>
+      -- halted: both sides stay at `s`
+      rw [executeFn_halted fetch s (n + 1 + m) code h_ec,
+          executeFn_halted fetch s (n + 1) code h_ec,
+          executeFn_halted fetch s m code h_ec]
+    | none =>
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · -- over budget: both sides collapse to `s` (fixed point)
+        rw [executeFn_overBudget fetch s (n + 1 + m) h_ec h_over,
+            executeFn_overBudget fetch s (n + 1) h_ec h_over,
+            executeFn_overBudget fetch s m h_ec h_over]
+      · -- in budget: peel one step, then induction
+        have h_le : s.cuConsumed ≤ s.cuBudget := Nat.le_of_not_lt h_over
+        cases h_f : fetch s.pc with
+        | none =>
+          -- invalid PC: first step sets exitCode, then both sides stay halted
+          have hbad : ∀ k, executeFn fetch s (k + 1) = { s with exitCode := some ERR_INVALID_PC } := by
+            intro k; simp [executeFn, h_ec, h_f, Nat.not_lt.mpr h_le]
+          rw [show n + 1 + m = (n + m) + 1 from by omega, hbad (n + m), hbad n,
+              executeFn_halted fetch _ m ERR_INVALID_PC rfl]
+        | some insn =>
+          rw [show n + 1 + m = (n + m) + 1 from by omega,
+              executeFn_step fetch s (n + m) insn h_ec h_le h_f,
+              executeFn_step fetch s n insn h_ec h_le h_f]
+          exact ih (chargeCu (step insn s))
 
 /-! ## Frame pointer (r10) — user-write invariance
 
@@ -557,13 +596,16 @@ theorem executeFn_preserves_r10_of_no_push
     cases h : s.exitCode with
     | some _ => exact ⟨rfl, h_cs⟩
     | none =>
-      cases hf : fetch s.pc with
-      | none => exact ⟨rfl, h_cs⟩
-      | some insn =>
-        have h_insn := h_nf _ _ hf
-        have h_cs' := step_preserves_callStack_of_no_push insn s h_insn h_cs
-        obtain ⟨h1, h2⟩ := ih (step insn s) h_cs'
-        exact ⟨h1.trans (step_preserves_r10_of_no_push insn s h_insn h_cs), h2⟩
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · rw [if_pos h_over]; exact ⟨rfl, h_cs⟩
+      · rw [if_neg h_over]
+        cases hf : fetch s.pc with
+        | none => exact ⟨rfl, h_cs⟩
+        | some insn =>
+          have h_insn := h_nf _ _ hf
+          have h_cs' := step_preserves_callStack_of_no_push insn s h_insn h_cs
+          obtain ⟨h1, h2⟩ := ih (chargeCu (step insn s)) (by simpa using h_cs')
+          exact ⟨h1.trans (by simpa using step_preserves_r10_of_no_push insn s h_insn h_cs), h2⟩
 
 /-- From `initState`, r10 stays at the frame top for the whole run
     when no `.call_local` is ever fetched. -/
@@ -623,9 +665,12 @@ match-case to surface the underlying record-update. -/
     cases h : s.exitCode with
     | some _ => rfl
     | none =>
-      cases hf : fetch s.pc with
-      | none => rfl
-      | some insn => rw [ih (step insn s), step_preserves_regions]
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · rw [if_pos h_over]
+      · rw [if_neg h_over]
+        cases hf : fetch s.pc with
+        | none => rfl
+        | some insn => rw [ih (chargeCu (step insn s))]; simpa using step_preserves_regions insn s
 
 /-! ## Paired execution (for tactic automation)
 
@@ -827,11 +872,12 @@ def execSegment (fetch : Nat → Option Insn) : Nat → Step
     match s.exitCode with
     | some _ => ((), s)
     | none =>
-      match fetch s.pc with
+      if s.cuConsumed > s.cuBudget then ((), s)
+      else match fetch s.pc with
       | none => ((), { s with exitCode := some ERR_INVALID_PC })
       | some insn =>
         let (_, s') := execInsn insn s
-        execSegment fetch fuel s'
+        execSegment fetch fuel (chargeCu s')
 
 /-- executeFn and execSegment produce the same final state. -/
 theorem executeFn_eq_execSegment (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
@@ -843,12 +889,15 @@ theorem executeFn_eq_execSegment (fetch : Nat → Option Insn) (s : State) (fuel
     cases h_exit : s.exitCode with
     | some _ => rfl
     | none =>
-      cases h_fetch : fetch s.pc with
-      | none => rfl
-      | some insn =>
-        simp (config := { failIfUnchanged := false }) only []
-        have heq : step insn s = (execInsn insn s).2 := step_eq_execInsn insn s
-        rw [heq]
-        exact ih (execInsn insn s).2
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · simp only [if_pos h_over]
+      · simp only [if_neg h_over]
+        cases h_fetch : fetch s.pc with
+        | none => rfl
+        | some insn =>
+          simp (config := { failIfUnchanged := false }) only []
+          have heq : step insn s = (execInsn insn s).2 := step_eq_execInsn insn s
+          rw [heq]
+          exact ih (chargeCu (execInsn insn s).2)
 
 end SVM.SBPF
