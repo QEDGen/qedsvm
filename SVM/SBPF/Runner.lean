@@ -579,6 +579,49 @@ def promoteSigners (parsedAccts : List ParsedAcct)
     then { p with isSigner := true }
     else p)
 
+/-- Parse the original `(key, is_signer, is_writable)` of each account
+    from a serialized input (the `serialize_parameters` layout that
+    `buildCpiSubInput*` emits). These are the runtime-set privileges the
+    runner clamps CPI escalation against (C5). A dup account is a 1-byte
+    index + 7 padding; its key was captured at the first occurrence, so we
+    just skip it. -/
+def parseInputPrivileges (input : ByteArray) : List (ByteArray × Bool × Bool) :=
+  go 8 (Decode.readU64LE input 0) []
+where
+  go (off remaining : Nat) (acc : List (ByteArray × Bool × Bool)) :
+      List (ByteArray × Bool × Bool) :=
+    match remaining with
+    | 0 => acc.reverse
+    | r + 1 =>
+      -- Stop if a (non-dup) block would run past the buffer — guards
+      -- against a malformed / non-account input (e.g. a bare-bytecode
+      -- demo), so the walk is total and never reads past EOF.
+      if off + 88 > input.size then acc.reverse
+      else if Decode.readU8 input off = 0xFF then
+        let signer   := Decode.readU8 input (off + 1) ≠ 0
+        let writable := Decode.readU8 input (off + 2) ≠ 0
+        let key      := input.extract (off + 8) (off + 40)
+        let dataLen  := Decode.readU64LE input (off + 80)
+        let alignPad := (8 - dataLen % 8) % 8
+        let blockSize := 88 + dataLen + alignPad + MAX_PERMITTED_DATA_INCREASE + 8
+        go (off + blockSize) r ((key, signer, writable) :: acc)
+      else
+        go (off + 8) r acc
+
+/-- Clamp CPI account privileges (C5): a callee may receive `is_signer`
+    only if the account is a derived PDA OR the program requested it AND
+    the caller actually held it; `is_writable` only if requested AND held.
+    Prevents a program from forging a signer/writable by overwriting the
+    AccountInfo flag byte in its own memory. -/
+def clampCpiPrivileges (parsed : List ParsedAcct) (derivedPdas : List ByteArray)
+    (origPrivs : List (ByteArray × Bool × Bool)) : List ParsedAcct :=
+  parsed.map (fun p =>
+    let isPda := derivedPdas.any (· == p.key)
+    let origS := origPrivs.any (fun t => t.1 == p.key && t.2.1)
+    let origW := origPrivs.any (fun t => t.1 == p.key && t.2.2)
+    { p with isSigner   := isPda || (p.isSigner && origS),
+             isWritable := p.isWritable && origW })
+
 /-- Compute the next state for one of the two CPI-call syscalls
     (`sol_invoke_signed` / `sol_invoke_signed_c`). Non-recursive — the
     recursive sub-VM invocation is supplied as the `runCallee` closure
@@ -633,7 +676,7 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
   let derivedPdas : List ByteArray :=
     deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
   let parsedAccts : List ParsedAcct :=
-    promoteSigners parsedAcctsRaw derivedPdas
+    clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
   -- Tier-2 #8 — account aliasing detection.
   let parsedArr : Array ParsedAcct := parsedAccts.toArray
   let aliasedWritability : Bool :=
@@ -798,7 +841,8 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 log         := s.log
                 returnData  := ByteArray.empty
                 cuBudget    := fuel'
-                progIdBytes := pidBytesIn }
+                progIdBytes := pidBytesIn
+                origPrivs   := parseInputPrivileges subInput }
             let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
               (fetchFromArray calleeInsns) subS fuel'
             let newCallerMem : Mem := slots.foldl (fun mem slot =>
@@ -828,7 +872,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             -- internally computes for Native/aliasing checks.
             let parsedAcctsRaw := parseAccountInfos s.mem s.regs.r2 accountCount
             let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
-            let parsedAccts := promoteSigners parsedAcctsRaw derivedPdas
+            let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
             -- Rust ABI Instruction: data:Vec at offset 24, layout
             -- { ptr@+24, cap@+32, len@+40 }.
             let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
@@ -847,7 +891,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             -- promotion below picks up the wrong account (issue #10).
             let parsedAcctsRaw := parseCpiAccounts s.mem s.regs.r2 accountCount
             let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
-            let parsedAccts := promoteSigners parsedAcctsRaw derivedPdas
+            let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
             -- C ABI SolInstruction: data_addr@+24, data_len@+32.
             let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
             let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 32)
@@ -882,7 +926,8 @@ def initialState (cfg : RunConfig) : State :=
     pc          := 0
     exitCode    := none
     cuBudget    := cfg.cuBudget
-    progIdBytes := cfg.progIdBytes }
+    progIdBytes := cfg.progIdBytes
+    origPrivs   := parseInputPrivileges cfg.input }
 
 @[simp] theorem initialState_pc (cfg : RunConfig) : (initialState cfg).pc = 0 := rfl
 
@@ -966,7 +1011,8 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
             pc          := entryPc
             exitCode    := none
             cuBudget    := cfg.cuBudget
-            progIdBytes := cfg.progIdBytes }
+            progIdBytes := cfg.progIdBytes
+            origPrivs   := parseInputPrivileges cfg.input }
         some (executeFnCpi cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 /-- Convenience: ELF run returning only the exit code. -/
@@ -1046,7 +1092,8 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
             pc          := entryPc
             exitCode    := none
             cuBudget    := cfg.cuBudget
-            progIdBytes := cfg.progIdBytes }
+            progIdBytes := cfg.progIdBytes
+            origPrivs   := parseInputPrivileges cfg.input }
         some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 end Runner

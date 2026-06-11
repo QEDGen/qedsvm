@@ -143,6 +143,16 @@ structure State where
       (`ByteArray.empty`) means PDA derivation will fail closed —
       safe default for code paths that don't need signer seeds. -/
   progIdBytes : ByteArray := ByteArray.empty
+  /-- Caller's RUNTIME-SET account privileges `(key, is_signer,
+      is_writable)`, parsed from the serialized input when the state is
+      created (and immutable thereafter). A program can overwrite the
+      `is_signer`/`is_writable` byte in its own (writable) AccountInfo
+      memory, but a CPI may only pass a callee privileges the caller
+      actually holds — so the runner clamps CPI privileges against this
+      table rather than trusting the program-supplied bytes. Empty means
+      "no recorded privileges" (every CPI signer/writable clamps off
+      unless PDA-derived). See docs/SOUNDNESS_AUDIT_* (C5). -/
+  origPrivs : List (ByteArray × Bool × Bool) := []
   deriving Inhabited
 
 /-- Is the machine still running? -/
