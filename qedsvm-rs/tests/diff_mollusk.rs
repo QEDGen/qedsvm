@@ -1549,6 +1549,91 @@ fn cpi_caller_forwards_account_to_incrementer() {
     assert_eq!(m_acct.data.as_slice(), expected.as_slice());
 }
 
+/// M6 read-only write-back protection. The SAME caller -> incrementer CPI
+/// as `cpi_caller_forwards_account_to_incrementer`, but the forwarded
+/// account is passed READ-ONLY at the top level. agave rejects the
+/// caller's attempt to re-forward it writable (privilege escalation), so
+/// the callee's `+1` is never committed. Our model reaches the same
+/// observable state by a different internal route: the C5 clamp
+/// downgrades the forged-writable AccountInfo back to read-only, and the
+/// M6 guard then (a) never writes a read-only slot back to caller memory
+/// and (b) flags the callee's attempted mutation as a violation
+/// (`ERR_READONLY_MODIFIED` in r0). Either way the account's data MUST be
+/// unchanged on both engines. Pre-M6 (C5 only) the unconditional
+/// write-back committed the increment, so this is the precise M6
+/// regression guard. The exact error code / CU on this malicious path is
+/// engine-specific (agave errors at invoke; we clamp + roll back) and is
+/// deliberately NOT asserted -- only the soundness-critical account state.
+#[test]
+fn cpi_readonly_account_not_committed_by_callee() {
+    let caller_id = pid(53);
+    let callee_id = pid(54);
+    let acct_key  = pid(55);
+
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    };
+    let callee_program_shared = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_mollusk = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    // acct_key forwarded READ-ONLY at the top level (vs `new` -- writable
+    // -- in the sibling test).
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new_readonly(acct_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
+    fs.add_program(&callee_id, INCREMENTER_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct_key, pre_shared),
+        (callee_id, callee_program_shared),
+    ]).expect("qedsvm runs CPI->incrementer (read-only acct)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_INCREMENT_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), INCREMENTER_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, pre_mollusk),
+        (callee_id, callee_program_mollusk),
+    ]);
+
+    // The read-only account's data MUST remain its original zeros on BOTH
+    // engines: agave blocks the escalation, we clamp + roll back.
+    let (_, fs_acct) = &fs_r.resulting_accounts[0];
+    assert_eq!(fs_acct.data(), data.as_slice(),
+        "qedsvm: read-only account was modified across CPI (M6 leak); got {:?}",
+        fs_acct.data());
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(m_acct.data.as_slice(), data.as_slice(),
+        "mollusk: read-only account modified (unexpected)");
+    assert_eq!(fs_acct.data(), m_acct.data.as_slice(),
+        "read-only account data diverged across engines");
+}
+
 /// CPI caller invokes the `logger.so` callee. Stronger claim than
 /// the noop variant: the callee actually does work (calls `sol_log_`
 /// with "hi"), so this test only passes if (a) our Phase 3 sub-input

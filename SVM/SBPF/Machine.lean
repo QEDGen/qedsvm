@@ -219,6 +219,17 @@ def ERR_INVALID_ATTRIBUTE : Nat := 0xFFFFFFFFFFFFFFF6
     aborts (`MaxSeedLengthExceeded`) rather than returning in-band. -/
 def ERR_BAD_SEEDS : Nat := 0xFFFFFFFFFFFFFFF5
 
+/-- Exit code for a CPI whose callee modified a NON-writable (read-only)
+    account's data, lamports, or owner. agave verifies every account
+    after a sub-instruction returns and fails the whole sub-instruction
+    (`InstructionError::{ReadonlyDataModified,ReadonlyLamportChange,
+    ExternalAccountDataModified,ModifiedProgramId}`), rolling back ALL of
+    the callee's account modifications; the `invoke` syscall then returns
+    this error in r0 and the caller resumes from its pre-CPI memory. We
+    model that rollback exactly: on violation the runner discards the
+    callee's write-back (caller mem unchanged) and sets r0 to this code. -/
+def ERR_READONLY_MODIFIED : Nat := 0xFFFFFFFFFFFFFFF4
+
 /-- `MAX_RETURN_DATA` (agave): a program may set at most 1024 bytes of
     return data; a larger `sol_set_return_data` aborts. -/
 def MAX_RETURN_DATA : Nat := 1024

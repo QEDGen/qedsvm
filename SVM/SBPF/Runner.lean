@@ -845,11 +845,39 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 origPrivs   := parseInputPrivileges subInput }
             let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
               (fetchFromArray calleeInsns) subS fuel'
+            -- M6 read-only protection: agave re-verifies every account
+            -- after a sub-instruction returns and FAILS the whole call if
+            -- the callee modified a non-writable account's data, lamports,
+            -- or owner. Compare each read-only slot's post-call block
+            -- against its pre-call snapshot (`p.data`/`p.lamports`/
+            -- `p.owner`, captured at parse time).
+            let roViolated : Bool := slots.any (fun slot =>
+              match slot.dupOf? with
+              | some _ => false
+              | none =>
+                let p := slot.parsed
+                if p.isWritable then false
+                else
+                  let blockBase := INPUT_START + slot.blockOff
+                  let postData := readMemBytes subFinal.mem
+                    (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
+                  let postLam := Memory.readU64 subFinal.mem
+                    (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
+                  let postOwner := readMemBytes subFinal.mem
+                    (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
+                  postData != p.data || postLam != p.lamports
+                    || postOwner != p.owner)
+            -- Commit only writable accounts back to the caller. Read-only
+            -- slots are unmodified on the honest path (checked above), so
+            -- the guard is a no-op there and a rollback-safety net under a
+            -- violation.
             let newCallerMem : Mem := slots.foldl (fun mem slot =>
               match slot.dupOf? with
               | some _ => mem
               | none =>
                 let p := slot.parsed
+                if !p.isWritable then mem
+                else
                 let blockBase := INPUT_START + slot.blockOff
                 let newData := readMemBytes subFinal.mem
                   (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
@@ -860,7 +888,15 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 let newOwner := readMemBytes subFinal.mem
                   (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
                 loadBytesAt m2 newOwner p.ownerPtr) s.mem
-            some (subFinal, newCallerMem, subFuelRemaining)
+            -- On a read-only violation agave fails the whole sub-instruction
+            -- and rolls every account back: return pre-CPI memory and surface
+            -- the error in r0 via the callee's exitCode (cpiCallNextState
+            -- reads `subFinal.exitCode.getD 1` into r0).
+            if roViolated then
+              some ({ subFinal with exitCode := some ERR_READONLY_MODIFIED },
+                    s.mem, subFuelRemaining)
+            else
+              some (subFinal, newCallerMem, subFuelRemaining)
         let s' : State :=
           match insn with
           | .call .sol_invoke_signed =>
