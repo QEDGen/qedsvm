@@ -286,7 +286,7 @@ theorem run_reaches_spec_mem
 private theorem run_terminates_after_witness
     {N k exit_ : Nat} {Q : Assertion}
     {bs : ByteArray} {insns : Array Insn} {cfg : RunConfig}
-    (hdecode : Decode.decodeProgram bs = some insns)
+    (hdecode : Decode.decodeProgram bs [(Elf.entrypointHash, 0)] = some insns)
     (hexit_fetch : fetchFromArray insns exit_ = some Insn.exit)
     (hnoCpi : ∀ i, i ∈ insns → Insn.isCpiCall i = false)
     (hnoCallLocal : ∀ i, i ∈ insns → Insn.isCallLocal i = false)
@@ -381,7 +381,7 @@ private theorem run_terminates_after_witness
 theorem run_terminates_with_spec
     {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
     {bs : ByteArray} {insns : Array Insn} {cfg : RunConfig}
-    (hdecode : Decode.decodeProgram bs = some insns)
+    (hdecode : Decode.decodeProgram bs [(Elf.entrypointHash, 0)] = some insns)
     (hcr : cr.SatisfiedBy (fetchFromArray insns))
     (hexit_fetch : fetchFromArray insns exit_ = some Insn.exit)
     (hnoCpi : ∀ i, i ∈ insns → Insn.isCpiCall i = false)
@@ -410,7 +410,7 @@ theorem run_terminates_with_spec_mem
     {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
     {rr : Memory.RegionTable → Prop}
     {bs : ByteArray} {insns : Array Insn} {cfg : RunConfig}
-    (hdecode : Decode.decodeProgram bs = some insns)
+    (hdecode : Decode.decodeProgram bs [(Elf.entrypointHash, 0)] = some insns)
     (hcr : cr.SatisfiedBy (fetchFromArray insns))
     (hexit_fetch : fetchFromArray insns exit_ = some Insn.exit)
     (hnoCpi : ∀ i, i ∈ insns → Insn.isCpiCall i = false)

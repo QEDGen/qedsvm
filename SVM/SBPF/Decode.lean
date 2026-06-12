@@ -133,15 +133,23 @@ where
 
 /-! ## Pass 2: single-instruction decoding with resolved jump targets -/
 
+/-- First-match lookup in the V0 function registry (key → target slot,
+    built by `Elf.buildFnRegistry`). First match mirrors agave's
+    entrypoint precedence (the e_entry pair is registered first). -/
+def fnRegLookup (fnReg : List (Nat × Nat)) (key : Nat) : Option Nat :=
+  (fnReg.find? (fun p => p.1 = key)).map (·.2)
+
 /-- Decode one sBPF instruction starting at byte offset `off`. The `slotMap`
     is consulted to translate PC-relative byte-slot offsets in branch
-    instructions into absolute logical-PC values.
+    instructions into absolute logical-PC values; `fnReg` is the V0
+    function registry (murmur3 key → target slot, `Elf.buildFnRegistry`)
+    that resolves internal `call` immediates (audit H2).
 
     Returns the decoded `Insn` plus the byte size consumed (8 normally,
     16 for `lddw`), or `none` if the opcode is unrecognized or the
     register fields are invalid. -/
-def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
-    Option (Insn × Nat) :=
+def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
+    (fnReg : List (Nat × Nat) := []) : Option (Insn × Nat) :=
   let opcode := readU8 bytes off
   let regs   := readU8 bytes (off + 1)
   let dstN   := regs &&& 0xF
@@ -245,32 +253,37 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
   | 0xdd => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jsle d (.reg s) t, 8)
   -- Call (opcode 0x85). After R_BPF_64_32 relocation has run
   -- (`SVM.SBPF.Elf.applyRelocations`), the imm field is one of:
-  --   - a known syscall's Murmur3 hash (e.g. `sol_log_` → 0x207559bd)
-  --   - a small signed offset (raw compiler output for an internal
-  --     function call; the function name's hash *isn't* in our
-  --     syscall registry)
+  --   - a known syscall's Murmur3 NAME hash (e.g. `sol_log_` →
+  --     0x207559bd), or
+  --   - an internal function's Murmur3 PC-bytes hash, registered in
+  --     the function registry at load (`Elf.buildFnRegistry`).
   --
-  -- Disambiguation: try `SyscallHash.fromHash`. If known → syscall.
-  -- Otherwise treat imm as a signed slot-offset from the next
-  -- instruction (internal call). The `src` field is *not* used for
-  -- disambiguation — both src=0 (static syscall) and src=1 (dynamic
-  -- syscall, post-relocation) decode the same way.
+  -- Resolution order mirrors agave V0 (interpreter.rs CALL_IMM):
+  -- syscall table first (`SyscallHash.fromHash`), then the function
+  -- registry, else fail closed at runtime. The `src` field is *not*
+  -- used for disambiguation in V0 — both src=0 and src=1 decode the
+  -- same way.
   | 0x85 =>
     let immU := readU32LE bytes (off + 4)
     match SyscallHash.fromHash immU with
     | .unknown _ =>
-      -- Internal call: imm is treated as a signed slot-offset, falling
-      -- back to PC 0 when out of range. NOTE: this fallback is itself a
-      -- divergence (agave relocates a defined internal call to a murmur3
-      -- HASH of the target PC, not an offset — tracked as H2), so an
-      -- out-of-range result here is usually a hash, not a bad jump. We do
-      -- NOT fail-close this arm (unlike jumps): doing so would reject
-      -- every hashed internal call until the H2 hash→PC registry lands.
-      let targetSlotInt : Int := currentSlot + 1 + imm
-      let targetPcLocal : Nat :=
-        let n := targetSlotInt.toNat
-        if h : n < slotMap.size then slotMap[n]'h else 0
-      some (.call_local targetPcLocal, 8)
+      -- V0 internal call (audit H2, closed): the relocated imm is a
+      -- murmur3 hash agave resolves through the function registry
+      -- (syscall registry first — the `fromHash` match above — then
+      -- the function registry; solana-sbpf interpreter.rs CALL_IMM).
+      -- A registered key resolves slot → logical PC via the slot map;
+      -- a registered slot past the program fails the decode (the
+      -- loader guarantees in-text targets, so this is malformed
+      -- input); an UNKNOWN key decodes to `.call (.unknown immU)`,
+      -- whose execution fails closed (`Misc.execUnknown`) — mirroring
+      -- agave's runtime `UnsupportedInstruction`. The pre-H2
+      -- slot-offset interpretation with its PC-0 fallback is gone.
+      match fnRegLookup fnReg immU with
+      | some targetSlot =>
+        if h : targetSlot < slotMap.size then
+          some (.call_local (slotMap[targetSlot]'h), 8)
+        else none
+      | none => some (.call (.unknown immU), 8)
     | sc => some (.call sc, 8)
   -- Indirect call: `callx <reg>`. The target is the runtime value of
   -- the src register (sBPF convention: src field of the opcode word).
@@ -306,11 +319,15 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat) :
 
 /-- Decode a flat sBPF bytecode array into a logical instruction sequence.
     Each output element is one logical `Insn`; `lddw` becomes one entry
-    even though it spans 16 bytes in the binary, and jump targets are
-    correctly resolved to logical PCs.
+    even though it spans 16 bytes in the binary, jump targets are
+    correctly resolved to logical PCs, and internal `call` immediates
+    resolve through the V0 function registry `fnReg`
+    (`Elf.buildFnRegistry`; pass `[]` for registry-less raw text — every
+    internal call then decodes to the fail-closed `.call (.unknown _)`).
 
     Returns `none` if any instruction fails to decode. -/
-def decodeProgram (bytes : ByteArray) : Option (Array Insn) :=
+def decodeProgram (bytes : ByteArray) (fnReg : List (Nat × Nat) := []) :
+    Option (Array Insn) :=
   let slotMap := buildSlotMap bytes
   go 0 #[] (bytes.size + 1) slotMap
 where
@@ -326,7 +343,7 @@ where
         -- (`ProgramLengthNotMultiple`). See docs/SOUNDNESS_AUDIT_* (M4).
         none
       else
-        match decodeInsn bytes slotMap off with
+        match decodeInsn bytes slotMap off fnReg with
         | none => none
         | some (insn, sz) => go (off + sz) (acc.push insn) fuel' slotMap
 

@@ -7,8 +7,8 @@ End-to-end lift demonstration:
 blows `maxRecDepth`).
 2. The full `decodeProgram` bridge is omitted; instead the
 `_decode_pins` theorem pins the decode of every walked
-PC's bytes by `native_decide` (internal `call_local`
-slots excluded — audit H2).
+PC's bytes by `native_decide`, threading the V0 function
+registry so internal `call_local` PCs resolve (audit H2).
 3. A `cuTripleWithinMem` Hoare triple is stated over the
 decoded sequence. The pre/post atom synthesis is the next
 iteration's work (the "symbolic executor" piece); for the
@@ -1652,10 +1652,24 @@ def PTokenMintToText : ByteArray := Decode.bytesOfHex "
     the `lddw` positions of the WHOLE text, not just the pinned windows. -/
 def PTokenMintToSlotMap : Array Nat := Decode.buildSlotMap PTokenMintToText
 
-/-- Walked-PC decode pins (soundness-audit H8): every instruction the
+/-- The V0 function registry (murmur3 key → target slot) solana-sbpf built
+    at load, mirroring `Elf.buildFnRegistry` (audit H2). Resolves internal
+    `call` immediates in the pins below to `.call_local` targets. -/
+def PTokenMintToFnRegistry : List (Nat × Nat) := [(376757276, 12751), (525548541, 12371), (561774218, 11825), (642964833, 11531), 
+  (671461368, 12794), (928297228, 117), (1159259341, 7357), (1284009300, 11887), 
+  (1321217803, 11609), (1638532683, 11888), (1669671676, 0), (1769220090, 11565), 
+  (1910755201, 225), (1969281849, 12728), (2521278826, 11571), (2522303878, 11802), 
+  (2620733455, 12477), (2698469525, 11537), (3070592760, 11524), (3082296710, 11560), 
+  (3116386864, 12059), (3201514961, 12366), (3377497451, 12475), (3403564053, 12259), 
+  (3411372361, 12341), (3666397485, 12443), (3965117566, 11584), (4007898883, 12379), 
+  (4277503374, 7511)]
+
+/-- Walked-PC decode pins (soundness-audit H8 + H2): every instruction the
     Hoare triple's `CodeReq` claims at a walked PC is the decode of the
     `.text` bytes at that PC's byte offset, checked end-to-end in-kernel
-    (`bytesOfHex` → `buildSlotMap` → `decodeInsn`) by `native_decide`. -/
+    (`bytesOfHex` → `buildSlotMap` → `decodeInsn` with the function registry) by
+    `native_decide`. Internal `call_local` PCs are included — their murmur3
+    imm resolves through `PTokenMintToFnRegistry`. -/
 theorem PTokenMintTo_decode_pins :
     ([1800, 1808, 2688, 2696, 2752, 2760, 2768, 2776, 2784, 2792, 2800, 2808, 2816, 2824, 2832, 28880, 
       28888, 28896, 28904, 29616, 29624, 30728, 30736, 30744, 30752, 30760, 30768, 30776, 30784, 30792, 30800, 30808, 
@@ -1665,7 +1679,7 @@ theorem PTokenMintTo_decode_pins :
       31536, 31544, 31552, 31560, 31568, 31576, 31584, 31592, 31600, 31608, 31616, 31624, 31632, 31640, 31648, 31656, 
       31664, 31672, 31680, 31688, 31696, 31704, 40792, 40800, 40808, 40816, 40824, 40832, 40840, 40848, 40856, 40864, 
       40872, 40880, 40888, 40896, 40904, 40912, 40920].map fun off =>
-      Decode.decodeInsn PTokenMintToText PTokenMintToSlotMap off) = [
+      Decode.decodeInsn PTokenMintToText PTokenMintToSlotMap off PTokenMintToFnRegistry) = [
       some (.ldx .byte .r2 .r1 0, 8),
       some (.jeq .r2 (.imm (3)) 304, 8),
       some (.ldx .dword .r2 .r1 88, 8),

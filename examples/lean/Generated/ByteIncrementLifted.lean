@@ -47,9 +47,14 @@ def ByteIncrementLiftedInsns : Array Insn := #[
   .exit
 ]
 
+/-- The V0 function registry (murmur3 key → target slot) solana-sbpf built
+    at load, mirroring `Elf.buildFnRegistry` (audit H2). Resolves internal
+    `call` immediates to `.call_local` targets. -/
+def ByteIncrementLiftedFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
+
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem ByteIncrementLifted_decodes :
-    Decode.decodeProgram ByteIncrementLiftedBytes = some ByteIncrementLiftedInsns := by
+    Decode.decodeProgram ByteIncrementLiftedBytes ByteIncrementLiftedFnRegistry = some ByteIncrementLiftedInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

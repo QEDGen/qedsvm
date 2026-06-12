@@ -48,9 +48,13 @@ def byteIncrementInsns : Array Insn :=
      .stx .byte .r1 0 .r2,
      .exit ]
 
-/-- Decoding the bytes yields exactly the expected instruction array. -/
+/-- Decoding the bytes yields exactly the expected instruction array.
+    The registry `[(Elf.entrypointHash, 0)]` matches what `Runner.run`
+    threads in (audit H2); byte_increment has no internal calls, so the
+    decode is independent of the registry contents. -/
 theorem byteIncrement_decodes :
-    Decode.decodeProgram byteIncrementBytes = some byteIncrementInsns := by
+    Decode.decodeProgram byteIncrementBytes [(Elf.entrypointHash, 0)] =
+      some byteIncrementInsns := by
   native_decide
 
 /-- The program contains no CPI-call instructions, so the spec-level
@@ -256,7 +260,8 @@ def byteIncrementSoInsns : Array Insn :=
      .exit ]
 
 theorem byteIncrementSo_decodes :
-    Decode.decodeProgram byteIncrementSoText = some byteIncrementSoInsns := by
+    Decode.decodeProgram byteIncrementSoText [(Elf.entrypointHash, 0)] =
+      some byteIncrementSoInsns := by
   native_decide
 
 theorem byteIncrementSo_noCpi :

@@ -20,12 +20,17 @@
     (both the in-`.text` lddw form and the `.data.rel.ro` form), and
     `R_BPF_64_32` (inter-function `call` offsets → murmur3 hash).
 
-  Known divergences from agave (tracked in docs/SOUNDNESS_AUDIT_*.md):
-  - No SBPF version / `e_machine` gate: any input is parsed as V0.
-  - `applyRel32` hashes the symbol NAME for defined internal functions,
-    whereas agave hashes the target PC bytes; the raw decoder then treats
-    an internal-call hash as a slot offset. The qedlift proof path
-    sidesteps both by resolving call targets through solana-sbpf.
+  V0 internal-call resolution (audit H2, closed): `R_BPF_64_32` against
+  a defined function patches the murmur3 hash of the target PC bytes
+  (agave's `register_function_hashed_legacy` convention) and the pair
+  is collected into the function registry (`buildFnRegistry`), which
+  `Decode.decodeInsn` consults to resolve `.call_local` targets. An
+  unresolved key decodes to `.call (.unknown _)`, which fails closed at
+  runtime (agave: `UnsupportedInstruction`).
+
+  Remaining divergences from agave are tracked in
+  docs/SOUNDNESS_AUDIT_*.md (M1: structural fail-open on malformed
+  section/relocation tables).
 -/
 
 import SVM.SBPF.Decode
@@ -312,12 +317,40 @@ def applyRel64 (textBytes : ByteArray) (textVA target : Nat) (relOff : Nat) :
 /-- Apply a single `R_BPF_64_32` relocation. The patch site `relOff`
     points at the *start* of the 8-byte instruction (typically `0x85`);
     the imm to overwrite is at `relOff + 4`. The patched value is the
-    Murmur3-32 hash of the symbol name (Solana's convention for
-    resolving syscall and internal-function references). -/
+    function-registry key computed by `rel32KeyEntry` (a syscall's
+    name hash, or a bpf-to-bpf target's PC-bytes hash). -/
 def applyRel32 (textBytes : ByteArray) (textVA hash : Nat) (relOff : Nat) :
     ByteArray :=
   let off := if relOff ≥ textVA then relOff - textVA else relOff
   writeU32LE textBytes (off + 4) hash
+
+/-- A u64 as 8 little-endian bytes — the input agave hashes to key a
+    bpf-to-bpf call target in the function registry. -/
+def le8 (n : Nat) : ByteArray :=
+  ⟨#[UInt8.ofNat (n % 256),
+     UInt8.ofNat (n / 0x100 % 256),
+     UInt8.ofNat (n / 0x10000 % 256),
+     UInt8.ofNat (n / 0x1000000 % 256),
+     UInt8.ofNat (n / 0x100000000 % 256),
+     UInt8.ofNat (n / 0x10000000000 % 256),
+     UInt8.ofNat (n / 0x1000000000000 % 256),
+     UInt8.ofNat (n / 0x100000000000000 % 256)]⟩
+
+/-- agave's legacy function-registry key for a bpf-to-bpf call target:
+    Murmur3-32 (seed 0) of the target slot index as 8 LE bytes
+    (`register_function_hashed_legacy`, solana-sbpf 0.14.4
+    program.rs:154-159 — the V0 path). The name "entrypoint" is the
+    one exception: it keys by the hash of the NAME (`entrypointHash`). -/
+def pcHash (targetSlot : Nat) : Nat :=
+  Murmur3.hash (le8 targetSlot) 0
+
+/-- The function-registry key of the program entrypoint: agave keys it
+    by the hash of the literal name "entrypoint", not of its PC bytes
+    (solana-sbpf program.rs:155-156, elf.rs:637-643). -/
+def entrypointHash : Nat := Murmur3.hashString "entrypoint"
+
+/-- The UTF-8 bytes of "entrypoint", for symbol-name comparison. -/
+def entrypointName : ByteArray := "entrypoint".toUTF8
 
 /-- Read a null-terminated string from `bytes` starting at `off`. Used
     for resolving `.dynstr` symbol names. Capped at 128 bytes to keep
@@ -331,6 +364,68 @@ where
     | fuel' + 1 =>
       let b := readU8 bytes (off + i)
       if b = 0 then ⟨acc⟩ else go (i + 1) fuel' (acc.push b.toUInt8)
+
+/-- PC-relative internal calls found by scanning the RAW text, mirroring
+    the FIRST pass of solana-sbpf 0.14.4 `relocate` (elf.rs:922-948):
+    every slot whose opcode is `CALL_IMM` (0x85) with `imm ≠ -1` is a
+    PC-relative call to `slot + 1 + imm`; agave registers the target
+    under its PC-bytes hash and rewrites the imm to that hash. (Calls
+    that go through `R_BPF_64_32` relocations carry the placeholder
+    imm = -1 on disk and are skipped here; the relocation pass handles
+    them.) Returns `(slotIdx, targetSlot)` pairs.
+
+    agave fails the LOAD on an out-of-bounds target
+    (`RelativeJumpOutOfBounds`); this parser has no error channel, so
+    such a call keeps its raw imm, decodes to `.call (.unknown _)`, and
+    fails closed at runtime instead (audit H2). NOTE the scan is over
+    SLOTS, exactly as agave's: it does not skip an `lddw`'s second slot
+    (whose opcode byte is 0, never 0x85, so this cannot misfire). -/
+def pcRelCallTargets (textBytes : ByteArray) : List (Nat × Nat) :=
+  let nSlots := textBytes.size / 8
+  (List.range nSlots).filterMap fun i =>
+    let opc := readU8 textBytes (i * 8)
+    let immU := readU32LE textBytes (i * 8 + 4)
+    if opc = 0x85 ∧ immU ≠ 0xFFFFFFFF then
+      let target : Int := (i : Int) + 1 + signExt32 immU
+      if 0 ≤ target ∧ target < (nSlots : Int) then
+        some (i, target.toNat)
+      else
+        none
+    else
+      none
+
+/-- The patched imm key + optional function-registry entry for one
+    `R_BPF_64_32` relocation, mirroring solana-sbpf 0.14.4 `relocate`
+    (elf.rs:1096-1140):
+
+    - a DEFINED function symbol (`STT_FUNC`, `st_value ≠ 0`) inside
+      `.text` is a bpf-to-bpf call: its key is `pcHash` of the target
+      slot (`(st_value − text.sh_addr) / 8`; the name "entrypoint"
+      keys by `entrypointHash` instead), and the pair
+      `(key, targetSlot)` is registered;
+    - anything else is a syscall reference: key = Murmur3 hash of the
+      symbol NAME, no registry entry.
+
+    agave rejects a defined function OUTSIDE `.text` at load
+    (`ValueOutOfBounds`); this parser has no error channel, so such a
+    symbol gets its PC-bytes key WITHOUT a registry entry — the call
+    then decodes to `.call (.unknown _)` and fails closed at runtime
+    instead of at load (same observable class, see audit H2). -/
+def rel32KeyEntry (elfBytes : ByteArray)
+    (symBase dynstrBase textVA textSize : Nat) (rel : RelocationEntry) :
+    Nat × Option (Nat × Nat) :=
+  let sym  := parseSymbolEntry elfBytes (symBase + rel.sym * 24)
+  let name := readCString elfBytes (dynstrBase + sym.nameOff)
+  if sym.info % 16 = 2 ∧ sym.value ≠ 0 then
+    let targetSlot := (sym.value - textVA) / 8
+    let key := if name.data = entrypointName.data then entrypointHash
+               else pcHash targetSlot
+    if textVA ≤ sym.value ∧ sym.value < textVA + textSize then
+      (key, some (key, targetSlot))
+    else
+      (key, none)
+  else
+    (Murmur3.hash name 0, none)
 
 /-- Apply a single `R_BPF_64_Relative` relocation that falls inside
     `.text`. The patch site `relOff` points at an `lddw` (a 16-byte
@@ -371,18 +466,26 @@ def applyRelRelativeText (textBytes : ByteArray) (textVA : Nat)
 
     - `R_BPF_64_64`: patches a 64-bit symbol address into an `lddw`'s
       split immediate fields. Used for pointers into `.rodata` etc.
-    - `R_BPF_64_32`: patches the Murmur3-32 hash of the symbol name
-      into a `call`/`call_local` instruction's 32-bit imm at
-      `relOff + 4`. After patching, the imm IS the function key —
-      either a syscall hash (decoder routes to `.call syscall`) or
-      an internal-function hash (decoder falls back to
-      `.call_local`).
+    - `R_BPF_64_32`: patches the function-registry key into a `call`
+      instruction's 32-bit imm at `relOff + 4` (see `rel32KeyEntry`:
+      syscalls key by NAME hash, bpf-to-bpf targets by PC-bytes hash,
+      exactly as agave relocates). After patching, the imm IS the
+      function key — the decoder routes it to `.call syscall` via the
+      syscall table or to `.call_local` via the function registry
+      (`buildFnRegistry`), and fails closed on an unknown key.
     - `R_BPF_64_Relative` in `.text`: bumps a sub-`MM_REGION_SIZE`
       address loaded by an `lddw` into the program region (see
       `applyRelRelativeText`). Relocs of this type outside `.text`
       are left for `applyDataRelocations`. -/
 def applyRelocations (elfBytes : ByteArray) (h : Header)
     (textVA : Nat) (textBytes : ByteArray) : ByteArray :=
+  -- Pass 1 (elf.rs:922-948): rewrite every PC-relative internal call's
+  -- imm to its PC-bytes registry hash. agave's `relocate` always runs
+  -- this scan, even when the ELF carries no relocation tables. The
+  -- target list is computed over the ORIGINAL text (the rewrites only
+  -- touch the scanned slot's own imm, so order is immaterial).
+  let textFixed := (pcRelCallTargets textBytes).foldl (fun acc p =>
+      writeU32LE acc (p.1 * 8 + 4) (pcHash p.2)) textBytes
   match findSectionByType elfBytes h SHT_DYNSYM,
         findSectionByType elfBytes h SHT_REL,
         findSection elfBytes h dynstrName with
@@ -399,17 +502,63 @@ def applyRelocations (elfBytes : ByteArray) (h : Header)
         let target := symSec.addr + sym.value
         applyRel64 acc textVA target rel.offset
       else if rel.type = R_BPF_64_32 then
-        let sym := parseSymbolEntry elfBytes (symBase + rel.sym * 24)
-        let name := readCString elfBytes (dynstrBase + sym.nameOff)
-        let hash := Murmur3.hash name 0
-        applyRel32 acc textVA hash rel.offset
+        let (key, _) := rel32KeyEntry elfBytes symBase dynstrBase
+                          textVA textBytes.size rel
+        applyRel32 acc textVA key rel.offset
       else if rel.type = R_BPF_64_Relative
               ∧ rel.offset ≥ textVA
               ∧ rel.offset + 16 ≤ textEnd then
         applyRelRelativeText acc textVA rel.offset
       else
-        acc) textBytes
-  | _, _, _ => textBytes
+        acc) textFixed
+  | _, _, _ => textFixed
+
+/-- The function registry (key → target SLOT index) for V0 internal
+    calls, mirroring what agave's loader builds (audit H2):
+
+    - one entry per PC-relative internal call found by the pass-1 text
+      scan (`pcRelCallTargets` over the RAW text — the SAME scan whose
+      rewrites `applyRelocations` applies, so every rewritten key
+      resolves), keyed by `pcHash` of the target slot;
+    - one entry per `R_BPF_64_32` relocation against a defined function
+      inside `.text` (`rel32KeyEntry`; again the same walk that patched
+      the call imms); and
+    - the entrypoint, keyed by `entrypointHash` and mapping to
+      `(e_entry − text.sh_addr) / 8` (agave unregisters any
+      symbol-derived "entrypoint" entry and re-registers it from
+      `e_entry` — elf.rs:637-643; putting the e_entry pair FIRST gives
+      it the same precedence under first-match lookup).
+
+    Values are SLOT indices (`lddw` counts as 2);
+    `Decode.decodeInsn` resolves them to logical PCs through the slot
+    map. Duplicate pairs (a function called from several sites) are
+    harmless under first-match lookup. agave's hash-collision
+    rejection (`SymbolHashCollision`) is not modeled — a collision
+    would need murmur3(LE8(slotA)) = murmur3(LE8(slotB)) (or a clash
+    with a syscall name hash), and the first-match lookup then picks
+    the first registration, which is a completeness (not soundness)
+    gap. -/
+def buildFnRegistry (elfBytes : ByteArray) (h : Header)
+    (textVA : Nat) (rawText : ByteArray) : List (Nat × Nat) :=
+  let entrySlot := (if h.entry ≥ textVA then h.entry - textVA else 0) / 8
+  let entryPair := (entrypointHash, entrySlot)
+  let pass1 := (pcRelCallTargets rawText).map (fun p => (pcHash p.2, p.2))
+  let relocPairs :=
+    match findSectionByType elfBytes h SHT_DYNSYM,
+          findSectionByType elfBytes h SHT_REL,
+          findSection elfBytes h dynstrName with
+    | some symtab, some reltab, some dynstr =>
+      let nRels := reltab.size / 16
+      (List.range nRels).foldr (fun i acc =>
+        let rel := parseRelocationEntry elfBytes (reltab.offset + i * 16)
+        if rel.type = R_BPF_64_32 then
+          match (rel32KeyEntry elfBytes symtab.offset dynstr.offset
+                   textVA rawText.size rel).2 with
+          | some p => p :: acc
+          | none => acc
+        else acc) []
+    | _, _, _ => []
+  entryPair :: pass1 ++ relocPairs
 
 /-- Apply `R_BPF_64_RELATIVE` relocations that fall inside a non-text
     section (typically `.data.rel.ro`). Each reloc names a byte offset

@@ -7,8 +7,8 @@ End-to-end lift demonstration:
 blows `maxRecDepth`).
 2. The full `decodeProgram` bridge is omitted; instead the
 `_decode_pins` theorem pins the decode of every walked
-PC's bytes by `native_decide` (internal `call_local`
-slots excluded — audit H2).
+PC's bytes by `native_decide`, threading the V0 function
+registry so internal `call_local` PCs resolve (audit H2).
 3. A `cuTripleWithinMem` Hoare triple is stated over the
 decoded sequence. The pre/post atom synthesis is the next
 iteration's work (the "symbolic executor" piece); for the
@@ -289,25 +289,39 @@ def LoggerText : ByteArray := Decode.bytesOfHex "
     the `lddw` positions of the WHOLE text, not just the pinned windows. -/
 def LoggerSlotMap : Array Nat := Decode.buildSlotMap LoggerText
 
-/-- Walked-PC decode pins (soundness-audit H8): every instruction the
+/-- The V0 function registry (murmur3 key → target slot) solana-sbpf built
+    at load, mirroring `Elf.buildFnRegistry` (audit H2). Resolves internal
+    `call` immediates in the pins below to `.call_local` targets. -/
+def LoggerFnRegistry : List (Nat × Nat) := [(128531268, 1781), (236076891, 1263), (297337294, 1072), (446451136, 530), 
+  (655947961, 634), (845973527, 200), (957622471, 504), (979288931, 1286), 
+  (1096506542, 501), (1208354375, 512), (1237104672, 893), (1248298065, 151), 
+  (1276710542, 1879), (1385152699, 595), (1420138093, 500), (1500269694, 71), 
+  (1571289603, 72), (1910755201, 3), (1999797290, 506), (2099945940, 642), 
+  (2532547410, 507), (2611520450, 887), (2758811421, 161), (2810194354, 816), 
+  (2828632807, 502), (2865585369, 138), (2997559978, 256), (3102797673, 113), 
+  (3107149687, 918), (3126268830, 37), (3137373098, 1451), (3162954960, 541), 
+  (3294448544, 638), (3584998590, 1445), (3834626197, 1655), (3983090375, 141), 
+  (4084026414, 947), (4101841557, 1883), (4102790330, 140)]
+
+/-- Walked-PC decode pins (soundness-audit H8 + H2): every instruction the
     Hoare triple's `CodeReq` claims at a walked PC is the decode of the
     `.text` bytes at that PC's byte offset, checked end-to-end in-kernel
-    (`bytesOfHex` → `buildSlotMap` → `decodeInsn`) by `native_decide`.
-    Internal `call_local` PCs [6, 252] are NOT pinned: their relocated imm
-    is a murmur3 hash of the target (soundness-audit H2); the emitter
-    resolves them via solana-sbpf's function registry instead. -/
+    (`bytesOfHex` → `buildSlotMap` → `decodeInsn` with the function registry) by
+    `native_decide`. Internal `call_local` PCs are included — their murmur3
+    imm resolves through `LoggerFnRegistry`. -/
 theorem Logger_decode_pins :
-    ([24, 32, 40, 2048, 2056, 2064, 2072, 2080, 2088, 2096, 2104, 2112, 2120, 15064, 15072, 15080, 
-      15088, 15096, 15104, 15112, 15120, 15128, 15136, 15144, 15152, 15160, 15168, 15176, 15184, 15192, 15200, 15208, 
-      15216, 15224, 15232, 15240, 15248, 15256, 15264, 15272, 15280, 15288, 15296, 15304, 15312, 15320, 15328, 15336, 
-      15344, 15352, 15360, 15368, 15376, 15384, 15392, 15400, 15408, 2136, 2144, 2152, 2160, 2168, 2176, 2184, 
-      2192, 2208, 2256, 2264, 2272, 2344, 2352, 2360, 2368, 2376, 2384, 2392, 3784, 3792, 3800, 3808, 
-      3816, 3824, 3832, 3840, 3848, 3856, 3864, 3872, 3880, 3888, 3896, 3904, 56, 64, 72, 88, 
-      96, 104, 280].map fun off =>
-      Decode.decodeInsn LoggerText LoggerSlotMap off) = [
+    ([24, 32, 40, 48, 2048, 2056, 2064, 2072, 2080, 2088, 2096, 2104, 2112, 2120, 2128, 15064, 
+      15072, 15080, 15088, 15096, 15104, 15112, 15120, 15128, 15136, 15144, 15152, 15160, 15168, 15176, 15184, 15192, 
+      15200, 15208, 15216, 15224, 15232, 15240, 15248, 15256, 15264, 15272, 15280, 15288, 15296, 15304, 15312, 15320, 
+      15328, 15336, 15344, 15352, 15360, 15368, 15376, 15384, 15392, 15400, 15408, 2136, 2144, 2152, 2160, 2168, 
+      2176, 2184, 2192, 2208, 2256, 2264, 2272, 2344, 2352, 2360, 2368, 2376, 2384, 2392, 3784, 3792, 
+      3800, 3808, 3816, 3824, 3832, 3840, 3848, 3856, 3864, 3872, 3880, 3888, 3896, 3904, 56, 64, 
+      72, 88, 96, 104, 280].map fun off =>
+      Decode.decodeInsn LoggerText LoggerSlotMap off LoggerFnRegistry) = [
       some (.mov64 .r2 (.reg .r1), 8),
       some (.mov64 .r1 (.reg .r10), 8),
       some (.add64 .r1 (.imm (-48)), 8),
+      some (.call_local 242, 8),
       some (.mov64 .r9 (.reg .r1), 8),
       some (.stx .dword .r10 (-56) .r2, 8),
       some (.ldx .dword .r2 .r2 0, 8),
@@ -318,6 +332,7 @@ theorem Logger_decode_pins :
       some (.mov64 .r3 (.imm (0)), 8),
       some (.mov64 .r4 (.imm (48)), 8),
       some (.mov64 .r5 (.imm (0)), 8),
+      some (.call_local 1826, 8),
       some (.stx .dword .r10 (-16) .r3, 8),
       some (.stx .dword .r10 (-8) .r1, 8),
       some (.mov64 .r1 (.reg .r2), 8),

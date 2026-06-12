@@ -7,8 +7,8 @@ End-to-end lift demonstration:
 blows `maxRecDepth`).
 2. The full `decodeProgram` bridge is omitted; instead the
 `_decode_pins` theorem pins the decode of every walked
-PC's bytes by `native_decide` (internal `call_local`
-slots excluded — audit H2).
+PC's bytes by `native_decide`, threading the V0 function
+registry so internal `call_local` PCs resolve (audit H2).
 3. A `cuTripleWithinMem` Hoare triple is stated over the
 decoded sequence. The pre/post atom synthesis is the next
 iteration's work (the "symbolic executor" piece); for the
@@ -1652,21 +1652,32 @@ def PTokenInitializeMint2Text : ByteArray := Decode.bytesOfHex "
     the `lddw` positions of the WHOLE text, not just the pinned windows. -/
 def PTokenInitializeMint2SlotMap : Array Nat := Decode.buildSlotMap PTokenInitializeMint2Text
 
-/-- Walked-PC decode pins (soundness-audit H8): every instruction the
+/-- The V0 function registry (murmur3 key → target slot) solana-sbpf built
+    at load, mirroring `Elf.buildFnRegistry` (audit H2). Resolves internal
+    `call` immediates in the pins below to `.call_local` targets. -/
+def PTokenInitializeMint2FnRegistry : List (Nat × Nat) := [(376757276, 12751), (525548541, 12371), (561774218, 11825), (642964833, 11531), 
+  (671461368, 12794), (928297228, 117), (1159259341, 7357), (1284009300, 11887), 
+  (1321217803, 11609), (1638532683, 11888), (1669671676, 0), (1769220090, 11565), 
+  (1910755201, 225), (1969281849, 12728), (2521278826, 11571), (2522303878, 11802), 
+  (2620733455, 12477), (2698469525, 11537), (3070592760, 11524), (3082296710, 11560), 
+  (3116386864, 12059), (3201514961, 12366), (3377497451, 12475), (3403564053, 12259), 
+  (3411372361, 12341), (3666397485, 12443), (3965117566, 11584), (4007898883, 12379), 
+  (4277503374, 7511)]
+
+/-- Walked-PC decode pins (soundness-audit H8 + H2): every instruction the
     Hoare triple's `CodeReq` claims at a walked PC is the decode of the
     `.text` bytes at that PC's byte offset, checked end-to-end in-kernel
-    (`bytesOfHex` → `buildSlotMap` → `decodeInsn`) by `native_decide`.
-    Internal `call_local` PCs [3927] are NOT pinned: their relocated imm
-    is a murmur3 hash of the target (soundness-audit H2); the emitter
-    resolves them via solana-sbpf's function registry instead. -/
+    (`bytesOfHex` → `buildSlotMap` → `decodeInsn` with the function registry) by
+    `native_decide`. Internal `call_local` PCs are included — their murmur3
+    imm resolves through `PTokenInitializeMint2FnRegistry`. -/
 theorem PTokenInitializeMint2_decode_pins :
     ([1800, 1808, 1816, 2752, 2760, 2768, 2776, 2784, 2792, 2800, 2808, 2816, 2824, 2896, 2904, 2912, 
       2920, 2928, 2936, 2944, 2952, 2960, 2968, 29784, 30560, 30568, 32856, 32864, 32872, 32880, 32888, 32896, 
-      33624, 33632, 33640, 33648, 33656, 92296, 92304, 92312, 92320, 92328, 92336, 92344, 92360, 92368, 92376, 92384, 
-      92416, 92424, 92432, 92440, 92448, 92456, 92464, 92472, 33672, 33680, 33688, 33696, 33704, 33712, 33720, 33728, 
-      33736, 33744, 33760, 33768, 33784, 33792, 33800, 33808, 37488, 37496, 37504, 37512, 37520, 37528, 37536, 37544, 
-      37552, 37560, 37568, 37576, 37584, 37592, 37600, 37608, 37616, 37624, 37632, 37640, 37648].map fun off =>
-      Decode.decodeInsn PTokenInitializeMint2Text PTokenInitializeMint2SlotMap off) = [
+      33624, 33632, 33640, 33648, 33656, 33664, 92296, 92304, 92312, 92320, 92328, 92336, 92344, 92360, 92368, 92376, 
+      92384, 92416, 92424, 92432, 92440, 92448, 92456, 92464, 92472, 33672, 33680, 33688, 33696, 33704, 33712, 33720, 
+      33728, 33736, 33744, 33760, 33768, 33784, 33792, 33800, 33808, 37488, 37496, 37504, 37512, 37520, 37528, 37536, 
+      37544, 37552, 37560, 37568, 37576, 37584, 37592, 37600, 37608, 37616, 37624, 37632, 37640, 37648].map fun off =>
+      Decode.decodeInsn PTokenInitializeMint2Text PTokenInitializeMint2SlotMap off PTokenInitializeMint2FnRegistry) = [
       some (.ldx .byte .r2 .r1 0, 8),
       some (.jeq .r2 (.imm (3)) 304, 8),
       some (.jne .r2 (.imm (4)) 312, 8),
@@ -1704,6 +1715,7 @@ theorem PTokenInitializeMint2_decode_pins :
       some (.ldx .dword .r6 .r4 80, 8),
       some (.mov64 .r1 (.reg .r10), 8),
       some (.add64 .r1 (.imm (-32)), 8),
+      some (.call_local 10836, 8),
       some (.mov64 .r6 (.reg .r1), 8),
       some (.st .word .r10 (-4) (0), 8),
       some (.st .word .r10 (-7) (0), 8),

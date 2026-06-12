@@ -66,6 +66,7 @@ lean_lib Examples where
     -- non-standard axiom (sorry / native_decide / crypto). Keep first.
     `AxiomAudit,
     `SyscallHashPin,
+    `H2Pin,
     `ByteIncrement,
     `DischargePoC,
     `ProofDemo,

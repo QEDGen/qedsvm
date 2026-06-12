@@ -792,19 +792,24 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
         let runCallee (pidBytesIn : ByteArray) (parsedAcctsIn : List ParsedAcct)
             (ixDataIn : ByteArray) (calleeBytes : ByteArray)
             : Option (State × Mem × Nat) :=
-          let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader) := do
+          let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader
+                               × List (Nat × Nat)) := do
             let h ← Elf.parseHeader calleeBytes
             let textSec ← Elf.findSection calleeBytes h Elf.textName
             let rawText  := Elf.extractSection calleeBytes textSec
             let textBytes := Elf.applyRelocations calleeBytes h textSec.addr rawText
-            some (textBytes, h, textSec)
+            let fnReg := Elf.buildFnRegistry calleeBytes h textSec.addr rawText
+            some (textBytes, h, textSec, fnReg)
           do
-            let (textBytes, headerOpt, textSecOpt) :
-                ByteArray × Option Elf.Header × Option Elf.SectionHeader :=
+            let (textBytes, headerOpt, textSecOpt, fnReg) :
+                ByteArray × Option Elf.Header × Option Elf.SectionHeader
+                × List (Nat × Nat) :=
               match tryElf with
-              | some (tb, h, ts) => (tb, some h, some ts)
-              | none => (calleeBytes, none, none)
-            let calleeInsns ← Decode.decodeProgram textBytes
+              | some (tb, h, ts, fr) => (tb, some h, some ts, fr)
+              -- Raw text (no ELF wrapper): registry = entrypoint at
+              -- slot 0, mirroring solana-sbpf's `new_from_text_bytes`.
+              | none => (calleeBytes, none, none, [(Elf.entrypointHash, 0)])
+            let calleeInsns ← Decode.decodeProgram textBytes fnReg
             let slots : List AcctSlot := buildAcctSlots parsedAcctsIn
             let subInput : ByteArray :=
               buildCpiSubInputN slots pidBytesIn ixDataIn
@@ -1007,7 +1012,9 @@ def initialState (cfg : RunConfig) : State :=
     - `some Memory.ERR_INVALID_PC` → invalid PC (fell off program)
     - `some n` → clean exit with return code `n` -/
 def run (bytes : ByteArray) (cfg : RunConfig := {}) : Option State := do
-  let insns ← Decode.decodeProgram bytes
+  -- Raw text (no ELF wrapper): registry = entrypoint at slot 0,
+  -- mirroring solana-sbpf's `new_from_text_bytes`.
+  let insns ← Decode.decodeProgram bytes [(Elf.entrypointHash, 0)]
   return executeFnCpi cfg.programRegistry (fetchFromArray insns) (initialState cfg) cfg.cuBudget
 
 /-- Convenience: return only the exit code if the program terminated. -/
@@ -1037,7 +1044,8 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
       -- Patch R_BPF_64_64 relocations (lddw → .rodata-relative pointers).
       -- A no-op when the ELF has no .dynsym/.rel.dyn sections.
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
-      match Decode.decodeProgram textBytes with
+      let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
+      match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
@@ -1105,7 +1113,8 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
     | some textSec =>
       let rawText   := Elf.extractSection elfBytes textSec
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
-      match Decode.decodeProgram textBytes with
+      let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
+      match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input

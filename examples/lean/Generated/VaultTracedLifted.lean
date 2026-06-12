@@ -47,9 +47,14 @@ def VaultInsns : Array Insn := #[
   .exit
 ]
 
+/-- The V0 function registry (murmur3 key → target slot) solana-sbpf built
+    at load, mirroring `Elf.buildFnRegistry` (audit H2). Resolves internal
+    `call` immediates to `.call_local` targets. -/
+def VaultFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
+
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem Vault_decodes :
-    Decode.decodeProgram VaultBytes = some VaultInsns := by
+    Decode.decodeProgram VaultBytes VaultFnRegistry = some VaultInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple
