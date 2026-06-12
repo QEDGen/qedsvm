@@ -145,6 +145,179 @@ theorem loadInput_lt (input : ByteArray) :
   unfold Runner.loadInput
   exact loadBytesAt_lt _ _ _ emptyMem_lt
 
+/-! ## Arithmetic bound lemmas
+
+Every value a `step` arm writes into a register is `< 2^64` by one of
+these. -/
+
+theorem wrapAdd_lt (a b : Nat) : wrapAdd a b < U64_MODULUS :=
+  Nat.mod_lt _ (by decide)
+theorem wrapSub_lt (a b : Nat) : wrapSub a b < U64_MODULUS :=
+  Nat.mod_lt _ (by decide)
+theorem wrapMul_lt (a b : Nat) : wrapMul a b < U64_MODULUS :=
+  Nat.mod_lt _ (by decide)
+theorem wrapNeg_lt (a : Nat) : wrapNeg a < U64_MODULUS :=
+  Nat.mod_lt _ (by decide)
+
+theorem signExtend32_lt {n : Nat} (h : n < U32_MODULUS) :
+    signExtend32 n < U64_MODULUS := by
+  simp only [signExtend32, U32_MODULUS, U64_MODULUS] at *
+  split <;> omega
+
+theorem wrapAdd32_lt (a b : Nat) : wrapAdd32 a b < U64_MODULUS :=
+  signExtend32_lt (Nat.mod_lt _ (by decide))
+theorem wrapSub32_lt (a b : Nat) : wrapSub32 a b < U64_MODULUS :=
+  signExtend32_lt (Nat.mod_lt _ (by decide))
+theorem wrapMul32_lt (a b : Nat) : wrapMul32 a b < U64_MODULUS :=
+  signExtend32_lt (Nat.mod_lt _ (by decide))
+theorem wrapNeg32_lt (a : Nat) : wrapNeg32 a < U64_MODULUS := by
+  simp only [wrapNeg32, U32_MODULUS, U64_MODULUS]
+  omega
+
+/-- Sign-extended immediates land in u64 range. -/
+theorem toU64_lt (v : Int) : toU64 v < U64_MODULUS := by
+  simp only [toU64, U64_MODULUS]
+  omega
+
+theorem resolveSrc_lt {rf : RegFile} (h : ∀ r, rf.get r < U64_MODULUS)
+    (src : Src) : resolveSrc rf src < U64_MODULUS := by
+  cases src with
+  | reg r => exact h r
+  | imm v => exact toU64_lt v
+
+/-- Memory loads are width-bounded UNCONDITIONALLY: `readU8/16/32/64`
+    reduce each byte `% 256` themselves. -/
+theorem readByWidth_lt (m : Mem) (addr : Nat) (w : Width) :
+    Memory.readByWidth m addr w < U64_MODULUS := by
+  cases w <;>
+    simp only [Memory.readByWidth, Memory.readU8, Memory.readU16,
+               Memory.readU32, Memory.readU64, U64_MODULUS] <;>
+    omega
+
+/-! ## Register-file bound plumbing -/
+
+/-- Writing a bounded value preserves all-registers-bounded. Pure defeq
+    case bash (`get`/`set` are `@[simp]` defs). -/
+theorem RegFile.set_get_lt {rf : RegFile} {B : Nat}
+    (h : ∀ r, rf.get r < B) {v : Nat} (hv : v < B) (dst : Reg) :
+    ∀ r, (rf.set dst v).get r < B := by
+  intro r
+  cases dst <;> cases r <;>
+    first
+      | exact hv
+      | exact h .r0 | exact h .r1 | exact h .r2 | exact h .r3
+      | exact h .r4 | exact h .r5 | exact h .r6 | exact h .r7
+      | exact h .r8 | exact h .r9 | exact h .r10
+
+/-! ## Memory-write boundedness plumbing -/
+
+/-- Any `foldl` of `writeU8`s preserves byte-boundedness (the common
+    core of `loadBytesAt` and `writeBytes`). -/
+theorem foldl_writeU8_lt (addrF valF : Nat → Nat) (idxs : List Nat) :
+    ∀ (m : Mem), (∀ a, m a < 256) →
+      ∀ a, (idxs.foldl (fun acc i =>
+              Memory.writeU8 acc (addrF i) (valF i)) m) a < 256 := by
+  induction idxs with
+  | nil => intro m h a; simpa using h a
+  | cons i rest ih =>
+    intro m h a
+    simp only [List.foldl_cons]
+    exact ih _ (fun x => by
+      unfold Memory.writeU8
+      exact Mem.read_put_lt _ _ _ h x) a
+
+/-- `writeBytes` (syscall bulk output: hashes, PDA results, …)
+    preserves byte-boundedness. -/
+theorem writeBytes_lt (out len : Nat) (bs : ByteArray) (m : Mem)
+    (h : ∀ a, m a < 256) : ∀ a, (writeBytes m out len bs) a < 256 := by
+  unfold writeBytes
+  exact foldl_writeU8_lt _ _ _ m h
+
+/-- Width-dispatched stores preserve byte-boundedness: every width is a
+    chain of `Mem.put`s. -/
+theorem writeByWidth_lt (m : Mem) (addr val : Nat) (w : Width)
+    (h : ∀ a, m a < 256) : ∀ a, (Memory.writeByWidth m addr val w) a < 256 := by
+  cases w <;>
+    simp only [Memory.writeByWidth, Memory.writeU8, Memory.writeU16,
+               Memory.writeU32, Memory.writeU64] <;>
+    repeat' first
+      | exact h
+      | apply Mem.read_put_lt
+
+/-- Reading a function-coerced `Mem` (the syscall bulk-write idiom
+    `let mem' : Memory.Mem := fun a => …`) is the function itself: the
+    coercion installs it as `default` with an empty overlay. -/
+theorem Mem.read_coe (f : Nat → Nat) (a : Nat) : ((f : Mem) : Nat → Nat) a = f a := by
+  show Mem.read { default := f } a = f a
+  unfold Mem.read
+  simp
+
+/-! ## State-shape preservation lemmas
+
+`step`'s arms are record updates of a handful of shapes; one lemma per
+shape keeps `step_bounded` a clean case bash. -/
+
+/-- Arms `{ s with regs := s.regs.set dst v, pc := pc' }` — the bulk of
+    the ALU/load ISA. The frame discipline survives because `RegFile.set`
+    cannot write r10 (`RegFile.set_preserves_r10`). -/
+theorem StateBounded.with_set_reg {s : State} (h : StateBounded s)
+    {dst : Reg} {v : Nat} (hv : v < U64_MODULUS) (pc' : Nat) :
+    StateBounded { s with regs := s.regs.set dst v, pc := pc' } :=
+  { regs_lt := RegFile.set_get_lt h.regs_lt hv dst
+    stack_r10 := by
+      show StackR10WF s.callStack (s.regs.set dst v).r10
+      rw [RegFile.set_preserves_r10]
+      exact h.stack_r10
+    stack_depth := h.stack_depth
+    frames_lt := h.frames_lt
+    cuBudget_lt := h.cuBudget_lt
+    heapNext_le := h.heapNext_le
+    returnData_le := h.returnData_le
+    mem_lt := h.mem_lt }
+
+/-- Arms `{ s with pc := … }` (all jumps). -/
+theorem StateBounded.with_pc {s : State} (h : StateBounded s) (pc' : Nat) :
+    StateBounded { s with pc := pc' } :=
+  { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
+    stack_depth := h.stack_depth, frames_lt := h.frames_lt
+    cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
+    returnData_le := h.returnData_le, mem_lt := h.mem_lt }
+
+/-- Arms `{ s with exitCode := … }` (every fail-closed abort). -/
+theorem StateBounded.with_exitCode {s : State} (h : StateBounded s)
+    (e : Option Nat) : StateBounded { s with exitCode := e } :=
+  { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
+    stack_depth := h.stack_depth, frames_lt := h.frames_lt
+    cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
+    returnData_le := h.returnData_le, mem_lt := h.mem_lt }
+
+/-- Arms `{ s with mem := m', pc := pc' }` (stores), given the new
+    memory is byte-bounded. -/
+theorem StateBounded.with_mem {s : State} (h : StateBounded s)
+    {m' : Mem} (hm : ∀ a, m' a < 256) (pc' : Nat) :
+    StateBounded { s with mem := m', pc := pc' } :=
+  { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
+    stack_depth := h.stack_depth, frames_lt := h.frames_lt
+    cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
+    returnData_le := h.returnData_le, mem_lt := hm }
+
+/-! ## Structural syscall sweeps
+
+No syscall touches the call stack or the CU budget; these two equalities
+let the stack/budget invariant components carry through the `.call` arm
+for every syscall at once (the r10 analog, `execSyscall_preserves_r10`,
+already exists in `Execute.lean`). -/
+
+theorem execSyscall_callStack (sc : Syscall) (s : State) :
+    (execSyscall sc s).callStack = s.callStack := by
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
+
+theorem execSyscall_cuBudget (sc : Syscall) (s : State) :
+    (execSyscall sc s).cuBudget = s.cuBudget := by
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
+
 /-! ## Base cases -/
 
 /-- `Execute.initState` is bounded, given bounded inputs (the input
