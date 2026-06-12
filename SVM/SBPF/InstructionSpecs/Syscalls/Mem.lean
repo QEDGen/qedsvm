@@ -2719,4 +2719,263 @@ theorem call_sol_memcmp_spec
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
 
+/-! ## Memset with a `↦U64` split tail (qedlift blob read-through)
+
+When the program later READS a dword inside the memset-filled region
+(p_token CloseAccount: `ldxdw [acct+88]` inside the 48-byte zeroing at
+`[acct+48, +96)`), the blob post must expose that cell as a `↦U64`
+atom or the read's atom would overlap the blob (an unsatisfiable
+sepConj — soundness audit H8 Phase C,
+`docs/QEDLIFT_ALIASING_DESIGN.md`). This variant splits the written
+blob's LAST 8 bytes off as a `↦U64` cell holding the fill byte
+replicated (`fill * 0x0101010101010101`). -/
+
+/-- `replicateByte` splits across `+`. -/
+theorem replicateByte_split (b : UInt8) (m k : Nat) :
+    replicateByte b (m + k) = replicateByte b m ++ replicateByte b k := by
+  apply ByteArray.ext
+  simp only [replicateByte, ByteArray.data_append]
+  apply Array.ext
+  · simp
+  · intro i h1 h2
+    simp only [Array.getElem_replicate]
+    rw [Array.getElem_append]
+    split <;> simp only [Array.getElem_replicate]
+
+/-- Eight replicated fill bytes are the `u64LE` encoding of any `w`
+    whose eight LE bytes each equal the fill byte. The byte equations
+    are parameters so the emitter can discharge them by `decide` on a
+    concrete `w` (avoiding big-constant `omega`). -/
+theorem replicateByte8_eq_u64LE (x w : Nat)
+    (h0 : w % 256 = x % 256)
+    (h1 : w / 0x100 % 256 = x % 256)
+    (h2 : w / 0x10000 % 256 = x % 256)
+    (h3 : w / 0x1000000 % 256 = x % 256)
+    (h4 : w / 0x100000000 % 256 = x % 256)
+    (h5 : w / 0x10000000000 % 256 = x % 256)
+    (h6 : w / 0x1000000000000 % 256 = x % 256)
+    (h7 : w / 0x100000000000000 % 256 = x % 256) :
+    replicateByte (x % 256).toUInt8 8 = PartialState.u64LE w := by
+  show (⟨#[(x % 256).toUInt8, (x % 256).toUInt8, (x % 256).toUInt8,
+           (x % 256).toUInt8, (x % 256).toUInt8, (x % 256).toUInt8,
+           (x % 256).toUInt8, (x % 256).toUInt8]⟩ : ByteArray) = _
+  simp only [PartialState.u64LE, h0, h1, h2, h3, h4, h5, h6, h7]
+
+set_option maxHeartbeats 1600000 in
+/-- `sol_memset_` whose written blob exposes its last 8 bytes as a
+    `↦U64` cell (`hn : r3V = n + 8` fixes the split point). Derived
+    from `call_sol_memset_spec` by reshaping the post through
+    `memBytesIs_append` + `memU64Is_eq_memBytesIs`. -/
+theorem call_sol_memset_split_u64_spec
+    (r0Old r1V r2V r3V n w a pc nCu : Nat) (bsOld : ByteArray)
+    (hbs : bsOld.size = r3V)
+    (hn : r3V = n + 8)
+    (ha : a = r1V + n)
+    (hw0 : w % 256 = r2V % 256)
+    (hw1 : w / 0x100 % 256 = r2V % 256)
+    (hw2 : w / 0x10000 % 256 = r2V % 256)
+    (hw3 : w / 0x1000000 % 256 = r2V % 256)
+    (hw4 : w / 0x100000000 % 256 = r2V % 256)
+    (hw5 : w / 0x10000000000 % 256 = r2V % 256)
+    (hw6 : w / 0x1000000000000 % 256 = r2V % 256)
+    (hw7 : w / 0x100000000000000 % 256 = r2V % 256)
+    (hCu : ∀ s : State,
+        (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_memset))
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
+       ** (r1V ↦Bytes bsOld))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
+       ** ((r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 n)) **
+           (a ↦U64 w))) := by
+  have hsplit : ∀ h',
+      memBytesIs r1V (replicateByte (r2V % 256).toUInt8 r3V) h'
+      ↔ ((r1V ↦Bytes replicateByte (r2V % 256).toUInt8 n) **
+         (a ↦U64 w)) h' := by
+    intro h'
+    rw [hn, replicateByte_split, ha]
+    have happ := memBytesIs_append r1V
+      (replicateByte (r2V % 256).toUInt8 n)
+      (replicateByte (r2V % 256).toUInt8 8) h'
+    rw [replicateByte_size] at happ
+    rw [happ]
+    exact sepConj_iff_congr_right _ (fun h'' => by
+      rw [replicateByte8_eq_u64LE r2V w hw0 hw1 hw2 hw3 hw4 hw5 hw6 hw7]
+      exact (memU64Is_eq_memBytesIs (r1V + n) _ h'').symm) h'
+  -- (the `ha` rewrite above moved the split-cell address to `a`)
+  refine cuTripleWithin_weaken (fun _ x => x) ?_
+    (call_sol_memset_spec r0Old r1V r2V r3V pc nCu bsOld hbs hCu)
+  intro h hh
+  exact (sepConj_iff_congr_right _ (fun h1 =>
+    sepConj_iff_congr_right _ (fun h2 =>
+      sepConj_iff_congr_right _ (fun h3 =>
+        sepConj_iff_congr_right _ (fun h4 => hsplit h4) h3) h2) h1) h).mp hh
+
+set_option maxHeartbeats 1600000 in
+/-- `sol_memset_` over a target whose LAST 8 bytes the lift ALREADY
+    owns as a `↦U64` cell (p_token CloseAccount reads the lamports
+    dword at `[acct+88]` BEFORE zeroing `[acct+48, +96)`): the pre owns
+    the prefix blob + that cell; the post is the shrunk fill blob +
+    the cell holding the fill spread across all eight lanes. -/
+theorem call_sol_memset_presplit_u64_spec
+    (r0Old r1V r2V r3V n w a oldV pc nCu : Nat) (bsOld : ByteArray)
+    (hbs : bsOld.size = n)
+    (hn : r3V = n + 8)
+    (ha : a = r1V + n)
+    (hw0 : w % 256 = r2V % 256)
+    (hw1 : w / 0x100 % 256 = r2V % 256)
+    (hw2 : w / 0x10000 % 256 = r2V % 256)
+    (hw3 : w / 0x1000000 % 256 = r2V % 256)
+    (hw4 : w / 0x100000000 % 256 = r2V % 256)
+    (hw5 : w / 0x10000000000 % 256 = r2V % 256)
+    (hw6 : w / 0x1000000000000 % 256 = r2V % 256)
+    (hw7 : w / 0x100000000000000 % 256 = r2V % 256)
+    (hCu : ∀ s : State,
+        (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_memset))
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
+       ** ((r1V ↦Bytes bsOld) ** (a ↦U64 oldV)))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
+       ** ((r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 n)) **
+           (a ↦U64 w))) := by
+  have hpre : ∀ h',
+      ((r1V ↦Bytes bsOld) ** (a ↦U64 oldV)) h'
+      ↔ memBytesIs r1V (bsOld ++ PartialState.u64LE oldV) h' := by
+    intro h'
+    have happ := memBytesIs_append r1V bsOld (PartialState.u64LE oldV) h'
+    rw [hbs, ← ha] at happ
+    rw [happ]
+    exact sepConj_iff_congr_right _
+      (fun h'' => memU64Is_eq_memBytesIs a oldV h'') h'
+  have hsplit : ∀ h',
+      memBytesIs r1V (replicateByte (r2V % 256).toUInt8 r3V) h'
+      ↔ ((r1V ↦Bytes replicateByte (r2V % 256).toUInt8 n) **
+         (a ↦U64 w)) h' := by
+    intro h'
+    rw [hn, replicateByte_split, ha]
+    have happ := memBytesIs_append r1V
+      (replicateByte (r2V % 256).toUInt8 n)
+      (replicateByte (r2V % 256).toUInt8 8) h'
+    rw [replicateByte_size] at happ
+    rw [happ]
+    exact sepConj_iff_congr_right _ (fun h'' => by
+      rw [replicateByte8_eq_u64LE r2V w hw0 hw1 hw2 hw3 hw4 hw5 hw6 hw7]
+      exact (memU64Is_eq_memBytesIs (r1V + n) _ h'').symm) h'
+  refine cuTripleWithin_weaken ?_ ?_
+    (call_sol_memset_spec r0Old r1V r2V r3V pc nCu
+      (bsOld ++ PartialState.u64LE oldV)
+      (by simp [ByteArray.size_append, hbs, hn]) hCu)
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h1 =>
+      sepConj_iff_congr_right _ (fun h2 =>
+        sepConj_iff_congr_right _ (fun h3 =>
+          sepConj_iff_congr_right _ (fun h4 => (hpre h4)) h3) h2) h1) h).mp hh
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h1 =>
+      sepConj_iff_congr_right _ (fun h2 =>
+        sepConj_iff_congr_right _ (fun h3 =>
+          sepConj_iff_congr_right _ (fun h4 => hsplit h4) h3) h2) h1) h).mp hh
+
+set_option maxHeartbeats 1600000 in
+/-- Like `call_sol_memset_presplit_u64_spec`, but the lift owns the
+    target's last SIXTEEN bytes as TWO `↦U64` cells (p_token
+    CloseAccount reads two account dwords before the zeroing). -/
+theorem call_sol_memset_presplit_2u64_spec
+    (r0Old r1V r2V r3V n w a1 a2 oldV1 oldV2 pc nCu : Nat) (bsOld : ByteArray)
+    (hbs : bsOld.size = n)
+    (hn : r3V = n + 16)
+    (ha1 : a1 = r1V + n)
+    (ha2 : a2 = r1V + n + 8)
+    (hw0 : w % 256 = r2V % 256)
+    (hw1 : w / 0x100 % 256 = r2V % 256)
+    (hw2 : w / 0x10000 % 256 = r2V % 256)
+    (hw3 : w / 0x1000000 % 256 = r2V % 256)
+    (hw4 : w / 0x100000000 % 256 = r2V % 256)
+    (hw5 : w / 0x10000000000 % 256 = r2V % 256)
+    (hw6 : w / 0x1000000000000 % 256 = r2V % 256)
+    (hw7 : w / 0x100000000000000 % 256 = r2V % 256)
+    (hCu : ∀ s : State,
+        (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_memset))
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
+       ** ((r1V ↦Bytes bsOld) ** ((a1 ↦U64 oldV1) ** (a2 ↦U64 oldV2))))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
+       ** ((r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 n)) **
+           ((a1 ↦U64 w) ** (a2 ↦U64 w)))) := by
+  -- Old tail: two adjacent `↦U64` cells ↔ the 16-byte blob of their
+  -- LE encodings.
+  have htail : ∀ h',
+      memBytesIs (r1V + n)
+        (PartialState.u64LE oldV1 ++ PartialState.u64LE oldV2) h'
+      ↔ ((a1 ↦U64 oldV1) ** (a2 ↦U64 oldV2)) h' := by
+    intro h'
+    have happ := memBytesIs_append (r1V + n)
+      (PartialState.u64LE oldV1) (PartialState.u64LE oldV2) h'
+    rw [PartialState.u64LE_size] at happ
+    rw [happ, ← ha2, ← ha1]
+    exact Iff.trans
+      (sepConj_iff_congr_left _
+        (fun h'' => (memU64Is_eq_memBytesIs a1 oldV1 h'').symm) h')
+      (sepConj_iff_congr_right _
+        (fun h'' => (memU64Is_eq_memBytesIs a2 oldV2 h'').symm) h')
+  have hpre : ∀ h',
+      ((r1V ↦Bytes bsOld) ** ((a1 ↦U64 oldV1) ** (a2 ↦U64 oldV2))) h'
+      ↔ memBytesIs r1V
+          (bsOld ++ (PartialState.u64LE oldV1 ++ PartialState.u64LE oldV2)) h' := by
+    intro h'
+    have happ := memBytesIs_append r1V bsOld
+      (PartialState.u64LE oldV1 ++ PartialState.u64LE oldV2) h'
+    rw [hbs] at happ
+    rw [happ]
+    exact sepConj_iff_congr_right _ (fun h'' => (htail h'').symm) h'
+  -- New tail: two `↦U64 w` cells ↔ the 16 replicated fill bytes.
+  have htailw : ∀ h',
+      memBytesIs (r1V + n)
+        (replicateByte (r2V % 256).toUInt8 8
+          ++ replicateByte (r2V % 256).toUInt8 8) h'
+      ↔ ((a1 ↦U64 w) ** (a2 ↦U64 w)) h' := by
+    intro h'
+    have happ := memBytesIs_append (r1V + n)
+      (replicateByte (r2V % 256).toUInt8 8)
+      (replicateByte (r2V % 256).toUInt8 8) h'
+    rw [replicateByte_size] at happ
+    rw [happ, ← ha2, ← ha1,
+        replicateByte8_eq_u64LE r2V w hw0 hw1 hw2 hw3 hw4 hw5 hw6 hw7]
+    exact Iff.trans
+      (sepConj_iff_congr_left _
+        (fun h'' => (memU64Is_eq_memBytesIs a1 w h'').symm) h')
+      (sepConj_iff_congr_right _
+        (fun h'' => (memU64Is_eq_memBytesIs a2 w h'').symm) h')
+  have hsplit : ∀ h',
+      memBytesIs r1V (replicateByte (r2V % 256).toUInt8 r3V) h'
+      ↔ ((r1V ↦Bytes replicateByte (r2V % 256).toUInt8 n) **
+         ((a1 ↦U64 w) ** (a2 ↦U64 w))) h' := by
+    intro h'
+    rw [hn, replicateByte_split _ n 16,
+        (replicateByte_split ((r2V % 256)).toUInt8 8 8 :
+          replicateByte _ 16 = _)]
+    have happ := memBytesIs_append r1V
+      (replicateByte (r2V % 256).toUInt8 n)
+      (replicateByte (r2V % 256).toUInt8 8
+        ++ replicateByte (r2V % 256).toUInt8 8) h'
+    rw [replicateByte_size] at happ
+    rw [happ]
+    exact sepConj_iff_congr_right _ (fun h'' => htailw h'') h'
+  refine cuTripleWithin_weaken ?_ ?_
+    (call_sol_memset_spec r0Old r1V r2V r3V pc nCu
+      (bsOld ++ (PartialState.u64LE oldV1 ++ PartialState.u64LE oldV2))
+      (by simp [ByteArray.size_append, hbs, hn]) hCu)
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h1 =>
+      sepConj_iff_congr_right _ (fun h2 =>
+        sepConj_iff_congr_right _ (fun h3 =>
+          sepConj_iff_congr_right _ (fun h4 => hpre h4) h3) h2) h1) h).mp hh
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h1 =>
+      sepConj_iff_congr_right _ (fun h2 =>
+        sepConj_iff_congr_right _ (fun h3 =>
+          sepConj_iff_congr_right _ (fun h4 => hsplit h4) h3) h2) h1) h).mp hh
+
 end SVM.SBPF

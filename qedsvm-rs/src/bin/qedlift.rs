@@ -592,6 +592,17 @@ mod layout_tests {
             Some("../examples/lean/PToken/MintToRefinement.lean"));
     }
 
+    /// CloseAccount: regenerated 2026-06-12 after the H8 finding —
+    /// Phase C-1 pre-split memset specs (the account dwords read
+    /// before the zeroing become `↦U64` cells; blob never overlaps).
+    #[test]
+    fn p_token_close_account_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_close_account.pcs",
+            "PTokenCloseAccount", None,
+            "../examples/lean/Generated/PTokenCloseAccountTracedLifted.lean",
+            None);
+    }
+
     #[test]
     fn p_token_burn_is_mechanically_emitted() {
         pin_p_token_arm("tests/fixtures/p_token_burn.pcs",
@@ -1298,6 +1309,18 @@ struct SymState {
     /// loop merges them into `hot_regions` and re-walks; this pass's
     /// output is discarded.
     new_hot: Vec<(String, i64, i64)>,
+    /// Memory-syscall blobs with CONSTANT count (and, when known,
+    /// constant fill), registered by `emit_sol_memset` so later reads
+    /// inside the blob can plan a split (H8 Phase C):
+    /// `(root, lo, len, fill)`.
+    blobs: Vec<(String, i64, i64, Option<u8>)>,
+    /// Blob TAIL-split plan, keyed `(root, lo)` → split offset `n`
+    /// (the blob's last `len − n = 8` bytes become a `↦U64` cell).
+    /// Input to the walk; grown via `new_blob_splits` + retry.
+    blob_splits: std::collections::BTreeMap<(String, i64), i64>,
+    /// Split requests discovered THIS pass (a dword read at a blob's
+    /// 8-byte tail). The retry loop merges and re-walks.
+    new_blob_splits: Vec<(String, i64, i64)>,
 }
 
 impl SymState {
@@ -1500,6 +1523,26 @@ impl SymState {
         };
         if wlen > 1 {
             let (root, lo) = canon_addr(&base_expr, off);
+            // A dword read at a registered blob's 8-byte TAIL plans a
+            // blob split (the memset emission then exposes that tail
+            // as a `↦U64` cell — H8 Phase C). Discovered this pass →
+            // request + retry; already planned → the cell exists (the
+            // memset registered it), so the aliased lookup below hits.
+            if matches!(width, Width::Dword) {
+                if let Some((broot, blo, blen, _)) = self.blobs.iter()
+                    .find(|(br, bl, bn, _)| *br == root && *bl <= lo
+                          && lo + 8 <= *bl + *bn)
+                    .cloned() {
+                    let rel = lo - blo;
+                    if rel + 8 == blen
+                        && !self.blob_splits.contains_key(&(broot.clone(), blo)) {
+                        self.new_blob_splits.push((broot, blo, rel));
+                    }
+                    // Non-tail reads inside a blob fall through to the
+                    // overlap detector (fail closed — a middle split
+                    // needs a 3-way spec, not implemented).
+                }
+            }
             // Fully inside a hot (byte-demoted) region: serve byte-wise.
             if self.hot_covers(&root, lo, lo + wlen) {
                 return self.read_hot_wide(base_expr, off, width);
@@ -3214,14 +3257,44 @@ fn emit_sol_memset(
     let ncu_name = format!("nCuMemset{}", idx);
     let hcu_name = format!("hCuMemset{}", idx);
 
-    // Pre atom: `r1V ↦Bytes memsetBs_idx`, size pinned to `r3V`.
-    let size_rendered = r3v.atom_lean();
-    // Overlap accounting for the blob's byte footprint. A symbolic
-    // count can't be span-checked — record a 1-byte footprint at the
-    // base (catches exact-base collisions; full symbolic-length
-    // support is part of the H8 byte-aliasing work).
+    // Pre atom: `r1V ↦Bytes memsetBs_idx`, size pinned to `r3V` (or to
+    // the prefix length under a pre-split, set below).
+    let mut size_rendered = r3v.atom_lean();
     let blob_len = const_of_expr(&r3v).unwrap_or(1).max(1);
-    state.note_access(&r1v, 0, blob_len, format!("blob:{}", r1v.to_lean()));
+    let (root, lo) = canon_addr(&r1v, 0);
+    // Register the blob for split planning (H8 Phase C): a later
+    // dword read at its 8-byte tail re-walks with a split plan.
+    let fill_const = const_of_expr(&r2v).map(|f| (f as u8));
+    if const_of_expr(&r3v).is_some() {
+        state.blobs.push((root.clone(), lo, blob_len, fill_const));
+    }
+    let split_n = state.blob_splits.get(&(root.clone(), lo)).copied();
+    // PRE-SPLIT: the lift ALREADY owns a dword cell at the blob's
+    // 8-byte tail (CloseAccount reads the lamports dword BEFORE the
+    // zeroing memset). The spec then owns prefix-blob + that cell.
+    // Collect TRAILING dword cells the lift already owns inside the
+    // target ([len-8k, len-8(k-1)) for k = 1, 2): the pre-split specs
+    // own prefix-blob + those cells. `tail_cells[0]` is the LAST
+    // 8 bytes.
+    let mut tail_cells: Vec<usize> = Vec::new();
+    if const_of_expr(&r3v).is_some() && fill_const.is_some() {
+        for k in 1..=2i64 {
+            if blob_len < 8 * k + 1 { break; }
+            let want = lo + blob_len - 8 * k;
+            match state.mem.iter().position(|c| {
+                matches!(c.width, Width::Dword) && {
+                    let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+                    cr == root && cd + c.delta == want
+                }
+            }) {
+                Some(i) => tail_cells.push(i),
+                None => break,
+            }
+        }
+    }
+    if !tail_cells.is_empty() {
+        size_rendered = format!("{}", blob_len - 8 * tail_cells.len() as i64);
+    }
     state.pre.push(Atom::Bytes {
         addr: r1v.clone(),
         value: BytesVal::Sym(bs_name.clone()),
@@ -3230,22 +3303,137 @@ fn emit_sol_memset(
     state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_memset"));
     state.syscall_pcs.insert(pc, ".sol_memset");
 
-    // Post effect: `r0 := 0`; the blob becomes `replicateByte (r2V%256) r3V`.
+    // Post effect: `r0 := 0`; the blob becomes `replicateByte (r2V%256) r3V`
+    // — or, under a TAIL SPLIT, `replicateByte … n` plus a `↦U64` cell
+    // holding the fill replicated across all eight lanes
+    // (`call_sol_memset_split_u64_spec`).
     state.write_reg(0, Expr::Const(0));
-    state.byte_blob_post.insert(
-        r1v.to_lean(),
-        BytesVal::Replicate { fill: r2v.clone(), count: r3v.clone() },
-    );
-
-    // The spec call:
-    //   call_sol_memset_spec r0Old r1V r2V r3V pc nCu bsOld hbs hCu
-    let have_line = format!(
-        "have h_{pc} := call_sol_memset_spec {r0} {r1} {r2} {r3} {pc} {ncu} {bs} {hbs} {hcu}",
-        pc = pc,
-        r0 = r0v.atom_lean(), r1 = r1v.atom_lean(),
-        r2 = r2v.atom_lean(), r3 = r3v.atom_lean(),
-        ncu = ncu_name, bs = bs_name, hbs = bs_sz, hcu = hcu_name,
-    );
+    let have_line = match (tail_cells.len(), split_n, fill_const) {
+        (1, _, Some(fill)) => {
+            let ci = tail_cells[0];
+            let n = blob_len - 8;
+            let w: u64 = u64::from_le_bytes([fill; 8]);
+            let a_render = SymState::cell_render(&state.mem[ci]);
+            let old_v = state.mem[ci].value.atom_lean();
+            // Post: the cell now holds the fill spread across all
+            // eight lanes; the blob shrinks to the prefix.
+            state.mem[ci].value = Expr::Const(w as i64);
+            state.note_access(&r1v, 0, n, format!("blob:{}", r1v.to_lean()));
+            state.byte_blob_post.insert(
+                r1v.to_lean(),
+                BytesVal::Replicate { fill: r2v.clone(), count: Expr::Const(n) },
+            );
+            let ha_name = format!("h_msplit_{}", pc);
+            state.side_hyps.push((ha_name.clone(), format!(
+                "{} = {} + {}", a_render, r1v.atom_lean(), n)));
+            // call_sol_memset_presplit_u64_spec r0Old r1V r2V r3V n w a
+            //   oldV pc nCu bsOld hbs hn ha hw0..hw7 hCu
+            format!(
+                "have h_{pc} := call_sol_memset_presplit_u64_spec {r0} {r1} {r2} {r3} \
+{n} {w} ({a}) {oldv} {pc} {ncu} {bs} {hbs} (by decide) {ha} \
+(by decide) (by decide) (by decide) (by decide) (by decide) (by decide) \
+(by decide) (by decide) {hcu}",
+                pc = pc,
+                r0 = r0v.atom_lean(), r1 = r1v.atom_lean(),
+                r2 = r2v.atom_lean(), r3 = r3v.atom_lean(),
+                n = n, w = w, a = a_render, oldv = old_v, ha = ha_name,
+                ncu = ncu_name, bs = bs_name, hbs = bs_sz, hcu = hcu_name,
+            )
+        }
+        (2, _, Some(fill)) => {
+            // tail_cells[0] = last 8 bytes (a2), [1] = the 8 before (a1).
+            let (c2, c1) = (tail_cells[0], tail_cells[1]);
+            let n = blob_len - 16;
+            let w: u64 = u64::from_le_bytes([fill; 8]);
+            let a1_render = SymState::cell_render(&state.mem[c1]);
+            let a2_render = SymState::cell_render(&state.mem[c2]);
+            let old1 = state.mem[c1].value.atom_lean();
+            let old2 = state.mem[c2].value.atom_lean();
+            state.mem[c1].value = Expr::Const(w as i64);
+            state.mem[c2].value = Expr::Const(w as i64);
+            state.note_access(&r1v, 0, n, format!("blob:{}", r1v.to_lean()));
+            state.byte_blob_post.insert(
+                r1v.to_lean(),
+                BytesVal::Replicate { fill: r2v.clone(), count: Expr::Const(n) },
+            );
+            let ha1_name = format!("h_msplit_{}_a1", pc);
+            let ha2_name = format!("h_msplit_{}_a2", pc);
+            state.side_hyps.push((ha1_name.clone(), format!(
+                "{} = {} + {}", a1_render, r1v.atom_lean(), n)));
+            state.side_hyps.push((ha2_name.clone(), format!(
+                "{} = {} + {} + 8", a2_render, r1v.atom_lean(), n)));
+            // call_sol_memset_presplit_2u64_spec r0Old r1V r2V r3V n w
+            //   a1 a2 oldV1 oldV2 pc nCu bsOld hbs hn ha1 ha2 hw0..hw7 hCu
+            format!(
+                "have h_{pc} := call_sol_memset_presplit_2u64_spec {r0} {r1} {r2} {r3} \
+{n} {w} ({a1}) ({a2}) {old1} {old2} {pc} {ncu} {bs} {hbs} (by decide) {ha1} {ha2} \
+(by decide) (by decide) (by decide) (by decide) (by decide) (by decide) \
+(by decide) (by decide) {hcu}",
+                pc = pc,
+                r0 = r0v.atom_lean(), r1 = r1v.atom_lean(),
+                r2 = r2v.atom_lean(), r3 = r3v.atom_lean(),
+                n = n, w = w, a1 = a1_render, a2 = a2_render,
+                old1 = old1, old2 = old2, ha1 = ha1_name, ha2 = ha2_name,
+                ncu = ncu_name, bs = bs_name, hbs = bs_sz, hcu = hcu_name,
+            )
+        }
+        (0, Some(n), Some(fill)) => {
+            // Footprints: shrunk blob + the split cell.
+            state.note_access(&r1v, 0, n, format!("blob:{}", r1v.to_lean()));
+            state.note_access(&r1v, n, 8, format!("blobtail:{}", r1v.to_lean()));
+            state.byte_blob_post.insert(
+                r1v.to_lean(),
+                BytesVal::Replicate { fill: r2v.clone(), count: Expr::Const(n) },
+            );
+            // The split `↦U64` cell, registered at the blob-base
+            // rendering; later reads at other renderings reach it via
+            // the Phase A aliased lookup + `h_alias` equation.
+            let w: u64 = u64::from_le_bytes([fill; 8]);
+            state.mem.push(MemCell {
+                addr_base: r1v.clone(), addr_off: n,
+                width: Width::Dword, value: Expr::Const(w as i64), delta: 0,
+            });
+            // The split-cell address equation, consumer-discharged
+            // like the h_addr* abstractions.
+            let ha_name = format!("h_msplit_{}", pc);
+            state.side_hyps.push((ha_name.clone(), format!(
+                "effectiveAddr ({}) ({}) = {} + {}",
+                r1v.to_lean(), n, r1v.atom_lean(), n)));
+            // call_sol_memset_split_u64_spec r0Old r1V r2V r3V n w a pc
+            //   nCu bsOld hbs hn ha hw0..hw7 hCu
+            format!(
+                "have h_{pc} := call_sol_memset_split_u64_spec {r0} {r1} {r2} {r3} \
+{n} {w} (effectiveAddr ({r1raw}) ({n})) {pc} {ncu} {bs} {hbs} (by decide) {ha} \
+(by decide) (by decide) (by decide) (by decide) (by decide) (by decide) \
+(by decide) (by decide) {hcu}",
+                pc = pc,
+                r0 = r0v.atom_lean(), r1 = r1v.atom_lean(),
+                r2 = r2v.atom_lean(), r3 = r3v.atom_lean(),
+                n = n, w = w, r1raw = r1v.to_lean(), ha = ha_name,
+                ncu = ncu_name, bs = bs_name, hbs = bs_sz, hcu = hcu_name,
+            )
+        }
+        _ => {
+            // Overlap accounting for the blob's byte footprint. A
+            // symbolic count records a 1-byte footprint at the base
+            // (no split applies).
+            // (catches exact-base collisions; full symbolic-length
+            // support is part of the H8 byte-aliasing work).
+            state.note_access(&r1v, 0, blob_len, format!("blob:{}", r1v.to_lean()));
+            state.byte_blob_post.insert(
+                r1v.to_lean(),
+                BytesVal::Replicate { fill: r2v.clone(), count: r3v.clone() },
+            );
+            // call_sol_memset_spec r0Old r1V r2V r3V pc nCu bsOld hbs hCu
+            format!(
+                "have h_{pc} := call_sol_memset_spec {r0} {r1} {r2} {r3} {pc} {ncu} {bs} {hbs} {hcu}",
+                pc = pc,
+                r0 = r0v.atom_lean(), r1 = r1v.atom_lean(),
+                r2 = r2v.atom_lean(), r3 = r3v.atom_lean(),
+                ncu = ncu_name, bs = bs_name, hbs = bs_sz, hcu = hcu_name,
+            )
+        }
+    };
     spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
     block_pcs.push(pc);
 }
@@ -4939,6 +5127,8 @@ fn lift_one(
     // attempt cap is a safety net.
     let mut hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>> =
         Default::default();
+    let mut blob_splits: std::collections::BTreeMap<(String, i64), i64> =
+        Default::default();
     let mut walk_attempts = 0usize;
     let (mut state, spec_calls, block_pcs, exit_pc) = loop {
     walk_attempts += 1;
@@ -4965,6 +5155,7 @@ fn lift_one(
     let exit_pc: usize;
     let mut state = SymState::default();
     state.hot_regions = hot_regions.clone();
+    state.blob_splits = blob_splits.clone();
     {
         // In trace mode the walk follows the recorded PC sequence; `ti`
         // is the cursor into it and `pc_iter` mirrors `trace[ti]`.
@@ -5252,6 +5443,13 @@ fn lift_one(
         }
     }
 
+    // Blob tail-splits requested: record and re-walk.
+    if !state.new_blob_splits.is_empty() {
+        for (root, lo, n) in state.new_blob_splits.drain(..) {
+            blob_splits.insert((root, lo), n);
+        }
+        continue;
+    }
     // Demotion requested: merge the new spans into the hot set and
     // re-walk (this pass's output is discarded).
     if !state.new_hot.is_empty() {

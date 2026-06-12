@@ -150,7 +150,12 @@ lean_lib Examples where
     -- demotion of the width-mixed input-header reads is served by
     -- `ldxdw_bytes_spec` over per-byte atoms).
     `Generated.PTokenMintToTracedLifted,
-    `Generated.PTokenBurnTracedLifted
+    `Generated.PTokenBurnTracedLifted,
+    -- CloseAccount: RESTORED via H8 Phase C-1 (the zeroing memset's
+    -- pre-split specs expose the account dwords the program reads
+    -- BEFORE the memset as `↦U64` cells, so the blob and the cells
+    -- never overlap; `call_sol_memset_presplit_{,2}u64_spec`).
+    `Generated.PTokenCloseAccountTracedLifted
     -- RETIREMENT NOTE (soundness audit H7/H8, 2026-06-11/12). Four
     -- p_token traced lifts and the two refinements built on them are
     -- retired pending regeneration, because qedlift's walker keyed
