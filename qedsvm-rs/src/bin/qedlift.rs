@@ -603,6 +603,18 @@ mod layout_tests {
             None);
     }
 
+    /// InitializeMint2: the full H8 gauntlet — faithful `sol_get_sysvar`
+    /// (cells17), stw tail-zeroing (byte demotion), and a rent dword
+    /// read spanning both (per-slot address parameters). Trace
+    /// re-captured under the H7-faithful VM.
+    #[test]
+    fn p_token_initialize_mint2_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_initialize_mint2.pcs",
+            "PTokenInitializeMint2", None,
+            "../examples/lean/Generated/PTokenInitializeMint2TracedLifted.lean",
+            None);
+    }
+
     #[test]
     fn p_token_burn_is_mechanically_emitted() {
         pin_p_token_arm("tests/fixtures/p_token_burn.pcs",
@@ -1107,6 +1119,10 @@ enum Atom {
     /// wrapper — `memBytesIs` takes a bare Nat), matching
     /// `call_sol_memset_spec`'s precondition shape.
     Bytes { addr: Expr, value: BytesVal },
+    /// A `↦Bytes32` atom referencing a NAMED Lean `ByteArray` constant
+    /// (e.g. `SysvarData.rentId` for `sol_get_sysvar`'s id read).
+    /// Identical pre and post (read-only).
+    Bytes32 { addr: Expr, name: String },
 }
 
 
@@ -1321,6 +1337,13 @@ struct SymState {
     /// Split requests discovered THIS pass (a dword read at a blob's
     /// 8-byte tail). The retry loop merges and re-walks.
     new_blob_splits: Vec<(String, i64, i64)>,
+    /// Per-SLOT alias equations for the current instruction: a hot
+    /// wide access whose byte slots live under foreign renderings
+    /// (e.g. the sysvar byte cell at `(r2v, 16)` consumed by a dword
+    /// read based at `(r10, -8)`). Each `(lhs, rhs)` becomes a
+    /// `h_alias_<pc>_<i> : lhs = rhs` side hypothesis, and the spec
+    /// call is followed by `rw [h_alias_<pc>_<i>, …] at h_<pc>`.
+    pending_slot_aliases: Vec<(String, String)>,
 }
 
 impl SymState {
@@ -1414,10 +1437,20 @@ impl SymState {
             self.new_hot.push((root.to_string(), nlo, nhi));
         }
     }
+    /// The address rendering the `*_bytes_spec` atoms use for slot `k`
+    /// of an access at `(base, off)`.
+    fn slot_expected_render(base: &Expr, off: i64, k: i64) -> String {
+        if k == 0 {
+            format!("effectiveAddr ({}) ({})", base.to_lean(), off)
+        } else {
+            format!("effectiveAddr ({}) ({}) + {}", base.to_lean(), off, k)
+        }
+    }
     /// Resolve (reusing or freshly materializing) the byte cell for
     /// slot `k` of a hot wide access at `(base, off)`. Returns the
-    /// cell index. Fails closed (overlap_errors) when the slot exists
-    /// under a rendering the spec's atom shape can't reference.
+    /// cell index. A slot under a FOREIGN rendering gets a per-slot
+    /// alias equation (`pending_slot_aliases`) rewriting the spec's
+    /// atom onto the cell's rendering.
     fn hot_slot(&mut self, base_expr: &Expr, off: i64, k: i64) -> usize {
         let (root, lo) = canon_addr(base_expr, off);
         let base_lean = base_expr.to_lean();
@@ -1432,11 +1465,12 @@ impl SymState {
                 && ((k == 0 && self.mem[i].delta == 0)
                     || self.mem[i].delta == k);
             if !render_ok {
-                self.overlap_errors.push(format!(
-                    "hot-region access at ({})+{}: byte slot {} exists \
-                     under a different rendering ({}); the per-slot alias \
-                     rewrite is not implemented yet (H8 Phase B)",
-                    base_lean, off, k, Self::cell_render(&self.mem[i])));
+                // `haK : <cell render> = <expected slot address>` —
+                // the spec's slot-address parameter equation.
+                self.pending_slot_aliases.push((
+                    Self::cell_render(&self.mem[i]),
+                    Self::slot_expected_render(base_expr, off, k),
+                ));
             }
             // Wide-access slots need a `< 256` bound for a bare var.
             if let Expr::InitMem(name) = &self.mem[i].value {
@@ -1920,7 +1954,10 @@ fn spec_call_for(
                 let (root, lo) = canon_addr(&bexpr, off);
                 if dst != src && state.hot_covers(&root, lo, lo + 8) {
                     let mut args = String::new();
+                    let mut addrs = String::new();
                     let mut bounds = String::new();
+                    let mut haddrs = String::new();
+                    let mut n_alias = 0usize;
                     let mut fresh = state.fresh;
                     for k in 0..8i64 {
                         let found = state.mem.iter().find(|c| {
@@ -1931,6 +1968,20 @@ fn spec_call_for(
                         });
                         match found {
                             Some(c) => {
+                                let render_ok = c.addr_base.to_lean() == bexpr.to_lean()
+                                    && c.addr_off == off
+                                    && ((k == 0 && c.delta == 0) || c.delta == k);
+                                if render_ok {
+                                    addrs.push_str(&format!(" ({})",
+                                        SymState::slot_expected_render(&bexpr, off, k)));
+                                    haddrs.push_str(" rfl");
+                                } else {
+                                    addrs.push_str(&format!(" ({})",
+                                        SymState::cell_render(c)));
+                                    haddrs.push_str(&format!(
+                                        " h_alias_{}_{}", pc, n_alias));
+                                    n_alias += 1;
+                                }
                                 args.push_str(&format!(" {}", c.value.atom_lean()));
                                 match &c.value {
                                     Expr::InitMem(n) =>
@@ -1941,6 +1992,9 @@ fn spec_call_for(
                             None => {
                                 let n = format!("oldMemB_{}", fresh);
                                 fresh += 1;
+                                addrs.push_str(&format!(" ({})",
+                                    SymState::slot_expected_render(&bexpr, off, k)));
+                                haddrs.push_str(" rfl");
                                 args.push_str(&format!(" {}", n));
                                 bounds.push_str(&format!(" h{}_lt", n));
                             }
@@ -1952,9 +2006,9 @@ fn spec_call_for(
                     return Some(SpecCall {
                         hyp_name: hyp_name.clone(),
                         have_line: format!(
-                            "have {} := ldxdw_bytes_spec {} {} {} ({}) ({}){} {} (by decide){}",
+                            "have {} := ldxdw_bytes_spec {} {} {} ({}) ({}){}{} {} (by decide){}{}",
                             hyp_name, reg(dst), reg(src), offl,
-                            v_old_dst, base_addr, args, pc, bounds,
+                            v_old_dst, base_addr, args, addrs, pc, bounds, haddrs,
                         ),
                     });
                 }
@@ -2236,7 +2290,10 @@ fn spec_call_for(
                 let (root, lo) = canon_addr(&bexpr, off);
                 if state.hot_covers(&root, lo, lo + 4) {
                     let mut bargs = String::new();
+                    let mut addrs = String::new();
                     let mut bounds = String::new();
+                    let mut haddrs = String::new();
+                    let mut n_alias = 0usize;
                     let mut fresh = state.fresh;
                     for k in 0..4i64 {
                         let found = state.mem.iter().find(|c| {
@@ -2247,6 +2304,20 @@ fn spec_call_for(
                         });
                         match found {
                             Some(c) => {
+                                let render_ok = c.addr_base.to_lean() == bexpr.to_lean()
+                                    && c.addr_off == off
+                                    && ((k == 0 && c.delta == 0) || c.delta == k);
+                                if render_ok {
+                                    addrs.push_str(&format!(" ({})",
+                                        SymState::slot_expected_render(&bexpr, off, k)));
+                                    haddrs.push_str(" rfl");
+                                } else {
+                                    addrs.push_str(&format!(" ({})",
+                                        SymState::cell_render(c)));
+                                    haddrs.push_str(&format!(
+                                        " h_alias_{}_{}", pc, n_alias));
+                                    n_alias += 1;
+                                }
                                 bargs.push_str(&format!(" {}", c.value.atom_lean()));
                                 match &c.value {
                                     Expr::InitMem(n) =>
@@ -2257,6 +2328,9 @@ fn spec_call_for(
                             None => {
                                 let n = format!("oldMemB_{}", fresh);
                                 fresh += 1;
+                                addrs.push_str(&format!(" ({})",
+                                    SymState::slot_expected_render(&bexpr, off, k)));
+                                haddrs.push_str(" rfl");
                                 bargs.push_str(&format!(" {}", n));
                                 bounds.push_str(&format!(" h{}_lt", n));
                             }
@@ -2267,10 +2341,10 @@ fn spec_call_for(
                     return Some(SpecCall {
                         hyp_name: hyp_name.clone(),
                         have_line: format!(
-                            "have {} := stw_bytes_spec {} {} {} ({}){} {} {} {} {} {}{} \
-(by decide) (by decide) (by decide) (by decide)",
+                            "have {} := stw_bytes_spec {} {} {} ({}){} {} {} {} {}{} {}{} \
+(by decide) (by decide) (by decide) (by decide){}",
                             hyp_name, reg(dst), offl, imm, base_addr, bargs,
-                            cb[0], cb[1], cb[2], cb[3], pc, bounds,
+                            cb[0], cb[1], cb[2], cb[3], addrs, pc, bounds, haddrs,
                         ),
                     });
                 }
@@ -2647,11 +2721,28 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             // `ldxh_spec` post is `dst ↦ᵣ v` (the ↦U16 cell value, raw —
             // bounded < 2^16 by the surfaced hv). Mirrors ldxdw, not ldxb.
             let raw = state.read_mem(src, off, Width::Halfword);
+            // A reloaded compound halfword surfaces its `< 2^16` bound
+            // as the `hReloadLt_<pc>` side hyp the spec references
+            // (mirrors the dword arm).
+            if !matches!(raw, Expr::InitMem(_)) {
+                let pcn = pc.unwrap_or(0);
+                state.side_hyps.push((
+                    format!("hReloadLt_{}", pcn),
+                    format!("{} < 2 ^ 16", raw.to_lean()),
+                ));
+            }
             state.write_reg(dst, raw);
         }
         LD_W_REG => {
             // `ldxw_spec` post is `dst ↦ᵣ v` (the ↦U32 cell value, raw).
             let raw = state.read_mem(src, off, Width::Word);
+            if !matches!(raw, Expr::InitMem(_)) {
+                let pcn = pc.unwrap_or(0);
+                state.side_hyps.push((
+                    format!("hReloadLt_{}", pcn),
+                    format!("{} < 2 ^ 32", raw.to_lean()),
+                ));
+            }
             state.write_reg(dst, raw);
         }
         LD_DW_REG => {
@@ -3172,6 +3263,9 @@ fn atom_to_lean_with_subst(
             // the value `generalize`) produces.
             format!("({} ↦Bytes {})", sub(addr), value.to_lean())
         }
+        Atom::Bytes32 { addr, name } => {
+            format!("({} ↦Bytes32 {})", sub(addr), name)
+        }
     }
 }
 
@@ -3438,6 +3532,144 @@ fn emit_sol_memset(
     block_pcs.push(pc);
 }
 
+/// The 32-byte rent sysvar id (`SysvarRent111…`), mirroring
+/// `SysvarData.rentId`.
+const RENT_ID_BYTES: [u8; 32] = [
+    0x06, 0xa7, 0xd5, 0x17, 0x19, 0x2c, 0x5c, 0x51,
+    0x21, 0x8c, 0xc9, 0x4c, 0x3d, 0x4a, 0xf1, 0x7f,
+    0x58, 0xda, 0xee, 0x08, 0x9b, 0xa1, 0xfd, 0x44,
+    0xe3, 0xdb, 0xd9, 0x8a, 0x00, 0x00, 0x00, 0x00,
+];
+
+/// Emit `sol_get_sysvar` (H8 Phase C-2). Supported shape: the RENT id
+/// (read from the binary's RO region at the constant `r1` address),
+/// offset 0, length 17 — pinocchio's `Rent::get()`. The out region is
+/// owned as TWO `↦U64` cells + one `↦ₘ` byte (pre: fresh; post: the
+/// concrete mollusk-default rent values 3480 / 2.0-bits / 50), shaped
+/// to `call_sol_get_sysvar_cells17_spec`; address-bound and
+/// disjointness side conditions are surfaced as hypotheses.
+fn emit_sol_get_sysvar(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+    ctx: &BinaryCtx,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1);
+    let r2v = state.read_reg(2);
+    let r3v = state.read_reg(3);
+    let r4v = state.read_reg(4);
+    let id_addr = const_of_expr(&r1v).ok_or_else(|| format!(
+        "get_sysvar at pc {pc}: symbolic sysvar-id address"))? as u64;
+    let off = const_of_expr(&r3v).ok_or_else(|| format!(
+        "get_sysvar at pc {pc}: symbolic offset"))?;
+    let len = const_of_expr(&r4v).ok_or_else(|| format!(
+        "get_sysvar at pc {pc}: symbolic length"))?;
+    let region = ctx.executable.get_ro_region();
+    let rel = id_addr.checked_sub(region.vm_addr)
+        .filter(|r| r + 32 <= region.len)
+        .ok_or_else(|| format!(
+            "get_sysvar at pc {pc}: id address {id_addr:#x} outside the \
+             RO region"))?;
+    let id_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts((region.host_addr + rel) as *const u8, 32)
+    };
+    if id_bytes != RENT_ID_BYTES || off != 0 || len != 17 {
+        return Err(format!(
+            "get_sysvar at pc {pc}: only the RENT id with offset 0 / \
+             length 17 is modelled (cells17 shape); got id {:02x?}…, \
+             offset {off}, length {len}", &id_bytes[..8]).into());
+    }
+
+    let idx = state.fresh; state.fresh += 1;
+    let ncu_name = format!("nCuGetSysvar{}", idx);
+    let hcu_name = format!("hCuGetSysvar{}", idx);
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_get_sysvar"));
+    state.syscall_pcs.insert(pc, ".sol_get_sysvar");
+
+    // The id bytes, as the named Lean constant (read-only, framed).
+    state.pre.push(Atom::Bytes32 {
+        addr: r1v.clone(), name: "SysvarData.rentId".to_string(),
+    });
+    state.note_access(&r1v, 0, 32, format!("sysvarId:{}", r1v.to_lean()));
+
+    // The out region as three fresh cells (their PRE values), then
+    // overwritten with the concrete rent bytes (the POST).
+    let mut cells: Vec<(i64, Width, u32, i64)> = vec![
+        (0, Width::Dword, 64, 3480),
+        (8, Width::Dword, 64, 4611686018427387904),
+        (16, Width::Byte, 8, 50),
+    ];
+    let mut old_names: Vec<String> = Vec::new();
+    for (coff, w, bits, post) in cells.drain(..) {
+        let i = state.fresh; state.fresh += 1;
+        let name = format!("{}_{}",
+            if matches!(w, Width::Dword) { "oldMemD" } else { "oldMemB" }, i);
+        state.u64_load_vars.push((name.clone(), bits));
+        let v = Expr::InitMem(name.clone());
+        state.mem.push(MemCell {
+            addr_base: r2v.clone(), addr_off: coff, width: w,
+            value: v.clone(), delta: 0,
+        });
+        state.pre.push(Atom::Mem {
+            addr_base: r2v.clone(), addr_off: coff, width: w,
+            value: v, delta: 0,
+        });
+        let wl = if matches!(w, Width::Dword) { 8 } else { 1 };
+        state.note_access(&r2v, coff, wl,
+            format!("sysvarOut:{}@{}", r2v.to_lean(), coff));
+        old_names.push(name);
+        let ci = state.mem.len() - 1;
+        state.mem[ci].value = Expr::Const(post);
+    }
+    state.write_reg(0, Expr::Const(0));
+
+    // Surfaced side conditions (symbolic in the out address — the
+    // consumer discharges them by `decide` at instantiation).
+    let out = r2v.to_lean();
+    let out_atom = r2v.atom_lean();
+    let id_atom = r1v.atom_lean();
+    let h_out = format!("h_sysvar_out_{}", pc);
+    let h_outlen = format!("h_sysvar_outlen_{}", pc);
+    let h_disj = format!("h_sysvar_disj_{}", pc);
+    let ha1 = format!("h_sysvar_a1_{}", pc);
+    let ha2 = format!("h_sysvar_a2_{}", pc);
+    state.side_hyps.push((h_out.clone(),
+        format!("{} < Memory.INPUT_START", out_atom)));
+    state.side_hyps.push((h_outlen.clone(),
+        format!("{} + 17 < U64_MODULUS", out_atom)));
+    state.side_hyps.push((h_disj.clone(),
+        format!("{} + 32 ≤ {} ∨ {} + 17 ≤ {}",
+            id_atom, out_atom, out_atom, id_atom)));
+    state.side_hyps.push((ha1.clone(),
+        format!("effectiveAddr ({}) (8) = {} + 8", out, out_atom)));
+    state.side_hyps.push((ha2.clone(),
+        format!("effectiveAddr ({}) (16) = {} + 8 + 8", out, out_atom)));
+
+    // call_sol_get_sysvar_cells17_spec r0Old idA outA offV lenV a1 a2
+    //   oldD0 oldD1 oldB w0 w1 wb idBytes buf slice pc nCu
+    //   hIdSize hBuf hInRange hOutAddr hOffLen hOutLen hLen hSliceSize
+    //   hSlice hsl hwb hob ha1 ha2 h_disj hCu
+    let have_line = format!(
+        "have h_{pc} := call_sol_get_sysvar_cells17_spec {r0} ({id}) ({out}) 0 17 \
+(effectiveAddr ({outraw}) (8)) (effectiveAddr ({outraw}) (16)) \
+{o0} {o1} {o2} 3480 4611686018427387904 50 \
+SysvarData.rentId SysvarData.rentBuf SysvarData.rentBuf {pc} {ncu} \
+rfl SysvarData.sysvarBuffer_rent (by decide) {hout} (by decide) {houtlen} \
+rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) h{o2}_lt \
+{ha1} {ha2} {hdisj} {hcu}",
+        pc = pc, r0 = r0v.atom_lean(), id = r1v.to_lean(),
+        out = out, outraw = out,
+        o0 = old_names[0], o1 = old_names[1], o2 = old_names[2],
+        ncu = ncu_name, hout = h_out, houtlen = h_outlen,
+        ha1 = ha1, ha2 = ha2, hdisj = h_disj, hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
+    block_pcs.push(pc);
+    Ok(())
+}
+
 /// Emit the lift artifacts for an "r0-only" host syscall — one whose
 /// model effect is just `r0 := 0` (no memory, no output buffer): e.g.
 /// `sol_get_sysvar` (`Misc.execGetSysvar`) and `sol_log_`
@@ -3504,6 +3736,10 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                     .cloned()
                     .unwrap_or_else(|| value.clone());
                 out.push(Atom::Bytes { addr: addr.clone(), value: post_val });
+            }
+            Atom::Bytes32 { addr, name } => {
+                // Read-only named constant (sysvar id) — unchanged.
+                out.push(Atom::Bytes32 { addr: addr.clone(), name: name.clone() });
             }
         }
     }
@@ -5029,7 +5265,11 @@ fn lift_one(
     // call_local + exit_pops composition) blow past the defaults
     // during `slBlockIter`'s isDefEq work.
     out.push_str("set_option maxRecDepth 65536\n");
-    out.push_str("set_option maxHeartbeats 4000000\n\n");
+    // Hot (byte-demoted) regions leave closed Horner byte-combos in
+    // the chain; their defeq normalization reduces numerals through
+    // the unary Nat model and needs a far larger budget. The walk
+    // hasn't run yet here — patched after it (see `@@HEARTBEATS@@`).
+    out.push_str("set_option maxHeartbeats @@HEARTBEATS@@\n\n");
     out.push_str(&format!("namespace Examples.Lifted.{}\n\n", module_name));
 
     out.push_str("open SVM.SBPF\n\n");
@@ -5236,34 +5476,13 @@ fn lift_one(
                             continue;
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
-                            // FAIL CLOSED (soundness audit H7). The model's
-                            // `sol_get_sysvar` now WRITES the output buffer
-                            // (`buf[r3..r3+r4)` of the cached sysvar to *r2)
-                            // and its CU is length-dependent, so the old
-                            // r0-only emission would frame memory the real
-                            // syscall mutates — a false-on-chain claim.
-                            // A faithful emission must thread the new
-                            // `call_sol_get_sysvar_spec` (id Bytes32 atom
-                            // from rodata, output blob, concrete slice) AND
-                            // alias the written region into the walker's
-                            // cell map so post-syscall loads read the
-                            // sysvar bytes. That cell-aliasing machinery is
-                            // the same feature needed to fix the walker's
-                            // OVERLAPPING-access vacuity (e.g. the 7-byte
-                            // tail-zeroing idiom `stw [r10-4]; stw [r10-7]`
-                            // emits overlapping `↦U32` pre-atoms, making
-                            // the emitted sepConj unsatisfiable). Until
-                            // both land, refuse to lift across this
-                            // syscall rather than emit an unsound or
-                            // vacuous theorem.
-                            return Err(format!(
-                                "call_imm at pc {pc_iter} is `sol_get_sysvar`: lifting \
-                                 across it is temporarily unsupported — the model now \
-                                 fills the output buffer (H7 fix), and emitting the \
-                                 pre-H7 r0-only shape would claim memory is unchanged \
-                                 where the chain writes it. Needs the buffer-write \
-                                 emission for `call_sol_get_sysvar_spec` (planned: \
-                                 walker cell-aliasing of syscall-written regions).").into());
+                            // H8 Phase C-2: faithful buffer-writing
+                            // emission (rent / offset 0 / length 17 —
+                            // anything else fails closed inside).
+                            emit_sol_get_sysvar(&mut state, &mut spec_calls,
+                                &mut block_pcs, pc_iter, ctx)?;
+                            ti += 1;
+                            continue;
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_log_") {
                             emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
@@ -5399,6 +5618,12 @@ fn lift_one(
                     format!("{} = {}", lhs, rhs),
                 ));
             }
+            for (i, (lhs, rhs)) in state.pending_slot_aliases.drain(..).enumerate() {
+                state.side_hyps.push((
+                    format!("h_alias_{}_{}", pc_iter, i),
+                    format!("{} = {}", lhs, rhs),
+                ));
+            }
 
             // PC progression. In trace mode the next PC is simply the
             // next recorded entry (the loop top reloads `pc_iter` from
@@ -5479,6 +5704,9 @@ fn lift_one(
     }
     break (state, spec_calls, block_pcs, exit_pc);
     };
+    let out_patched = out.replace("@@HEARTBEATS@@",
+        if state.hot_regions.is_empty() { "4000000" } else { "16000000" });
+    let mut out = out_patched;
 
     // Build the CR as a Lean string. `sl_block_auto` requires the CR
     // to appear as a literal `union`-of-`singleton`s in the theorem
@@ -5597,6 +5825,7 @@ fn lift_one(
                 push_var(addr_base, &mut vars);
                 push_var(value, &mut vars);
             }
+            Atom::Bytes32 { addr, .. } => push_var(addr, &mut vars),
             // The blob's `Sym` name is a `ByteArray` (surfaced via
             // `memset_blobs`, not here); the address's Nat leaves were
             // already collected when the syscall's registers were read.
@@ -5688,11 +5917,21 @@ fn lift_one(
     // Skip values that are already address abstractions (folded via
     // sl_rw_abs) and bare initials/constants (cheap, nothing to gain).
     let value_gens: Vec<String> = if use_block_iter {
-        let is_complex = |e: &Expr| matches!(e,
-            Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::WrapMul(..) | Expr::NatAdd(..) |
-            Expr::Mod(..) | Expr::AndU64Imm(..) | Expr::LshU64Imm(..) |
-            Expr::RshU64Imm(..) | Expr::StHalfImm(..) | Expr::StWordImm(..) |
-            Expr::StDwordImm(..) | Expr::Raw(..) | Expr::ByteCombo(..));
+        let is_complex = |e: &Expr| match e {
+            // An all-constant Horner combo is a CLOSED term —
+            // generalizing it makes `kabstract` defeq-check the
+            // reducible literal against every numeral in the goal
+            // (a whnf blowup). Leave it inline; branch hypotheses
+            // over it are consumer-decidable.
+            Expr::ByteCombo(vs) =>
+                vs.iter().any(|v| !matches!(v, Expr::Const(_))),
+            Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::WrapMul(..)
+            | Expr::NatAdd(..) | Expr::Mod(..) | Expr::AndU64Imm(..)
+            | Expr::LshU64Imm(..) | Expr::RshU64Imm(..)
+            | Expr::StHalfImm(..) | Expr::StWordImm(..)
+            | Expr::StDwordImm(..) | Expr::Raw(..) => true,
+            _ => false,
+        };
         let mut seen = std::collections::BTreeSet::new();
         let mut gens = Vec::new();
         for atom in pre.iter().chain(post.iter()) {
@@ -5702,7 +5941,7 @@ fn lift_one(
             let v = match atom {
                 Atom::Reg(_, v) => v,
                 Atom::Mem { value, .. } => value,
-                Atom::Bytes { .. } => continue,
+                Atom::Bytes { .. } | Atom::Bytes32 { .. } => continue,
             };
             if is_complex(v) {
                 // Render with sub-expression abstractions folded, so the

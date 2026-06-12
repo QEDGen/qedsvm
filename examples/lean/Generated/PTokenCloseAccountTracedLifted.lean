@@ -19,7 +19,7 @@ import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
 
 set_option maxRecDepth 65536
-set_option maxHeartbeats 4000000
+set_option maxHeartbeats 16000000
 
 namespace Examples.Lifted.PTokenCloseAccount
 
@@ -370,7 +370,7 @@ theorem PTokenCloseAccount_lifted_spec
   have h_309 := jne_imm_taken_spec .r2 165 (oldMemD_3) 309 312 h_branch3
   have h_312 := mov64_reg_spec .r0 .r1 (vR0Old) (baseAddr) 312 (by decide)
   have h_313 := add64_imm_spec .r0 8 (baseAddr) 313 (by decide)
-  have h_314 := ldxdw_bytes_spec .r7 .r1 0 (vR7Old) (baseAddr) oldMemB_0 oldMemB_4 oldMemB_5 oldMemB_6 oldMemB_7 oldMemB_8 oldMemB_9 oldMemB_10 314 (by decide) holdMemB_0_lt holdMemB_4_lt holdMemB_5_lt holdMemB_6_lt holdMemB_7_lt holdMemB_8_lt holdMemB_9_lt holdMemB_10_lt
+  have h_314 := ldxdw_bytes_spec .r7 .r1 0 (vR7Old) (baseAddr) oldMemB_0 oldMemB_4 oldMemB_5 oldMemB_6 oldMemB_7 oldMemB_8 oldMemB_9 oldMemB_10 (effectiveAddr (baseAddr) (0)) (effectiveAddr (baseAddr) (0) + 1) (effectiveAddr (baseAddr) (0) + 2) (effectiveAddr (baseAddr) (0) + 3) (effectiveAddr (baseAddr) (0) + 4) (effectiveAddr (baseAddr) (0) + 5) (effectiveAddr (baseAddr) (0) + 6) (effectiveAddr (baseAddr) (0) + 7) 314 (by decide) holdMemB_0_lt holdMemB_4_lt holdMemB_5_lt holdMemB_6_lt holdMemB_7_lt holdMemB_8_lt holdMemB_9_lt holdMemB_10_lt rfl rfl rfl rfl rfl rfl rfl rfl
   have h_315 := jeq_imm_not_taken_spec .r7 0 (oldMemB_0 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * (oldMemB_7 + 256 * (oldMemB_8 + 256 * (oldMemB_9 + 256 * oldMemB_10))))))) 315 418 h_branch4
   have h_316 := stxdw_spec .r10 .r0 (-2072) (vR10Old) (wrapAdd baseAddr (toU64 8)) oldMemD_11 316
   have h_317 := ldxdw_spec .r2 .r1 88 (oldMemD_3) (baseAddr) oldMemD_1 317 (by decide) holdMemD_1_lt

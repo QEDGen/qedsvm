@@ -155,35 +155,26 @@ lean_lib Examples where
     -- pre-split specs expose the account dwords the program reads
     -- BEFORE the memset as `↦U64` cells, so the blob and the cells
     -- never overlap; `call_sol_memset_presplit_{,2}u64_spec`).
-    `Generated.PTokenCloseAccountTracedLifted
-    -- RETIREMENT NOTE (soundness audit H7/H8, 2026-06-11/12). Four
-    -- p_token traced lifts and the two refinements built on them are
-    -- retired pending regeneration, because qedlift's walker keyed
-    -- memory cells by RENDERED address with no overlap analysis: two
-    -- accesses to overlapping bytes through different renderings
-    -- emitted two overlapping atoms, making the precondition's
-    -- sepConj UNSATISFIABLE — the theorems were VACUOUSLY true.
-    -- qedlift now detects footprint overlap on a canonical
-    -- (root, displacement) form and fails closed. The casualties,
-    -- each confirmed by re-running the emitter on its .pcs trace:
-    --   * PTokenMintToTracedLifted + PToken.MintToRefinement —
-    --     duplicate cells: pinocchio spills pointers via r10
-    --     ([r10-2064], [r10-2056]) and reloads them through a struct
-    --     base (addr1 = r10-2072, offsets +8/+16).
-    --   * PTokenBurnTracedLifted + PToken.BurnRefinement — same
-    --     duplicate-cell pattern.
-    --   * PTokenCloseAccountTracedLifted — a load at baseAddr+88
-    --     INSIDE the sol_memset blob [baseAddr+48, +96) (also note:
-    --     the fresh-variable read should have been the memset fill).
-    --   * PTokenInitializeMint2TracedLifted — overlapping `↦U32`
-    --     tail-zeroing stores (`stw [r10-4]; stw [r10-7]`); ALSO
-    --     traced against the pre-H7 zero-filling `sol_get_sysvar`.
-    -- Transfer / TransferChecked re-emit byte-identical under the
-    -- detector and remain (with their refinements) — the flagship
-    -- balance theorems are NOT affected. Restoration = walker
-    -- aliasing (canonical cell keys + h_alias address equations for
-    -- duplicates; byte-granular demotion for partial overlap; blob
-    -- read-through for memset/get_sysvar regions), tracked under H8 —
-    -- see docs/QEDLIFT_ALIASING_DESIGN.md. Runtime diff coverage of
-    -- all four arms is unaffected (p_token_* diff tests).
+    `Generated.PTokenCloseAccountTracedLifted,
+    -- InitializeMint2: RESTORED via H8 Phases B+C — crosses the
+    -- faithful `sol_get_sysvar` (cells17 emission: the rent buffer as
+    -- two `↦U64` cells + a byte with the concrete mollusk defaults),
+    -- the stw tail-zeroing (byte-demoted, `stw_bytes_spec`), and a
+    -- rent dword read spanning both (per-slot h_alias rewrites).
+    -- Trace RE-CAPTURED under the H7-faithful VM (95 PCs vs the old
+    -- zero-rent 199 — real values skip the soft-float zero path).
+    `Generated.PTokenInitializeMint2TracedLifted
+    -- H8 RETIREMENT/RESTORATION HISTORY (soundness audit, 2026-06-11/12).
+    -- Four p_token traced lifts (+ the MintTo/Burn refinements) were
+    -- found VACUOUS — qedlift's walker keyed cells by rendered address
+    -- with no overlap analysis, so overlapping accesses emitted
+    -- unsatisfiable sepConjs. All were retired, the walker gained a
+    -- fail-closed overlap detector, and ALL are now RESTORED on
+    -- satisfiable preconditions via the aliasing phases (canonical
+    -- cell keys + h_alias equations; byte demotion with
+    -- ldxdw_bytes/stw_bytes specs and per-slot address parameters;
+    -- memset pre-split specs; the faithful sol_get_sysvar cells17
+    -- emission). Every arm is pinned byte-for-byte against the
+    -- emitter (qedlift inline tests). See
+    -- docs/QEDLIFT_ALIASING_DESIGN.md.
   ]

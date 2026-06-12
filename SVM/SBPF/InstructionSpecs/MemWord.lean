@@ -994,25 +994,26 @@ set_option maxHeartbeats 400000 in
 /-- `st .word baseReg off imm` over four byte atoms `[addr, addr+4)`. -/
 theorem stw_bytes_spec
     (baseReg : Reg) (off : Int) (imm : Int)
-    (baseAddr b0 b1 b2 b3 c0 c1 c2 c3 : Nat) (pc : Nat)
+    (baseAddr b0 b1 b2 b3 c0 c1 c2 c3 : Nat)
+    (a0 a1 a2 a3 : Nat) (pc : Nat)
     (hb0 : b0 < 256) (hb1 : b1 < 256) (hb2 : b2 < 256) (hb3 : b3 < 256)
     (hc0 : c0 = toU64 imm % 2 ^ (4 * 8) % 256)
     (hc1 : c1 = toU64 imm % 2 ^ (4 * 8) / 0x100 % 256)
     (hc2 : c2 = toU64 imm % 2 ^ (4 * 8) / 0x10000 % 256)
-    (hc3 : c3 = toU64 imm % 2 ^ (4 * 8) / 0x1000000 % 256) :
+    (hc3 : c3 = toU64 imm % 2 ^ (4 * 8) / 0x1000000 % 256)
+    -- Slot addresses as parameters (see `ldxdw_bytes_spec`).
+    (ha0 : a0 = effectiveAddr baseAddr off)
+    (ha1 : a1 = effectiveAddr baseAddr off + 1)
+    (ha2 : a2 = effectiveAddr baseAddr off + 2)
+    (ha3 : a3 = effectiveAddr baseAddr off + 3) :
     cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.st .word baseReg off imm))
       ((baseReg ↦ᵣ baseAddr) **
-        ((effectiveAddr baseAddr off ↦ₘ b0) **
-         (effectiveAddr baseAddr off + 1 ↦ₘ b1) **
-         (effectiveAddr baseAddr off + 2 ↦ₘ b2) **
-         (effectiveAddr baseAddr off + 3 ↦ₘ b3)))
+        ((a0 ↦ₘ b0) ** (a1 ↦ₘ b1) ** (a2 ↦ₘ b2) ** (a3 ↦ₘ b3)))
       ((baseReg ↦ᵣ baseAddr) **
-        ((effectiveAddr baseAddr off ↦ₘ c0) **
-         (effectiveAddr baseAddr off + 1 ↦ₘ c1) **
-         (effectiveAddr baseAddr off + 2 ↦ₘ c2) **
-         (effectiveAddr baseAddr off + 3 ↦ₘ c3)))
+        ((a0 ↦ₘ c0) ** (a1 ↦ₘ c1) ** (a2 ↦ₘ c2) ** (a3 ↦ₘ c3)))
       (fun rt => rt.containsWritable (effectiveAddr baseAddr off) 4 = true) := by
+  subst ha0 ha1 ha2 ha3
   have hcb0 : c0 < 256 := by omega
   have hcb1 : c1 < 256 := by omega
   have hcb2 : c2 < 256 := by omega

@@ -974,6 +974,108 @@ theorem call_sol_get_sysvar_spec
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
 
+/-! ## `sol_get_sysvar` with a CELLS-shaped out region (qedlift)
+
+For a 17-byte sysvar slice (rent) whose buffer the program then reads
+as dwords, the blob shape would overlap the read cells; this variant
+owns the out region as TWO `↦U64` cells + one `↦ₘ` byte, pre AND post
+(H8 Phase C-2, `docs/QEDLIFT_ALIASING_DESIGN.md`). Derived from
+`call_sol_get_sysvar_spec` with
+`bsOut := u64LE oldD0 ++ (u64LE oldD1 ++ byteBA oldB)`. -/
+
+set_option maxHeartbeats 1600000 in
+/-- `sol_get_sysvar` (success, exact 17-byte slice) over a
+    cell-granular out region. The slice decomposition
+    (`hsl : slice = u64LE w0 ++ (u64LE w1 ++ byteBA wb)`) and the cell
+    addresses (`ha1`/`ha2`) are parameters the emitter discharges by
+    `decide` / surfaces as side hypotheses. -/
+theorem call_sol_get_sysvar_cells17_spec
+    (r0Old idA outA offV lenV a1 a2 : Nat)
+    (oldD0 oldD1 oldB w0 w1 wb : Nat)
+    (idBytes buf slice : ByteArray) (pc : Nat) (nCu : Nat)
+    (hIdSize : idBytes.size = 32)
+    (hBuf : SysvarData.sysvarBuffer idBytes = some buf)
+    (hInRange : offV + lenV ≤ buf.size)
+    (hOutAddr : outA < Memory.INPUT_START)
+    (hOffLen : offV + lenV < U64_MODULUS)
+    (hOutLen : outA + lenV < U64_MODULUS)
+    (hLen : lenV = 17)
+    (hSliceSize : slice.size = lenV)
+    (hSlice : ∀ i, i < lenV → slice.get! i = buf.get! (offV + i))
+    (hsl : slice = PartialState.u64LE w0
+        ++ (PartialState.u64LE w1 ++ PartialState.byteBA wb))
+    (hwb : wb < 256) (hob : oldB < 256)
+    (ha1 : a1 = outA + 8) (ha2 : a2 = outA + 8 + 8)
+    (h_disj : idA + 32 ≤ outA ∨ outA + lenV ≤ idA)
+    (hCu : ∀ s : State,
+        (step (.call .sol_get_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithin 1 nCu pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_get_sysvar))
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
+        (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
+        (idA ↦Bytes32 idBytes) **
+        ((outA ↦U64 oldD0) ** ((a1 ↦U64 oldD1) ** (a2 ↦ₘ oldB))))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
+        (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
+        (idA ↦Bytes32 idBytes) **
+        ((outA ↦U64 w0) ** ((a1 ↦U64 w1) ** (a2 ↦ₘ wb)))) := by
+  -- The cells ↔ blob decomposition, parametric over the cell values.
+  have hcells : ∀ (d0 d1 b : Nat), b < 256 → ∀ h',
+      memBytesIs outA (PartialState.u64LE d0
+        ++ (PartialState.u64LE d1 ++ PartialState.byteBA b)) h'
+      ↔ ((outA ↦U64 d0) ** ((a1 ↦U64 d1) ** (a2 ↦ₘ b))) h' := by
+    intro d0 d1 b hb h'
+    have hinner : ∀ h'',
+        memBytesIs (outA + 8)
+          (PartialState.u64LE d1 ++ PartialState.byteBA b) h''
+        ↔ ((a1 ↦U64 d1) ** (a2 ↦ₘ b)) h'' := by
+      intro h''
+      have happ2 := memBytesIs_append (outA + 8)
+        (PartialState.u64LE d1) (PartialState.byteBA b) h''
+      rw [PartialState.u64LE_size] at happ2
+      rw [happ2, ← ha2, ← ha1]
+      exact Iff.trans
+        (sepConj_iff_congr_left _
+          (fun h3 => (memU64Is_eq_memBytesIs a1 d1 h3).symm) h'')
+        (sepConj_iff_congr_right _
+          (fun h3 => (memByteIs_eq_memBytesIs a2 b hb h3).symm) h'')
+    have happ1 := memBytesIs_append outA (PartialState.u64LE d0)
+      (PartialState.u64LE d1 ++ PartialState.byteBA b) h'
+    rw [PartialState.u64LE_size] at happ1
+    rw [happ1]
+    exact Iff.trans
+      (sepConj_iff_congr_left _
+        (fun h3 => (memU64Is_eq_memBytesIs outA d0 h3).symm) h')
+      (sepConj_iff_congr_right _ (fun h3 => hinner h3) h')
+  have hOutSize : (PartialState.u64LE oldD0
+      ++ (PartialState.u64LE oldD1 ++ PartialState.byteBA oldB)).size
+      = lenV := by
+    simp [ByteArray.size_append, hLen]
+  refine cuTripleWithin_weaken ?_ ?_
+    (call_sol_get_sysvar_spec r0Old idA outA offV lenV idBytes buf slice
+      (PartialState.u64LE oldD0
+        ++ (PartialState.u64LE oldD1 ++ PartialState.byteBA oldB))
+      pc nCu hIdSize hBuf hInRange hOutAddr hOffLen hOutLen hOutSize
+      hSliceSize hSlice h_disj hCu)
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h1 =>
+      sepConj_iff_congr_right _ (fun h2 =>
+        sepConj_iff_congr_right _ (fun h3 =>
+          sepConj_iff_congr_right _ (fun h4 =>
+            sepConj_iff_congr_right _ (fun h5 =>
+              sepConj_iff_congr_right _ (fun h6 =>
+                (hcells oldD0 oldD1 oldB hob h6).symm) h5) h4) h3) h2) h1)
+      h).mp hh
+  · intro h hh
+    rw [hsl] at hh
+    exact (sepConj_iff_congr_right _ (fun h1 =>
+      sepConj_iff_congr_right _ (fun h2 =>
+        sepConj_iff_congr_right _ (fun h3 =>
+          sepConj_iff_congr_right _ (fun h4 =>
+            sepConj_iff_congr_right _ (fun h5 =>
+              sepConj_iff_congr_right _ (fun h6 =>
+                hcells w0 w1 wb hwb h6) h5) h4) h3) h2) h1) h).mp hh
+
 /-! ## Syscall: `.unknown` (unrecognized hash)
 
 For any unrecognized / unregistered syscall hash agave rejects the

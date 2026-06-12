@@ -861,33 +861,38 @@ set_option maxHeartbeats 800000 in
     The loaded value is `b0 + 256·(b1 + 256·(… + 256·b7))`. -/
 theorem ldxdw_bytes_spec
     (dst src : Reg) (off : Int)
-    (vOldDst baseAddr b0 b1 b2 b3 b4 b5 b6 b7 : Nat) (pc : Nat)
+    (vOldDst baseAddr b0 b1 b2 b3 b4 b5 b6 b7 : Nat)
+    (a0 a1 a2 a3 a4 a5 a6 a7 : Nat) (pc : Nat)
     (hne : dst ≠ .r10)
     (hb0 : b0 < 256) (hb1 : b1 < 256) (hb2 : b2 < 256) (hb3 : b3 < 256)
-    (hb4 : b4 < 256) (hb5 : b5 < 256) (hb6 : b6 < 256) (hb7 : b7 < 256) :
+    (hb4 : b4 < 256) (hb5 : b5 < 256) (hb6 : b6 < 256) (hb7 : b7 < 256)
+    -- Slot addresses as parameters: a hot region's byte cells may live
+    -- under FOREIGN renderings (other instructions' bases); the
+    -- defining equations are `rfl` for native slots and surfaced
+    -- `h_alias_*` side hypotheses (consumer-discharged by `decide`)
+    -- for foreign ones. Keeping them as parameters (instead of `rw`s
+    -- at the spec hypothesis) leaves the rr clause and the sibling
+    -- slot addresses untouched.
+    (ha0 : a0 = effectiveAddr baseAddr off)
+    (ha1 : a1 = effectiveAddr baseAddr off + 1)
+    (ha2 : a2 = effectiveAddr baseAddr off + 2)
+    (ha3 : a3 = effectiveAddr baseAddr off + 3)
+    (ha4 : a4 = effectiveAddr baseAddr off + 4)
+    (ha5 : a5 = effectiveAddr baseAddr off + 5)
+    (ha6 : a6 = effectiveAddr baseAddr off + 6)
+    (ha7 : a7 = effectiveAddr baseAddr off + 7) :
     cuTripleWithinMem 1 0 pc (pc + 1)
       (CodeReq.singleton pc (.ldx .dword dst src off))
       ((dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) **
-        ((effectiveAddr baseAddr off ↦ₘ b0) **
-         (effectiveAddr baseAddr off + 1 ↦ₘ b1) **
-         (effectiveAddr baseAddr off + 2 ↦ₘ b2) **
-         (effectiveAddr baseAddr off + 3 ↦ₘ b3) **
-         (effectiveAddr baseAddr off + 4 ↦ₘ b4) **
-         (effectiveAddr baseAddr off + 5 ↦ₘ b5) **
-         (effectiveAddr baseAddr off + 6 ↦ₘ b6) **
-         (effectiveAddr baseAddr off + 7 ↦ₘ b7)))
+        ((a0 ↦ₘ b0) ** (a1 ↦ₘ b1) ** (a2 ↦ₘ b2) ** (a3 ↦ₘ b3) **
+         (a4 ↦ₘ b4) ** (a5 ↦ₘ b5) ** (a6 ↦ₘ b6) ** (a7 ↦ₘ b7)))
       ((dst ↦ᵣ b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
           (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) **
         (src ↦ᵣ baseAddr) **
-        ((effectiveAddr baseAddr off ↦ₘ b0) **
-         (effectiveAddr baseAddr off + 1 ↦ₘ b1) **
-         (effectiveAddr baseAddr off + 2 ↦ₘ b2) **
-         (effectiveAddr baseAddr off + 3 ↦ₘ b3) **
-         (effectiveAddr baseAddr off + 4 ↦ₘ b4) **
-         (effectiveAddr baseAddr off + 5 ↦ₘ b5) **
-         (effectiveAddr baseAddr off + 6 ↦ₘ b6) **
-         (effectiveAddr baseAddr off + 7 ↦ₘ b7)))
+        ((a0 ↦ₘ b0) ** (a1 ↦ₘ b1) ** (a2 ↦ₘ b2) ** (a3 ↦ₘ b3) **
+         (a4 ↦ₘ b4) ** (a5 ↦ₘ b5) ** (a6 ↦ₘ b6) ** (a7 ↦ₘ b7)))
       (fun rt => rt.containsRange (effectiveAddr baseAddr off) 8 = true) := by
+  subst ha0 ha1 ha2 ha3 ha4 ha5 ha6 ha7
   have hcombo : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
       (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) < 2 ^ 64 := by omega
   have hbridge := byte_atoms_eq_memU64Is (effectiveAddr baseAddr off)
