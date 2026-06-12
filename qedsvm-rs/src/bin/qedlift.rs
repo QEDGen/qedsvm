@@ -1180,6 +1180,16 @@ struct SymState {
     /// surfaces it as a hard error (fail closed — never emit a
     /// vacuous theorem).
     overlap_error: Option<String>,
+    /// Set by `read_mem`/`write_mem` when an access resolved to an
+    /// existing cell through a DIFFERENT rendering (Phase A aliasing,
+    /// docs/QEDLIFT_ALIASING_DESIGN.md): `(lhs, rhs)` are the
+    /// `effectiveAddr …` renderings of this access and of the
+    /// canonical cell. The walk loop drains it into a
+    /// `h_alias_<pc> : lhs = rhs` side hypothesis (consumer-discharged
+    /// by `decide`, like `h_addr*`), which the matching spec-call line
+    /// `rw`s at its own hypothesis so the chain composes on ONE atom
+    /// instead of two overlapping ones.
+    pending_alias: Option<(String, String)>,
 }
 
 impl SymState {
@@ -1230,20 +1240,51 @@ impl SymState {
         }
         self.regs.insert(r, v);
     }
+    /// Canon-aware cell lookup: the rendered key first (exact match),
+    /// then the canonical `(root, displacement, width)` — a hit there
+    /// is the SAME physical cell reached through a different rendering
+    /// (e.g. spilled via `[r10-2056]`, reloaded via `addr1+16` with
+    /// `addr1 = r10-2072`). Returns `(index, is_alias)`.
+    fn lookup_cell_aliased(&self, base: &Expr, off: i64, width: Width)
+        -> Option<(usize, bool)> {
+        let key = (base.to_lean(), off, width as u8);
+        if let Some(i) = self.mem.iter().position(|c| c.key() == key) {
+            return Some((i, false));
+        }
+        let (root, disp) = canon_addr(base, off);
+        self.mem.iter().position(|c| {
+            if c.width as u8 != width as u8 { return false; }
+            let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+            cr == root && cd == disp
+        }).map(|i| (i, true))
+    }
     fn read_mem(&mut self, base: u8, off: i64, width: Width) -> Expr {
         // Compute the effective-address key from the base register's
         // *current* symbolic value (not just its register number).
         let base_expr = self.read_reg(base);
-        let key = (base_expr.to_lean(), off, width as u8);
-        if let Some(cell) = self.mem.iter().find(|c| c.key() == key) {
-            let v = cell.value.clone();
+        if let Some((i, aliased)) = self.lookup_cell_aliased(&base_expr, off, width) {
+            let cell_base = self.mem[i].addr_base.clone();
+            let cell_off  = self.mem[i].addr_off;
+            let v = self.mem[i].value.clone();
             // A re-read of an already-cached cell is still a load
             // instruction: its spec contributes a `containsRange` to the
             // sl_block_iter chain. Record it here too so the goal rr stays
             // 1:1 with the walked load instructions (the fresh path below
             // pushes the same clause). Without this, a cell read twice
             // makes the chain rr out-count the goal rr.
-            self.rr_walk.push((base_expr, off, width, false));
+            if aliased {
+                // Aliased rendering: the goal-side rr clause (and, via
+                // the emitted `rw [h_alias_<pc>]`, the spec hypothesis)
+                // uses the CANONICAL rendering, keeping ONE atom per
+                // physical cell.
+                self.pending_alias = Some((
+                    format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
+                    format!("effectiveAddr ({}) ({})", cell_base.to_lean(), cell_off),
+                ));
+                self.rr_walk.push((cell_base, cell_off, width, false));
+            } else {
+                self.rr_walk.push((base_expr, off, width, false));
+            }
             return v;
         }
         // Fresh cell: name by (width, sequence index) since the
@@ -1277,10 +1318,12 @@ impl SymState {
     }
     fn write_mem(&mut self, base: u8, off: i64, width: Width, value: Expr) {
         let base_expr = self.read_reg(base);
-        let key = (base_expr.to_lean(), off, width as u8);
         // Make sure the pre-atom exists (a store after no preceding
         // load still needs the cell to be present in the pre-state).
-        if !self.mem.iter().any(|c| c.key() == key) {
+        // The lookup is canon-aware: a store through a different
+        // rendering of an existing cell updates THAT cell (Phase A
+        // aliasing) instead of materialising an overlapping twin.
+        if self.lookup_cell_aliased(&base_expr, off, width).is_none() {
             let _ = self.read_mem(base, off, width);
             // `read_mem` materialised the cell AND pushed a
             // `containsRange` rr_walk entry — but this access is a
@@ -1291,11 +1334,22 @@ impl SymState {
             // walked memory instructions (matching sl_block_iter).
             self.rr_walk.pop();
         }
-        if let Some(cell) = self.mem.iter_mut().find(|c| c.key() == key) {
-            cell.value = value;
+        if let Some((i, aliased)) = self.lookup_cell_aliased(&base_expr, off, width) {
+            let cell_base = self.mem[i].addr_base.clone();
+            let cell_off  = self.mem[i].addr_off;
+            self.mem[i].value = value;
+            // rr contribution: every store needs containsWritable —
+            // through the canonical rendering when aliased.
+            if aliased {
+                self.pending_alias = Some((
+                    format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
+                    format!("effectiveAddr ({}) ({})", cell_base.to_lean(), cell_off),
+                ));
+                self.rr_walk.push((cell_base, cell_off, width, true));
+            } else {
+                self.rr_walk.push((base_expr, off, width, true));
+            }
         }
-        // rr contribution: every store needs containsWritable.
-        self.rr_walk.push((base_expr, off, width, true));
     }
 }
 
@@ -1470,6 +1524,24 @@ fn spec_call_for(
             None    => reg_initial_name(r),
         }
     };
+    // Current symbolic value of a register as an `Expr`, for the
+    // canon-aware cell lookups below.
+    let reg_val_expr = |r: u8| -> Expr {
+        state.regs.get(&r).cloned()
+            .unwrap_or_else(|| Expr::InitReg(reg_initial_name(r)))
+    };
+    // Phase A aliasing (docs/QEDLIFT_ALIASING_DESIGN.md): when this
+    // access resolves to an existing cell through a DIFFERENT
+    // rendering, follow the `have` with a rewrite onto the canonical
+    // atom via the `h_alias_<pc>` equation step() surfaces for the
+    // same access — the chain then composes on ONE atom per physical
+    // cell instead of two overlapping (unsatisfiable) ones.
+    let alias_suffix = |lookup: &Option<(usize, bool)>| -> String {
+        match lookup {
+            Some((_, true)) => format!("\n  rw [h_alias_{}] at {}", pc, hyp_name),
+            _ => String::new(),
+        }
+    };
     let have_line = match insn.opc {
         LD_B_REG => {
             // ldxb_spec dst src off vOldDst baseAddr v pc hne
@@ -1478,28 +1550,27 @@ fn spec_call_for(
             // an already-accessed cell, reuse its existing value var
             // (read_mem returns the same cell). Mirrors SymState::read_mem.
             let base_addr = reg_val_lean(src);
-            let v_name = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == base_addr
-                       && c.addr_off == off
-                       && c.width as u8 == Width::Byte as u8)
-                .map(|c| c.value.atom_lean())
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, Width::Byte);
+            let v_name = lookup
+                .map(|(i, _)| state.mem[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
+            let alias = alias_suffix(&lookup);
             if dst == src {
                 // `ldxb r, [r]`: dst == src. The generic ldxb_spec would
                 // emit two `r ↦ᵣ` atoms (unsatisfiable). The same-register
                 // spec owns one register atom; baseAddr IS the dst's old value.
                 format!(
-                    "have {} := ldxb_same_spec {} {} ({}) {} {} (by decide)",
-                    hyp_name, reg(dst), offl, base_addr, v_name, pc,
+                    "have {} := ldxb_same_spec {} {} ({}) {} {} (by decide){}",
+                    hyp_name, reg(dst), offl, base_addr, v_name, pc, alias,
                 )
             } else {
                 let v_old_dst = state.regs.get(&dst)
                     .map(|e| e.to_lean())
                     .unwrap_or_else(|| reg_initial_name(dst));
                 format!(
-                    "have {} := ldxb_spec {} {} {} ({}) ({}) {} {} (by decide)",
+                    "have {} := ldxb_spec {} {} {} ({}) ({}) {} {} (by decide){}",
                     hyp_name, reg(dst), reg(src), offl,
-                    v_old_dst, base_addr, v_name, pc,
+                    v_old_dst, base_addr, v_name, pc, alias,
                 )
             }
         }
@@ -1520,11 +1591,9 @@ fn spec_call_for(
             // value (a register spilled to the stack then loaded back) is
             // parenthesised and its `< 2^64` bound surfaced as the side
             // hyp `hReloadLt_<pc>` that `step` registers.
-            let cell_val = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == base_addr
-                       && c.addr_off == off
-                       && c.width as u8 == Width::Dword as u8)
-                .map(|c| c.value.clone());
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, Width::Dword);
+            let cell_val = lookup.map(|(i, _)| state.mem[i].value.clone());
+            let alias = alias_suffix(&lookup);
             let (v_arg, hv) = match &cell_val {
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
                 Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
@@ -1533,17 +1602,17 @@ fn spec_call_for(
             if dst == src {
                 // `ldxdw r, [r]`: same-register variant (ldxdw_same_spec).
                 format!(
-                    "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) {}",
-                    hyp_name, reg(dst), offl, base_addr, v_arg, pc, hv,
+                    "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) {}{}",
+                    hyp_name, reg(dst), offl, base_addr, v_arg, pc, hv, alias,
                 )
             } else {
                 let v_old_dst = state.regs.get(&dst)
                     .map(|e| e.to_lean())
                     .unwrap_or_else(|| reg_initial_name(dst));
                 format!(
-                    "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) {}",
+                    "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) {}{}",
                     hyp_name, reg(dst), reg(src), offl,
-                    v_old_dst, base_addr, v_arg, pc, hv,
+                    v_old_dst, base_addr, v_arg, pc, hv, alias,
                 )
             }
         }
@@ -1555,11 +1624,9 @@ fn spec_call_for(
                 ("ldxw_spec", Width::Word, "oldMemW")
             } else { ("ldxh_spec", Width::Halfword, "oldMemH") };
             let base_addr = reg_val_lean(src);
-            let cell_val = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == base_addr
-                       && c.addr_off == off
-                       && c.width as u8 == w as u8)
-                .map(|c| c.value.clone());
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, w);
+            let cell_val = lookup.map(|(i, _)| state.mem[i].value.clone());
+            let alias = alias_suffix(&lookup);
             let (v_arg, hv) = match &cell_val {
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
                 Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
@@ -1569,9 +1636,9 @@ fn spec_call_for(
                 .map(|e| e.to_lean())
                 .unwrap_or_else(|| reg_initial_name(dst));
             format!(
-                "have {} := {} {} {} {} ({}) ({}) {} {} (by decide) {}",
+                "have {} := {} {} {} {} ({}) ({}) {} {} (by decide) {}{}",
                 hyp_name, spec, reg(dst), reg(src), offl,
-                v_old_dst, base_addr, v_arg, pc, hv,
+                v_old_dst, base_addr, v_arg, pc, hv, alias,
             )
         }
         ST_B_REG | ST_H_REG | ST_W_REG | ST_DW_REG => {
@@ -1587,25 +1654,23 @@ fn spec_call_for(
             };
             let base_addr = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            let key_addr = base_addr.clone();
             // `atom_lean` parenthesises a compound prior value (e.g. a
             // `toU64 0` left by an earlier imm store) while leaving a
             // bare `oldMem*_N` / fresh name unparenthesised (so the common
             // case stays byte-identical).
-            let old_v = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == key_addr
-                       && c.addr_off == off
-                       && c.width as u8 == w as u8)
-                .map(|c| c.value.atom_lean())
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, w);
+            let old_v = lookup
+                .map(|(i, _)| state.mem[i].value.atom_lean())
                 // Cell not yet in state.mem → this store is the FIRST
                 // access to it. step()'s write_mem will call read_mem,
                 // allocating `oldMem*_{fresh}`. Predict that name (same
                 // as the load specs) instead of an unresolved `?oldV`.
                 .unwrap_or_else(|| format!("{}_{}", pfx, state.fresh));
+            let alias = alias_suffix(&lookup);
             format!(
-                "have {} := {} {} {} {} ({}) ({}) {} {}",
+                "have {} := {} {} {} {} ({}) ({}) {} {}{}",
                 hyp_name, spec, reg(dst), reg(src), offl,
-                base_addr, v_src, old_v, pc,
+                base_addr, v_src, old_v, pc, alias,
             )
         }
         ADD64_IMM => {
@@ -1760,61 +1825,53 @@ fn spec_call_for(
             // The old byte value lives in state.mem keyed by the
             // base-address expression + offset + byte width. Same
             // pattern as ST_DW_REG.
-            let key_addr = base_addr.clone();
-            let old_v = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == key_addr
-                       && c.addr_off == off
-                       && c.width as u8 == Width::Byte as u8)
-                .map(|c| c.value.atom_lean())
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Byte);
+            let old_v = lookup
+                .map(|(i, _)| state.mem[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
+            let alias = alias_suffix(&lookup);
             format!(
-                "have {} := stb_spec {} {} {} ({}) ({}) {}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
+                "have {} := stb_spec {} {} {} ({}) ({}) {}{}",
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
             )
         }
         ST_H_IMM => {
             // sth_spec baseReg off imm baseAddr oldHalfVal pc
             let base_addr = reg_val_lean(dst);
-            let key_addr = base_addr.clone();
-            let old_v = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == key_addr
-                       && c.addr_off == off
-                       && c.width as u8 == Width::Halfword as u8)
-                .map(|c| c.value.atom_lean())
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Halfword);
+            let old_v = lookup
+                .map(|(i, _)| state.mem[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemH_{}", state.fresh));
+            let alias = alias_suffix(&lookup);
             format!(
-                "have {} := sth_spec {} {} {} ({}) ({}) {}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
+                "have {} := sth_spec {} {} {} ({}) ({}) {}{}",
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
             )
         }
         ST_W_IMM => {
             // stw_spec baseReg off imm baseAddr oldWordVal pc
             let base_addr = reg_val_lean(dst);
-            let key_addr = base_addr.clone();
-            let old_v = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == key_addr
-                       && c.addr_off == off
-                       && c.width as u8 == Width::Word as u8)
-                .map(|c| c.value.atom_lean())
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Word);
+            let old_v = lookup
+                .map(|(i, _)| state.mem[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemW_{}", state.fresh));
+            let alias = alias_suffix(&lookup);
             format!(
-                "have {} := stw_spec {} {} {} ({}) ({}) {}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
+                "have {} := stw_spec {} {} {} ({}) ({}) {}{}",
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
             )
         }
         ST_DW_IMM => {
             // stdw_spec baseReg off imm baseAddr oldDwordVal pc
             let base_addr = reg_val_lean(dst);
-            let key_addr = base_addr.clone();
-            let old_v = state.mem.iter()
-                .find(|c| c.addr_base.to_lean() == key_addr
-                       && c.addr_off == off
-                       && c.width as u8 == Width::Dword as u8)
-                .map(|c| c.value.atom_lean())
+            let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Dword);
+            let old_v = lookup
+                .map(|(i, _)| state.mem[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
+            let alias = alias_suffix(&lookup);
             format!(
-                "have {} := stdw_spec {} {} {} ({}) ({}) {}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc,
+                "have {} := stdw_spec {} {} {} ({}) ({}) {}{}",
+                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
             )
         }
         ADD64_REG => {
@@ -4732,6 +4789,17 @@ fn lift_one(
                 spec_calls.push(sc);
             }
             step(&mut state, ins, Some(pc_iter), branch_taken, Some(jtgt))?;
+            // Phase A aliasing: surface the address equation for an
+            // access that resolved to an existing cell through a
+            // different rendering (consumed by the `rw [h_alias_<pc>]`
+            // the spec call just emitted; discharged by `decide` at
+            // instantiation like the h_addr* equations).
+            if let Some((lhs, rhs)) = state.pending_alias.take() {
+                state.side_hyps.push((
+                    format!("h_alias_{}", pc_iter),
+                    format!("{} = {}", lhs, rhs),
+                ));
+            }
 
             // PC progression. In trace mode the next PC is simply the
             // next recorded entry (the loop top reloads `pc_iter` from
