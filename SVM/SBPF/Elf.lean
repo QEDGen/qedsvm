@@ -569,6 +569,29 @@ def buildFnRegistry (elfBytes : ByteArray) (h : Header)
     | _, _, _ => []
   entryPair :: pass1 ++ relocPairs
 
+/-- Whether the function registry is free of key collisions — agave's
+    `SymbolHashCollision` load rejection (audit H2 residual).
+    `register_function_hashed_legacy` errors when a key is re-registered
+    with a DIFFERENT target slot; re-registering the same `(key, slot)`
+    pair is normal (every call site of a function registers the same
+    pair). The `entrypointHash` key is exempt: agave explicitly
+    unregisters any symbol-derived "entrypoint" entry and re-registers it
+    from `e_entry` (elf.rs:637-643), so an entry-key mismatch resolves by
+    e_entry precedence (our first-match lookup, the entry pair is
+    registered first) rather than by a collision error.
+
+    A real collision needs `murmur3(LE8 slotA) = murmur3(LE8 slotB)` (or a
+    clash with a syscall name hash) — astronomically unlikely for honest
+    binaries, so this is a pure fail-closed hardening: pre-gate, first-match
+    lookup silently picked the first registration. Checked by the runners
+    next to `relocationsResolvable`. -/
+def registryCollisionFree (reg : List (Nat × Nat)) : Bool :=
+  match reg with
+  | [] => true
+  | (k, v) :: rest =>
+    (k == entrypointHash || rest.all fun p => p.1 != k || p.2 == v)
+      && registryCollisionFree rest
+
 /-- Whether every symbol-using relocation can resolve its symbol — the
     fail-closed gate for audit M1. solana-sbpf 0.14.4 `relocate`
     (elf.rs:969-973) reads each `R_Bpf_64_64` / `R_Bpf_64_32`

@@ -801,13 +801,18 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             let fnReg := Elf.buildFnRegistry calleeBytes h textSec.addr rawText
             some (textBytes, h, textSec, fnReg)
           do
-            -- M1: an ELF callee whose relocations cannot resolve their
-            -- symbols fails the CPI load (agave: `UnknownSymbol` at load).
-            -- This must abort runCallee OUTRIGHT — it must NOT fall
-            -- through to the raw-text branch below, which would
-            -- reinterpret the ELF bytes as code.
-            if let some h := Elf.parseHeader calleeBytes then
+            -- M1 + H2: an ELF callee whose relocations cannot resolve
+            -- their symbols (agave: `UnknownSymbol`) or whose function
+            -- registry has a key collision (agave: `SymbolHashCollision`)
+            -- fails the CPI load. These must abort runCallee OUTRIGHT —
+            -- they must NOT fall through to the raw-text branch below,
+            -- which would reinterpret the ELF bytes as code.
+            if let some h := Elf.parseHeader calleeBytes then do
               guard (Elf.relocationsResolvable calleeBytes h)
+              if let some textSec := Elf.findSection calleeBytes h Elf.textName then
+                let rawText := Elf.extractSection calleeBytes textSec
+                guard (Elf.registryCollisionFree
+                  (Elf.buildFnRegistry calleeBytes h textSec.addr rawText))
             let (textBytes, headerOpt, textSecOpt, fnReg) :
                 ByteArray × Option Elf.Header × Option Elf.SectionHeader
                 × List (Nat × Nat) :=
@@ -1057,6 +1062,10 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
       -- A no-op when the ELF has no .dynsym/.rel.dyn sections.
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
       let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
+      -- H2 residual: a registry key collision is agave's load-time
+      -- `SymbolHashCollision` — fail closed instead of silently resolving
+      -- by first-match.
+      if !Elf.registryCollisionFree fnReg then none else
       match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>
@@ -1128,6 +1137,10 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
       let rawText   := Elf.extractSection elfBytes textSec
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
       let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
+      -- H2 residual: a registry key collision is agave's load-time
+      -- `SymbolHashCollision` — fail closed instead of silently resolving
+      -- by first-match.
+      if !Elf.registryCollisionFree fnReg then none else
       match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>

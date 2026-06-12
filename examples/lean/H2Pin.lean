@@ -145,4 +145,44 @@ theorem loader_pipeline_resolves_internal_call :
       Decode.decodeProgram text reg)
       = some counterWithHelperInsns := by native_decide
 
+/-! ## Registry hash collisions fail closed (H2 residual)
+
+agave rejects a function-registry key registered with two different
+targets at load (`SymbolHashCollision`); `Elf.registryCollisionFree`
+(checked by `runElf`/`runElfWithFuel`/the CPI callee path) mirrors that.
+Crafting a real colliding binary needs a murmur3 collision, so the pins
+exercise the predicate directly plus the real `.so`'s registry. -/
+
+/-- Same key, different targets — a collision. -/
+theorem collision_detected :
+    Elf.registryCollisionFree [(5, 1), (5, 2)] = false := by native_decide
+
+/-- Exact duplicate pairs are NOT collisions (a function called from
+    several sites registers the same pair each time). -/
+theorem duplicate_pair_ok :
+    Elf.registryCollisionFree [(5, 1), (5, 1), (7, 2)] = true := by native_decide
+
+/-- The `entrypointHash` key is exempt: agave unregisters a symbol-derived
+    "entrypoint" entry and re-registers from `e_entry` (elf.rs:637-643), so
+    a mismatch there resolves by e_entry precedence, not a collision. -/
+theorem entrypoint_key_exempt :
+    Elf.registryCollisionFree [(Elf.entrypointHash, 4), (Elf.entrypointHash, 0)]
+      = true := by native_decide
+
+/-- A collision BEHIND the entrypoint pair is still caught. -/
+theorem collision_behind_entrypoint_detected :
+    Elf.registryCollisionFree [(Elf.entrypointHash, 4), (5, 1), (5, 2)]
+      = false := by native_decide
+
+/-- The real binary's registry is collision-free (and `runElf` accepts it,
+    via the loader pins above). -/
+theorem real_registry_collision_free :
+    (do
+      let h ← Elf.parseHeader counterWithHelperSo
+      let ts ← Elf.findSection counterWithHelperSo h Elf.textName
+      let raw := Elf.extractSection counterWithHelperSo ts
+      pure (Elf.registryCollisionFree
+        (Elf.buildFnRegistry counterWithHelperSo h ts.addr raw)))
+      = some true := by native_decide
+
 end Examples.H2Pin
