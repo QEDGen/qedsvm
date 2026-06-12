@@ -96,8 +96,11 @@ lean_lib Examples where
     `PToken.TransferRefinement,
     `PToken.TransferCheckedRefinement,
     `PToken.MintAggregation,
-    -- MintToRefinement / BurnRefinement are RETIRED with their lifts —
-    -- see the retirement note at the end of this list.
+    -- MintTo / Burn refinements: RESTORED 2026-06-12 on the
+    -- regenerated (satisfiable-precondition) lifts — see the H8 note
+    -- at the end of this list.
+    `PToken.MintToRefinement,
+    `PToken.BurnRefinement,
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     -- Logger: a real, non-Pinocchio Solana program (Rust/solana-program)
@@ -141,7 +144,13 @@ lean_lib Examples where
     -- Trace-guided lifts: real p_token happy paths, balance/supply
     -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,
-    `Generated.PTokenTransferCheckedTracedLifted
+    `Generated.PTokenTransferCheckedTracedLifted,
+    -- MintTo + Burn: RESTORED via H8 Phase A+B (canonical cell
+    -- aliasing resolves the r10 pointer-spill duplicate atoms; byte
+    -- demotion of the width-mixed input-header reads is served by
+    -- `ldxdw_bytes_spec` over per-byte atoms).
+    `Generated.PTokenMintToTracedLifted,
+    `Generated.PTokenBurnTracedLifted
     -- RETIREMENT NOTE (soundness audit H7/H8, 2026-06-11/12). Four
     -- p_token traced lifts and the two refinements built on them are
     -- retired pending regeneration, because qedlift's walker keyed

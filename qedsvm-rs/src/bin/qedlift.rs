@@ -531,6 +531,74 @@ mod layout_tests {
             "HalfwordStoreLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
     }
+
+    /// Re-emit one p_token trace-guided arm and diff the lift (and,
+    /// when the registry has an entry, the refinement) against the
+    /// on-disk artifacts. EVERY shipped arm is pinned: the H8
+    /// overlap-vacuity findings shipped unnoticed precisely because
+    /// the p_token arms had no emitter pins.
+    fn pin_p_token_arm(
+        pcs: &str, module: &str, arm: Option<&str>,
+        lift_path: &str, refine_path: Option<&str>,
+    ) {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable)
+            .expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new(pcs)).expect("load trace");
+        let result = lift_one(so, &ctx, &analysis, None,
+            Some(module.to_string()), Some(&trace), arm, None)
+            .expect("lift p_token arm");
+
+        let on_disk = std::fs::read_to_string(lift_path).expect("read lift");
+        assert_eq!(result.lean, on_disk,
+            "{lift_path} is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+        if let Some(rp) = refine_path {
+            let (_, rlean) = result.refinement.expect("refinement emitted");
+            let r_on_disk = std::fs::read_to_string(rp).expect("read refinement");
+            assert_eq!(rlean, r_on_disk,
+                "{rp} is out of sync with the qedlift refinement codegen \
+                 (mechanically emitted, do not hand-edit)");
+        }
+    }
+
+    #[test]
+    fn p_token_transfer_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer.pcs",
+            "PTokenTransfer", Some("Transfer"),
+            "../examples/lean/Generated/PTokenTransferTracedLifted.lean",
+            Some("../examples/lean/PToken/TransferRefinement.lean"));
+    }
+
+    #[test]
+    fn p_token_transfer_checked_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_checked.pcs",
+            "PTokenTransferChecked", Some("TransferChecked"),
+            "../examples/lean/Generated/PTokenTransferCheckedTracedLifted.lean",
+            Some("../examples/lean/PToken/TransferCheckedRefinement.lean"));
+    }
+
+    /// MintTo/Burn: regenerated 2026-06-12 after the H8 overlap-vacuity
+    /// finding — Phase A canonical aliasing (the r10 pointer spills) +
+    /// Phase B byte demotion (the width-mixed input-header reads,
+    /// `ldxdw_bytes_spec`). These pins keep the restored artifacts in
+    /// lockstep with the walker.
+    #[test]
+    fn p_token_mint_to_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_mint_to.pcs",
+            "PTokenMintTo", Some("MintTo"),
+            "../examples/lean/Generated/PTokenMintToTracedLifted.lean",
+            Some("../examples/lean/PToken/MintToRefinement.lean"));
+    }
+
+    #[test]
+    fn p_token_burn_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_burn.pcs",
+            "PTokenBurn", Some("Burn"),
+            "../examples/lean/Generated/PTokenBurnTracedLifted.lean",
+            Some("../examples/lean/PToken/BurnRefinement.lean"));
+    }
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -855,6 +923,11 @@ enum Expr {
     /// balance-correctness corollary to expose a `wrapSub a b` debit in
     /// clean form (justified by `wrapSub_of_le` under a funds guard).
     CleanSub(Box<Expr>, Box<Expr>),
+    /// Little-endian Horner combination of 8 byte cells — the value an
+    /// `ldxdw` over a hot (byte-demoted) region loads. Renders exactly
+    /// as `ldxdw_bytes_spec`'s post value:
+    /// `b0 + 256 * (b1 + 256 * (… + 256 * b7))`.
+    ByteCombo(Vec<Expr>),
     /// Pre-rendered Lean term for an ALU result whose shape doesn't
     /// warrant a bespoke variant (the long tail: or/xor/div/mod/neg,
     /// reg-form shifts, 32-bit ops). The string is exactly what the
@@ -902,6 +975,23 @@ impl Expr {
                 format!("{} >>> (toU64 {} % 64)", a.atom_lean(), imm_lean)
             }
             Expr::CleanSub(a, b) => format!("{} - {}", a.atom_lean(), b.atom_lean()),
+            Expr::ByteCombo(bs) => {
+                // Horner fold, innermost pair unparenthesised, exactly
+                // matching `ldxdw_bytes_spec`'s post:
+                // `b0 + 256 * (b1 + … + 256 * (b6 + 256 * b7)…)`.
+                let mut it = bs.iter().rev();
+                let mut s = it.next().map(|e| e.atom_lean()).unwrap_or_default();
+                let mut first = true;
+                for b in it {
+                    if first {
+                        s = format!("{} + 256 * {}", b.atom_lean(), s);
+                        first = false;
+                    } else {
+                        s = format!("{} + 256 * ({})", b.atom_lean(), s);
+                    }
+                }
+                s
+            }
         }
     }
     /// Lean rendering suitable for use as a function argument
@@ -1000,7 +1090,7 @@ impl BytesVal {
 #[derive(Clone, Debug)]
 enum Atom {
     Reg(u8, Expr),
-    Mem { addr_base: Expr, addr_off: i64, width: Width, value: Expr },
+    Mem { addr_base: Expr, addr_off: i64, width: Width, value: Expr, delta: i64 },
     /// A `↦Bytes` atom: `addr ↦Bytes <bytes>`. The address is the raw
     /// symbolic value of the syscall's `r1` (no `effectiveAddr`
     /// wrapper — `memBytesIs` takes a bare Nat), matching
@@ -1034,13 +1124,20 @@ struct MemCell {
     addr_off:  i64,
     width:     Width,
     value:     Expr,
+    /// Byte displacement within a hot (byte-demoted) region, RELATIVE
+    /// to `(addr_base, addr_off)`. 0 for ordinary cells. A hot byte
+    /// cell renders as `effectiveAddr base off + delta` — the exact
+    /// address `step` reads (plain Nat add on the resolved address),
+    /// matching `ldxdw_bytes_spec`'s atom shape with no wrap-around
+    /// side conditions. (H8 Phase B, docs/QEDLIFT_ALIASING_DESIGN.md.)
+    delta:     i64,
 }
 
 impl MemCell {
     /// Stable key over (rendered address, width) — two cells whose
     /// addresses render identically refer to the same physical cell.
-    fn key(&self) -> (String, i64, u8) {
-        (self.addr_base.to_lean(), self.addr_off, self.width as u8)
+    fn key(&self) -> (String, i64, i64, u8) {
+        (self.addr_base.to_lean(), self.addr_off, self.delta, self.width as u8)
     }
 }
 
@@ -1176,10 +1273,11 @@ struct SymState {
     /// emitted sepConj unsatisfiable (a vacuous theorem). Blob entries
     /// (memset) use the blob's rendered address as the key component.
     atom_spans: Vec<(String, i64, i64, String)>,
-    /// Set when `note_access` detects an overlap; the walk loop
-    /// surfaces it as a hard error (fail closed — never emit a
-    /// vacuous theorem).
-    overlap_error: Option<String>,
+    /// Populated when `note_access` detects footprint overlaps; the
+    /// walk surfaces them as one hard error after completing (fail
+    /// closed — never emit a vacuous theorem — but report the FULL
+    /// inventory, which Phase B demotion planning needs).
+    overlap_errors: Vec<String>,
     /// Set by `read_mem`/`write_mem` when an access resolved to an
     /// existing cell through a DIFFERENT rendering (Phase A aliasing,
     /// docs/QEDLIFT_ALIASING_DESIGN.md): `(lhs, rhs)` are the
@@ -1190,6 +1288,16 @@ struct SymState {
     /// `rw`s at its own hypothesis so the chain composes on ONE atom
     /// instead of two overlapping ones.
     pending_alias: Option<(String, String)>,
+    /// Byte-granular ("hot") regions per canonical root — spans the
+    /// program accesses at MIXED widths, kept as per-byte atoms so the
+    /// sepConj stays satisfiable (H8 Phase B). Input to the walk,
+    /// computed by the retry loop in `lift_one`.
+    hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>>,
+    /// Demotion requests discovered THIS pass (a wide access over
+    /// byte-granular cells outside the current hot set). The retry
+    /// loop merges them into `hot_regions` and re-walks; this pass's
+    /// output is discarded.
+    new_hot: Vec<(String, i64, i64)>,
 }
 
 impl SymState {
@@ -1206,15 +1314,9 @@ impl SymState {
         let hi = lo.wrapping_add(len);
         for (eroot, elo, ehi, ekey) in &self.atom_spans {
             if *eroot == root && *ekey != key_render && lo < *ehi && *elo < hi {
-                self.overlap_error = Some(format!(
-                    "aliasing: atom `{key_render}` (root `{root}`, bytes \
-                     [{lo}, {hi})) overlaps existing atom `{ekey}` (bytes \
-                     [{elo}, {ehi})). Emitting both would make the \
-                     precondition's sepConj unsatisfiable — a VACUOUS \
-                     theorem. The walker does not yet alias overlapping \
-                     accesses at byte granularity (tracked under the \
-                     soundness-audit H8 emitter follow-ups), so this \
-                     lift fails closed."));
+                self.overlap_errors.push(format!(
+                    "atom `{key_render}` (root `{root}`, bytes [{lo}, {hi})) \
+                     overlaps existing atom `{ekey}` (bytes [{elo}, {ehi}))"));
                 return;
             }
         }
@@ -1240,6 +1342,94 @@ impl SymState {
         }
         self.regs.insert(r, v);
     }
+    /// Is `[lo, hi)` on `root` fully inside a hot (byte-demoted) region?
+    fn hot_covers(&self, root: &str, lo: i64, hi: i64) -> bool {
+        self.hot_regions.get(root)
+            .map_or(false, |v| v.iter().any(|(l, h)| *l <= lo && hi <= *h))
+    }
+    /// Does `[lo, hi)` on `root` intersect any hot region?
+    fn hot_intersects(&self, root: &str, lo: i64, hi: i64) -> bool {
+        self.hot_regions.get(root)
+            .map_or(false, |v| v.iter().any(|(l, h)| lo < *h && *l < hi))
+    }
+    /// The `effectiveAddr …` rendering of a cell (hot byte cells carry
+    /// a `+ delta` suffix, matching `ldxdw_bytes_spec`'s atom shape).
+    fn cell_render(c: &MemCell) -> String {
+        if c.delta != 0 {
+            format!("effectiveAddr ({}) ({}) + {}",
+                c.addr_base.to_lean(), c.addr_off, c.delta)
+        } else {
+            format!("effectiveAddr ({}) ({})", c.addr_base.to_lean(), c.addr_off)
+        }
+    }
+    /// Serve a wide LOAD whose span is hot: the region is byte-granular,
+    /// so reuse/materialize the 8 byte cells and return their Horner
+    /// combination (the value `ldxdw_bytes_spec` loads). Unsupported
+    /// shapes (non-dword widths, slots under foreign renderings) fail
+    /// closed via `overlap_errors`.
+    fn read_hot_wide(&mut self, base_expr: Expr, off: i64, width: Width) -> Expr {
+        if !matches!(width, Width::Dword) {
+            self.overlap_errors.push(format!(
+                "hot-region {:?} access at ({})+{} — only dword LOADS are \
+                 byte-demoted so far (H8 Phase B-1)",
+                width, base_expr.to_lean(), off));
+            return Expr::Raw("hotUnsupported".into());
+        }
+        let (root, lo) = canon_addr(&base_expr, off);
+        let base_lean = base_expr.to_lean();
+        let mut vals: Vec<Expr> = Vec::with_capacity(8);
+        for k in 0..8i64 {
+            let found = self.mem.iter().position(|c| {
+                if !matches!(c.width, Width::Byte) { return false; }
+                let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+                cr == root && cd + c.delta == lo + k
+            });
+            match found {
+                Some(i) => {
+                    let render_ok = self.mem[i].addr_base.to_lean() == base_lean
+                        && self.mem[i].addr_off == off
+                        && ((k == 0 && self.mem[i].delta == 0)
+                            || self.mem[i].delta == k);
+                    if !render_ok {
+                        self.overlap_errors.push(format!(
+                            "hot-region dword at ({})+{}: byte slot {} exists \
+                             under a different rendering ({}); the per-slot \
+                             alias rewrite is not implemented yet (H8 \
+                             Phase B-1)",
+                            base_lean, off, k, Self::cell_render(&self.mem[i])));
+                    }
+                    let v = self.mem[i].value.clone();
+                    // `ldxdw_bytes_spec` needs `< 256` per slot — surface
+                    // the bound for a bare byte var that has none yet.
+                    if let Expr::InitMem(name) = &v {
+                        if !self.u64_load_vars.iter().any(|(n, _)| n == name) {
+                            self.u64_load_vars.push((name.clone(), 8));
+                        }
+                    }
+                    vals.push(v);
+                }
+                None => {
+                    let idx = self.fresh; self.fresh += 1;
+                    let name = format!("oldMemB_{}", idx);
+                    self.u64_load_vars.push((name.clone(), 8));
+                    let v = Expr::InitMem(name);
+                    self.mem.push(MemCell {
+                        addr_base: base_expr.clone(), addr_off: off,
+                        width: Width::Byte, value: v.clone(), delta: k,
+                    });
+                    self.pre.push(Atom::Mem {
+                        addr_base: base_expr.clone(), addr_off: off,
+                        width: Width::Byte, value: v.clone(), delta: k,
+                    });
+                    self.note_access(&base_expr, off + k, 1,
+                        format!("{}@{}+{}:HotByte", base_lean, off, k));
+                    vals.push(v);
+                }
+            }
+        }
+        self.rr_walk.push((base_expr, off, Width::Dword, false));
+        Expr::ByteCombo(vals)
+    }
     /// Canon-aware cell lookup: the rendered key first (exact match),
     /// then the canonical `(root, displacement, width)` — a hit there
     /// is the SAME physical cell reached through a different rendering
@@ -1247,7 +1437,7 @@ impl SymState {
     /// `addr1 = r10-2072`). Returns `(index, is_alias)`.
     fn lookup_cell_aliased(&self, base: &Expr, off: i64, width: Width)
         -> Option<(usize, bool)> {
-        let key = (base.to_lean(), off, width as u8);
+        let key = (base.to_lean(), off, 0i64, width as u8);
         if let Some(i) = self.mem.iter().position(|c| c.key() == key) {
             return Some((i, false));
         }
@@ -1255,13 +1445,47 @@ impl SymState {
         self.mem.iter().position(|c| {
             if c.width as u8 != width as u8 { return false; }
             let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
-            cr == root && cd == disp
+            cr == root && cd + c.delta == disp
         }).map(|i| (i, true))
     }
     fn read_mem(&mut self, base: u8, off: i64, width: Width) -> Expr {
         // Compute the effective-address key from the base register's
         // *current* symbolic value (not just its register number).
         let base_expr = self.read_reg(base);
+        let wlen = match width {
+            Width::Byte => 1i64, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
+        };
+        if wlen > 1 {
+            let (root, lo) = canon_addr(&base_expr, off);
+            // Fully inside a hot (byte-demoted) region: serve byte-wise.
+            if self.hot_covers(&root, lo, lo + wlen) {
+                return self.read_hot_wide(base_expr, off, width);
+            }
+            // A wide access over bytes the walk already tracks
+            // individually (or straddling a hot edge): request the
+            // span's demotion and retry the walk. Falling through is
+            // fine — this pass's output is discarded.
+            let over_bytes = {
+                let mut any = false; let mut all_byte = true;
+                for c in &self.mem {
+                    let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+                    if cr != root { continue; }
+                    let cl = cd + c.delta;
+                    let ch = cl + match c.width {
+                        Width::Byte => 1, Width::Halfword => 2,
+                        Width::Word => 4, Width::Dword => 8,
+                    };
+                    if lo < ch && cl < lo + wlen {
+                        any = true;
+                        if !matches!(c.width, Width::Byte) { all_byte = false; }
+                    }
+                }
+                any && all_byte
+            };
+            if over_bytes || self.hot_intersects(&root, lo, lo + wlen) {
+                self.new_hot.push((root, lo, lo + wlen));
+            }
+        }
         if let Some((i, aliased)) = self.lookup_cell_aliased(&base_expr, off, width) {
             let cell_base = self.mem[i].addr_base.clone();
             let cell_off  = self.mem[i].addr_off;
@@ -1277,9 +1501,10 @@ impl SymState {
                 // the emitted `rw [h_alias_<pc>]`, the spec hypothesis)
                 // uses the CANONICAL rendering, keeping ONE atom per
                 // physical cell.
+                let rhs = Self::cell_render(&self.mem[i]);
                 self.pending_alias = Some((
                     format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
-                    format!("effectiveAddr ({}) ({})", cell_base.to_lean(), cell_off),
+                    rhs,
                 ));
                 self.rr_walk.push((cell_base, cell_off, width, false));
             } else {
@@ -1301,6 +1526,7 @@ impl SymState {
         let v = Expr::InitMem(name);
         let cell = MemCell {
             addr_base: base_expr.clone(), addr_off: off, width, value: v.clone(),
+            delta: 0,
         };
         let width_len = match width {
             Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
@@ -1310,6 +1536,7 @@ impl SymState {
         self.mem.push(cell);
         self.pre.push(Atom::Mem {
             addr_base: base_expr.clone(), addr_off: off, width, value: v.clone(),
+            delta: 0,
         });
         // rr contribution: every load needs containsRange at the
         // accessed cell.
@@ -1318,6 +1545,21 @@ impl SymState {
     }
     fn write_mem(&mut self, base: u8, off: i64, width: Width, value: Expr) {
         let base_expr = self.read_reg(base);
+        let wlen = match width {
+            Width::Byte => 1i64, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
+        };
+        if wlen > 1 {
+            let (root, lo) = canon_addr(&base_expr, off);
+            if self.hot_intersects(&root, lo, lo + wlen) {
+                // Wide STORES into a byte-demoted region need
+                // `stxdw_bytes`-style specs — not implemented yet.
+                self.overlap_errors.push(format!(
+                    "wide {:?} STORE at ({})+{} into a hot (byte-demoted) \
+                     region — only dword loads are supported so far (H8 \
+                     Phase B-1)", width, base_expr.to_lean(), off));
+                return;
+            }
+        }
         // Make sure the pre-atom exists (a store after no preceding
         // load still needs the cell to be present in the pre-state).
         // The lookup is canon-aware: a store through a different
@@ -1341,9 +1583,10 @@ impl SymState {
             // rr contribution: every store needs containsWritable —
             // through the canonical rendering when aliased.
             if aliased {
+                let rhs = Self::cell_render(&self.mem[i]);
                 self.pending_alias = Some((
                     format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
-                    format!("effectiveAddr ({}) ({})", cell_base.to_lean(), cell_off),
+                    rhs,
                 ));
                 self.rr_walk.push((cell_base, cell_off, width, true));
             } else {
@@ -1583,6 +1826,54 @@ fn spec_call_for(
             // hypothesis the theorem signature surfaces is named
             // `h<var>_lt` (i.e., `holdMemD_<N>_lt`).
             let base_addr = reg_val_lean(src);
+            // Hot (byte-demoted) region: `ldxdw_bytes_spec` over the 8
+            // byte atoms; the loaded value is their Horner combination
+            // (H8 Phase B). Predictions mirror `read_hot_wide`'s slot
+            // resolution and fresh-name allocation exactly.
+            {
+                let bexpr = reg_val_expr(src);
+                let (root, lo) = canon_addr(&bexpr, off);
+                if dst != src && state.hot_covers(&root, lo, lo + 8) {
+                    let mut args = String::new();
+                    let mut bounds = String::new();
+                    let mut fresh = state.fresh;
+                    for k in 0..8i64 {
+                        let found = state.mem.iter().find(|c| {
+                            matches!(c.width, Width::Byte) && {
+                                let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+                                cr == root && cd + c.delta == lo + k
+                            }
+                        });
+                        match found {
+                            Some(c) => {
+                                args.push_str(&format!(" {}", c.value.atom_lean()));
+                                match &c.value {
+                                    Expr::InitMem(n) =>
+                                        bounds.push_str(&format!(" h{}_lt", n)),
+                                    _ => bounds.push_str(" (by omega)"),
+                                }
+                            }
+                            None => {
+                                let n = format!("oldMemB_{}", fresh);
+                                fresh += 1;
+                                args.push_str(&format!(" {}", n));
+                                bounds.push_str(&format!(" h{}_lt", n));
+                            }
+                        }
+                    }
+                    let v_old_dst = state.regs.get(&dst)
+                        .map(|e| e.to_lean())
+                        .unwrap_or_else(|| reg_initial_name(dst));
+                    return Some(SpecCall {
+                        hyp_name: hyp_name.clone(),
+                        have_line: format!(
+                            "have {} := ldxdw_bytes_spec {} {} {} ({}) ({}){} {} (by decide){}",
+                            hyp_name, reg(dst), reg(src), offl,
+                            v_old_dst, base_addr, args, pc, bounds,
+                        ),
+                    });
+                }
+            }
             // Re-read of an already-accessed cell reuses its existing
             // value (read_mem returns the same cell); only a first access
             // allocates oldMemD_<fresh>. A fresh / `InitMem`-valued cell
@@ -2236,7 +2527,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             // not a fresh `oldMemD_N` var, so `read_mem` surfaced no
             // `< 2^64` bound for it. Register the matching `hReloadLt_<pc>`
             // side hyp that `spec_call_for` references as the spec's `hv`.
-            if !matches!(raw, Expr::InitMem(_)) {
+            if !matches!(raw, Expr::InitMem(_) | Expr::ByteCombo(_)) {
                 let pcn = pc.unwrap_or(0);
                 state.side_hyps.push((
                     format!("hReloadLt_{}", pcn),
@@ -2715,11 +3006,22 @@ fn atom_to_lean_with_subst(
         Atom::Reg(r, v) => {
             format!("(.{} ↦ᵣ {})", reg_lit(*r), sub(v))
         }
-        Atom::Mem { addr_base, addr_off, width, value } => {
+        Atom::Mem { addr_base, addr_off, width, value, delta } => {
             let rendered = addr_base.to_lean();
             let addr_str = subst.get(&rendered)
                 .map(|p| p.clone())
                 .unwrap_or_else(|| addr_base.atom_lean());
+            if *delta != 0 {
+                // Hot byte cell: `effectiveAddr base off + delta ↦ₘ v`
+                // (plain Nat add on the resolved address — the form
+                // `ldxdw_bytes_spec`'s atoms use).
+                return format!(
+                    "(effectiveAddr {} {} + {} {} {})",
+                    addr_str,
+                    if *addr_off < 0 { format!("({})", addr_off) } else { format!("{}", addr_off) },
+                    delta, width.lean_arrow(), sub(value),
+                );
+            }
             format!(
                 "(effectiveAddr {} {} {} {})",
                 addr_str, lean_off(*addr_off), width.lean_arrow(), sub(value),
@@ -2769,7 +3071,7 @@ fn atom_to_lean_heap(
     atom: &Atom,
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+    if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
         if matches!(width, Width::Dword) {
             if let Some(abs) = heap_cell_addr(addr_base, *addr_off) {
                 let v = fold_abstractions(value.to_lean(), subst);
@@ -2901,10 +3203,10 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                     .unwrap_or_else(|| Expr::InitReg(reg_initial_name(*r)));
                 out.push(Atom::Reg(*r, v));
             }
-            Atom::Mem { addr_base, addr_off, width, .. } => {
-                // Look up the cell by (rendered-addr, off, width) key —
-                // the same scheme `read_mem`/`write_mem` use.
-                let key = (addr_base.to_lean(), *addr_off, *width as u8);
+            Atom::Mem { addr_base, addr_off, width, delta, .. } => {
+                // Look up the cell by (rendered-addr, off, delta, width)
+                // key — the same scheme `read_mem`/`write_mem` use.
+                let key = (addr_base.to_lean(), *addr_off, *delta, *width as u8);
                 let v = state.mem.iter()
                     .find(|c| c.key() == key)
                     .map(|c| c.value.clone())
@@ -2914,6 +3216,7 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                     addr_off:  *addr_off,
                     width:     *width,
                     value:     v,
+                    delta:     *delta,
                 });
             }
             Atom::Bytes { addr, value } => {
@@ -3157,7 +3460,7 @@ fn is_const_delta_arm(arm: Option<&str>) -> bool {
 /// if the lift owns it.
 fn cell_val<'a>(atoms: &'a [Atom], base_raw: &str, off: i64, byte: bool) -> Option<&'a Expr> {
     for a in atoms {
-        if let Atom::Mem { addr_base, addr_off, width, value } = a {
+        if let Atom::Mem { addr_base, addr_off, width, value, .. } = a {
             if *addr_off == off && matches!(width, Width::Byte) == byte
                && addr_base.to_lean() == base_raw {
                 return Some(value);
@@ -4036,7 +4339,7 @@ fn emit_counter_refinement(
     // cleaned `NatAdd(InitMem, Const)` form.
     let mut found: Option<(Expr, i64, Expr, i64)> = None;
     for atom in post_clean {
-        if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+        if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
             if matches!(width, Width::Dword) {
                 if let Expr::NatAdd(a, b) = value {
                     if let (Expr::InitMem(_), Expr::Const(k)) = (a.as_ref(), b.as_ref()) {
@@ -4161,7 +4464,7 @@ fn emit_vault_refinement(
     // `NatAdd(InitMem, Const)` (the constant `+k` delta).
     let mut updated: Option<(Expr, i64, Expr, i64)> = None; // base, off, pre_val, delta
     for atom in post_clean {
-        if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+        if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
             if matches!(width, Width::Dword) {
                 if let Expr::NatAdd(a, b) = value {
                     if let (Expr::InitMem(_), Expr::Const(k)) = (a.as_ref(), b.as_ref()) {
@@ -4538,6 +4841,21 @@ fn lift_one(
         ));
     }
 
+    let entry_pc: usize = executable.get_entrypoint_instruction_offset();
+    // Hot (byte-demoted) regions, grown across walk retries: when a
+    // wide access overlaps byte-granular cells, the walk requests the
+    // span's demotion and is re-run with the union hot set (H8 Phase
+    // B). Growth is monotone and bounded by the touched bytes; the
+    // attempt cap is a safety net.
+    let mut hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>> =
+        Default::default();
+    let mut walk_attempts = 0usize;
+    let (mut state, spec_calls, block_pcs, exit_pc) = loop {
+    walk_attempts += 1;
+    if walk_attempts > 8 {
+        return Err("qedlift: hot-region demotion did not converge after 8 \
+                    walk retries".into());
+    }
     // Spec calls collected during the walk for the
     // `sl_block_iter` proof emission (when needed).
     let mut spec_calls: Vec<SpecCall> = Vec::new();
@@ -4555,8 +4873,8 @@ fn lift_one(
     // the linker may place helper functions before the entrypoint).
     let mut block_pcs: Vec<usize> = Vec::new();
     let exit_pc: usize;
-    let entry_pc: usize = executable.get_entrypoint_instruction_offset();
     let mut state = SymState::default();
+    state.hot_regions = hot_regions.clone();
     {
         // In trace mode the walk follows the recorded PC sequence; `ti`
         // is the cursor into it and `pc_iter` mirrors `trace[ti]`.
@@ -4844,13 +5162,35 @@ fn lift_one(
         }
     }
 
+    // Demotion requested: merge the new spans into the hot set and
+    // re-walk (this pass's output is discarded).
+    if !state.new_hot.is_empty() {
+        for (root, lo, hi) in state.new_hot.drain(..) {
+            let v = hot_regions.entry(root).or_default();
+            let (mut nlo, mut nhi) = (lo, hi);
+            v.retain(|(l, h)| {
+                if *l <= nhi && nlo <= *h {
+                    nlo = nlo.min(*l); nhi = nhi.max(*h); false
+                } else { true }
+            });
+            v.push((nlo, nhi));
+        }
+        continue;
+    }
     // FAIL CLOSED on atom-footprint overlap (soundness audit H8): a
     // sepConj with overlapping memory atoms is unsatisfiable, so the
     // emitted theorem would be vacuously true — worse than no theorem.
-    if let Some(err) = state.overlap_error.take() {
+    if !state.overlap_errors.is_empty() {
         return Err(format!(
-            "qedlift: refusing to emit a vacuous lift — {err}").into());
+            "qedlift: refusing to emit a vacuous lift — overlapping atom \
+             footprints would make the precondition's sepConj \
+             unsatisfiable. The walker does not yet alias these at byte \
+             granularity (soundness-audit H8, \
+             docs/QEDLIFT_ALIASING_DESIGN.md):\n  - {}",
+            state.overlap_errors.join("\n  - ")).into());
     }
+    break (state, spec_calls, block_pcs, exit_pc);
+    };
 
     // Build the CR as a Lean string. `sl_block_auto` requires the CR
     // to appear as a literal `union`-of-`singleton`s in the theorem
@@ -5064,7 +5404,7 @@ fn lift_one(
             Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::WrapMul(..) | Expr::NatAdd(..) |
             Expr::Mod(..) | Expr::AndU64Imm(..) | Expr::LshU64Imm(..) |
             Expr::RshU64Imm(..) | Expr::StHalfImm(..) | Expr::StWordImm(..) |
-            Expr::StDwordImm(..) | Expr::Raw(..));
+            Expr::StDwordImm(..) | Expr::Raw(..) | Expr::ByteCombo(..));
         let mut seen = std::collections::BTreeSet::new();
         let mut gens = Vec::new();
         for atom in pre.iter().chain(post.iter()) {
@@ -5304,13 +5644,13 @@ fn lift_one(
     let mut shifts: Vec<Shift> = Vec::new();
     let mut post_clean: Vec<Atom> = Vec::with_capacity(post.len());
     for atom in &post {
-        if let Atom::Mem { addr_base, addr_off, width, value } = atom {
+        if let Atom::Mem { addr_base, addr_off, width, value, delta } = atom {
             if let Expr::WrapSub(a, b) = value {
                 if is_initmem(a) && is_initmem(b) {
                     shifts.push(Shift::Sub((**a).clone(), (**b).clone()));
                     post_clean.push(Atom::Mem { addr_base: addr_base.clone(),
                         addr_off: *addr_off, width: *width,
-                        value: Expr::CleanSub(a.clone(), b.clone()) });
+                        value: Expr::CleanSub(a.clone(), b.clone()), delta: *delta });
                     continue;
                 }
             }
@@ -5319,7 +5659,7 @@ fn lift_one(
                     shifts.push(Shift::Add((**a).clone(), (**b).clone()));
                     post_clean.push(Atom::Mem { addr_base: addr_base.clone(),
                         addr_off: *addr_off, width: *width,
-                        value: Expr::NatAdd(a.clone(), b.clone()) });
+                        value: Expr::NatAdd(a.clone(), b.clone()), delta: *delta });
                     continue;
                 }
                 if counter_arm && is_initmem(a) {
@@ -5327,7 +5667,7 @@ fn lift_one(
                         shifts.push(Shift::AddConst((**a).clone(), k));
                         post_clean.push(Atom::Mem { addr_base: addr_base.clone(),
                             addr_off: *addr_off, width: *width,
-                            value: Expr::NatAdd(a.clone(), Box::new(Expr::Const(k))) });
+                            value: Expr::NatAdd(a.clone(), Box::new(Expr::Const(k))), delta: *delta });
                         continue;
                     }
                 }

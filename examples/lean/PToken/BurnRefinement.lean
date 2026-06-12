@@ -1,0 +1,465 @@
+/-
+  AsmRefinesTokenBurn asm-refines-intrinsic theorem. MECHANICALLY EMITTED by qedlift's
+  refinement codegen from the lift's atoms + the IDL arm name. Wires the
+  trace-guided lift to `AsmRefinesTokenBurn` via the codec-aggregation lemmas +
+  `cuTripleWithinMem_frame_right` + `sl_exact`.
+-/
+
+import SVM.SBPF.Tactic.SL
+import SVM.Solana.Abstract.Refinement
+import SVM.Solana.TokenFieldCodec
+import Generated.PTokenBurnTracedLifted
+import SVM.Solana.MintFieldCodec
+import PToken.TransferAggregation
+import PToken.MintAggregation
+
+namespace Examples.PTokenBurnRefinement
+open SVM SVM.SBPF SVM.SBPF.Memory
+open Examples.PTokenTransferAggregation Examples.PTokenMintAggregation
+
+set_option maxHeartbeats 800000 in
+theorem refines_asm
+    (cr : CodeReq) (rr : Memory.RegionTable → Prop)
+    (baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 vR0Old oldMemB_4 oldMemB_5 oldMemB_6 oldMemB_7 oldMemB_8 oldMemB_9 oldMemB_10 vR7Old vR10Old oldMemD_11 vR3Old oldMemB_12 oldMemD_13 oldMemD_14 oldMemB_15 oldMemD_16 oldMemD_17 vR4Old oldMemD_18 vR9Old oldMemB_19 vR5Old vR8Old vR6Old oldMemB_20 oldMemB_21 oldMemB_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemB_37 oldMemD_38 oldMemD_39 oldMemD_40 oldMemD_41 oldMemD_42 oldMemD_43 oldMemD_44 oldMemB_45 oldMemD_46 : Nat)
+    (g1 g2 preAuth5 g3 g4 : ByteArray)
+    (g1sz : g1.size = 35)
+    (h_oldMemB_37 : oldMemB_37 < 256)
+    (h_oldMemB_20 : oldMemB_20 < 256)
+    (h_oldMemB_22 : oldMemB_22 < 256)
+    (h_oldMemB_21 : oldMemB_21 < 256)
+    (g3sz : g3.size = 1)
+    (lift : cuTripleWithinMem 130 0 198 3542 cr
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ vR0Old) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ vR7Old) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 oldMemD_11) **
+      (.r3 ↦ᵣ vR3Old) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 oldMemD_13) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 oldMemD_16) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ vR4Old) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ vR9Old) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ vR5Old) **
+      (.r8 ↦ᵣ vR8Old) **
+      (.r6 ↦ᵣ vR6Old) **
+      (effectiveAddr addr4 196 ↦ₘ oldMemB_20) **
+      (effectiveAddr addr0 133 ↦ₘ oldMemB_21) **
+      (effectiveAddr addr4 197 ↦ₘ oldMemB_22) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr4 152 ↦U64 oldMemD_24) **
+      (effectiveAddr addr4 88 ↦U64 oldMemD_25) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr4 96 ↦U64 oldMemD_27) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr4 104 ↦U64 oldMemD_29) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_31) **
+      (effectiveAddr addr4 112 ↦U64 oldMemD_32) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr addr4 120 ↦U64 oldMemD_34) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_35) **
+      (effectiveAddr vR10Old (-2104) ↦U64 oldMemD_36) **
+      (effectiveAddr addr4 160 ↦ₘ oldMemB_37) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr4 128 ↦U64 oldMemD_40) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr4 136 ↦U64 oldMemD_42) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr4 144 ↦U64 oldMemD_44) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45) **
+      (effectiveAddr addr0 124 ↦U64 oldMemD_46))
+      ((.r1 ↦ᵣ wrapSub oldMemD_46 oldMemD_23) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ oldMemD_44) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ toU64 0) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ oldMemB_0 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * (oldMemB_7 + 256 * (oldMemB_8 + 256 * (oldMemB_9 + 256 * oldMemB_10))))))) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 addr4) **
+      (.r3 ↦ᵣ addr0) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 addr0) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 addr2) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ addr4) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ toU64 4) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ oldMemD_23) **
+      (.r8 ↦ᵣ addr5) **
+      (.r6 ↦ᵣ toU64 0) **
+      (effectiveAddr addr4 196 ↦ₘ oldMemB_20) **
+      (effectiveAddr addr0 133 ↦ₘ oldMemB_21) **
+      (effectiveAddr addr4 197 ↦ₘ oldMemB_22) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr4 152 ↦U64 oldMemD_24 - oldMemD_23) **
+      (effectiveAddr addr4 88 ↦U64 oldMemD_25) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr4 96 ↦U64 oldMemD_27) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr4 104 ↦U64 oldMemD_29) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_24) **
+      (effectiveAddr addr4 112 ↦U64 oldMemD_32) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr addr4 120 ↦U64 oldMemD_34) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_23) **
+      (effectiveAddr vR10Old (-2104) ↦U64 wrapAdd vR10Old (toU64 (-2048))) **
+      (effectiveAddr addr4 160 ↦ₘ oldMemB_37) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr4 128 ↦U64 oldMemD_40) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr4 136 ↦U64 oldMemD_42) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr4 144 ↦U64 oldMemD_44) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45) **
+      (effectiveAddr addr0 124 ↦U64 oldMemD_46 - oldMemD_23)) rr) :
+    SVM.Solana.Abstract.AsmRefinesTokenBurn cr 130 0 198 3542 rr (addr4 + 88) (addr0 + 88)
+      { mint := ⟨oldMemD_25, oldMemD_27, oldMemD_29, oldMemD_32⟩,
+        owner := ⟨oldMemD_34, oldMemD_40, oldMemD_42, oldMemD_44⟩, amount := oldMemD_24,
+        rest := PartialState.byteBA oldMemB_37 ++ (g1 ++ (PartialState.byteBA oldMemB_20 ++ (PartialState.byteBA oldMemB_22 ++ g2))) }
+      { preAuth := preAuth5,
+        supply := oldMemD_46,
+        rest := g3 ++ (PartialState.byteBA oldMemB_21 ++ g4) }
+      oldMemD_23
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ vR0Old) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ vR7Old) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 oldMemD_11) **
+      (.r3 ↦ᵣ vR3Old) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 oldMemD_13) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 oldMemD_16) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ vR4Old) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ vR9Old) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ vR5Old) **
+      (.r8 ↦ᵣ vR8Old) **
+      (.r6 ↦ᵣ vR6Old) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_31) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_35) **
+      (effectiveAddr vR10Old (-2104) ↦U64 oldMemD_36) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45))
+      ((.r1 ↦ᵣ wrapSub oldMemD_46 oldMemD_23) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ oldMemD_44) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ toU64 0) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ oldMemB_0 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * (oldMemB_7 + 256 * (oldMemB_8 + 256 * (oldMemB_9 + 256 * oldMemB_10))))))) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 addr4) **
+      (.r3 ↦ᵣ addr0) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 addr0) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 addr2) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ addr4) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ toU64 4) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ oldMemD_23) **
+      (.r8 ↦ᵣ addr5) **
+      (.r6 ↦ᵣ toU64 0) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_24) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_23) **
+      (effectiveAddr vR10Old (-2104) ↦U64 wrapAdd vR10Old (toU64 (-2048))) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45)) := by
+  unfold SVM.Solana.Abstract.AsmRefinesTokenBurn
+  simp only [SVM.Solana.Abstract.Mint.withSupply, SVM.Solana.Abstract.TokenAccount.withAmount]
+  rw [src_account_eq (addr4 + 88) oldMemD_25 oldMemD_27 oldMemD_29 oldMemD_32 oldMemD_34 oldMemD_40 oldMemD_42 oldMemD_44 oldMemD_24 oldMemB_37 oldMemB_20 oldMemB_22 g1 g2 g1sz h_oldMemB_37 h_oldMemB_20 h_oldMemB_22,
+      mint_supply_eq (addr0 + 88) oldMemD_46 oldMemB_21 preAuth5 g3 g4 g3sz h_oldMemB_21,
+      src_account_eq (addr4 + 88) oldMemD_25 oldMemD_27 oldMemD_29 oldMemD_32 oldMemD_34 oldMemD_40 oldMemD_42 oldMemD_44 (oldMemD_24 - oldMemD_23) oldMemB_37 oldMemB_20 oldMemB_22 g1 g2 g1sz h_oldMemB_37 h_oldMemB_20 h_oldMemB_22,
+      mint_supply_eq (addr0 + 88) (oldMemD_46 - oldMemD_23) oldMemB_21 preAuth5 g3 g4 g3sz h_oldMemB_21]
+  simp only [pubkeyIs]
+  have framed := cuTripleWithinMem_frame_right
+    ( memBytesIs (addr4 + 161) g1 **
+      memBytesIs (addr4 + 198) g2 **
+      memBytesIs (addr0 + 88) preAuth5 **
+      memBytesIs (addr0 + 132) g3 **
+      memBytesIs (addr0 + 134) g4 )
+    (by sl_pcfree) lift
+  simp only [Nat.add_assoc, Nat.reduceAdd]
+  sl_exact framed
+
+/-- Discharge-route reshape: the `AsmRefinesTokenBurn` obligation is a layout-general
+    field-list (`codecCoarse`/`tokenFields`/`mintFields`) obligation. The
+    convergence keystones (`tokenAcctBalance_codec` / `mintSupply_codec`)
+    rewrite the bespoke `tokenAcctBalanceOf` / `mintSupplyOf` atoms to the
+    field-list codec, so qedgen reads the mutated field off the decoded list
+    via the library `*_ensures_*` facts (`qedsvm_discharge`). Pairs with
+    `refines_asm` (the lift realises the obligation). -/
+theorem refines_field
+    (cr : CodeReq) (rr : Memory.RegionTable → Prop)
+    (baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 vR0Old oldMemB_4 oldMemB_5 oldMemB_6 oldMemB_7 oldMemB_8 oldMemB_9 oldMemB_10 vR7Old vR10Old oldMemD_11 vR3Old oldMemB_12 oldMemD_13 oldMemD_14 oldMemB_15 oldMemD_16 oldMemD_17 vR4Old oldMemD_18 vR9Old oldMemB_19 vR5Old vR8Old vR6Old oldMemB_20 oldMemB_21 oldMemB_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemB_37 oldMemD_38 oldMemD_39 oldMemD_40 oldMemD_41 oldMemD_42 oldMemD_43 oldMemD_44 oldMemB_45 oldMemD_46 : Nat)
+    (g1 g2 preAuth5 g3 g4 : ByteArray)
+    (h : SVM.Solana.Abstract.AsmRefinesTokenBurn cr 130 0 198 3542 rr (addr4 + 88) (addr0 + 88)
+      { mint := ⟨oldMemD_25, oldMemD_27, oldMemD_29, oldMemD_32⟩,
+        owner := ⟨oldMemD_34, oldMemD_40, oldMemD_42, oldMemD_44⟩, amount := oldMemD_24,
+        rest := PartialState.byteBA oldMemB_37 ++ (g1 ++ (PartialState.byteBA oldMemB_20 ++ (PartialState.byteBA oldMemB_22 ++ g2))) }
+      { preAuth := preAuth5,
+        supply := oldMemD_46,
+        rest := g3 ++ (PartialState.byteBA oldMemB_21 ++ g4) }
+      oldMemD_23
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ vR0Old) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ vR7Old) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 oldMemD_11) **
+      (.r3 ↦ᵣ vR3Old) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 oldMemD_13) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 oldMemD_16) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ vR4Old) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ vR9Old) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ vR5Old) **
+      (.r8 ↦ᵣ vR8Old) **
+      (.r6 ↦ᵣ vR6Old) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_31) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_35) **
+      (effectiveAddr vR10Old (-2104) ↦U64 oldMemD_36) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45))
+      ((.r1 ↦ᵣ wrapSub oldMemD_46 oldMemD_23) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ oldMemD_44) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ toU64 0) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ oldMemB_0 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * (oldMemB_7 + 256 * (oldMemB_8 + 256 * (oldMemB_9 + 256 * oldMemB_10))))))) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 addr4) **
+      (.r3 ↦ᵣ addr0) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 addr0) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 addr2) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ addr4) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ toU64 4) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ oldMemD_23) **
+      (.r8 ↦ᵣ addr5) **
+      (.r6 ↦ᵣ toU64 0) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_24) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_23) **
+      (effectiveAddr vR10Old (-2104) ↦U64 wrapAdd vR10Old (toU64 (-2048))) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45))) :
+    cuTripleWithinMem 130 0 198 3542 cr
+      (((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ vR0Old) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ vR7Old) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 oldMemD_11) **
+      (.r3 ↦ᵣ vR3Old) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 oldMemD_13) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 oldMemD_16) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ vR4Old) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ vR9Old) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ vR5Old) **
+      (.r8 ↦ᵣ vR8Old) **
+      (.r6 ↦ᵣ vR6Old) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_31) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_35) **
+      (effectiveAddr vR10Old (-2104) ↦U64 oldMemD_36) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45)) **
+      codecCoarse (addr4 + 88) (SVM.Solana.tokenFields ⟨oldMemD_25, oldMemD_27, oldMemD_29, oldMemD_32⟩ ⟨oldMemD_34, oldMemD_40, oldMemD_42, oldMemD_44⟩ oldMemD_24 (PartialState.byteBA oldMemB_37 ++ (g1 ++ (PartialState.byteBA oldMemB_20 ++ (PartialState.byteBA oldMemB_22 ++ g2))))) **
+      codecCoarse (addr0 + 88) (SVM.Solana.mintFields (preAuth5) oldMemD_46 (g3 ++ (PartialState.byteBA oldMemB_21 ++ g4))))
+      (((.r1 ↦ᵣ wrapSub oldMemD_46 oldMemD_23) **
+      (effectiveAddr baseAddr 0 ↦ₘ oldMemB_0) **
+      (.r2 ↦ᵣ oldMemD_44) **
+      (effectiveAddr baseAddr 88 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 10512 ↦ₘ oldMemB_2) **
+      (effectiveAddr baseAddr 10592 ↦U64 oldMemD_3) **
+      (.r0 ↦ᵣ toU64 0) **
+      (effectiveAddr baseAddr 0 + 1 ↦ₘ oldMemB_4) **
+      (effectiveAddr baseAddr 0 + 2 ↦ₘ oldMemB_5) **
+      (effectiveAddr baseAddr 0 + 3 ↦ₘ oldMemB_6) **
+      (effectiveAddr baseAddr 0 + 4 ↦ₘ oldMemB_7) **
+      (effectiveAddr baseAddr 0 + 5 ↦ₘ oldMemB_8) **
+      (effectiveAddr baseAddr 0 + 6 ↦ₘ oldMemB_9) **
+      (effectiveAddr baseAddr 0 + 7 ↦ₘ oldMemB_10) **
+      (.r7 ↦ᵣ oldMemB_0 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * (oldMemB_7 + 256 * (oldMemB_8 + 256 * (oldMemB_9 + 256 * oldMemB_10))))))) **
+      (.r10 ↦ᵣ vR10Old) **
+      (effectiveAddr vR10Old (-2072) ↦U64 addr4) **
+      (.r3 ↦ᵣ addr0) **
+      (effectiveAddr addr0 0 ↦ₘ oldMemB_12) **
+      (effectiveAddr addr1 8 ↦U64 addr0) **
+      (effectiveAddr addr0 80 ↦U64 oldMemD_14) **
+      (effectiveAddr addr2 0 ↦ₘ oldMemB_15) **
+      (effectiveAddr addr1 16 ↦U64 addr2) **
+      (effectiveAddr addr2 80 ↦U64 oldMemD_17) **
+      (.r4 ↦ᵣ addr4) **
+      (effectiveAddr addr3 0 ↦U64 oldMemD_18) **
+      (.r9 ↦ᵣ toU64 4) **
+      (effectiveAddr addr3 8 ↦ₘ oldMemB_19) **
+      (.r5 ↦ᵣ oldMemD_23) **
+      (.r8 ↦ᵣ addr5) **
+      (.r6 ↦ᵣ toU64 0) **
+      (effectiveAddr addr5 0 ↦U64 oldMemD_23) **
+      (effectiveAddr addr0 8 ↦U64 oldMemD_26) **
+      (effectiveAddr addr0 16 ↦U64 oldMemD_28) **
+      (effectiveAddr addr0 24 ↦U64 oldMemD_30) **
+      (effectiveAddr vR10Old (-2096) ↦U64 oldMemD_24) **
+      (effectiveAddr addr0 32 ↦U64 oldMemD_33) **
+      (effectiveAddr vR10Old (-2088) ↦U64 oldMemD_23) **
+      (effectiveAddr vR10Old (-2104) ↦U64 wrapAdd vR10Old (toU64 (-2048))) **
+      (effectiveAddr addr2 8 ↦U64 oldMemD_38) **
+      (effectiveAddr addr2 16 ↦U64 oldMemD_39) **
+      (effectiveAddr addr2 24 ↦U64 oldMemD_41) **
+      (effectiveAddr addr2 32 ↦U64 oldMemD_43) **
+      (effectiveAddr addr2 1 ↦ₘ oldMemB_45)) **
+      codecCoarse (addr4 + 88) (SVM.Solana.tokenFields ⟨oldMemD_25, oldMemD_27, oldMemD_29, oldMemD_32⟩ ⟨oldMemD_34, oldMemD_40, oldMemD_42, oldMemD_44⟩ (oldMemD_24 - oldMemD_23) (PartialState.byteBA oldMemB_37 ++ (g1 ++ (PartialState.byteBA oldMemB_20 ++ (PartialState.byteBA oldMemB_22 ++ g2))))) **
+      codecCoarse (addr0 + 88) (SVM.Solana.mintFields (preAuth5) (oldMemD_46 - oldMemD_23) (g3 ++ (PartialState.byteBA oldMemB_21 ++ g4))))
+      rr := by
+  unfold SVM.Solana.Abstract.AsmRefinesTokenBurn at h
+  simpa only [SVM.Solana.tokenAcctBalanceOf_eq, SVM.Solana.tokenAcctBalanceOf_withAmount, SVM.Solana.tokenAcctBalance_codec, SVM.Solana.mintSupplyOf_eq, SVM.Solana.mintSupplyOf_withSupply, SVM.Solana.mintSupply_codec] using h
+
+end Examples.PTokenBurnRefinement

@@ -1,4 +1,5 @@
 import SVM.SBPF.InstructionSpecs.MemByte
+import SVM.SBPF.SegAggregation
 
 namespace SVM.SBPF
 
@@ -844,5 +845,60 @@ theorem ldxdw_same_spec
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
 
+/-! ## Dword load over BYTE-granular memory (qedlift hot regions)
+
+When a region is accessed at MIXED widths (e.g. pinocchio's entrypoint
+reads `input[0]` as a byte and `input[0..8)` as a dword), qedlift keeps
+it at byte granularity — one `↦ₘ` atom per byte — so the sepConj stays
+satisfiable (soundness audit H8 Phase B,
+`docs/QEDLIFT_ALIASING_DESIGN.md`). The dword load's spec is
+`ldxdw_spec` reshaped through `byte_atoms_eq_memU64Is`: the pre/post
+own the 8 byte atoms, and the loaded value is their little-endian
+Horner combination. -/
+
+set_option maxHeartbeats 800000 in
+/-- `ldx .dword dst src off` over eight byte atoms `[addr, addr+8)`.
+    The loaded value is `b0 + 256·(b1 + 256·(… + 256·b7))`. -/
+theorem ldxdw_bytes_spec
+    (dst src : Reg) (off : Int)
+    (vOldDst baseAddr b0 b1 b2 b3 b4 b5 b6 b7 : Nat) (pc : Nat)
+    (hne : dst ≠ .r10)
+    (hb0 : b0 < 256) (hb1 : b1 < 256) (hb2 : b2 < 256) (hb3 : b3 < 256)
+    (hb4 : b4 < 256) (hb5 : b5 < 256) (hb6 : b6 < 256) (hb7 : b7 < 256) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.ldx .dword dst src off))
+      ((dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) **
+        ((effectiveAddr baseAddr off ↦ₘ b0) **
+         (effectiveAddr baseAddr off + 1 ↦ₘ b1) **
+         (effectiveAddr baseAddr off + 2 ↦ₘ b2) **
+         (effectiveAddr baseAddr off + 3 ↦ₘ b3) **
+         (effectiveAddr baseAddr off + 4 ↦ₘ b4) **
+         (effectiveAddr baseAddr off + 5 ↦ₘ b5) **
+         (effectiveAddr baseAddr off + 6 ↦ₘ b6) **
+         (effectiveAddr baseAddr off + 7 ↦ₘ b7)))
+      ((dst ↦ᵣ b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+          (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) **
+        (src ↦ᵣ baseAddr) **
+        ((effectiveAddr baseAddr off ↦ₘ b0) **
+         (effectiveAddr baseAddr off + 1 ↦ₘ b1) **
+         (effectiveAddr baseAddr off + 2 ↦ₘ b2) **
+         (effectiveAddr baseAddr off + 3 ↦ₘ b3) **
+         (effectiveAddr baseAddr off + 4 ↦ₘ b4) **
+         (effectiveAddr baseAddr off + 5 ↦ₘ b5) **
+         (effectiveAddr baseAddr off + 6 ↦ₘ b6) **
+         (effectiveAddr baseAddr off + 7 ↦ₘ b7)))
+      (fun rt => rt.containsRange (effectiveAddr baseAddr off) 8 = true) := by
+  have hcombo : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+      (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) < 2 ^ 64 := by omega
+  have hbridge := byte_atoms_eq_memU64Is (effectiveAddr baseAddr off)
+      b0 b1 b2 b3 b4 b5 b6 b7 hb0 hb1 hb2 hb3 hb4 hb5 hb6 hb7
+  refine cuTripleWithinMem_weaken ?_ ?_ (fun _ x => x)
+    (ldxdw_spec dst src off vOldDst baseAddr _ pc hne hcombo)
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h' =>
+      sepConj_iff_congr_right _ (fun h'' => hbridge h'') h') h).mp hh
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h' =>
+      sepConj_iff_congr_right _ (fun h'' => (hbridge h'').symm) h') h).mp hh
 
 end SVM.SBPF

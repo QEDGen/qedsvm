@@ -155,4 +155,86 @@ example (base b0 b36 b37 : Nat) (g1 g2 : ByteArray)
          segsSL base [.byte b0, .gap g1, .byte b36, .byte b37, .gap g2] h :=
   memBytesIs_segs base _ ⟨hb0, trivial, hb36, hb37, trivial, trivial⟩
 
+/-! ## Byte-granular `↦U64` bridge (qedlift hot regions — H8 Phase B)
+
+When a program accesses overlapping bytes at MIXED widths (e.g.
+pinocchio's entrypoint reads `input[0]` as a byte AND `input[0..8)` as
+a dword), qedlift demotes the region to per-byte atoms and the wide
+access's spec reshapes through this bridge: eight adjacent `↦ₘ` atoms
+are exactly one `↦U64` cell holding their little-endian (Horner)
+combination. -/
+
+set_option maxHeartbeats 1600000 in
+/-- Eight adjacent byte atoms ↔ one `↦U64` cell of their LE Horner
+    combination. Instance of the keystone over `[.byte b0, …, .byte b7]`
+    plus the `u64LE`-of-Horner byte computation. (Heartbeats: the
+    high-byte `omega` extractions carry `256^7`-scale coefficients.) -/
+theorem byte_atoms_eq_memU64Is (a b0 b1 b2 b3 b4 b5 b6 b7 : Nat)
+    (h0 : b0 < 256) (h1 : b1 < 256) (h2 : b2 < 256) (h3 : b3 < 256)
+    (h4 : b4 < 256) (h5 : b5 < 256) (h6 : b6 < 256) (h7 : b7 < 256) :
+    ∀ h,
+      ((a ↦ₘ b0) ** ((a + 1) ↦ₘ b1) ** ((a + 2) ↦ₘ b2) **
+       ((a + 3) ↦ₘ b3) ** ((a + 4) ↦ₘ b4) ** ((a + 5) ↦ₘ b5) **
+       ((a + 6) ↦ₘ b6) ** ((a + 7) ↦ₘ b7)) h
+      ↔ memU64Is a
+          (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+            (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) h := by
+  intro h
+  have hsegs := memBytesIs_segs a
+      [.byte b0, .byte b1, .byte b2, .byte b3,
+       .byte b4, .byte b5, .byte b6, .byte b7]
+      ⟨h0, h1, h2, h3, h4, h5, h6, h7, trivial⟩ h
+  -- The segment blob is exactly the `u64LE` encoding of the Horner
+  -- combination (each `u64LE` byte-extraction collapses by `omega`
+  -- under the `< 256` bounds).
+  have hba : segsBytes
+      [.byte b0, .byte b1, .byte b2, .byte b3,
+       .byte b4, .byte b5, .byte b6, .byte b7]
+      = PartialState.u64LE
+          (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+            (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) := by
+    have e0 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) % 256 = b0 := by omega
+    have e1 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) / 0x100 % 256 = b1 := by
+      omega
+    have e2 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) / 0x10000 % 256 = b2 := by
+      omega
+    have e3 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) / 0x1000000 % 256
+        = b3 := by omega
+    have e4 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) / 0x100000000 % 256
+        = b4 := by omega
+    have e5 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) / 0x10000000000 % 256
+        = b5 := by omega
+    have e6 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) / 0x1000000000000 % 256
+        = b6 := by omega
+    have e7 : (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+        (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) / 0x100000000000000 % 256
+        = b7 := by omega
+    show (⟨#[b0.toUInt8, b1.toUInt8, b2.toUInt8, b3.toUInt8,
+             b4.toUInt8, b5.toUInt8, b6.toUInt8, b7.toUInt8]⟩ : ByteArray)
+        = _
+    simp only [PartialState.u64LE, e0, e1, e2, e3, e4, e5, e6, e7]
+  rw [hba] at hsegs
+  rw [memU64Is_eq_memBytesIs a _ h, hsegs]
+  -- Both sides are now the byte-atom sepConj; the keystone's RHS has
+  -- accumulated `+ 1 + 1 …` addresses and a trailing `** emp`.
+  show _ ↔ ((a ↦ₘ b0) ** ((a + 1) ↦ₘ b1) ** ((a + 1 + 1) ↦ₘ b2) **
+       ((a + 1 + 1 + 1) ↦ₘ b3) ** ((a + 1 + 1 + 1 + 1) ↦ₘ b4) **
+       ((a + 1 + 1 + 1 + 1 + 1) ↦ₘ b5) **
+       ((a + 1 + 1 + 1 + 1 + 1 + 1) ↦ₘ b6) **
+       (((a + 1 + 1 + 1 + 1 + 1 + 1 + 1) ↦ₘ b7) ** emp)) h
+  rw [sepConj_emp_right_eq,
+      show a + 1 + 1 = a + 2 from by omega,
+      show a + 1 + 1 + 1 = a + 3 from by omega,
+      show a + 1 + 1 + 1 + 1 = a + 4 from by omega,
+      show a + 1 + 1 + 1 + 1 + 1 = a + 5 from by omega,
+      show a + 1 + 1 + 1 + 1 + 1 + 1 = a + 6 from by omega,
+      show a + 1 + 1 + 1 + 1 + 1 + 1 + 1 = a + 7 from by omega]
+
 end SVM.SBPF
