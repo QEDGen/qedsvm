@@ -67,6 +67,7 @@ lean_lib Examples where
     `AxiomAudit,
     `SyscallHashPin,
     `H2Pin,
+    `M4Pin,
     `ByteIncrement,
     `DischargePoC,
     `ProofDemo,
