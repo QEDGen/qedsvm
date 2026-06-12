@@ -18,7 +18,11 @@ import SVM.SBPF.Machine
 namespace SVM.SBPF
 namespace Cpi
 
-/-- `DEFAULT_INVOCATION_COST` from agave. -/
+/-- `INVOKE_UNITS_COST_SIMD_0339` from agave (execution_budget.rs:23).
+    The diff baseline is mollusk under `FeatureSet::all_enabled()`, which
+    activates SIMD-0339, so `get_invoke_unit_cost` returns 946 — NOT the
+    pre-SIMD-0339 `DEFAULT_INVOCATION_COST = 1000`. Empirically pinned by
+    the CPI diff fixtures' CU-exact assertions (audit M6). -/
 def cu : Nat := 946
 
 /-- Fail closed: the proof-facing CPI is not modeled, so refuse to run
