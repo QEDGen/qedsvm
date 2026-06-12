@@ -237,4 +237,40 @@ theorem byte_atoms_eq_memU64Is (a b0 b1 b2 b3 b4 b5 b6 b7 : Nat)
       show a + 1 + 1 + 1 + 1 + 1 + 1 = a + 6 from by omega,
       show a + 1 + 1 + 1 + 1 + 1 + 1 + 1 = a + 7 from by omega]
 
+set_option maxHeartbeats 400000 in
+/-- Four adjacent byte atoms ↔ one `↦U32` cell of their LE Horner
+    combination — the word-width sibling of `byte_atoms_eq_memU64Is`
+    (H8 Phase B-2: `stw`/`ldxw` over byte-demoted regions). -/
+theorem byte_atoms_eq_memU32Is (a b0 b1 b2 b3 : Nat)
+    (h0 : b0 < 256) (h1 : b1 < 256) (h2 : b2 < 256) (h3 : b3 < 256) :
+    ∀ h,
+      ((a ↦ₘ b0) ** ((a + 1) ↦ₘ b1) ** ((a + 2) ↦ₘ b2) **
+       ((a + 3) ↦ₘ b3)) h
+      ↔ memU32Is a (b0 + 256 * (b1 + 256 * (b2 + 256 * b3))) h := by
+  intro h
+  have hsegs := memBytesIs_segs a
+      [.byte b0, .byte b1, .byte b2, .byte b3]
+      ⟨h0, h1, h2, h3, trivial⟩ h
+  have hba : segsBytes [.byte b0, .byte b1, .byte b2, .byte b3]
+      = PartialState.u32LE
+          (b0 + 256 * (b1 + 256 * (b2 + 256 * b3))) := by
+    have e0 : (b0 + 256 * (b1 + 256 * (b2 + 256 * b3))) % 256 = b0 := by
+      omega
+    have e1 : (b0 + 256 * (b1 + 256 * (b2 + 256 * b3))) / 0x100 % 256
+        = b1 := by omega
+    have e2 : (b0 + 256 * (b1 + 256 * (b2 + 256 * b3))) / 0x10000 % 256
+        = b2 := by omega
+    have e3 : (b0 + 256 * (b1 + 256 * (b2 + 256 * b3))) / 0x1000000 % 256
+        = b3 := by omega
+    show (⟨#[b0.toUInt8, b1.toUInt8, b2.toUInt8, b3.toUInt8]⟩ : ByteArray)
+        = _
+    simp only [PartialState.u32LE, e0, e1, e2, e3]
+  rw [hba] at hsegs
+  rw [memU32Is_eq_memBytesIs a _ h, hsegs]
+  show _ ↔ ((a ↦ₘ b0) ** ((a + 1) ↦ₘ b1) ** ((a + 1 + 1) ↦ₘ b2) **
+       (((a + 1 + 1 + 1) ↦ₘ b3) ** emp)) h
+  rw [sepConj_emp_right_eq,
+      show a + 1 + 1 = a + 2 from by omega,
+      show a + 1 + 1 + 1 = a + 3 from by omega]
+
 end SVM.SBPF

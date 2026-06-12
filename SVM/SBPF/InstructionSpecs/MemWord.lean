@@ -1,4 +1,5 @@
 import SVM.SBPF.InstructionSpecs.MemHalfword
+import SVM.SBPF.SegAggregation
 
 namespace SVM.SBPF
 
@@ -978,5 +979,60 @@ theorem stw_spec
     baseAddr oldWordVal (toU64 imm % 2 ^ (4 * 8)) pc (.st .word baseReg off imm)
     (fun _ hbase hreg => by
       simp only [step, hbase, Width.bytes, if_pos hreg, Memory.writeByWidth])
+
+/-! ## Word store over BYTE-granular memory (qedlift hot regions)
+
+The compiler's tail-zeroing idiom (`stw [r10-4] 0; stw [r10-7] 0`)
+overlaps two word stores; qedlift demotes the union span to per-byte
+atoms (H8 Phase B-2, `docs/QEDLIFT_ALIASING_DESIGN.md`). Each word
+store's spec is `stw_spec` reshaped through `byte_atoms_eq_memU32Is`:
+the pre owns the 4 byte atoms; the post holds the immediate's LE
+bytes, supplied as parameters `c0..c3` with defining hypotheses the
+emitter discharges by `decide`. -/
+
+set_option maxHeartbeats 400000 in
+/-- `st .word baseReg off imm` over four byte atoms `[addr, addr+4)`. -/
+theorem stw_bytes_spec
+    (baseReg : Reg) (off : Int) (imm : Int)
+    (baseAddr b0 b1 b2 b3 c0 c1 c2 c3 : Nat) (pc : Nat)
+    (hb0 : b0 < 256) (hb1 : b1 < 256) (hb2 : b2 < 256) (hb3 : b3 < 256)
+    (hc0 : c0 = toU64 imm % 2 ^ (4 * 8) % 256)
+    (hc1 : c1 = toU64 imm % 2 ^ (4 * 8) / 0x100 % 256)
+    (hc2 : c2 = toU64 imm % 2 ^ (4 * 8) / 0x10000 % 256)
+    (hc3 : c3 = toU64 imm % 2 ^ (4 * 8) / 0x1000000 % 256) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.st .word baseReg off imm))
+      ((baseReg ↦ᵣ baseAddr) **
+        ((effectiveAddr baseAddr off ↦ₘ b0) **
+         (effectiveAddr baseAddr off + 1 ↦ₘ b1) **
+         (effectiveAddr baseAddr off + 2 ↦ₘ b2) **
+         (effectiveAddr baseAddr off + 3 ↦ₘ b3)))
+      ((baseReg ↦ᵣ baseAddr) **
+        ((effectiveAddr baseAddr off ↦ₘ c0) **
+         (effectiveAddr baseAddr off + 1 ↦ₘ c1) **
+         (effectiveAddr baseAddr off + 2 ↦ₘ c2) **
+         (effectiveAddr baseAddr off + 3 ↦ₘ c3)))
+      (fun rt => rt.containsWritable (effectiveAddr baseAddr off) 4 = true) := by
+  have hcb0 : c0 < 256 := by omega
+  have hcb1 : c1 < 256 := by omega
+  have hcb2 : c2 < 256 := by omega
+  have hcb3 : c3 < 256 := by omega
+  have hv : toU64 imm % 2 ^ (4 * 8)
+      = c0 + 256 * (c1 + 256 * (c2 + 256 * c3)) := by
+    subst hc0 hc1 hc2 hc3
+    omega
+  have hbridge_pre := byte_atoms_eq_memU32Is (effectiveAddr baseAddr off)
+      b0 b1 b2 b3 hb0 hb1 hb2 hb3
+  have hbridge_post := byte_atoms_eq_memU32Is (effectiveAddr baseAddr off)
+      c0 c1 c2 c3 hcb0 hcb1 hcb2 hcb3
+  refine cuTripleWithinMem_weaken ?_ ?_ (fun _ x => x)
+    (stw_spec baseReg off imm baseAddr
+      (b0 + 256 * (b1 + 256 * (b2 + 256 * b3))) pc)
+  · intro h hh
+    exact (sepConj_iff_congr_right _ (fun h' => hbridge_pre h') h).mp hh
+  · intro h hh
+    rw [hv] at hh
+    exact (sepConj_iff_congr_right _
+      (fun h' => (hbridge_post h').symm) h).mp hh
 
 end SVM.SBPF

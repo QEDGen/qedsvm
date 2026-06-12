@@ -1362,6 +1362,96 @@ impl SymState {
             format!("effectiveAddr ({}) ({})", c.addr_base.to_lean(), c.addr_off)
         }
     }
+    /// Shared demotion trigger: if `[lo, lo+wlen)` on `root` conflicts
+    /// with an existing cell (intersecting footprint that is NOT the
+    /// same span+width — that exact case is the aliased lookup's job)
+    /// or straddles a hot edge, push a `new_hot` request covering the
+    /// UNION of the access span and every conflicting cell's span.
+    fn request_demotion_on_conflict(&mut self, root: &str, lo: i64, wlen: i64,
+        width: Width) {
+        let (mut nlo, mut nhi) = (lo, lo + wlen);
+        let mut conflict = false;
+        for c in &self.mem {
+            let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+            if cr != root { continue; }
+            let cl = cd + c.delta;
+            let ch = cl + match c.width {
+                Width::Byte => 1, Width::Halfword => 2,
+                Width::Word => 4, Width::Dword => 8,
+            };
+            let same_cell = cl == lo && ch == lo + wlen
+                && c.width as u8 == width as u8;
+            if !same_cell && lo < ch && cl < lo + wlen {
+                conflict = true;
+                nlo = nlo.min(cl);
+                nhi = nhi.max(ch);
+            }
+        }
+        if conflict || self.hot_intersects(root, lo, lo + wlen) {
+            self.new_hot.push((root.to_string(), nlo, nhi));
+        }
+    }
+    /// Resolve (reusing or freshly materializing) the byte cell for
+    /// slot `k` of a hot wide access at `(base, off)`. Returns the
+    /// cell index. Fails closed (overlap_errors) when the slot exists
+    /// under a rendering the spec's atom shape can't reference.
+    fn hot_slot(&mut self, base_expr: &Expr, off: i64, k: i64) -> usize {
+        let (root, lo) = canon_addr(base_expr, off);
+        let base_lean = base_expr.to_lean();
+        if let Some(i) = self.mem.iter().position(|c| {
+            matches!(c.width, Width::Byte) && {
+                let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+                cr == root && cd + c.delta == lo + k
+            }
+        }) {
+            let render_ok = self.mem[i].addr_base.to_lean() == base_lean
+                && self.mem[i].addr_off == off
+                && ((k == 0 && self.mem[i].delta == 0)
+                    || self.mem[i].delta == k);
+            if !render_ok {
+                self.overlap_errors.push(format!(
+                    "hot-region access at ({})+{}: byte slot {} exists \
+                     under a different rendering ({}); the per-slot alias \
+                     rewrite is not implemented yet (H8 Phase B)",
+                    base_lean, off, k, Self::cell_render(&self.mem[i])));
+            }
+            // Wide-access slots need a `< 256` bound for a bare var.
+            if let Expr::InitMem(name) = &self.mem[i].value {
+                let name = name.clone();
+                if !self.u64_load_vars.iter().any(|(n, _)| *n == name) {
+                    self.u64_load_vars.push((name, 8));
+                }
+            }
+            return i;
+        }
+        let idx = self.fresh; self.fresh += 1;
+        let name = format!("oldMemB_{}", idx);
+        self.u64_load_vars.push((name.clone(), 8));
+        let v = Expr::InitMem(name);
+        self.mem.push(MemCell {
+            addr_base: base_expr.clone(), addr_off: off,
+            width: Width::Byte, value: v.clone(), delta: k,
+        });
+        self.pre.push(Atom::Mem {
+            addr_base: base_expr.clone(), addr_off: off,
+            width: Width::Byte, value: v, delta: k,
+        });
+        self.note_access(base_expr, off + k, 1,
+            format!("{}@{}+{}:HotByte", base_lean, off, k));
+        self.mem.len() - 1
+    }
+    /// A `st .word imm` whose span is hot: realize the 4 byte cells
+    /// (their PRE values are the spec's `b0..b3`) and overwrite them
+    /// with the immediate's LE bytes (`stw_bytes_spec`'s `c0..c3`).
+    fn write_hot_word_imm(&mut self, base_expr: Expr, off: i64, imm: i64) {
+        let w = (imm as i64) as u32; // toU64 imm % 2^32
+        let bytes = w.to_le_bytes();
+        for k in 0..4i64 {
+            let i = self.hot_slot(&base_expr, off, k);
+            self.mem[i].value = Expr::Const(bytes[k as usize] as i64);
+        }
+        self.rr_walk.push((base_expr, off, Width::Word, true));
+    }
     /// Serve a wide LOAD whose span is hot: the region is byte-granular,
     /// so reuse/materialize the 8 byte cells and return their Horner
     /// combination (the value `ldxdw_bytes_spec` loads). Unsupported
@@ -1375,57 +1465,10 @@ impl SymState {
                 width, base_expr.to_lean(), off));
             return Expr::Raw("hotUnsupported".into());
         }
-        let (root, lo) = canon_addr(&base_expr, off);
-        let base_lean = base_expr.to_lean();
         let mut vals: Vec<Expr> = Vec::with_capacity(8);
         for k in 0..8i64 {
-            let found = self.mem.iter().position(|c| {
-                if !matches!(c.width, Width::Byte) { return false; }
-                let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
-                cr == root && cd + c.delta == lo + k
-            });
-            match found {
-                Some(i) => {
-                    let render_ok = self.mem[i].addr_base.to_lean() == base_lean
-                        && self.mem[i].addr_off == off
-                        && ((k == 0 && self.mem[i].delta == 0)
-                            || self.mem[i].delta == k);
-                    if !render_ok {
-                        self.overlap_errors.push(format!(
-                            "hot-region dword at ({})+{}: byte slot {} exists \
-                             under a different rendering ({}); the per-slot \
-                             alias rewrite is not implemented yet (H8 \
-                             Phase B-1)",
-                            base_lean, off, k, Self::cell_render(&self.mem[i])));
-                    }
-                    let v = self.mem[i].value.clone();
-                    // `ldxdw_bytes_spec` needs `< 256` per slot — surface
-                    // the bound for a bare byte var that has none yet.
-                    if let Expr::InitMem(name) = &v {
-                        if !self.u64_load_vars.iter().any(|(n, _)| n == name) {
-                            self.u64_load_vars.push((name.clone(), 8));
-                        }
-                    }
-                    vals.push(v);
-                }
-                None => {
-                    let idx = self.fresh; self.fresh += 1;
-                    let name = format!("oldMemB_{}", idx);
-                    self.u64_load_vars.push((name.clone(), 8));
-                    let v = Expr::InitMem(name);
-                    self.mem.push(MemCell {
-                        addr_base: base_expr.clone(), addr_off: off,
-                        width: Width::Byte, value: v.clone(), delta: k,
-                    });
-                    self.pre.push(Atom::Mem {
-                        addr_base: base_expr.clone(), addr_off: off,
-                        width: Width::Byte, value: v.clone(), delta: k,
-                    });
-                    self.note_access(&base_expr, off + k, 1,
-                        format!("{}@{}+{}:HotByte", base_lean, off, k));
-                    vals.push(v);
-                }
-            }
+            let i = self.hot_slot(&base_expr, off, k);
+            vals.push(self.mem[i].value.clone());
         }
         self.rr_walk.push((base_expr, off, Width::Dword, false));
         Expr::ByteCombo(vals)
@@ -1461,30 +1504,13 @@ impl SymState {
             if self.hot_covers(&root, lo, lo + wlen) {
                 return self.read_hot_wide(base_expr, off, width);
             }
-            // A wide access over bytes the walk already tracks
-            // individually (or straddling a hot edge): request the
-            // span's demotion and retry the walk. Falling through is
-            // fine — this pass's output is discarded.
-            let over_bytes = {
-                let mut any = false; let mut all_byte = true;
-                for c in &self.mem {
-                    let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
-                    if cr != root { continue; }
-                    let cl = cd + c.delta;
-                    let ch = cl + match c.width {
-                        Width::Byte => 1, Width::Halfword => 2,
-                        Width::Word => 4, Width::Dword => 8,
-                    };
-                    if lo < ch && cl < lo + wlen {
-                        any = true;
-                        if !matches!(c.width, Width::Byte) { all_byte = false; }
-                    }
-                }
-                any && all_byte
-            };
-            if over_bytes || self.hot_intersects(&root, lo, lo + wlen) {
-                self.new_hot.push((root, lo, lo + wlen));
-            }
+            // A wide access CONFLICTING with existing cells (same root,
+            // intersecting footprint, but not the same span+width —
+            // that case is the cell itself and is handled by the
+            // aliased lookup below), or straddling a hot edge: request
+            // demotion of the union span and retry the walk. Falling
+            // through is fine — this pass's output is discarded.
+            self.request_demotion_on_conflict(&root, lo, wlen, width);
         }
         if let Some((i, aliased)) = self.lookup_cell_aliased(&base_expr, off, width) {
             let cell_base = self.mem[i].addr_base.clone();
@@ -1550,13 +1576,29 @@ impl SymState {
         };
         if wlen > 1 {
             let (root, lo) = canon_addr(&base_expr, off);
-            if self.hot_intersects(&root, lo, lo + wlen) {
-                // Wide STORES into a byte-demoted region need
-                // `stxdw_bytes`-style specs — not implemented yet.
+            if self.hot_covers(&root, lo, lo + wlen) {
+                // Word-IMMEDIATE stores are byte-demotable
+                // (`stw_bytes_spec`); other wide stores into hot
+                // regions still fail closed.
+                if matches!(width, Width::Word) {
+                    if let Expr::StWordImm(imm) = &value {
+                        let imm = *imm;
+                        self.write_hot_word_imm(base_expr, off, imm);
+                        return;
+                    }
+                }
                 self.overlap_errors.push(format!(
                     "wide {:?} STORE at ({})+{} into a hot (byte-demoted) \
-                     region — only dword loads are supported so far (H8 \
-                     Phase B-1)", width, base_expr.to_lean(), off));
+                     region — only word-immediate stores and dword loads \
+                     are supported so far (H8 Phase B)",
+                    width, base_expr.to_lean(), off));
+                return;
+            }
+            self.request_demotion_on_conflict(&root, lo, wlen, width);
+            if self.hot_intersects(&root, lo, lo + wlen) {
+                // Straddles a hot edge without full coverage — the
+                // demotion request above will widen the region; this
+                // pass is discarded.
                 return;
             }
         }
@@ -2142,6 +2184,54 @@ fn spec_call_for(
         ST_W_IMM => {
             // stw_spec baseReg off imm baseAddr oldWordVal pc
             let base_addr = reg_val_lean(dst);
+            // Hot (byte-demoted) region: `stw_bytes_spec` over the 4
+            // byte atoms — pre = the slots' current values (b0..b3),
+            // post = the immediate's LE bytes (c0..c3, hypotheses by
+            // decide). Predictions mirror `write_hot_word_imm`.
+            {
+                let bexpr = reg_val_expr(dst);
+                let (root, lo) = canon_addr(&bexpr, off);
+                if state.hot_covers(&root, lo, lo + 4) {
+                    let mut bargs = String::new();
+                    let mut bounds = String::new();
+                    let mut fresh = state.fresh;
+                    for k in 0..4i64 {
+                        let found = state.mem.iter().find(|c| {
+                            matches!(c.width, Width::Byte) && {
+                                let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
+                                cr == root && cd + c.delta == lo + k
+                            }
+                        });
+                        match found {
+                            Some(c) => {
+                                bargs.push_str(&format!(" {}", c.value.atom_lean()));
+                                match &c.value {
+                                    Expr::InitMem(n) =>
+                                        bounds.push_str(&format!(" h{}_lt", n)),
+                                    _ => bounds.push_str(" (by omega)"),
+                                }
+                            }
+                            None => {
+                                let n = format!("oldMemB_{}", fresh);
+                                fresh += 1;
+                                bargs.push_str(&format!(" {}", n));
+                                bounds.push_str(&format!(" h{}_lt", n));
+                            }
+                        }
+                    }
+                    let w = insn.imm as u32; // toU64 imm % 2^32
+                    let cb = w.to_le_bytes();
+                    return Some(SpecCall {
+                        hyp_name: hyp_name.clone(),
+                        have_line: format!(
+                            "have {} := stw_bytes_spec {} {} {} ({}){} {} {} {} {} {}{} \
+(by decide) (by decide) (by decide) (by decide)",
+                            hyp_name, reg(dst), offl, imm, base_addr, bargs,
+                            cb[0], cb[1], cb[2], cb[3], pc, bounds,
+                        ),
+                    });
+                }
+            }
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Word);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())

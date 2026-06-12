@@ -1115,6 +1115,47 @@ theorem singletonMemU64_eq_bytes (a v : Nat) :
     rw [singletonMemU64_mem_outside a v x (by omega),
         singletonMemBytes_mem_outside a (u64LE v) x (by rw [u64LE_size]; omega)]
 
+/-- The 4-byte little-endian encoding of `v`'s low 32 bits. Byte `k` is
+    `v / 256^k % 256`, matching `singletonMemU32`'s layout. -/
+def u32LE (v : Nat) : ByteArray :=
+  ⟨#[(v % 256).toUInt8, (v / 0x100 % 256).toUInt8,
+      (v / 0x10000 % 256).toUInt8, (v / 0x1000000 % 256).toUInt8]⟩
+
+@[simp] theorem u32LE_size (v : Nat) : (u32LE v).size = 4 := rfl
+
+/-- A `singletonMemU32` cell is the byte-blob of its 4-byte LE encoding.
+    The state-level core of the `↦U32`↔`↦Bytes` bridge (the word-width
+    sibling of `singletonMemU64_eq_bytes`; H8 Phase B-2 byte demotion
+    of `stw`/`ldxw` accesses needs it). -/
+theorem singletonMemU32_eq_bytes (a v : Nat) :
+    singletonMemU32 a v = singletonMemBytes a (u32LE v) := by
+  show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
+  rw [PartialState.mk.injEq]
+  refine ⟨rfl, ?_, rfl, rfl, rfl⟩
+  funext x
+  by_cases hx : a ≤ x ∧ x < a + 4
+  · obtain ⟨hlo, hhi⟩ := hx
+    obtain ⟨k, hk, rfl⟩ : ∃ k, k < 4 ∧ x = a + k := ⟨x - a, by omega, by omega⟩
+    show (singletonMemU32 a v).mem (a + k) = (singletonMemBytes a (u32LE v)).mem (a + k)
+    rw [singletonMemBytes_mem_at a (u32LE v) k (by rw [u32LE_size]; exact hk)]
+    rcases k with _|_|_|_|k
+    · rw [Nat.add_zero, singletonMemU32_mem_0]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU32_mem_1]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU32_mem_2]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · rw [singletonMemU32_mem_3]
+      congr 1
+      exact (UInt8.toNat_ofNat_of_lt' (by simp only [UInt8.size]; omega)).symm
+    · exact absurd hk (by omega)
+  · show (singletonMemU32 a v).mem x = (singletonMemBytes a (u32LE v)).mem x
+    rw [singletonMemU32_mem_outside a v x (by omega),
+        singletonMemBytes_mem_outside a (u32LE v) x (by rw [u32LE_size]; omega)]
+
 /-- One-byte `ByteArray` holding `v`'s low byte. -/
 def byteBA (v : Nat) : ByteArray := ⟨#[v.toUInt8]⟩
 
@@ -1547,6 +1588,17 @@ theorem memU64Is_eq_memBytesIs (a v : Nat) :
       show memBytesIs a (PartialState.u64LE v) h
          = (h = PartialState.singletonMemBytes a (PartialState.u64LE v)) from rfl,
       PartialState.singletonMemU64_eq_bytes]
+
+/-- SL-level bridge: a `↦U32` cell equals the `↦Bytes` blob of its
+    4-byte little-endian encoding (word-width sibling of
+    `memU64Is_eq_memBytesIs`). -/
+theorem memU32Is_eq_memBytesIs (a v : Nat) :
+    ∀ h, memU32Is a v h ↔ memBytesIs a (PartialState.u32LE v) h := by
+  intro h
+  rw [show memU32Is a v h = (h = PartialState.singletonMemU32 a v) from rfl,
+      show memBytesIs a (PartialState.u32LE v) h
+         = (h = PartialState.singletonMemBytes a (PartialState.u32LE v)) from rfl,
+      PartialState.singletonMemU32_eq_bytes]
 
 /-- SL-level bridge: a single byte cell `↦ₘ` (value `< 256`) equals the
     `↦Bytes` blob of its one-byte encoding. Composed with
