@@ -96,8 +96,8 @@ lean_lib Examples where
     `PToken.TransferRefinement,
     `PToken.TransferCheckedRefinement,
     `PToken.MintAggregation,
-    `PToken.MintToRefinement,
-    `PToken.BurnRefinement,
+    -- MintToRefinement / BurnRefinement are RETIRED with their lifts —
+    -- see the retirement note at the end of this list.
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     -- Logger: a real, non-Pinocchio Solana program (Rust/solana-program)
@@ -139,28 +139,37 @@ lean_lib Examples where
     `Generated.TwoOpIncrementLifted,
     `Generated.TwoOpDecrementLifted,
     -- Trace-guided lifts: real p_token happy paths, balance/supply
-    -- mutation in the post (qedlift --trace). MintTo also demonstrates
-    -- that trace guidance sidesteps the static walker's phantom loop.
+    -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,
-    `Generated.PTokenMintToTracedLifted,
-    `Generated.PTokenBurnTracedLifted,
-    `Generated.PTokenTransferCheckedTracedLifted,
-    -- CloseAccount: first arm whose happy path crosses a host syscall
-    -- (`sol_memset_` zeroing the account data). qedlift threads it via
-    -- `call_sol_memset_spec` (a `↦Bytes` blob + surfaced CU/size hyps).
-    `Generated.PTokenCloseAccountTracedLifted
-    -- InitializeMint2's traced lift is RETIRED pending regeneration
-    -- (soundness audit H7): its happy path crosses `sol_get_sysvar`,
-    -- which the model now implements faithfully (fills the output
-    -- buffer with the cached sysvar bytes), so the old lift — traced
-    -- against the zero-filling stub — proves a frame the chain
-    -- violates AND walks branch outcomes (the soft-float rent math)
-    -- the real bytes flip. It was also VACUOUS as emitted: the
-    -- 7-byte tail-zeroing idiom (`stw [r10-4]; stw [r10-7]`) produced
-    -- two overlapping `↦U32` pre-atoms, making the sepConj
-    -- unsatisfiable. Regeneration needs qedlift's walker to alias
-    -- syscall-written regions and overlapping accesses at byte
-    -- granularity; tracked with the qedlift emitter follow-ups (H8).
-    -- The runtime path keeps full coverage via the
-    -- `p_token_initialize_mint2_matches_mollusk` diff test.
+    `Generated.PTokenTransferCheckedTracedLifted
+    -- RETIREMENT NOTE (soundness audit H7/H8, 2026-06-11/12). Four
+    -- p_token traced lifts and the two refinements built on them are
+    -- retired pending regeneration, because qedlift's walker keyed
+    -- memory cells by RENDERED address with no overlap analysis: two
+    -- accesses to overlapping bytes through different renderings
+    -- emitted two overlapping atoms, making the precondition's
+    -- sepConj UNSATISFIABLE — the theorems were VACUOUSLY true.
+    -- qedlift now detects footprint overlap on a canonical
+    -- (root, displacement) form and fails closed. The casualties,
+    -- each confirmed by re-running the emitter on its .pcs trace:
+    --   * PTokenMintToTracedLifted + PToken.MintToRefinement —
+    --     duplicate cells: pinocchio spills pointers via r10
+    --     ([r10-2064], [r10-2056]) and reloads them through a struct
+    --     base (addr1 = r10-2072, offsets +8/+16).
+    --   * PTokenBurnTracedLifted + PToken.BurnRefinement — same
+    --     duplicate-cell pattern.
+    --   * PTokenCloseAccountTracedLifted — a load at baseAddr+88
+    --     INSIDE the sol_memset blob [baseAddr+48, +96) (also note:
+    --     the fresh-variable read should have been the memset fill).
+    --   * PTokenInitializeMint2TracedLifted — overlapping `↦U32`
+    --     tail-zeroing stores (`stw [r10-4]; stw [r10-7]`); ALSO
+    --     traced against the pre-H7 zero-filling `sol_get_sysvar`.
+    -- Transfer / TransferChecked re-emit byte-identical under the
+    -- detector and remain (with their refinements) — the flagship
+    -- balance theorems are NOT affected. Restoration = walker
+    -- aliasing (canonical cell keys + h_alias address equations for
+    -- duplicates; byte-granular demotion for partial overlap; blob
+    -- read-through for memset/get_sysvar regions), tracked under H8 —
+    -- see docs/QEDLIFT_ALIASING_DESIGN.md. Runtime diff coverage of
+    -- all four arms is unaffected (p_token_* diff tests).
   ]

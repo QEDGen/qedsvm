@@ -1044,6 +1044,59 @@ impl MemCell {
     }
 }
 
+/// Fold a constant out of an `Expr` (through `toU64`).
+fn const_of_expr(e: &Expr) -> Option<i64> {
+    match e {
+        Expr::Const(k) => Some(*k),
+        Expr::ToU64(inner) => const_of_expr(inner),
+        _ => None,
+    }
+}
+
+/// Decompose an effective address `base_expr + off` into a canonical
+/// `(root, displacement)` pair by folding constant `wrapAdd`/`wrapSub`/
+/// `Nat.add` layers (e.g. `r2 = r10 - 24` and a later `[r10 - 16]`
+/// access both canonicalize to root `vR10Old` with displacements −24
+/// and −16). A base the folding can't see through (multiplies, masks,
+/// loads) becomes its own opaque root — same non-aliasing assumption
+/// the cell map already makes for distinct rendered bases.
+///
+/// Soundness role: the walker keys cells by RENDERED address, so two
+/// accesses whose byte footprints overlap under different renderings
+/// produce two separate (overlapping) atoms — and an overlapping
+/// sepConj is UNSATISFIABLE, making the emitted theorem vacuous. The
+/// canonical form lets `note_access` detect that and fail the lift
+/// closed instead. (Soundness audit H8: the shipped InitializeMint2
+/// lift was vacuous via the 7-byte tail-zeroing idiom
+/// `stw [r10-4]; stw [r10-7]`.)
+fn canon_addr(base: &Expr, off: i64) -> (String, i64) {
+    fn go(e: &Expr, acc: i64) -> Option<(String, i64)> {
+        match e {
+            Expr::InitReg(_) | Expr::InitMem(_) => Some((e.to_lean(), acc)),
+            Expr::Const(k) => Some(("«absolute»".to_string(), acc.wrapping_add(*k))),
+            Expr::ToU64(inner) => go(inner, acc),
+            Expr::WrapAdd(a, b) | Expr::NatAdd(a, b) => {
+                if let Some(k) = const_of_expr(b) {
+                    go(a, acc.wrapping_add(k))
+                } else if let Some(k) = const_of_expr(a) {
+                    go(b, acc.wrapping_add(k))
+                } else {
+                    None
+                }
+            }
+            Expr::WrapSub(a, b) => {
+                if let Some(k) = const_of_expr(b) {
+                    go(a, acc.wrapping_sub(k))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+    go(base, off).unwrap_or_else(|| (base.to_lean(), off))
+}
+
 /// Symbolic state threaded through one walk of the slice.
 #[derive(Default)]
 struct SymState {
@@ -1116,9 +1169,47 @@ struct SymState {
     /// symbolic, so its non-zeroness is the caller's obligation, like a
     /// branch hypothesis). Emitted into the theorem signature verbatim.
     side_hyps: Vec<(String, String)>,
+    /// Byte footprints of every materialized atom, in canonical
+    /// `(root, lo, hi_exclusive, cell_key_rendering)` form (see
+    /// `canon_addr`). Consulted on each NEW materialization to detect
+    /// footprint overlap between DISTINCT atoms — which would make the
+    /// emitted sepConj unsatisfiable (a vacuous theorem). Blob entries
+    /// (memset) use the blob's rendered address as the key component.
+    atom_spans: Vec<(String, i64, i64, String)>,
+    /// Set when `note_access` detects an overlap; the walk loop
+    /// surfaces it as a hard error (fail closed — never emit a
+    /// vacuous theorem).
+    overlap_error: Option<String>,
 }
 
 impl SymState {
+    /// Record the byte footprint `[base+off, base+off+len)` of a newly
+    /// materialized atom (cell or blob) and flag any overlap with a
+    /// DIFFERENT existing atom on the same canonical root. Two atoms
+    /// with overlapping byte footprints in one sepConj make the
+    /// precondition unsatisfiable — the emitted theorem would be
+    /// vacuously true, which is worse than no theorem (soundness
+    /// audit H8 / the InitializeMint2 finding). Distinct opaque roots
+    /// keep the walker's existing assumed-disjoint treatment.
+    fn note_access(&mut self, base: &Expr, off: i64, len: i64, key_render: String) {
+        let (root, lo) = canon_addr(base, off);
+        let hi = lo.wrapping_add(len);
+        for (eroot, elo, ehi, ekey) in &self.atom_spans {
+            if *eroot == root && *ekey != key_render && lo < *ehi && *elo < hi {
+                self.overlap_error = Some(format!(
+                    "aliasing: atom `{key_render}` (root `{root}`, bytes \
+                     [{lo}, {hi})) overlaps existing atom `{ekey}` (bytes \
+                     [{elo}, {ehi})). Emitting both would make the \
+                     precondition's sepConj unsatisfiable — a VACUOUS \
+                     theorem. The walker does not yet alias overlapping \
+                     accesses at byte granularity (tracked under the \
+                     soundness-audit H8 emitter follow-ups), so this \
+                     lift fails closed."));
+                return;
+            }
+        }
+        self.atom_spans.push((root, lo, hi, key_render));
+    }
     fn read_reg(&mut self, r: u8) -> Expr {
         if let Some(v) = self.regs.get(&r) { return v.clone(); }
         let v = Expr::InitReg(reg_initial_name(r));
@@ -1170,6 +1261,11 @@ impl SymState {
         let cell = MemCell {
             addr_base: base_expr.clone(), addr_off: off, width, value: v.clone(),
         };
+        let width_len = match width {
+            Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
+        };
+        self.note_access(&base_expr, off, width_len,
+            format!("{}@{}:{:?}", base_expr.to_lean(), off, width));
         self.mem.push(cell);
         self.pre.push(Atom::Mem {
             addr_base: base_expr.clone(), addr_off: off, width, value: v.clone(),
@@ -2671,6 +2767,12 @@ fn emit_sol_memset(
 
     // Pre atom: `r1V ↦Bytes memsetBs_idx`, size pinned to `r3V`.
     let size_rendered = r3v.atom_lean();
+    // Overlap accounting for the blob's byte footprint. A symbolic
+    // count can't be span-checked — record a 1-byte footprint at the
+    // base (catches exact-base collisions; full symbolic-length
+    // support is part of the H8 byte-aliasing work).
+    let blob_len = const_of_expr(&r3v).unwrap_or(1).max(1);
+    state.note_access(&r1v, 0, blob_len, format!("blob:{}", r1v.to_lean()));
     state.pre.push(Atom::Bytes {
         addr: r1v.clone(),
         value: BytesVal::Sym(bs_name.clone()),
@@ -4672,6 +4774,14 @@ fn lift_one(
                 _ => { pc_iter += 1; }
             }
         }
+    }
+
+    // FAIL CLOSED on atom-footprint overlap (soundness audit H8): a
+    // sepConj with overlapping memory atoms is unsatisfiable, so the
+    // emitted theorem would be vacuously true — worse than no theorem.
+    if let Some(err) = state.overlap_error.take() {
+        return Err(format!(
+            "qedlift: refusing to emit a vacuous lift — {err}").into());
     }
 
     // Build the CR as a Lean string. `sl_block_auto` requires the CR
