@@ -64,6 +64,35 @@ def readI16LE (bytes : ByteArray) (off : Nat) : Int :=
 def readI32LE (bytes : ByteArray) (off : Nat) : Int :=
   signExt32 (readU32LE bytes off)
 
+/-! ## Hex-string byte embedding
+
+qedlift embeds a large `.text` section as a hex STRING literal rather
+than a `#[..]` `ByteArray` literal: an array literal elaborates through
+nested `List.cons` applications whose depth is the byte count, blowing
+`maxRecDepth` around a few KB, while a string literal is a single token
+of any size. The generated per-PC decode pins (`<Module>_decode_pins`)
+evaluate this decoder under `native_decide`. -/
+
+/-- Decode a hex string into a `ByteArray`. Characters that are not hex
+    digits (whitespace, newlines) are skipped, so callers may wrap long
+    embeddings freely; a dangling unpaired nibble is dropped. Corruption
+    of an embedded program is caught downstream: the decode pins compare
+    `decodeInsn` over these bytes against the expected instructions. -/
+def bytesOfHex (s : String) : ByteArray := Id.run do
+  let mut out := ByteArray.empty
+  let mut hi : Option Nat := none
+  for c in s.data do
+    let v? : Option Nat :=
+      if '0' ≤ c ∧ c ≤ '9' then some (c.toNat - '0'.toNat)
+      else if 'a' ≤ c ∧ c ≤ 'f' then some (c.toNat - 'a'.toNat + 10)
+      else if 'A' ≤ c ∧ c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
+      else none
+    match v?, hi with
+    | some v, none   => hi := some v
+    | some v, some h => out := out.push (UInt8.ofNat (h * 16 + v)); hi := none
+    | none,   _      => pure ()
+  return out
+
 /-! ## Register decoding -/
 
 /-- Map a 4-bit nibble to the corresponding `Reg`, or `none` for invalid values. -/
