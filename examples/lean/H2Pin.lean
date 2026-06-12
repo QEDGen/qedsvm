@@ -81,4 +81,68 @@ theorem pcHash_slot4 : Elf.pcHash 4 = 3491892518 := by native_decide
     (In `counter_with_helper` this is the key for the entry slot 4.) -/
 theorem entrypointHash_pin : Elf.entrypointHash = 1910755201 := by native_decide
 
+/-! ## End-to-end loader pin: `Elf.buildFnRegistry` on a real `.so`
+
+The pins above exercise `decodeInsn` against a *hand-built* registry and
+pin the hash constants. They do NOT exercise `Elf.buildFnRegistry` (the
+runtime-loader path used by `runElf`/`run`/CPI) on a real ELF — the
+shipped lifts decode with the qedlift-EMITTED (solana-sbpf ground-truth)
+registry, leaving `buildFnRegistry`'s own assembly unanchored. These two
+pins close that: they run the WHOLE Lean loader on the real
+`counter_with_helper.so` and check both the registry it builds and that
+the pipeline resolves the internal `call` to the right `.call_local`. -/
+
+/-- The full `counter_with_helper.so` (1144 bytes). Its `.text` carries one
+    bpf-to-bpf `call -1` resolved by an `R_BPF_64_32` relocation against the
+    defined function `increment_by` (slot 0); the entrypoint is slot 4. So
+    this fixture exercises both `buildFnRegistry` registry-producing paths:
+    the entrypoint derivation and `rel32KeyEntry` for a defined function. -/
+def counterWithHelperSo : ByteArray := Decode.bytesOfHex
+  "7f454c46020101000000000000000000030007010100000040010000000000004000000000000000b80200000000000000000000400038000300400007000600010000000500000020010000000000002001000000000000200100000000000048000000000000004800000000000000001000000000000001000000040000000802000000000000080200000000000008020000000000007800000000000000780000000000000000100000000000000200000006000000680100000000000068010000000000006801000000000000a000000000000000a0000000000000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000079130000000000000f230000000000007b3100000000000095000000000000007912000000000000070100000800000085100000ffffffffb70000000000000095000000000000001e000000000000000400000000000000110000000000000070020000000000001200000000000000100000000000000013000000000000001000000000000000060000000000000008020000000000000b000000000000001800000000000000050000000000000050020000000000000a00000000000000190000000000000016000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000012000100400100000000000028000000000000000c000000120001002001000000000000200000000000000000656e747279706f696e7400696e6372656d656e745f6279000000000000000050010000000000000a00000002000000002e74657874002e64796e737472002e72656c2e64796e002e64796e73796d002e64796e616d6963002e736873747274616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000006000000000000002001000000000000200100000000000048000000000000000000000000000000080000000000000000000000000000002000000006000000030000000000000068010000000000006801000000000000a000000000000000040000000000000008000000000000001000000000000000180000000b0000000200000000000000080200000000000008020000000000004800000000000000040000000100000008000000000000001800000000000000070000000300000002000000000000005002000000000000500200000000000019000000000000000000000000000000010000000000000000000000000000000f00000009000000020000000000000070020000000000007002000000000000100000000000000003000000000000000800000000000000100000000000000029000000030000000000000000000000000000000000000080020000000000003300000000000000000000000000000001000000000000000000000000000000"
+
+/-- The decoded `.text` of `counter_with_helper.so` (inlined from the lift,
+    kept independent of regeneration). The `.call_local 0` is the internal
+    call resolved through the registry. -/
+def counterWithHelperInsns : Array Insn := #[
+  .ldx .dword .r3 .r1 0,
+  .add64 .r3 (.reg .r2),
+  .stx .dword .r1 0 .r3,
+  .exit,
+  .ldx .dword .r2 .r1 0,
+  .add64 .r1 (.imm (8)),
+  .call_local 0,
+  .mov64 .r0 (.imm (0)),
+  .exit]
+
+/-- `Elf.buildFnRegistry` run on the real `.so` produces the (key → slot)
+    mapping solana-sbpf builds: the entrypoint (`entrypointHash → 4`,
+    registered FIRST for first-match precedence) and the rel32 defined
+    function `increment_by` (`pcHash 0 → 0`). This is the qedlift-emitted
+    `CounterWithHelperFnRegistry = [(1669671676, 0), (1910755201, 4)]`
+    reordered (entrypoint-first; the keys are distinct so first-match
+    lookup is order-independent). -/
+theorem buildFnRegistry_on_real_so :
+    (do
+      let h ← Elf.parseHeader counterWithHelperSo
+      let ts ← Elf.findSection counterWithHelperSo h Elf.textName
+      let raw := Elf.extractSection counterWithHelperSo ts
+      pure (Elf.buildFnRegistry counterWithHelperSo h ts.addr raw))
+      = some [(1910755201, 4), (1669671676, 0)] := by native_decide
+
+/-- The whole Lean loader pipeline (parseHeader → applyRelocations →
+    buildFnRegistry → decodeProgram) run on the real `.so` resolves the
+    internal `call` to `.call_local 0` — the SAME instruction array the
+    qedlift lift pins with the solana-sbpf-emitted registry
+    (`CounterWithHelper_decodes`). So `Elf.buildFnRegistry` is now anchored
+    to ground truth, not merely code-reviewed. -/
+theorem loader_pipeline_resolves_internal_call :
+    (do
+      let h ← Elf.parseHeader counterWithHelperSo
+      let ts ← Elf.findSection counterWithHelperSo h Elf.textName
+      let raw := Elf.extractSection counterWithHelperSo ts
+      let text := Elf.applyRelocations counterWithHelperSo h ts.addr raw
+      let reg := Elf.buildFnRegistry counterWithHelperSo h ts.addr raw
+      Decode.decodeProgram text reg)
+      = some counterWithHelperInsns := by native_decide
+
 end Examples.H2Pin
