@@ -45,4 +45,31 @@ theorem oob_reloc_symbol_unresolvable :
 theorem runElf_fails_closed_on_oob_reloc :
     Runner.runElf corruptedSo = none := by native_decide
 
+/-! ## Header identity gates: `ei_osabi` and `e_type` (M1)
+
+agave's `validate` (solana-sbpf 0.14.4 elf.rs:721,727) rejects
+`ei_osabi ≠ ELFOSABI_NONE` (`WrongAbi`) and `e_type ≠ ET_DYN`
+(`WrongType`). `parseHeader` now gates both; these pins corrupt one byte
+each of the real `.so` and check the parse fails, plus that the
+uncorrupted binary still parses (no over-rejection). -/
+
+/-- Overwrite one byte — for crafting single-field header corruptions. -/
+def setByte (b : ByteArray) (i : Nat) (v : UInt8) : ByteArray :=
+  ⟨b.data.set! i v⟩
+
+/-- `ei_osabi = 1` (byte 7): agave `WrongAbi` — parse fails. -/
+theorem osabi_nonzero_fails :
+    Elf.parseHeader (setByte Examples.H2Pin.counterWithHelperSo 7 1) = none := by
+  native_decide
+
+/-- `e_type = ET_EXEC = 2` (offset 16): agave `WrongType` — parse fails. -/
+theorem etype_exec_fails :
+    Elf.parseHeader (setByte Examples.H2Pin.counterWithHelperSo 16 2) = none := by
+  native_decide
+
+/-- The uncorrupted binary still parses (the gates don't over-reject). -/
+theorem valid_so_still_parses :
+    (Elf.parseHeader Examples.H2Pin.counterWithHelperSo).isSome = true := by
+  native_decide
+
 end Examples.M1Pin

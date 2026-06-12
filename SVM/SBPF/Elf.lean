@@ -91,6 +91,12 @@ def parseHeader (bytes : ByteArray) : Option Header :=
   else if readU8 bytes 3 ≠ 0x46 then none  -- 'F'
   else if readU8 bytes 4 ≠ 2 then none     -- ei_class = ELFCLASS64
   else if readU8 bytes 5 ≠ 1 then none     -- ei_data = ELFDATA2LSB
+  -- ei_osabi (byte 7): agave rejects ≠ ELFOSABI_NONE (`WrongAbi`,
+  -- solana-sbpf 0.14.4 elf.rs:721). M1.
+  else if readU8 bytes 7 ≠ 0 then none
+  -- e_type (offset 16): agave rejects ≠ ET_DYN = 3 (`WrongType`,
+  -- elf.rs:727) — sBPF programs are shared objects. M1.
+  else if readU16LE bytes 16 ≠ 3 then none
   -- e_machine (offset 18): EM_BPF = 247 or EM_SBPF = 263.
   else if readU16LE bytes 18 ≠ 247 ∧ readU16LE bytes 18 ≠ 263 then none
   -- e_flags (offset 48): SBPF version. Only V0 (0) is modeled.
@@ -98,7 +104,10 @@ def parseHeader (bytes : ByteArray) : Option Header :=
   -- M1: section-table structural validation — fail closed on a malformed
   -- header rather than read past the file via zero-fill. `e_shstrndx`
   -- must index a real section, and the section header table must lie
-  -- within the file. See docs/SOUNDNESS_AUDIT_* (M1).
+  -- within the file. NOTE this check also rejects `SHN_XINDEX`
+  -- (`e_shstrndx = 0xFFFF`, the extended-index sentinel): `shnum` is a
+  -- u16, so `0xFFFF ≥ shnum` always — extended section numbering is
+  -- deliberately not modeled. See docs/SOUNDNESS_AUDIT_* (M1).
   else if readU16LE bytes 62 ≥ readU16LE bytes 60 then none      -- shstrndx ≥ shnum
   else if readU64LE bytes 40 + readU16LE bytes 60 * readU16LE bytes 58 > bytes.size then none
   else some {
