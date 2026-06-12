@@ -2179,6 +2179,20 @@ fn rodata_addr_returner_matches_mollusk() {
         "CU diverged: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
+
+    // Soundness-audit M5 pin (lddw CU weight): this `.text` is 5 byte-slots
+    // = 4 LOGICAL instructions — `lddw` (slots 0-1, the rodata address
+    // materialization), `ldx`, `rsh`, `exit` — and the entrypoint is
+    // branchless, so all 4 execute exactly once. Both engines report CU=4,
+    // NOT 5. That refutes the audit's "lddw is metered by slot-delta so it
+    // costs 2" hypothesis: agave meters `lddw` as ONE logical instruction
+    // (the interpreter's meter ticks once per step even though `lddw`
+    // advances pc by 2), exactly as the Lean model's `chargeCu` does. A
+    // regression that double-charged `lddw` would make ours=4, mollusk=4
+    // still agree, so pin the concrete agave value too.
+    assert_eq!(m_r.compute_units_consumed, 4,
+        "M5: agave must meter the 4-logical-insn (1 lddw) program at 4 CU, \
+         got {} — lddw CU weight changed in agave", m_r.compute_units_consumed);
 }
 
 /// Exercises `sol_try_find_program_address` end-to-end with one seed
