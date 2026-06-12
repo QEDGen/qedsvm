@@ -129,6 +129,10 @@ const RODATA_ADDR_RETURNER_SO: &[u8] = include_bytes!("fixtures/rodata_addr_retu
 /// M9 CU referee for the `base + incr*(n-1)` formula (the n=1 call
 /// charges the bare base). Source in `curve_msm_probe_src/`.
 const CURVE_MSM_PROBE_SO: &[u8] = include_bytes!("fixtures/curve_msm_probe.so");
+/// CLEAN exit with r0 = 0xFFFFFFFFFFFFFFFD (the model's ERR_ABORT
+/// sentinel) — the L1 sentinel-collision experiment. Source in
+/// `sentinel_exit_src/`.
+const SENTINEL_EXIT_SO: &[u8] = include_bytes!("fixtures/sentinel_exit.so");
 /// Calls `sol_try_find_program_address(&[b"vault"], program_id)` and
 /// writes the resulting (PDA, bump) as 33-byte return_data. Exercises
 /// the per-iteration CU charge for `sol_try_find_program_address`
@@ -2240,6 +2244,51 @@ fn curve_msm_cu_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "M9 MSM CU diverged (the base + 758*(n-1) formula): ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// L1 sentinel-collision experiment (soundness-audit L1, closure-plan
+/// phase 3 step 0): a healthy program CLEANLY exits with
+/// r0 = 0xFFFFFFFFFFFFFFFD — numerically identical to the model's
+/// ERR_ABORT fault sentinel. This prints what each engine observably
+/// reports, pinning the wire mapping BEFORE the vmError exit-shape
+/// refactor. Both engines must at least agree (the clean exit and the
+/// fault land in the same observable class today — that sameness is
+/// exactly the L1 incompleteness being closed).
+#[test]
+fn sentinel_clean_exit_observability() {
+    let program_id = pid(74);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, SENTINEL_EXIT_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs sentinel_exit");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SENTINEL_EXIT_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("L1 EXPERIMENT: clean exit with r0 = 0xFFFFFFFFFFFFFFFD");
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+
+    // Cross-engine agreement on the observable class: both non-Success.
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: nonzero r0 must not be Success, got {:?}", fs_r.program_result);
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: nonzero r0 must not be Success, got {:?}", m_r.program_result);
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }
