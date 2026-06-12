@@ -252,6 +252,41 @@ theorem Mem.read_coe (f : Nat → Nat) (a : Nat) : ((f : Mem) : Nat → Nat) a =
   unfold Mem.read
   simp
 
+/-- A real byte. (`UInt8.toNat` is the shape every `ByteArray` read in
+    a syscall bulk-write lambda produces.) -/
+theorem byte_toNat_lt (u : UInt8) : u.toNat < 256 := by
+  first
+    | exact u.toNat_lt_size
+    | exact u.toNat_lt
+    | exact Nat.lt_of_lt_of_le u.toBitVec.isLt (by decide)
+
+/-- Bound for reading ANY constructor-literal `Mem` (the shape a
+    syscall's `let mem' : Memory.Mem := fun a => …` coercion produces),
+    overlay-agnostic: an overlay hit is a real `UInt8`; a miss lands in
+    the default function. `apply`-unifies regardless of how the empty
+    overlay's `{}` elaborated (a rewrite keyed on a specific `{}` term
+    does NOT reliably match — learned the hard way). -/
+theorem Mem.read_mk_lt (f : Nat → Nat) (o : Std.HashMap Nat UInt8)
+    (a : Nat) (hf : ∀ x, f x < 256) : Mem.read ⟨f, o⟩ a < 256 := by
+  unfold Mem.read
+  split
+  · exact byte_toNat_lt _
+  · exact hf a
+
+/-- Peel one `ite` off a bound goal. Closing if-chains by `repeat`ed
+    `apply ite_lt` instead of `split` matters: after `apply
+    Mem.read_mk_lt; intro x` the chain goal is a BETA-REDEX
+    (`(fun a => if …) x < 256`), which `split` cannot see through
+    (syntactic ite search) and which the `simp`/`dsimp` beta route
+    cannot normalize without max-stepping on `Mem.read`'s `HashMap`
+    internals — but `apply` unifies up to defeq, so it reads straight
+    through the redex. -/
+theorem ite_lt {c : Prop} [Decidable c] {t e B : Nat}
+    (ht : t < B) (he : e < B) : (if c then t else e) < B := by
+  split
+  · exact ht
+  · exact he
+
 /-! ## State-shape preservation lemmas
 
 `step`'s arms are record updates of a handful of shapes; one lemma per
@@ -317,6 +352,327 @@ theorem execSyscall_cuBudget (sc : Syscall) (s : State) :
     (execSyscall sc s).cuBudget = s.cuBudget := by
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
+
+/-! ## Value syscall sweeps
+
+The four invariant components a syscall can actually move: the heap bump
+pointer (`sol_alloc_free_` only, capped by `allocFreeStep`), the return
+data (`sol_set_return_data` only, capped at 1024), r0 (every syscall, to
+a status code / length / address — all bounded), and memory (bulk writes
+— all byte-reduced). -/
+
+/-- `execTryFind` helper in the `execTryFind_preserves_r10` style: it
+    never touches the heap pointer (in either match arm). -/
+@[simp] theorem _root_.SVM.SBPF.Pda.execTryFind_heapNext (s : State) :
+    (Pda.execTryFind s).heapNext = s.heapNext := by
+  simp only [Pda.execTryFind]
+  split <;> rfl
+
+/-- `execTryFind` never touches the return data. -/
+@[simp] theorem _root_.SVM.SBPF.Pda.execTryFind_returnData (s : State) :
+    (Pda.execTryFind s).returnData = s.returnData := by
+  simp only [Pda.execTryFind]
+  split <;> rfl
+
+theorem execSyscall_heapNext_le (sc : Syscall) (s : State)
+    (h : s.heapNext ≤ 0x300008000) :
+    (execSyscall sc s).heapNext ≤ 0x300008000 := by
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | exact h | omega | (simp; omega))
+
+theorem execSyscall_returnData_le (sc : Syscall) (s : State)
+    (h : s.returnData.size ≤ 1024) :
+    (execSyscall sc s).returnData.size ≤ 1024 := by
+  cases sc <;> simp [execSyscall, commitOptional, MAX_RETURN_DATA] <;>
+    (repeat' split) <;> (first | exact h | omega | (simp; omega))
+
+set_option maxHeartbeats 1000000 in
+set_option maxRecDepth 65536 in
+theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
+    ∀ r, (execSyscall sc s).regs.get r < U64_MODULUS := by
+  have h1 := hb.returnData_le
+  have h2 := hb.cuBudget_lt
+  have h3 := hb.heapNext_le
+  intro r
+  -- `simp only` over the explicit exec-def roster: keeps `RegFile.get`/
+  -- `set` FOLDED (a full `simp` unfolds them and `repeat' split` then
+  -- cases on `r` itself), and keeps the `sysvarBuffer` eval lemmas and
+  -- 20 KiB buffer literals OUT of the proof term (the kernel
+  -- deep-recursion hazard — see the H7 notes in `SysvarData.lean`).
+  cases sc <;>
+    simp only [execSyscall, commitOptional,
+          Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
+          Logging.execLogComputeUnits, Logging.execLogData,
+          Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,
+          Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
+          Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
+          Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
+          AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
+          Pda.execCreate, Pda.execTryFind, Cpi.exec,
+          Sysvar.execClock, Sysvar.execRent, Sysvar.execEpochSchedule,
+          Sysvar.execLastRestartSlot, Sysvar.execFees,
+          Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
+          Sysvar.zeroFillR1, ReturnData.execSet, ReturnData.execGet,
+          Abort.execAbort, Abort.execPanic, Misc.execAllocFree,
+          Misc.allocFreeStep, Misc.execRemainingComputeUnits,
+          Misc.execGetStackHeight, Misc.execProcessedSibling,
+          Misc.execUnknown] <;>
+    (repeat' split) <;>
+    (first
+      | exact hb.regs_lt r
+      | exact RegFile.set_get_lt hb.regs_lt (by decide) _ r
+      | exact RegFile.set_get_lt hb.regs_lt
+          (by simp only [U64_MODULUS] at h1 h2 h3 ⊢; omega) _ r)
+
+set_option maxHeartbeats 8000000 in
+set_option maxRecDepth 65536 in
+theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
+    ∀ a, (execSyscall sc s).mem a < 256 := by
+  intro a
+  -- Same `simp only` roster discipline as `execSyscall_regs_lt`.
+  -- Leaf families: unchanged memory (IH); `writeBytes` bulk outputs
+  -- (folded — closed by `writeBytes_lt`); `writeU32` (memcmp's out
+  -- write — defeq `writeByWidth .word`); and the function-coerced
+  -- lambda writes, opened by `Mem.read_coe` + split, whose branches
+  -- are literals, `% 256` reads, `ByteArray` bytes, or the old memory.
+  cases sc <;>
+    simp only [execSyscall, commitOptional,
+          Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
+          Logging.execLogComputeUnits, Logging.execLogData,
+          Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,
+          Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
+          Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
+          Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
+          AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
+          Pda.execCreate, Pda.execTryFind, Cpi.exec,
+          Sysvar.execClock, Sysvar.execRent, Sysvar.execEpochSchedule,
+          Sysvar.execLastRestartSlot, Sysvar.execFees,
+          Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
+          Sysvar.zeroFillR1, ReturnData.execSet, ReturnData.execGet,
+          Abort.execAbort, Abort.execPanic, Misc.execAllocFree,
+          Misc.allocFreeStep, Misc.execRemainingComputeUnits,
+          Misc.execGetStackHeight, Misc.execProcessedSibling,
+          Misc.execUnknown] <;>
+    (repeat' split) <;>
+    (first
+      | exact hb.mem_lt a
+      | exact hb.mem_lt _
+      | exact writeBytes_lt _ _ _ _ hb.mem_lt a
+      | exact writeBytes_lt _ _ _ _ hb.mem_lt _
+      | exact writeByWidth_lt _ _ _ .word hb.mem_lt a
+      | omega
+      | exact Nat.mod_lt _ (by decide)
+      | exact byte_toNat_lt _
+      -- Function-coerced lambda writes: `apply` the overlay-agnostic
+      -- constructor-literal bound, then peel the if-chain by repeated
+      -- `apply ite_lt` (defeq-through-the-redex — see its docstring),
+      -- closing branches as literals / `% 256` reads / `ByteArray`
+      -- bytes / fallthrough to the old memory or a `writeBytes`.
+      | (apply Mem.read_mk_lt
+         intro x
+         repeat
+           first
+             | omega
+             | exact Nat.mod_lt _ (by decide)
+             | exact byte_toNat_lt _
+             | exact hb.mem_lt _
+             | exact writeBytes_lt _ _ _ _ hb.mem_lt _
+             | apply ite_lt))
+
+/-- `n >>> k ≤ n` (right shifts only shrink). -/
+theorem shiftRight_le' (n k : Nat) : n >>> k ≤ n := by
+  rw [Nat.shiftRight_eq_div_pow]
+  exact Nat.div_le_self _ _
+
+/-! ## Step preservation -/
+
+set_option maxHeartbeats 1000000 in
+/-- THE preservation theorem (audit L5 + L3): one `step` keeps the state
+    bounded. The three stack-touching arms (`call`/`call_local`/`exit`)
+    are bespoke; every other arm is a record update matching one of the
+    `with_*` shapes plus an arithmetic bound. -/
+theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
+    StateBounded (step insn s) := by
+  cases insn
+  case call sc =>
+    -- `{ execSyscall sc s with pc := _, cuConsumed := _ }`: every
+    -- component comes from one of the syscall sweeps.
+    simp only [step]
+    exact
+      { regs_lt := execSyscall_regs_lt sc s h
+        stack_r10 := by
+          show StackR10WF (execSyscall sc s).callStack
+            (execSyscall sc s).regs.r10
+          rw [execSyscall_callStack, execSyscall_preserves_r10]
+          exact h.stack_r10
+        stack_depth := by
+          show (execSyscall sc s).callStack.length ≤ _
+          rw [execSyscall_callStack]; exact h.stack_depth
+        frames_lt := by
+          show ∀ f ∈ (execSyscall sc s).callStack, _
+          rw [execSyscall_callStack]; exact h.frames_lt
+        cuBudget_lt := by
+          show (execSyscall sc s).cuBudget < _
+          rw [execSyscall_cuBudget]; exact h.cuBudget_lt
+        heapNext_le := execSyscall_heapNext_le sc s h.heapNext_le
+        returnData_le := execSyscall_returnData_le sc s h.returnData_le
+        mem_lt := execSyscall_mem_lt sc s h }
+  case call_local target =>
+    simp only [step]
+    split
+    · -- depth-64 guard tripped: fail-closed abort.
+      exact h.with_exitCode _
+    · next hdepth =>
+      -- Push: frame saves the (bounded) registers; r10 climbs one frame,
+      -- re-establishing the discipline at depth+1.
+      have hr10 := h.r10_eq
+      have hd := h.stack_depth
+      refine
+        { regs_lt := ?_
+          stack_r10 := ⟨rfl, h.stack_r10⟩
+          stack_depth := ?_
+          frames_lt := ?_
+          cuBudget_lt := h.cuBudget_lt
+          heapNext_le := h.heapNext_le
+          returnData_le := h.returnData_le
+          mem_lt := h.mem_lt }
+      · intro r
+        cases r <;>
+          first
+            | exact h.regs_lt .r0 | exact h.regs_lt .r1 | exact h.regs_lt .r2
+            | exact h.regs_lt .r3 | exact h.regs_lt .r4 | exact h.regs_lt .r5
+            | exact h.regs_lt .r6 | exact h.regs_lt .r7 | exact h.regs_lt .r8
+            | exact h.regs_lt .r9
+            | (show s.regs.r10 + 0x1000 < U64_MODULUS
+               simp only [STACK_START, MAX_CALL_DEPTH, U64_MODULUS] at hr10 hd ⊢
+               omega)
+      · show (_ :: s.callStack).length ≤ MAX_CALL_DEPTH
+        simp only [List.length_cons, MAX_CALL_DEPTH] at hdepth ⊢
+        omega
+      · intro f hf
+        rcases List.mem_cons.mp hf with rfl | hf'
+        · exact ⟨h.regs_lt .r6, h.regs_lt .r7, h.regs_lt .r8, h.regs_lt .r9⟩
+        · exact h.frames_lt f hf'
+  case exit =>
+    simp only [step]
+    split
+    · next frame rest heq =>
+      -- Pop: r10 restores to the top frame's saved pointer, which the
+      -- discipline pins one frame down; r6-r9 restore to saved values
+      -- bounded by `frames_lt`.
+      have hfr := h.frames_lt frame (by rw [heq]; exact List.mem_cons_self ..)
+      have hwf : StackR10WF (frame :: rest) s.regs.r10 := heq ▸ h.stack_r10
+      obtain ⟨-, hrest⟩ := hwf
+      have hdep : rest.length ≤ MAX_CALL_DEPTH := by
+        have hl := h.stack_depth
+        rw [heq] at hl
+        simp only [List.length_cons] at hl
+        omega
+      have hr10' := hrest.r10_eq
+      refine
+        { regs_lt := ?_
+          stack_r10 := hrest
+          stack_depth := hdep
+          frames_lt := ?_
+          cuBudget_lt := h.cuBudget_lt
+          heapNext_le := h.heapNext_le
+          returnData_le := h.returnData_le
+          mem_lt := h.mem_lt }
+      · intro r
+        cases r <;>
+          first
+            | exact h.regs_lt .r0 | exact h.regs_lt .r1 | exact h.regs_lt .r2
+            | exact h.regs_lt .r3 | exact h.regs_lt .r4 | exact h.regs_lt .r5
+            | exact hfr.1 | exact hfr.2.1 | exact hfr.2.2.1 | exact hfr.2.2.2
+            | (show frame.savedR10 < U64_MODULUS
+               simp only [STACK_START, MAX_CALL_DEPTH, U64_MODULUS]
+                 at hr10' hdep ⊢
+               omega)
+      · intro f hf
+        exact h.frames_lt f (by rw [heq]; exact List.mem_cons_of_mem _ hf)
+    · -- Empty stack: program exit (sets only exitCode).
+      exact h.with_exitCode _
+  all_goals
+    simp only [step] <;> (repeat' split) <;>
+      first
+        | exact h.with_exitCode _
+        | exact h.with_pc _
+        | exact h.with_mem (writeByWidth_lt _ _ _ _ h.mem_lt) _
+        | exact h.with_set_reg (toU64_lt _) _
+        | exact h.with_set_reg (readByWidth_lt _ _ _) _
+        | exact h.with_set_reg (wrapAdd_lt _ _) _
+        | exact h.with_set_reg (wrapSub_lt _ _) _
+        | exact h.with_set_reg (wrapMul_lt _ _) _
+        | exact h.with_set_reg (wrapNeg_lt _) _
+        | exact h.with_set_reg (wrapAdd32_lt _ _) _
+        | exact h.with_set_reg (wrapSub32_lt _ _) _
+        | exact h.with_set_reg (wrapMul32_lt _ _) _
+        | exact h.with_set_reg (wrapNeg32_lt _) _
+        | exact h.with_set_reg (resolveSrc_lt h.regs_lt _) _
+        | exact h.with_set_reg (Nat.mod_lt _ (by decide)) _
+        | exact h.with_set_reg
+            (Nat.lt_of_le_of_lt (Nat.mod_le _ _) (h.regs_lt _)) _
+        | exact h.with_set_reg
+            (Nat.lt_of_le_of_lt (shiftRight_le' _ _) (h.regs_lt _)) _
+        | exact h.with_set_reg
+            (Nat.lt_trans (Nat.mod_lt _ (by decide)) (by decide)) _
+        | exact h.with_set_reg
+            (Nat.lt_trans (Nat.lt_of_le_of_lt (Nat.mod_le _ _)
+              (Nat.mod_lt _ (by decide))) (by decide)) _
+        | exact h.with_set_reg
+            (Nat.lt_trans (Nat.lt_of_le_of_lt (shiftRight_le' _ _)
+              (Nat.mod_lt _ (by decide))) (by decide)) _
+
+/-- `chargeCu` only moves the consumed meter — every invariant component
+    carries. -/
+theorem chargeCu_bounded {s : State} (h : StateBounded s) :
+    StateBounded (chargeCu s) :=
+  { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
+    stack_depth := h.stack_depth, frames_lt := h.frames_lt
+    cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
+    returnData_le := h.returnData_le, mem_lt := h.mem_lt }
+
+/-- THE multi-step preservation theorem: the proof-side executor keeps
+    every reachable state bounded, for any program and any fuel. -/
+theorem executeFn_bounded (fetch : Nat → Option Insn) {s : State}
+    (h : StateBounded s) (fuel : Nat) :
+    StateBounded (executeFn fetch s fuel) := by
+  induction fuel generalizing s with
+  | zero => exact h
+  | succ fuel' ih =>
+    rw [executeFn]
+    split
+    · exact h                         -- already exited
+    · split
+      · exact h                       -- budget exhausted: halt as-is
+      · split
+        · exact h.with_exitCode _     -- invalid PC: fail closed
+        · exact ih (chargeCu_bounded (step_bounded _ h))
+
+/-! ## The L5 / L3 closes -/
+
+/-- L5 (audit): every register of every state the executor can reach is
+    a real u64. In particular the unsigned compares
+    (`jgt`/`jge`/`jlt`/`jle`), which compare RAW `Nat` register values,
+    are faithful u64 compares on every reachable state. -/
+theorem executeFn_regs_lt (fetch : Nat → Option Insn) {s : State}
+    (h : StateBounded s) (fuel : Nat) :
+    ∀ r, (executeFn fetch s fuel).regs.get r < 2 ^ 64 :=
+  (executeFn_bounded fetch h fuel).regs_lt
+
+/-- L3 (audit): a byte-cell claim `s.mem a = v` with `v ≥ 256` is FALSE
+    of every bounded state — real cells hold real bytes. So a
+    `memByteIs a v` atom with a non-canonical `v` is unsatisfiable
+    against any reachable state's memory: the raw-valued `singletonMem`
+    definition cannot be exploited on the reachable fragment. (This is
+    the invariant-side fence; canonicalising `singletonMem` itself was
+    attempted and reverted — it ripples `< 256` hypotheses through the
+    byte-cell specs into the H8 byte-demotion base.) -/
+theorem mem_byte_canonical {s : State} (h : StateBounded s) {a v : Nat}
+    (hv : 256 ≤ v) : s.mem a ≠ v := by
+  intro he
+  have := h.mem_lt a
+  omega
 
 /-! ## Base cases -/
 
