@@ -560,6 +560,35 @@ def buildFnRegistry (elfBytes : ByteArray) (h : Header)
     | _, _, _ => []
   entryPair :: pass1 ++ relocPairs
 
+/-- Whether every symbol-using relocation can resolve its symbol — the
+    fail-closed gate for audit M1. solana-sbpf 0.14.4 `relocate`
+    (elf.rs:969-973) reads each `R_Bpf_64_64` / `R_Bpf_64_32`
+    relocation's symbol as
+    `dynamic_symbol_table().and_then(|t| t.get(r_sym)).ok_or(UnknownSymbol)?`,
+    so a relocation table that references a missing `.dynsym` or an
+    out-of-range symbol index fails the LOAD. The total `applyRelocations`
+    instead 0-fills such reads (OOB → 0) and silently patches a wrong
+    address; the runners (`runElf`/`runElfWithFuel`/CPI) call this first and
+    fail closed when it is `false`.
+
+    A binary with NO relocation table is trivially resolvable (agave's
+    `dynamic_relocations_table().unwrap_or_default()` yields an empty
+    iterator — a valid static binary). `R_Bpf_64_Relative` relocations do
+    not use the symbol table, so they never make this `false`. -/
+def relocationsResolvable (elfBytes : ByteArray) (h : Header) : Bool :=
+  match findSectionByType elfBytes h SHT_REL with
+  | none => true
+  | some reltab =>
+    let nRels  := reltab.size / 16
+    let symtab? := findSectionByType elfBytes h SHT_DYNSYM
+    let nSyms  := match symtab? with | some s => s.size / 24 | none => 0
+    (List.range nRels).all fun i =>
+      let rel := parseRelocationEntry elfBytes (reltab.offset + i * 16)
+      if rel.type = R_BPF_64_64 ∨ rel.type = R_BPF_64_32 then
+        symtab?.isSome && rel.sym < nSyms
+      else
+        true
+
 /-- Apply `R_BPF_64_RELATIVE` relocations that fall inside a non-text
     section (typically `.data.rel.ro`). Each reloc names a byte offset
     inside the section where the linker has placed an 8-byte word

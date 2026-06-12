@@ -68,6 +68,7 @@ lean_lib Examples where
     `SyscallHashPin,
     `H2Pin,
     `M4Pin,
+    `M1Pin,
     `ByteIncrement,
     `DischargePoC,
     `ProofDemo,

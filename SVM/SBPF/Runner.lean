@@ -1040,6 +1040,11 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
     match Elf.findSection elfBytes header Elf.textName with
     | none => none
     | some textSec =>
+      -- M1: fail closed when a relocation references a missing `.dynsym`
+      -- or an out-of-range symbol index (agave: `UnknownSymbol` at load,
+      -- solana-sbpf elf.rs:969-973). `applyRelocations` would otherwise
+      -- 0-fill the bad symbol read and patch a wrong address.
+      if !Elf.relocationsResolvable elfBytes header then none else
       let rawText   := Elf.extractSection elfBytes textSec
       -- Patch R_BPF_64_64 relocations (lddw → .rodata-relative pointers).
       -- A no-op when the ELF has no .dynsym/.rel.dyn sections.
@@ -1111,6 +1116,8 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
     match Elf.findSection elfBytes header Elf.textName with
     | none => none
     | some textSec =>
+      -- M1: fail closed on an unresolvable relocation symbol (see `runElf`).
+      if !Elf.relocationsResolvable elfBytes header then none else
       let rawText   := Elf.extractSection elfBytes textSec
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
       let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
