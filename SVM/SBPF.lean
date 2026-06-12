@@ -31,4 +31,5 @@ import SVM.SBPF.SyscallHash
 import SVM.SBPF.Decode
 import SVM.SBPF.Elf
 import SVM.SBPF.Runner
+import SVM.SBPF.Bounded
 import SVM.SBPF.RunnerBridge
