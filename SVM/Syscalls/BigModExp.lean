@@ -38,13 +38,23 @@ ABI: r1 = `*const BigModExpParams` (48 bytes — 6 × u64 LE:
 `{ base, base_len, exponent, exponent_len, modulus, modulus_len }`),
 r2 = `*mut [u8; modulus_len]` output. r0 = 0/1 (1 iff any len > 512). -/
 
-/-- `big_modular_exponentiation_cost` from agave's
-    `SVMTransactionExecutionCost::default()` (mirrored at
-    `blueshift/sbpf/crates/runtime/src/config.rs:119`). Agave actually
-    consumes a more complex `cost.saturating_mul(n)` per modulus byte
-    inside the syscall; this flat value is a soft approximation until
-    a fixture forces the input-scaled form. -/
-def cu : Nat := 33
+/-- `sol_big_mod_exp` CU, exact per agave-syscalls 4.0.0-rc.0
+    (`src/lib.rs:2280-2295`): `syscall_base_cost +
+    (input_len² / big_modular_exponentiation_cost_divisor +
+    big_modular_exponentiation_base_cost)`, with
+    `input_len = max(base_len, exponent_len, modulus_len)` and the
+    `SVMTransactionExecutionCost::default()` constants (100, divisor 2,
+    base 190 — `solana-program-runtime/src/execution_budget.rs:236,257,
+    258`), i.e. `100 + (input_len² / 2 + 190)`. The `/2` is Nat-floored,
+    matching agave's `checked_div`. Audit M9: the pre-fix flat `33` was a
+    soft approximation; this is the input-scaled form. -/
+def cu (s : State) : Nat :=
+  let paramsA := s.regs.r1
+  let baseLen := Memory.readU64 s.mem (paramsA + 8)
+  let expLen  := Memory.readU64 s.mem (paramsA + 24)
+  let modLen  := Memory.readU64 s.mem (paramsA + 40)
+  let inputLen := max baseLen (max expLen modLen)
+  100 + (inputLen * inputLen / 2 + 190)
 
 @[simp] def exec (s : State) : State :=
   let paramsA := s.regs.r1

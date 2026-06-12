@@ -70,7 +70,7 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_curve_pairing_map                       => Bls12_381.cuPairing
   | .sol_alt_bn128_group_op                      => AltBn128.cuGroupOp s
   | .sol_alt_bn128_compression                   => AltBn128.cuCompression s
-  | .sol_big_mod_exp                             => BigModExp.cu
+  | .sol_big_mod_exp                             => BigModExp.cu s
   -- PDA. `create` is a fixed `cuPerAttempt`; `try_find` scales
   -- per bump-loop iteration (matches agave's pre-loop + per-failed
   -- iter charging in `SyscallTryFindProgramAddress::rust`).

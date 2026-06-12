@@ -132,13 +132,18 @@ caller still pays *something*. -/
     else 521
   else 473
 
-/-- `sol_curve_multiscalar_mul`. Base + n × incremental:
-    edwards = 2273 + n·758, ristretto = 2303 + n·788. `n` is the
-    point count in `r4`. -/
+/-- `sol_curve_multiscalar_mul`. Agave charges
+    `msm_base_cost + msm_incremental_cost · (points_len − 1)`
+    (`agave-syscalls-4.0.0-rc.0/src/lib.rs:1711-1716`,
+    `points_len.saturating_sub(1)`): edwards = 2273 + 758·(n−1),
+    ristretto = 2303 + 788·(n−1). `n` is the point count in `r4`. The
+    `− 1` is Nat-truncated, matching agave's `saturating_sub(1)` (n=0 and
+    n=1 both charge the bare base). Audit M9: the pre-fix `n ·` form
+    over-charged by one increment for every n ≥ 2. -/
 @[simp] def cuMSM (s : State) : Nat :=
   let n := s.regs.r4
-  if s.regs.r1 = CURVE25519_EDWARDS then 2_273 + n * 758
-  else if s.regs.r1 = CURVE25519_RISTRETTO then 2_303 + n * 788
+  if s.regs.r1 = CURVE25519_EDWARDS then 2_273 + (n - 1) * 758
+  else if s.regs.r1 = CURVE25519_RISTRETTO then 2_303 + (n - 1) * 788
   else 2_273
 
 /-- Execute `sol_curve_validate_point`.
