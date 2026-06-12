@@ -21,6 +21,7 @@ instruction sequence.
 import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
+import SVM.SBPF.SatWitness
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 16000000
@@ -2275,6 +2276,138 @@ theorem PTokenMintTo_lifted_spec
   have h_4759 := ja_spec 3542 4759
   sl_rw_abs [h_addr4, h_addr1, h_addr0, h_addr2, h_addr3, h_addr5] at [h_198, h_199, h_304, h_305, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_322, h_3361, h_3362, h_3363, h_3364, h_3453, h_3454, h_3585, h_3586, h_3587, h_3588, h_3589, h_3590, h_3591, h_3592, h_3593, h_3594, h_3595, h_326, h_327, h_328, h_329, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_340, h_3543, h_3654, h_3655, h_3656, h_3657, h_3658, h_3659, h_3660, h_3661, h_3662, h_3663, h_3664, h_3665, h_3666, h_3667, h_3668, h_3669, h_3670, h_3671, h_3672, h_3673, h_3674, h_3675, h_3676, h_3677, h_3678, h_3679, h_3680, h_3681, h_3682, h_3683, h_3684, h_3685, h_3686, h_3687, h_3688, h_3689, h_3690, h_3691, h_3692, h_3693, h_3694, h_3695, h_3696, h_3697, h_3698, h_3699, h_3700, h_3701, h_3702, h_3703, h_3704, h_3705, h_3706, h_3707, h_4743, h_4744, h_4745, h_4746, h_4747, h_4748, h_4749, h_4750, h_4751, h_4752, h_4753, h_4754, h_4755, h_4756, h_4757, h_4758, h_4759]
   sl_block_iter [h_198, h_199, h_304, h_305, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_322, h_3361, h_3362, h_3363, h_3364, h_3453, h_3454, h_3585, h_3586, h_3587, h_3588, h_3589, h_3590, h_3591, h_3592, h_3593, h_3594, h_3595, h_326, h_327, h_328, h_329, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_340, h_3543, h_3654, h_3655, h_3656, h_3657, h_3658, h_3659, h_3660, h_3661, h_3662, h_3663, h_3664, h_3665, h_3666, h_3667, h_3668, h_3669, h_3670, h_3671, h_3672, h_3673, h_3674, h_3675, h_3676, h_3677, h_3678, h_3679, h_3680, h_3681, h_3682, h_3683, h_3684, h_3685, h_3686, h_3687, h_3688, h_3689, h_3690, h_3691, h_3692, h_3693, h_3694, h_3695, h_3696, h_3697, h_3698, h_3699, h_3700, h_3701, h_3702, h_3703, h_3704, h_3705, h_3706, h_3707, h_4743, h_4744, h_4745, h_4746, h_4747, h_4748, h_4749, h_4750, h_4751, h_4752, h_4753, h_4754, h_4755, h_4756, h_4757, h_4758, h_4759] generalizing [((toU64 0) &&& toU64 1) % U64_MODULUS, wrapAdd oldMemD_41 oldMemD_38, wrapAdd oldMemD_40 oldMemD_38]
+
+/-! ## Satisfiability witness (soundness-audit H8)
+
+The triple's precondition is SATISFIABLE at the concrete
+assignment below — an overlapping (vacuous) sepConj would fail
+`native_decide` here, so vacuity cannot ship. The guards pin
+each `addrK` literal to its `h_addrK` defining equation at the
+assignment; the witness goal is the theorem's precondition with
+the variables instantiated, so the reflected `SatWitness` atoms
+are tied to the real pre by the elaborator's defeq check.
+Value-level path hypotheses (`h_branch*`) are not certified
+consistent — they are outside the overlap-vacuity class this
+guards against. -/
+
+example : 17716740096 = ((wrapAdd (wrapAdd 17179869184 536860561) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS := by native_decide
+example : 17448302568 = wrapAdd 17448304640 (toU64 (-2072)) := by native_decide
+example : 17985175552 = ((wrapAdd (wrapAdd (17716740096) 268425113) (toU64 10343)) &&& toU64 (-8)) % U64_MODULUS := by native_decide
+example : 18253611008 = ((wrapAdd (wrapAdd (17985175552) 268425113) (toU64 10343)) &&& toU64 (-8)) % U64_MODULUS := by native_decide
+example : 17179869192 = wrapAdd 17179869184 (toU64 8) := by native_decide
+example : 18253611017 = wrapAdd (18253611008) (toU64 9) := by native_decide
+
+open Memory in
+example : ∃ s,
+    ((.r1 ↦ᵣ 17179869184) **
+      (effectiveAddr 17179869184 0 ↦ₘ 0) **
+      (.r2 ↦ᵣ 0) **
+      (effectiveAddr 17179869184 88 ↦U64 536860561) **
+      (.r0 ↦ᵣ 0) **
+      (effectiveAddr 17179869184 0 + 1 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 2 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 3 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 4 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 5 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 6 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 7 ↦ₘ 0) **
+      (.r7 ↦ᵣ 0) **
+      (.r10 ↦ᵣ 17448304640) **
+      (effectiveAddr 17448304640 (-2072) ↦U64 0) **
+      (.r3 ↦ᵣ 0) **
+      (effectiveAddr 17716740096 0 ↦ₘ 0) **
+      (effectiveAddr 17448302568 8 ↦U64 0) **
+      (effectiveAddr 17716740096 80 ↦U64 268425113) **
+      (effectiveAddr 17985175552 0 ↦ₘ 0) **
+      (effectiveAddr 17448302568 16 ↦U64 0) **
+      (effectiveAddr 17985175552 80 ↦U64 268425113) **
+      (.r4 ↦ᵣ 0) **
+      (effectiveAddr 18253611008 0 ↦U64 0) **
+      (.r9 ↦ᵣ 0) **
+      (effectiveAddr 18253611008 8 ↦ₘ 0) **
+      (.r5 ↦ᵣ 0) **
+      (.r8 ↦ᵣ 0) **
+      (.r6 ↦ᵣ 0) **
+      (effectiveAddr 17716740096 196 ↦ₘ 0) **
+      (effectiveAddr 17716740096 197 ↦ₘ 0) **
+      (effectiveAddr 17716740096 88 ↦U64 0) **
+      (effectiveAddr 17179869192 8 ↦U64 0) **
+      (effectiveAddr 17716740096 96 ↦U64 0) **
+      (effectiveAddr 17179869192 16 ↦U64 0) **
+      (effectiveAddr 17716740096 104 ↦U64 0) **
+      (effectiveAddr 17179869192 24 ↦U64 0) **
+      (effectiveAddr 17716740096 112 ↦U64 0) **
+      (effectiveAddr 17179869192 32 ↦U64 0) **
+      (effectiveAddr 17179869192 133 ↦ₘ 0) **
+      (effectiveAddr 17179869192 88 ↦ₘ 0) **
+      (effectiveAddr 17985175552 8 ↦U64 0) **
+      (effectiveAddr 17179869192 92 ↦U64 0) **
+      (effectiveAddr 17985175552 16 ↦U64 0) **
+      (effectiveAddr 17179869192 100 ↦U64 0) **
+      (effectiveAddr 17985175552 24 ↦U64 0) **
+      (effectiveAddr 17179869192 108 ↦U64 0) **
+      (effectiveAddr 17985175552 32 ↦U64 0) **
+      (effectiveAddr 17179869192 116 ↦U64 0) **
+      (effectiveAddr 18253611017 0 ↦U64 0) **
+      (effectiveAddr 17985175552 1 ↦ₘ 0) **
+      (effectiveAddr 17179869192 124 ↦U64 0) **
+      (effectiveAddr 17716740096 152 ↦U64 0)) s := by
+  have w := SatWitness.sat_witness
+    [.reg .r1 17179869184,
+     .byte 17179869184 0,
+     .reg .r2 0,
+     .u64 17179869272 536860561,
+     .reg .r0 0,
+     .byte 17179869185 0,
+     .byte 17179869186 0,
+     .byte 17179869187 0,
+     .byte 17179869188 0,
+     .byte 17179869189 0,
+     .byte 17179869190 0,
+     .byte 17179869191 0,
+     .reg .r7 0,
+     .reg .r10 17448304640,
+     .u64 17448302568 0,
+     .reg .r3 0,
+     .byte 17716740096 0,
+     .u64 17448302576 0,
+     .u64 17716740176 268425113,
+     .byte 17985175552 0,
+     .u64 17448302584 0,
+     .u64 17985175632 268425113,
+     .reg .r4 0,
+     .u64 18253611008 0,
+     .reg .r9 0,
+     .byte 18253611016 0,
+     .reg .r5 0,
+     .reg .r8 0,
+     .reg .r6 0,
+     .byte 17716740292 0,
+     .byte 17716740293 0,
+     .u64 17716740184 0,
+     .u64 17179869200 0,
+     .u64 17716740192 0,
+     .u64 17179869208 0,
+     .u64 17716740200 0,
+     .u64 17179869216 0,
+     .u64 17716740208 0,
+     .u64 17179869224 0,
+     .byte 17179869325 0,
+     .byte 17179869280 0,
+     .u64 17985175560 0,
+     .u64 17179869284 0,
+     .u64 17985175568 0,
+     .u64 17179869292 0,
+     .u64 17985175576 0,
+     .u64 17179869300 0,
+     .u64 17985175584 0,
+     .u64 17179869308 0,
+     .u64 18253611017 0,
+     .byte 17985175553 0,
+     .u64 17179869316 0,
+     .u64 17716740248 0]
+    (by native_decide)
+  exact w
 
 open Memory in
 theorem PTokenMintTo_balance_correct

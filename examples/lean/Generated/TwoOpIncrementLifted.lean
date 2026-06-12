@@ -17,6 +17,7 @@ instruction sequence.
 import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
+import SVM.SBPF.SatWitness
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 4000000
@@ -100,5 +101,36 @@ theorem TwoOpIncrement_lifted_spec
   have h_7 := stxdw_spec .r1 .r2 1 (baseAddr) (wrapAdd oldMemD_0 (oldMemB_1 % 256)) oldMemD_0 7
   have h_8 := mov64_imm_spec .r0 0 (vR0Old) 8 (by decide)
   sl_block_iter [h_0, h_1, h_2, h_6, h_7, h_8] generalizing [wrapAdd oldMemD_0 (oldMemB_1 % 256), oldMemB_1 % 256]
+
+/-! ## Satisfiability witness (soundness-audit H8)
+
+The triple's precondition is SATISFIABLE at the concrete
+assignment below — an overlapping (vacuous) sepConj would fail
+`native_decide` here, so vacuity cannot ship. The guards pin
+each `addrK` literal to its `h_addrK` defining equation at the
+assignment; the witness goal is the theorem's precondition with
+the variables instantiated, so the reflected `SatWitness` atoms
+are tied to the real pre by the elaborator's defeq check.
+Value-level path hypotheses (`h_branch*`) are not certified
+consistent — they are outside the overlap-vacuity class this
+guards against. -/
+
+open Memory in
+example : ∃ s,
+    ((.r1 ↦ᵣ 17179869184) **
+      (effectiveAddr 17179869184 1 ↦U64 0) **
+      (.r2 ↦ᵣ 0) **
+      (effectiveAddr 17179869184 0 ↦ₘ 0) **
+      (.r3 ↦ᵣ 0) **
+      (.r0 ↦ᵣ 0)) s := by
+  have w := SatWitness.sat_witness
+    [.reg .r1 17179869184,
+     .u64 17179869185 0,
+     .reg .r2 0,
+     .byte 17179869184 0,
+     .reg .r3 0,
+     .reg .r0 0]
+    (by native_decide)
+  exact w
 
 end Examples.Lifted.TwoOpIncrement

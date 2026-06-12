@@ -17,6 +17,7 @@ instruction sequence.
 import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
+import SVM.SBPF.SatWitness
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 4000000
@@ -116,6 +117,50 @@ theorem CounterWithHelperLifted_lifted_spec
   have h_7 := mov64_imm_spec .r0 0 (vR0Old) 7 (by decide)
   sl_rw_abs [h_addr0] at [h_4, h_5, h_6, h_0, h_1, h_2, h_3, h_7]
   sl_block_iter [h_4, h_5, h_6, h_0, h_1, h_2, h_3, h_7] generalizing [wrapAdd oldMemD_1 oldMemD_0]
+
+/-! ## Satisfiability witness (soundness-audit H8)
+
+The triple's precondition is SATISFIABLE at the concrete
+assignment below — an overlapping (vacuous) sepConj would fail
+`native_decide` here, so vacuity cannot ship. The guards pin
+each `addrK` literal to its `h_addrK` defining equation at the
+assignment; the witness goal is the theorem's precondition with
+the variables instantiated, so the reflected `SatWitness` atoms
+are tied to the real pre by the elaborator's defeq check.
+Value-level path hypotheses (`h_branch*`) are not certified
+consistent — they are outside the overlap-vacuity class this
+guards against. -/
+
+example : 17179869192 = wrapAdd 17179869184 (toU64 8) := by native_decide
+
+open Memory in
+example : ∃ s,
+    ((.r1 ↦ᵣ 17179869184) **
+      (effectiveAddr 17179869184 0 ↦U64 0) **
+      (.r2 ↦ᵣ 0) **
+      (.r6 ↦ᵣ 0) **
+      (.r7 ↦ᵣ 0) **
+      (.r8 ↦ᵣ 0) **
+      (.r9 ↦ᵣ 0) **
+      (.r10 ↦ᵣ 0) **
+      (effectiveAddr 17179869192 0 ↦U64 0) **
+      (.r3 ↦ᵣ 0) **
+      (.r0 ↦ᵣ 0) ** callStackIs []) s := by
+  have w := SatWitness.sat_witness
+    [.reg .r1 17179869184,
+     .u64 17179869184 0,
+     .reg .r2 0,
+     .reg .r6 0,
+     .reg .r7 0,
+     .reg .r8 0,
+     .reg .r9 0,
+     .reg .r10 0,
+     .u64 17179869192 0,
+     .reg .r3 0,
+     .reg .r0 0,
+     .callStack []]
+    (by native_decide)
+  exact w
 
 open Memory in
 theorem CounterWithHelperLifted_balance_correct

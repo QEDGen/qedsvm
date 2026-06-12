@@ -1221,6 +1221,144 @@ fn canon_addr(base: &Expr, off: i64) -> (String, i64) {
     go(base, off).unwrap_or_else(|| (base.to_lean(), off))
 }
 
+/// Walk an address expression to its canonical root, returning the
+/// root SUB-EXPRESSION (None for an absolute/constant root) and the
+/// folded displacement. Mirror of `canon_addr`'s `go` that keeps the
+/// `Expr` instead of its rendering — the satisfiability-witness
+/// builder needs the tree to solve/evaluate it.
+fn canon_root_expr<'a>(e: &'a Expr, acc: i64) -> (Option<&'a Expr>, i64) {
+    match e {
+        Expr::InitReg(_) | Expr::InitMem(_) => (Some(e), acc),
+        Expr::Const(k) => (None, acc.wrapping_add(*k)),
+        Expr::ToU64(inner) => canon_root_expr(inner, acc),
+        Expr::WrapAdd(a, b) | Expr::NatAdd(a, b) => {
+            if let Some(k) = const_of_expr(b) {
+                canon_root_expr(a, acc.wrapping_add(k))
+            } else if let Some(k) = const_of_expr(a) {
+                canon_root_expr(b, acc.wrapping_add(k))
+            } else {
+                (Some(e), acc)
+            }
+        }
+        Expr::WrapSub(a, b) => {
+            if let Some(k) = const_of_expr(b) {
+                canon_root_expr(a, acc.wrapping_sub(k))
+            } else {
+                (Some(e), acc)
+            }
+        }
+        _ => (Some(e), acc),
+    }
+}
+
+/// Evaluate an `Expr` to a concrete `u64` under a variable assignment,
+/// mirroring the Lean semantics of each rendered form (`wrapAdd` =
+/// wrapping 64-bit add, `toU64 k` = `k` mod 2^64, `&&& imm` mask, …).
+/// `None` when the expression contains an unassigned variable or an
+/// opaque `Raw` rendering. Used by the satisfiability-witness builder;
+/// every evaluation it relies on is re-checked kernel-side by a
+/// `native_decide` guard, so a divergence here fails `lake build`
+/// rather than weakening the witness.
+fn eval_expr(e: &Expr, env: &std::collections::BTreeMap<String, u64>) -> Option<u64> {
+    match e {
+        Expr::InitReg(n) | Expr::InitMem(n) => env.get(n).copied(),
+        Expr::Const(k) => if *k >= 0 { Some(*k as u64) } else { None },
+        Expr::ToU64(inner) => match inner.as_ref() {
+            Expr::Const(k) => Some(*k as u64),
+            other => eval_expr(other, env),
+        },
+        Expr::Mod(a, m) => eval_expr(a, env).map(|v| if *m == 0 { v } else { v % *m }),
+        Expr::WrapAdd(a, b) => Some(eval_expr(a, env)?.wrapping_add(eval_expr(b, env)?)),
+        Expr::WrapSub(a, b) => Some(eval_expr(a, env)?.wrapping_sub(eval_expr(b, env)?)),
+        Expr::WrapMul(a, b) => Some(eval_expr(a, env)?.wrapping_mul(eval_expr(b, env)?)),
+        // Plain Nat add: witness values stay far below 2^64, where Nat
+        // and wrapping agree; overflow would diverge from Lean's Nat,
+        // so fail closed on it.
+        Expr::NatAdd(a, b) => eval_expr(a, env)?.checked_add(eval_expr(b, env)?),
+        Expr::AndU64Imm(a, imm) => Some(eval_expr(a, env)? & (*imm as u64)),
+        Expr::LshU64Imm(a, imm) =>
+            Some(eval_expr(a, env)?.wrapping_shl((*imm as u64 % 64) as u32)),
+        Expr::RshU64Imm(a, imm) =>
+            Some(eval_expr(a, env)? >> (*imm as u64 % 64)),
+        Expr::StHalfImm(imm) => Some((*imm as u64) % (1 << 16)),
+        Expr::StWordImm(imm) => Some((*imm as u64) % (1 << 32)),
+        Expr::StDwordImm(imm) => Some(*imm as u64),
+        Expr::CleanSub(a, b) => eval_expr(a, env)?.checked_sub(eval_expr(b, env)?),
+        Expr::ByteCombo(bs) => {
+            let mut acc: u64 = 0;
+            for b in bs.iter().rev() {
+                acc = acc.wrapping_mul(256).wrapping_add(eval_expr(b, env)?);
+            }
+            Some(acc)
+        }
+        Expr::Raw(_) => None,
+    }
+}
+
+/// Choose an assignment for the (single) unassigned variable inside an
+/// invertible address expression so that it evaluates to `target`.
+/// Handles the chains qedlift's walker produces for derived address
+/// roots: `wrapAdd`/`wrapSub` layers, `toU64`, narrowing `%`, and the
+/// `&&& imm` alignment mask (target must already satisfy the mask).
+/// Returns `false` (fail closed) on shapes it can't invert.
+fn solve_expr(
+    e: &Expr,
+    target: u64,
+    env: &mut std::collections::BTreeMap<String, u64>,
+) -> bool {
+    // Already fully evaluable? Then the expression is closed under the
+    // current assignment and can only be checked, not steered.
+    if let Some(v) = eval_expr(e, env) {
+        return v == target;
+    }
+    match e {
+        Expr::InitReg(n) | Expr::InitMem(n) => {
+            // Not in env (eval above failed) — assign it.
+            env.insert(n.clone(), target);
+            true
+        }
+        Expr::ToU64(inner) => solve_expr(inner, target, env),
+        Expr::Mod(a, m) => {
+            if *m != 0 && target >= *m { return false; }
+            solve_expr(a, target, env)
+        }
+        Expr::WrapAdd(a, b) => {
+            if let Some(va) = eval_expr(a, env) {
+                solve_expr(b, target.wrapping_sub(va), env)
+            } else if let Some(vb) = eval_expr(b, env) {
+                solve_expr(a, target.wrapping_sub(vb), env)
+            } else {
+                false
+            }
+        }
+        Expr::WrapSub(a, b) => {
+            if let Some(vb) = eval_expr(b, env) {
+                solve_expr(a, target.wrapping_add(vb), env)
+            } else if let Some(va) = eval_expr(a, env) {
+                solve_expr(b, va.wrapping_sub(target), env)
+            } else {
+                false
+            }
+        }
+        Expr::NatAdd(a, b) => {
+            if let Some(va) = eval_expr(a, env) {
+                target.checked_sub(va).map_or(false, |t| solve_expr(b, t, env))
+            } else if let Some(vb) = eval_expr(b, env) {
+                target.checked_sub(vb).map_or(false, |t| solve_expr(a, t, env))
+            } else {
+                false
+            }
+        }
+        Expr::AndU64Imm(a, imm) => {
+            // `target` must be a fixed point of the mask; then any
+            // pre-image works — use `target` itself.
+            if target & (*imm as u64) != target { return false; }
+            solve_expr(a, target, env)
+        }
+        _ => false,
+    }
+}
+
 /// Symbolic state threaded through one walk of the slice.
 #[derive(Default)]
 struct SymState {
@@ -3269,6 +3407,259 @@ fn atom_to_lean_with_subst(
     }
 }
 
+/// Build the H8 satisfiability-witness section for a lift: a concrete
+/// variable assignment under which the theorem's precondition is
+/// satisfiable, certified kernel-side. Emits
+///
+///   * one `native_decide` guard per address abstraction, pinning the
+///     chosen `addrK` literal to its `h_addrK` defining equation at the
+///     assignment (so the witness addresses really are the
+///     hypothesis-determined ones — a Rust evaluator bug fails
+///     `lake build`), and
+///   * an `example : ∃ s, (pre at the assignment) s :=
+///     SatWitness.sat_witness [reflected atoms] (by native_decide)`,
+///     where the goal is the THEOREM's rendered precondition with each
+///     variable token-substituted by its literal — the elaborator's
+///     defeq check ties the reflected atoms to the real pre.
+///
+/// An UNSATISFIABLE precondition (the H8 overlap-vacuity class) makes
+/// the witness construction fail right here (fail closed), and even a
+/// walker/detector bug that slipped through would fail the emitted
+/// `native_decide` at `lake build` — vacuity is structurally
+/// unshippable. SCOPE: heap satisfiability under the `h_addr` defining
+/// equations; value-level path hypotheses (`h_branch*`) are not
+/// certified consistent (they are outside the overlap-vacuity class).
+///
+/// Assignment strategy: each distinct canonical address ROOT gets a
+/// far-apart 4096-aligned base (0x400000000 + k·0x10000000 — separated
+/// by far more than any walked displacement or blob length); derived
+/// roots (masked pointer reloads) are steered there by solving their
+/// defining expression for its free variable; every remaining variable
+/// is 0.
+fn build_sat_witness(
+    pre: &[Atom],
+    state: &SymState,
+    abstractions: &[(String, String, String)],
+    abs_subst: &std::collections::BTreeMap<String, String>,
+    folded_rhs: &[String],
+    vars: &[String],
+) -> Result<String, String> {
+    use std::collections::BTreeMap;
+
+    // Abstraction param → its defining address expression (the
+    // pre-atom `addr_base` whose rendering the abstraction captured).
+    let mut param_expr: BTreeMap<String, Expr> = BTreeMap::new();
+    for atom in pre {
+        if let Atom::Mem { addr_base, .. } = atom {
+            if let Some(p) = abs_subst.get(&addr_base.to_lean()) {
+                param_expr.entry(p.clone()).or_insert_with(|| addr_base.clone());
+            }
+        }
+    }
+
+    let mut env: BTreeMap<String, u64> = BTreeMap::new();
+    let mut next_base: u64 = 0x4_0000_0000;
+    let mut alloc_base = || { let t = next_base; next_base += 0x1000_0000; t };
+
+    // Atom address expressions, in pre order (Mem bases + blob addrs).
+    let addr_exprs: Vec<&Expr> = pre.iter().filter_map(|a| match a {
+        Atom::Mem { addr_base, .. } => Some(addr_base),
+        Atom::Bytes { addr, .. } => Some(addr),
+        Atom::Bytes32 { addr, .. } => Some(addr),
+        Atom::Reg(..) => None,
+    }).collect();
+
+    // Pass 1: variable roots get bases directly.
+    for e in &addr_exprs {
+        if let (Some(Expr::InitReg(n)), _) | (Some(Expr::InitMem(n)), _) =
+            canon_root_expr(e, 0)
+        {
+            if !env.contains_key(n) {
+                let b = alloc_base();
+                env.insert(n.clone(), b);
+            }
+        }
+    }
+    // Pass 2: opaque (derived) roots, steered via their free variable.
+    // Atom order is creation order, so an outer root's expression only
+    // references roots already solved.
+    let mut solved_roots: std::collections::BTreeSet<String> = Default::default();
+    for e in &addr_exprs {
+        if let (Some(root), _) = canon_root_expr(e, 0) {
+            if matches!(root, Expr::InitReg(_) | Expr::InitMem(_)) { continue; }
+            let key = root.to_lean();
+            if !solved_roots.insert(key.clone()) { continue; }
+            let target = alloc_base();
+            if !solve_expr(root, target, &mut env) {
+                return Err(format!(
+                    "cannot steer derived address root `{}` to a witness \
+                     base (unsupported expression shape)", key));
+            }
+        }
+    }
+    // Pass 3: every remaining theorem variable is 0.
+    for v in vars {
+        env.entry(v.clone()).or_insert(0);
+    }
+
+    // Abstraction parameter values under the assignment.
+    let mut param_vals: BTreeMap<String, u64> = BTreeMap::new();
+    for (param, _, _) in abstractions {
+        let e = param_expr.get(param).ok_or_else(|| format!(
+            "no defining expression recorded for abstraction `{}`", param))?;
+        let v = eval_expr(e, &env).ok_or_else(|| format!(
+            "cannot evaluate abstraction `{}` under the witness assignment", param))?;
+        param_vals.insert(param.clone(), v);
+    }
+
+    // `effectiveAddr base off (+ delta)` over u64/i64, mirroring
+    // `Int.toNat (base + off)` (clamp at 0, no 2^64 wrap).
+    let eff = |base: u64, off: i64, delta: i64| -> u64 {
+        let a = (base as i128) + (off as i128);
+        let a = if a < 0 { 0 } else { a as u128 };
+        (a + delta as u128) as u64
+    };
+
+    // Reflected atoms + footprints, in pre order.
+    struct Foot { mem: Option<(u64, u64)>, reg: Option<u8>, cs: bool, desc: String }
+    let mut sat_atoms: Vec<String> = Vec::new();
+    let mut feet: Vec<Foot> = Vec::new();
+    let mut blob_subst: Vec<(String, String)> = Vec::new();
+    for atom in pre {
+        match atom {
+            Atom::Reg(r, v) => {
+                let vv = eval_expr(v, &env).ok_or_else(|| format!(
+                    "cannot evaluate register r{} initial value", r))?;
+                sat_atoms.push(format!(".reg .{} {}", reg_lit(*r), vv));
+                feet.push(Foot { mem: None, reg: Some(*r), cs: false,
+                                 desc: format!("r{}", r) });
+            }
+            Atom::Mem { addr_base, addr_off, width, value, delta } => {
+                let base = eval_expr(addr_base, &env).ok_or_else(|| format!(
+                    "cannot evaluate address base `{}`", addr_base.to_lean()))?;
+                let a = eff(base, *addr_off, *delta);
+                let vv = eval_expr(value, &env).ok_or_else(|| format!(
+                    "cannot evaluate cell value `{}`", value.to_lean()))?;
+                let (ctor, sz) = match width {
+                    Width::Byte => (".byte", 1u64),
+                    Width::Halfword => (".u16", 2),
+                    Width::Word => (".u32", 4),
+                    Width::Dword => (".u64", 8),
+                };
+                sat_atoms.push(format!("{} {} {}", ctor, a, vv));
+                feet.push(Foot { mem: Some((a, sz)), reg: None, cs: false,
+                                 desc: format!("{} cell at {}", ctor, a) });
+            }
+            Atom::Bytes { addr, value } => {
+                let a = eval_expr(addr, &env).ok_or_else(|| format!(
+                    "cannot evaluate blob address `{}`", addr.to_lean()))?;
+                let name = match value {
+                    BytesVal::Sym(n) => n,
+                    BytesVal::Replicate { .. } => return Err(
+                        "unexpected Replicate blob in a precondition".into()),
+                };
+                let size_s = state.memset_blobs.iter()
+                    .find(|(n, _)| n == name).map(|(_, s)| s.clone())
+                    .ok_or_else(|| format!("no size recorded for blob `{}`", name))?;
+                let sz: u64 = size_s.parse().map_err(|_| format!(
+                    "blob `{}` has a non-constant size `{}`", name, size_s))?;
+                let repl = format!("(replicateByte 0 {})", sz);
+                sat_atoms.push(format!(".bytes {} {}", a, repl));
+                blob_subst.push((name.clone(), repl));
+                feet.push(Foot { mem: Some((a, sz)), reg: None, cs: false,
+                                 desc: format!("blob `{}` at {}", name, a) });
+            }
+            Atom::Bytes32 { addr, name } => {
+                let a = eval_expr(addr, &env).ok_or_else(|| format!(
+                    "cannot evaluate Bytes32 address `{}`", addr.to_lean()))?;
+                sat_atoms.push(format!(".bytes32 {} {}", a, name));
+                feet.push(Foot { mem: Some((a, 32)), reg: None, cs: false,
+                                 desc: format!("`{}` at {}", name, a) });
+            }
+        }
+    }
+    if state.saw_call {
+        sat_atoms.push(".callStack []".to_string());
+        feet.push(Foot { mem: None, reg: None, cs: true,
+                         desc: "callStack".to_string() });
+    }
+
+    // Rust-side pairwise disjointness (the same check `satCheck` will
+    // re-run kernel-side). Overlap here means the precondition is
+    // unsatisfiable AT THIS ASSIGNMENT — for the H8 class (structural
+    // footprint overlap) that is vacuity; fail the lift.
+    for i in 0..feet.len() {
+        for j in (i + 1)..feet.len() {
+            let (x, y) = (&feet[i], &feet[j]);
+            let mem_clash = match (x.mem, y.mem) {
+                (Some((s1, n1)), Some((s2, n2))) =>
+                    n1 > 0 && n2 > 0 && s1 + n1 > s2 && s2 + n2 > s1,
+                _ => false,
+            };
+            let reg_clash = matches!((x.reg, y.reg), (Some(a), Some(b)) if a == b);
+            if mem_clash || reg_clash || (x.cs && y.cs) {
+                return Err(format!(
+                    "precondition atoms overlap under the witness assignment \
+                     ({} vs {}) — the theorem would be vacuous",
+                    x.desc, y.desc));
+            }
+        }
+    }
+
+    // Token-substitution table: theorem variables → literals,
+    // abstraction params → their values, blob names → concrete arrays.
+    let mut tokens: Vec<(String, String)> = Vec::new();
+    for v in vars {
+        tokens.push((v.clone(), env.get(v).copied().unwrap_or(0).to_string()));
+    }
+    for (p, val) in &param_vals {
+        tokens.push((p.clone(), val.to_string()));
+    }
+    for (n, repl) in &blob_subst {
+        tokens.push((n.clone(), repl.clone()));
+    }
+    let subst = |s: &str| -> String {
+        let mut out = s.to_string();
+        for (k, v) in &tokens {
+            out = replace_token(&out, k, v);
+        }
+        out
+    };
+
+    let mut w = String::new();
+    w.push_str(
+        "/-! ## Satisfiability witness (soundness-audit H8)\n\n\
+         The triple's precondition is SATISFIABLE at the concrete\n\
+         assignment below — an overlapping (vacuous) sepConj would fail\n\
+         `native_decide` here, so vacuity cannot ship. The guards pin\n\
+         each `addrK` literal to its `h_addrK` defining equation at the\n\
+         assignment; the witness goal is the theorem's precondition with\n\
+         the variables instantiated, so the reflected `SatWitness` atoms\n\
+         are tied to the real pre by the elaborator's defeq check.\n\
+         Value-level path hypotheses (`h_branch*`) are not certified\n\
+         consistent — they are outside the overlap-vacuity class this\n\
+         guards against. -/\n\n");
+    for (i, (param, _, _)) in abstractions.iter().enumerate() {
+        w.push_str(&format!(
+            "example : {} = {} := by native_decide\n",
+            param_vals[param], subst(&folded_rhs[i])));
+    }
+    if !abstractions.is_empty() { w.push('\n'); }
+    let cs = if state.saw_call { " ** callStackIs []" } else { "" };
+    // `have` first so the SatAtom list elaborates CLOSED (with an
+    // expected type of `∃ s, interp [..] s` the unifier postpones the
+    // list elements as metavariables and gets stuck); `exact` then
+    // reduces `interp [..]` against the substituted precondition.
+    w.push_str(&format!(
+        "open Memory in\nexample : ∃ s,\n    ({}{}) s := by\n  \
+         have w := SatWitness.sat_witness\n    [{}]\n    (by native_decide)\n  \
+         exact w\n\n",
+        subst(&atoms_to_lean(pre, abs_subst)), cs,
+        sat_atoms.join(",\n     "),
+    ));
+    Ok(w)
+}
+
 /// The BPF program heap: `[MM_HEAP_START, MM_HEAP_START + 0x8000)`.
 const HEAP_START_I: i64 = 0x300000000;
 const HEAP_END_I:   i64 = 0x300000000 + 0x8000;
@@ -5284,7 +5675,9 @@ fn lift_one(
     ));
     out.push_str("import SVM.SBPF.Decode\n");
     out.push_str("import SVM.SBPF.RunnerBridge\n");
-    out.push_str("import SVM.SBPF.Macros\n\n");
+    out.push_str("import SVM.SBPF.Macros\n");
+    // The satisfiability-witness section (H8) applies `SatWitness.sat_witness`.
+    out.push_str("import SVM.SBPF.SatWitness\n\n");
     // File-level option bumps. Long chains (especially ones with
     // call_local + exit_pops composition) blow past the defaults
     // during `slBlockIter`'s isDefEq work.
@@ -6199,6 +6592,16 @@ fn lift_one(
         rr,
         tactic,
     ));
+
+    // ── H8 satisfiability witness ───────────────────────────────────
+    // Fail closed: a precondition this builder can't witness as
+    // satisfiable does not ship (see `build_sat_witness`).
+    match build_sat_witness(&pre, &state, &abstractions, &abs_subst,
+                            &folded_rhs, &vars) {
+        Ok(w) => out.push_str(&w),
+        Err(e) => return Err(format!(
+            "qedlift: satisfiability witness construction failed — {}", e).into()),
+    }
 
     // ── Heap-allocation corollary ──────────────────────────────────
     // If the program touched the runtime heap (the embedded bump

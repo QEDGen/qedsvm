@@ -17,6 +17,7 @@ instruction sequence.
 import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
+import SVM.SBPF.SatWitness
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 4000000
@@ -82,5 +83,34 @@ theorem HalfwordStore_lifted_spec
                   rt.containsWritable (effectiveAddr baseAddr 96) 2 = true) ∧
                   rt.containsWritable (effectiveAddr baseAddr 98) 2 = true) := by
   sl_block_auto <;> assumption
+
+/-! ## Satisfiability witness (soundness-audit H8)
+
+The triple's precondition is SATISFIABLE at the concrete
+assignment below — an overlapping (vacuous) sepConj would fail
+`native_decide` here, so vacuity cannot ship. The guards pin
+each `addrK` literal to its `h_addrK` defining equation at the
+assignment; the witness goal is the theorem's precondition with
+the variables instantiated, so the reflected `SatWitness` atoms
+are tied to the real pre by the elaborator's defeq check.
+Value-level path hypotheses (`h_branch*`) are not certified
+consistent — they are outside the overlap-vacuity class this
+guards against. -/
+
+open Memory in
+example : ∃ s,
+    ((.r1 ↦ᵣ 17179869184) **
+      (effectiveAddr 17179869184 96 ↦U16 0) **
+      (.r2 ↦ᵣ 0) **
+      (effectiveAddr 17179869184 98 ↦U16 0) **
+      (.r0 ↦ᵣ 0)) s := by
+  have w := SatWitness.sat_witness
+    [.reg .r1 17179869184,
+     .u16 17179869280 0,
+     .reg .r2 0,
+     .u16 17179869282 0,
+     .reg .r0 0]
+    (by native_decide)
+  exact w
 
 end Examples.Lifted.HalfwordStore

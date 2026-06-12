@@ -18,6 +18,7 @@ import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
 import SVM.SBPF.HeapSL
+import SVM.SBPF.SatWitness
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 4000000
@@ -93,6 +94,35 @@ theorem HeapAlloc_lifted_spec
                   rt.containsWritable (effectiveAddr (toU64 12884934640) 0) 8 = true) ∧
                   rt.containsRange (effectiveAddr (toU64 12884934640) 0) 8 = true) := by
   sl_block_auto <;> assumption
+
+/-! ## Satisfiability witness (soundness-audit H8)
+
+The triple's precondition is SATISFIABLE at the concrete
+assignment below — an overlapping (vacuous) sepConj would fail
+`native_decide` here, so vacuity cannot ship. The guards pin
+each `addrK` literal to its `h_addrK` defining equation at the
+assignment; the witness goal is the theorem's precondition with
+the variables instantiated, so the reflected `SatWitness` atoms
+are tied to the real pre by the elaborator's defeq check.
+Value-level path hypotheses (`h_branch*`) are not certified
+consistent — they are outside the overlap-vacuity class this
+guards against. -/
+
+open Memory in
+example : ∃ s,
+    ((.r1 ↦ᵣ 0) **
+      (effectiveAddr (toU64 12884901888) 0 ↦U64 0) **
+      (.r2 ↦ᵣ 0) **
+      (effectiveAddr (toU64 12884934640) 0 ↦U64 0) **
+      (.r0 ↦ᵣ 0)) s := by
+  have w := SatWitness.sat_witness
+    [.reg .r1 0,
+     .u64 12884901888 0,
+     .reg .r2 0,
+     .u64 12884934640 0,
+     .reg .r0 0]
+    (by native_decide)
+  exact w
 
 open Memory in
 theorem HeapAlloc_allocates

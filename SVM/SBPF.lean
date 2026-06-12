@@ -8,6 +8,7 @@ import SVM.SBPF.PubkeySL
 import SVM.SBPF.Patterns
 import SVM.SBPF.Region
 import SVM.SBPF.SepLogic
+import SVM.SBPF.SatWitness
 import SVM.SBPF.CPSSpec
 import SVM.SBPF.InstructionSpecs
 import SVM.SBPF.Tactic.SL

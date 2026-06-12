@@ -21,6 +21,7 @@ instruction sequence.
 import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
+import SVM.SBPF.SatWitness
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 16000000
@@ -2204,5 +2205,140 @@ theorem PTokenInitializeMint2_lifted_spec
   have h_4391 := jeq_imm_taken_spec .r9 0 (toU64 0) 4391 3542 h_branch20
   sl_rw_abs [h_addr1, h_addr4, h_addr3, h_addr2, h_addr0, h_addr5] at [h_198, h_199, h_200, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_3474, h_3564, h_3565, h_3837, h_3838, h_3839, h_3840, h_3841, h_3842, h_3922, h_3923, h_3924, h_3925, h_3926, h_3927, h_10836, h_10837, h_10838, h_10839, h_10840, h_10841, h_10842, h_10843, h_10844, h_10845, h_10846, h_10850, h_10851, h_10852, h_10853, h_10854, h_10855, h_10856, h_10857, h_3928, h_3929, h_3930, h_3931, h_3932, h_3933, h_3934, h_3935, h_3936, h_3937, h_3938, h_3939, h_3940, h_3941, h_3942, h_3943, h_4371, h_4372, h_4373, h_4374, h_4375, h_4376, h_4377, h_4378, h_4379, h_4380, h_4381, h_4382, h_4383, h_4384, h_4385, h_4386, h_4387, h_4388, h_4389, h_4390, h_4391]
   sl_block_iter [h_198, h_199, h_200, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_3474, h_3564, h_3565, h_3837, h_3838, h_3839, h_3840, h_3841, h_3842, h_3922, h_3923, h_3924, h_3925, h_3926, h_3927, h_10836, h_10837, h_10838, h_10839, h_10840, h_10841, h_10842, h_10843, h_10844, h_10845, h_10846, h_10850, h_10851, h_10852, h_10853, h_10854, h_10855, h_10856, h_10857, h_3928, h_3929, h_3930, h_3931, h_3932, h_3933, h_3934, h_3935, h_3936, h_3937, h_3938, h_3939, h_3940, h_3941, h_3942, h_3943, h_4371, h_4372, h_4373, h_4374, h_4375, h_4376, h_4377, h_4378, h_4379, h_4380, h_4381, h_4382, h_4383, h_4384, h_4385, h_4386, h_4387, h_4388, h_4389, h_4390, h_4391] generalizing [oldMemB_0 + 256 * (oldMemB_1 + 256 * (oldMemB_2 + 256 * (oldMemB_3 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * oldMemB_7)))))), (oldMemB_12 % 256) % 256, oldMemB_12 % 256, oldMemB_11 % 256, (toU64 1) % 256]
+
+/-! ## Satisfiability witness (soundness-audit H8)
+
+The triple's precondition is SATISFIABLE at the concrete
+assignment below — an overlapping (vacuous) sepConj would fail
+`native_decide` here, so vacuity cannot ship. The guards pin
+each `addrK` literal to its `h_addrK` defining equation at the
+assignment; the witness goal is the theorem's precondition with
+the variables instantiated, so the reflected `SatWitness` atoms
+are tied to the real pre by the elaborator's defeq check.
+Value-level path hypotheses (`h_branch*`) are not certified
+consistent — they are outside the overlap-vacuity class this
+guards against. -/
+
+example : 17716740096 = ((wrapAdd (wrapAdd 17179869184 536860561) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS := by native_decide
+example : 17448308736 = 17448304640 + 4096 := by native_decide
+example : 17448308712 = wrapAdd (17448308736) (toU64 (-24)) := by native_decide
+example : 17448304608 = wrapAdd 17448304640 (toU64 (-32)) := by native_decide
+example : 17179869192 = wrapAdd 17179869184 (toU64 8) := by native_decide
+example : 17716740106 = wrapAdd (17716740096) (toU64 10) := by native_decide
+
+open Memory in
+example : ∃ s,
+    ((.r1 ↦ᵣ 17179869184) **
+      (effectiveAddr 17179869184 0 ↦ₘ 0) **
+      (.r2 ↦ᵣ 0) **
+      (.r0 ↦ᵣ 0) **
+      (effectiveAddr 17179869184 0 + 1 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 2 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 3 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 4 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 5 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 6 ↦ₘ 0) **
+      (effectiveAddr 17179869184 0 + 7 ↦ₘ 0) **
+      (.r7 ↦ᵣ 0) **
+      (.r10 ↦ᵣ 17448304640) **
+      (effectiveAddr 17448304640 (-2072) ↦U64 0) **
+      (effectiveAddr 17179869184 88 ↦U64 536860561) **
+      (.r4 ↦ᵣ 0) **
+      (effectiveAddr 17716740096 0 ↦U64 0) **
+      (.r9 ↦ᵣ 0) **
+      (effectiveAddr 17716740096 8 ↦ₘ 0) **
+      (.r5 ↦ᵣ 0) **
+      (.r8 ↦ᵣ 0) **
+      (effectiveAddr 17716740096 9 ↦ₘ 0) **
+      (effectiveAddr 17716740096 42 ↦ₘ 0) **
+      (effectiveAddr 17448304640 (-2096) ↦U64 0) **
+      (.r6 ↦ᵣ 0) **
+      (effectiveAddr 17448308736 (-4) ↦ₘ 0) **
+      (effectiveAddr 17448308736 (-4) + 1 ↦ₘ 0) **
+      (effectiveAddr 17448308736 (-4) + 2 ↦ₘ 0) **
+      (effectiveAddr 17448308736 (-4) + 3 ↦ₘ 0) **
+      (effectiveAddr 17448308736 (-7) ↦ₘ 0) **
+      (effectiveAddr 17448308736 (-7) + 1 ↦ₘ 0) **
+      (effectiveAddr 17448308736 (-7) + 2 ↦ₘ 0) **
+      (.r3 ↦ᵣ 0) **
+      (toU64 4295070680 ↦Bytes32 SysvarData.rentId) **
+      (effectiveAddr 17448308712 0 ↦U64 0) **
+      (effectiveAddr 17448308712 8 ↦U64 0) **
+      (effectiveAddr 17448308712 16 ↦ₘ 0) **
+      (effectiveAddr 17448304608 24 ↦U64 0) **
+      (effectiveAddr 17448304608 16 ↦U64 0) **
+      (effectiveAddr 17448304608 8 ↦U64 0) **
+      (effectiveAddr 17448304608 0 ↦U32 0) **
+      (effectiveAddr 17448304640 (-2080) ↦U64 0) **
+      (effectiveAddr 17179869192 72 ↦U64 0) **
+      (effectiveAddr 17179869192 133 ↦ₘ 0) **
+      (effectiveAddr 17179869192 88 ↦ₘ 0) **
+      (effectiveAddr 17716740106 0 ↦U64 0) **
+      (effectiveAddr 17716740106 8 ↦U64 0) **
+      (effectiveAddr 17716740106 16 ↦U64 0) **
+      (effectiveAddr 17716740106 24 ↦U64 0) **
+      (effectiveAddr 17179869192 116 ↦U64 0) **
+      (effectiveAddr 17179869192 108 ↦U64 0) **
+      (effectiveAddr 17179869192 100 ↦U64 0) **
+      (effectiveAddr 17179869192 92 ↦U64 0) **
+      (effectiveAddr 17179869192 132 ↦ₘ 0) ** callStackIs []) s := by
+  have w := SatWitness.sat_witness
+    [.reg .r1 17179869184,
+     .byte 17179869184 0,
+     .reg .r2 0,
+     .reg .r0 0,
+     .byte 17179869185 0,
+     .byte 17179869186 0,
+     .byte 17179869187 0,
+     .byte 17179869188 0,
+     .byte 17179869189 0,
+     .byte 17179869190 0,
+     .byte 17179869191 0,
+     .reg .r7 0,
+     .reg .r10 17448304640,
+     .u64 17448302568 0,
+     .u64 17179869272 536860561,
+     .reg .r4 0,
+     .u64 17716740096 0,
+     .reg .r9 0,
+     .byte 17716740104 0,
+     .reg .r5 0,
+     .reg .r8 0,
+     .byte 17716740105 0,
+     .byte 17716740138 0,
+     .u64 17448302544 0,
+     .reg .r6 0,
+     .byte 17448308732 0,
+     .byte 17448308733 0,
+     .byte 17448308734 0,
+     .byte 17448308735 0,
+     .byte 17448308729 0,
+     .byte 17448308730 0,
+     .byte 17448308731 0,
+     .reg .r3 0,
+     .bytes32 4295070680 SysvarData.rentId,
+     .u64 17448308712 0,
+     .u64 17448308720 0,
+     .byte 17448308728 0,
+     .u64 17448304632 0,
+     .u64 17448304624 0,
+     .u64 17448304616 0,
+     .u32 17448304608 0,
+     .u64 17448302560 0,
+     .u64 17179869264 0,
+     .byte 17179869325 0,
+     .byte 17179869280 0,
+     .u64 17716740106 0,
+     .u64 17716740114 0,
+     .u64 17716740122 0,
+     .u64 17716740130 0,
+     .u64 17179869308 0,
+     .u64 17179869300 0,
+     .u64 17179869292 0,
+     .u64 17179869284 0,
+     .byte 17179869324 0,
+     .callStack []]
+    (by native_decide)
+  exact w
 
 end Examples.Lifted.PTokenInitializeMint2
