@@ -125,6 +125,10 @@ const CPI_TWO_ACCOUNT_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_two_accoun
 /// diverge from mollusk on return_data. Source in
 /// `rodata_addr_returner_src/`.
 const RODATA_ADDR_RETURNER_SO: &[u8] = include_bytes!("fixtures/rodata_addr_returner.so");
+/// Calls `sol_curve_multiscalar_mul` (Edwards) with n=1 then n=2 — the
+/// M9 CU referee for the `base + incr*(n-1)` formula (the n=1 call
+/// charges the bare base). Source in `curve_msm_probe_src/`.
+const CURVE_MSM_PROBE_SO: &[u8] = include_bytes!("fixtures/curve_msm_probe.so");
 /// Calls `sol_try_find_program_address(&[b"vault"], program_id)` and
 /// writes the resulting (PDA, bump) as 33-byte return_data. Exercises
 /// the per-iteration CU charge for `sol_try_find_program_address`
@@ -2193,6 +2197,51 @@ fn rodata_addr_returner_matches_mollusk() {
     assert_eq!(m_r.compute_units_consumed, 4,
         "M5: agave must meter the 4-logical-insn (1 lddw) program at 4 CU, \
          got {} — lddw CU weight changed in agave", m_r.compute_units_consumed);
+}
+
+/// `sol_curve_multiscalar_mul` CU referee (soundness-audit M9). The
+/// fixture calls Edwards MSM with n=1 (boundary: agave charges the bare
+/// `msm_base_cost` 2273 — the incremental cost is `758*(n-1)`,
+/// agave-syscalls lib.rs:1711-1716) and n=2 (2273 + 758), returning
+/// `r0_1 + r0_2` (0 iff both succeed). Under the pre-M9 model formula
+/// (`base + incr*n`) the model would over-charge by 758 per call (1516
+/// total), so CU equality here discriminates the `(n-1)` form, n=1
+/// boundary included.
+#[test]
+fn curve_msm_cu_matches_mollusk() {
+    let program_id = pid(73);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, CURVE_MSM_PROBE_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs curve_msm_probe");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CURVE_MSM_PROBE_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: both MSM calls must succeed (r0=0), got {:?}",
+        fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: both MSM calls must succeed, got {:?}", m_r.program_result);
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "M9 MSM CU diverged (the base + 758*(n-1) formula): ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
 }
 
 /// Exercises `sol_try_find_program_address` end-to-end with one seed
