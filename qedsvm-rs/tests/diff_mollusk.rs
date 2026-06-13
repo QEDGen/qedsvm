@@ -46,6 +46,7 @@ use mollusk_svm::result::ProgramResult as MlProgramResult;
 use mollusk_svm::Mollusk;
 use solana_account::{Account, AccountSharedData, ReadableAccount};
 use solana_instruction::{AccountMeta, Instruction};
+use solana_instruction::error::InstructionError;
 use solana_pubkey::Pubkey;
 
 const NOOP_SO: &[u8] = include_bytes!("fixtures/noop.so");
@@ -242,6 +243,67 @@ fn assert_no_poststate_backstop(fs_r: &qedsvm::InstructionResult) {
     );
 }
 
+/// Cross-engine OUTCOME agreement at the granularity agave observably
+/// distinguishes (soundness-audit M14). Before this, the diff tests only
+/// asserted "both non-Success" on the fault paths, so the model could
+/// report the WRONG outcome class (e.g. a clean exit where agave faults,
+/// or the wrong program-error code) undetected.
+///
+/// agave collapses essentially every VM-level fault to
+/// `InstructionError::ProgramFailedToComplete` (mollusk
+/// `UnknownError(ProgramFailedToComplete)`) — see the source map in
+/// docs/SOUNDNESS_AUDIT_* (M14) — including budget exhaustion
+/// (`ExceededMaxInstructions`). So a model `VmFault` / `OutOfBudget`
+/// matches that catch-all regardless of WHICH fault it was (the model's
+/// finer `sentinel` is diagnostics only). A program-RETURNED error
+/// (`ProgramError`, r0 high bits set) compares against mollusk's
+/// `Failure(ProgramError)` by the exact code. The by-design divergences
+/// (M6/C5 read-only-modified, where the model produces
+/// `ERR_READONLY_MODIFIED` and agave a specific account-verification
+/// `InstructionError`) are NOT routed here — those tests assert their own
+/// expected pair.
+fn outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult) -> Result<(), String> {
+    use FsProgramResult as F;
+    use MlProgramResult as M;
+    // agave's catch-all for VM faults + meter exhaustion.
+    let is_failed_to_complete =
+        |ie: &InstructionError| matches!(ie, InstructionError::ProgramFailedToComplete);
+    match (fs, ml) {
+        (F::Success, M::Success) => Ok(()),
+        (F::VmFault { sentinel }, M::UnknownError(ie)) => {
+            if is_failed_to_complete(ie) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "model VmFault({}) but mollusk InstructionError {ie:?} \
+                     (not the ProgramFailedToComplete catch-all)",
+                    qedsvm::vm_fault_name(*sentinel)))
+            }
+        }
+        (F::OutOfBudget, M::UnknownError(ie)) => {
+            if is_failed_to_complete(ie) {
+                Ok(())
+            } else {
+                Err(format!("model OutOfBudget but mollusk InstructionError {ie:?}"))
+            }
+        }
+        (F::ProgramError(pe), M::Failure(mpe)) => {
+            if pe == mpe { Ok(()) }
+            else { Err(format!("ProgramError diverged: model {pe:?} mollusk {mpe:?}")) }
+        }
+        _ => Err(format!("outcome class diverged: model {fs:?} mollusk {ml:?}")),
+    }
+}
+
+/// Assert cross-engine outcome agreement (M14); panics with the precise
+/// mismatch. The replacement for the old "both non-Success" assertions on
+/// fault fixtures.
+fn assert_outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult, ctx: &str) {
+    if let Err(why) = outcome_matches(fs, ml) {
+        panic!("{ctx}: cross-engine outcome mismatch (M14): {why}");
+    }
+}
+
 /// L10: resolve a resulting account by key instead of indexing
 /// positionally (`resulting_accounts[0]`), which silently reads the
 /// wrong slot if the engine ever reorders the list. Panics (not a wrong
@@ -428,8 +490,10 @@ fn logger_surcharge_overrun_matches_mollusk() {
     assert!(matches!(fs_r.program_result, FsProgramResult::OutOfBudget),
         "qedsvm: expected OutOfBudget on surcharge overrun, got {:?}",
         fs_r.program_result);
-    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected a failure on surcharge overrun, got Success");
+    // M14: agave's meter exhaustion (ExceededMaxInstructions) also
+    // collapses to UnknownError(ProgramFailedToComplete) — same outcome.
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result,
+        "logger_surcharge_overrun");
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "consumed-CU diverged at the surcharge-overrun boundary: ours={} mollusk={}",
@@ -2378,15 +2442,12 @@ fn oob_read_fails_on_both() {
     eprintln!("fs.program_result  = {:?}", fs_r.program_result);
     eprintln!("mol.program_result = {:?}", m_r.program_result);
 
-    // Both engines must reject the OOB read.
-    assert!(
-        !matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm should fail on OOB read, got {:?}", fs_r.program_result,
-    );
-    assert!(
-        !matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk should fail on OOB read, got {:?}", m_r.program_result,
-    );
+    // M14: the model VM-faults (access violation) and agave surfaces it
+    // as UnknownError(ProgramFailedToComplete) — same observable outcome,
+    // not merely "both non-Success".
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB read, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_read");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does
