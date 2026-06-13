@@ -125,11 +125,15 @@ partial def base64Encode (bs : ByteArray) : String :=
   { s with regs := s.regs.set .r0 0
            log  := s.log.push (readBytes s.mem ptr len) }
 
-/-- `sol_log_pubkey(ptr)`: log 32 bytes from `*r1`, set r0 = 0. -/
+/-- `sol_log_pubkey(ptr)`: log 32 bytes from `*r1`, set r0 = 0.
+    H6: agave reads the 32-byte pubkey via `translate_type::<Pubkey>`
+    (Load, fixed size, always checked); out of region traps with
+    `AccessViolation`. -/
 @[simp] def execLogPubkey (s : State) : State :=
   let ptr := s.regs.r1
-  { s with regs := s.regs.set .r0 0
-           log  := s.log.push (readBytes s.mem ptr 32) }
+  s.guardRead ptr 32 fun s =>
+    { s with regs := s.regs.set .r0 0
+             log  := s.log.push (readBytes s.mem ptr 32) }
 
 /-- `sol_log_64_(a, b, c, d, e)`: emit "0x<a>, 0x<b>, 0x<c>, 0x<d>,
     0x<e>" as the log message body. -/

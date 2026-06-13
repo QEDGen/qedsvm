@@ -32,20 +32,36 @@ theorem call_sol_log_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
 `sol_log_pubkey(ptr)`: log 32 bytes from `[r1..r1+32)`, set `r0 := 0`.
 Same single-atom shape as `sol_log_`. -/
 
-theorem call_sol_log_pubkey_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
+theorem call_sol_log_pubkey_spec (r0Old r1V : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
         (step (.call .sol_log_pubkey) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: the 32-byte pubkey at `[r1V, r1V + 32)` must be in a mapped region.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_log_pubkey))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_pubkey 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s hex => by simp [step, execSyscall, Logging.execLogPubkey]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V))
+      (fun rt => rt.containsRange r1V 32 = true) :=
+  cuTripleWithinMem_syscall_writes_r0_reads_fixed .sol_log_pubkey 0 pc nCu
+    .r1 r1V 32 (by decide)
+    (fun s hr1 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, hr1']
+      rw [if_pos (Or.inr hreg)])
+    (fun s hr1 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, hr1']
+      rw [if_pos (Or.inr hreg)])
+    (fun s => by simp only [step, execSyscall, Logging.execLogPubkey])
+    (fun s hex hr1 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, hr1']
+      rw [if_pos (Or.inr hreg)]; exact hex)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, State.accessFault]
+      split <;> rfl)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, State.accessFault]
+      split <;> rfl)
     (fun s => h_step_cu s)
     r0Old
 

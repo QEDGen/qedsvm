@@ -154,6 +154,13 @@ const OOB_READ_SO: &[u8] = include_bytes!("fixtures/oob_read.so");
 /// Success; post-fix `MemOps.execSet`'s `guardWrite` faults. Source in
 /// `oob_memset_src/`.
 const OOB_MEMSET_SO: &[u8] = include_bytes!("fixtures/oob_memset.so");
+/// Out-of-bounds SYSCALL pubkey log (audit H6). Calls `sol_log_pubkey`
+/// with a pointer 256 MiB past the input pointer; agave's
+/// `translate_type::<Pubkey>` traps the 32-byte read with
+/// `AccessViolation`. Pre-fix qedsvm read through a region-free `Mem`
+/// and returned Success; post-fix `Logging.execLogPubkey`'s `guardRead`
+/// faults. Source in `oob_log_pubkey_src/`.
+const OOB_LOG_PUBKEY_SO: &[u8] = include_bytes!("fixtures/oob_log_pubkey.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2491,6 +2498,38 @@ fn oob_memset_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_memset_, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_memset");
+}
+
+/// Audit H6 (syscall memory translation, logging family). The program
+/// calls `sol_log_pubkey` with a pointer 256 MiB past the input pointer.
+/// agave's `translate_type::<Pubkey>` traps the 32-byte read with
+/// `AccessViolation`; post-fix `Logging.execLogPubkey`'s `guardRead`
+/// VM-faults. Both engines must fail with the same observable outcome.
+#[test]
+fn oob_log_pubkey_fails_on_both() {
+    let program_id = pid(53);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_LOG_PUBKEY_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_log_pubkey");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_LOG_PUBKEY_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_log_pubkey, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_pubkey");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does
