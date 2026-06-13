@@ -161,6 +161,12 @@ const OOB_MEMSET_SO: &[u8] = include_bytes!("fixtures/oob_memset.so");
 /// and returned Success; post-fix `Logging.execLogPubkey`'s `guardRead`
 /// faults. Source in `oob_log_pubkey_src/`.
 const OOB_LOG_PUBKEY_SO: &[u8] = include_bytes!("fixtures/oob_log_pubkey.so");
+/// Out-of-bounds SYSCALL message log (audit H6). Calls `sol_log_` with a
+/// 16-byte message 256 MiB past the input pointer; agave's
+/// `translate_slice` traps the read with `AccessViolation`. Pre-fix
+/// qedsvm read through a region-free `Mem` and returned Success; post-fix
+/// `Logging.execLog`'s `guardRead` faults. Source in `oob_log_src/`.
+const OOB_LOG_SO: &[u8] = include_bytes!("fixtures/oob_log.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2530,6 +2536,38 @@ fn oob_log_pubkey_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_log_pubkey, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_pubkey");
+}
+
+/// Audit H6 (syscall memory translation, logging family). The program
+/// calls `sol_log_` with a 16-byte message 256 MiB past the input
+/// pointer. agave's `translate_slice` traps the read with
+/// `AccessViolation`; post-fix `Logging.execLog`'s `guardRead` VM-faults.
+/// Both engines must fail with the same observable outcome.
+#[test]
+fn oob_log_fails_on_both() {
+    let program_id = pid(54);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_LOG_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_log");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_LOG_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_log_, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does

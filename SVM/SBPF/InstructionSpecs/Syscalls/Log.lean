@@ -10,20 +10,39 @@ open Memory
 Memory is read but not written; r1 and r2 are unchanged. `State.log` is
 silent in `PartialState` by design. -/
 
-theorem call_sol_log_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
+theorem call_sol_log_spec (r0Old r1V r2V : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
         (step (.call .sol_log_) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: the logged message `[r1V, r1V + r2V)` must be in a mapped region.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_log_))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_ 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s hex => by simp [step, execSyscall, Logging.execLog]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s => by simp [step, execSyscall, Logging.execLog])
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V))
+      (fun rt => rt.containsRange r1V r2V = true) :=
+  cuTripleWithinMem_syscall_writes_r0_reads_var .sol_log_ 0 pc nCu
+    .r1 .r2 r1V r2V (by decide) (by decide) (by decide)
+    (fun s hr1 hr2 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      have hr2' : s.regs.r2 = r2V := hr2
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, hr1', hr2']
+      rw [if_pos (Or.inr hreg)])
+    (fun s hr1 hr2 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      have hr2' : s.regs.r2 = r2V := hr2
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, hr1', hr2']
+      rw [if_pos (Or.inr hreg)])
+    (fun s => by simp only [step, execSyscall, Logging.execLog])
+    (fun s hex hr1 hr2 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      have hr2' : s.regs.r2 = r2V := hr2
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, hr1', hr2']
+      rw [if_pos (Or.inr hreg)]; exact hex)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, State.accessFault]
+      split <;> rfl)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, State.accessFault]
+      split <;> rfl)
     (fun s => h_step_cu s)
     r0Old
 

@@ -4114,6 +4114,38 @@ fn emit_r0_syscall(
     block_pcs.push(pc);
 }
 
+/// `sol_log_(ptr, len)` (audit H6). Like `emit_r0_syscall` but the spec
+/// `call_sol_log_spec` pins `r1`/`r2` (the message slice) and carries an
+/// `rr = containsRange r1 r2` requirement, so the emitter reads those
+/// registers, threads them into the spec call, and records the matching
+/// `containsRange` clause in `rr_walk` (writable = false).
+fn emit_sol_log(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1);
+    let r2v = state.read_reg(2);
+    // The logged slice `[r1, r1+r2)` must be in a readable region.
+    state.rr_walk.push((r1v.clone(), 0, Width::Byte, false,
+        Some((r1v.clone(), r2v.clone()))));
+    let idx = state.fresh; state.fresh += 1;
+    let ncu_name = format!("nCuLog{}", idx);
+    let hcu_name = format!("hCuLog{}", idx);
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_log_"));
+    state.syscall_pcs.insert(pc, ".sol_log_");
+    state.write_reg(0, Expr::Const(0));
+    let have_line = format!(
+        "have h_{pc} := call_sol_log_spec {r0} {r1} {r2} {pc} {ncu} {hcu}",
+        pc = pc, r0 = r0v.atom_lean(), r1 = r1v.atom_lean(), r2 = r2v.atom_lean(),
+        ncu = ncu_name, hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
+    block_pcs.push(pc);
+}
+
 /// Build the postcondition atom list: same shape as pre, but each atom
 /// reflects the symbolic value at the end of the walk.
 fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
@@ -4170,16 +4202,18 @@ fn region_req(
     // Walk-order rr contributions: each load → containsRange; each
     // store → containsWritable. Order matches what slBlockIter
     // produces by left-folding per chain step.
-    for (addr_base, addr_off, width, writable, memset) in &state.rr_walk {
-        // H6 memset override: a variable-length writable requirement,
-        // `containsWritable dst count`, with the destination rendered raw
-        // (subst-folded, no `effectiveAddr`) exactly like the memset's
-        // `↦Bytes` atom — so it matches the `rr` carried by
-        // `call_sol_memset_*_spec` after `sl_rw_abs`.
-        if let Some((dst, count)) = memset {
-            let dst_str = fold_abstractions(dst.to_lean(), subst);
+    for (addr_base, addr_off, width, writable, raw) in &state.rr_walk {
+        // H6 variable-length override (memset dst write / sol_log slice
+        // read): `contains{Writable,Range} addr count` with the address
+        // rendered raw (subst-folded, no `effectiveAddr`) exactly like the
+        // syscall's `↦Bytes`/register atom — so it matches the `rr`
+        // carried by `call_sol_{memset,log}_*_spec` after `sl_rw_abs`.
+        // `writable` picks the predicate (store vs load).
+        if let Some((addr, count)) = raw {
+            let addr_str = fold_abstractions(addr.to_lean(), subst);
+            let kind = if *writable { "containsWritable" } else { "containsRange" };
             clauses.push(format!(
-                "rt.containsWritable ({}) ({}) = true", dst_str, count.to_lean()));
+                "rt.{} ({}) ({}) = true", kind, addr_str, count.to_lean()));
             continue;
         }
         let width_bytes = match width {
@@ -5973,8 +6007,8 @@ fn lift_one(
                             continue;
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_log_") {
-                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter, "call_sol_log_spec", ".sol_log_", "Log");
+                            emit_sol_log(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter);
                             ti += 1;
                             continue;
                         }

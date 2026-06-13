@@ -118,12 +118,16 @@ partial def base64Encode (bs : ByteArray) : String :=
 
 /-! ## Bodies -/
 
-/-- `sol_log_(ptr, len)`: log the byte slice verbatim, set r0 = 0. -/
+/-- `sol_log_(ptr, len)`: log the byte slice verbatim, set r0 = 0.
+    H6: agave's `translate_string_and_do` reads `[ptr, ptr+len)` via
+    `translate_slice` (Load); out of region traps with `AccessViolation`,
+    `len = 0` is allowed. -/
 @[simp] def execLog (s : State) : State :=
   let ptr := s.regs.r1
   let len := s.regs.r2
-  { s with regs := s.regs.set .r0 0
-           log  := s.log.push (readBytes s.mem ptr len) }
+  s.guardRead ptr len fun s =>
+    { s with regs := s.regs.set .r0 0
+             log  := s.log.push (readBytes s.mem ptr len) }
 
 /-- `sol_log_pubkey(ptr)`: log 32 bytes from `*r1`, set r0 = 0.
     H6: agave reads the 32-byte pubkey via `translate_type::<Pubkey>`

@@ -627,7 +627,7 @@ theorem Logger_lifted_spec
       (effectiveAddr addr4 40 ↦U64 oldMemD_11) **
       (effectiveAddr addr4 32 ↦U64 wrapAdd (addr3) (toU64 8)) **
       (effectiveAddr addr4 24 ↦U64 wrapAdd (wrapAdd (addr3) (toU64 8)) oldMemD_11) ** callStackIs [])
-      (fun rt => (((((((((((((((((((((((((((((rt.containsWritable (effectiveAddr addr0 (-56)) 8 = true) ∧
+      (fun rt => ((((((((((((((((((((((((((((((rt.containsWritable (effectiveAddr addr0 (-56)) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr0 (-72)) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr1 (-16)) 8 = true) ∧
@@ -656,7 +656,8 @@ theorem Logger_lifted_spec
                   rt.containsWritable (effectiveAddr addr4 32) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr4 24) 8 = true) ∧
                   rt.containsRange (effectiveAddr addr4 16) 8 = true) ∧
-                  rt.containsRange (effectiveAddr addr4 8) 8 = true) := by
+                  rt.containsRange (effectiveAddr addr4 8) 8 = true) ∧
+                  rt.containsRange (toU64 4294983000) (toU64 2) = true) := by
   have h_3 := mov64_reg_spec .r2 .r1 (vR2Old) (baseAddr) 3 (by decide)
   have h_4 := mov64_reg_spec .r1 .r10 (baseAddr) (vR10Old) 4 (by decide)
   have h_5 := add64_imm_spec .r1 (-48) (vR10Old) 5 (by decide)
@@ -761,7 +762,7 @@ theorem Logger_lifted_spec
   rw [h_alias_8] at h_8
   have h_9 := lddw_spec .r1 4294983000 (oldMemD_11) 9 (by decide)
   have h_10 := mov64_imm_spec .r2 2 (toU64 0) 10 (by decide)
-  have h_11 := call_sol_log_spec (toU64 8) 11 nCuLog18 hCuLog18
+  have h_11 := call_sol_log_spec (toU64 8) (toU64 4294983000) (toU64 2) 11 nCuLog18 hCuLog18
   have h_12 := jeq_imm_taken_spec .r7 0 (toU64 0 % 2 ^ (8 * 8)) 12 34 h_branch7
   have h_34 := mov64_imm_spec .r0 0 (0) 34 (by decide)
   sl_rw_abs [h_addr0, h_addr1, h_addr3, h_addr4, h_addr2] at [h_3, h_4, h_5, h_6, h_242, h_243, h_244, h_245, h_246, h_247, h_248, h_249, h_250, h_251, h_252, h_1826, h_1827, h_1828, h_1829, h_1830, h_1831, h_1832, h_1833, h_1834, h_1835, h_1836, h_1837, h_1838, h_1839, h_1840, h_1841, h_1842, h_1843, h_1844, h_1845, h_1846, h_1847, h_1848, h_1849, h_1850, h_1851, h_1852, h_1853, h_1854, h_1855, h_1856, h_1857, h_1858, h_1859, h_1860, h_1861, h_1862, h_1863, h_1864, h_1865, h_1866, h_1867, h_1868, h_1869, h_253, h_254, h_255, h_256, h_257, h_258, h_259, h_260, h_261, h_266, h_267, h_268, h_277, h_278, h_279, h_280, h_281, h_282, h_283, h_455, h_456, h_457, h_458, h_459, h_460, h_461, h_462, h_463, h_464, h_465, h_466, h_467, h_468, h_469, h_470, h_7, h_8, h_9, h_10, h_11, h_12, h_34]
