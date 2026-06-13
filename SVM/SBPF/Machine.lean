@@ -338,6 +338,15 @@ theorem State.guardRead_pos (s : State) (addr len : Nat) (k : State → State)
     (h : len = 0 ∨ s.regions.containsRange addr len = true) :
     s.guardRead addr len k = k s := if_pos h
 
+/-- The fault branch of `guardRead`: a non-empty out-of-region range collapses
+    the guard to `accessFault`. The opaque counterpart of `guardRead_pos` —
+    rewriting with this (rather than `simp only [State.guardRead, if_neg h]`)
+    keeps the 16-field `State` record folded, which is what makes
+    `guardSlices_eq` elaborate in milliseconds instead of exhausting memory. -/
+theorem State.guardRead_neg (s : State) (addr len : Nat) (k : State → State)
+    (h : ¬(len = 0 ∨ s.regions.containsRange addr len = true)) :
+    s.guardRead addr len k = s.accessFault := if_neg h
+
 theorem State.guardWrite_pos (s : State) (addr len : Nat) (k : State → State)
     (h : len = 0 ∨ s.regions.containsWritable addr len = true) :
     s.guardWrite addr len k = k s := if_pos h
@@ -357,6 +366,115 @@ theorem State.guardWrite_r10 (s : State) (addr len : Nat) (k : State → State)
   simp only [State.guardWrite]; split
   · exact hk
   · rfl
+
+/-- Region-gated read guard for a `SliceDesc { ptr : u64, len : u64 }[count]`
+    descriptor array at `descsAddr`. Walks the `count` 16-byte descriptors,
+    reading each `(ptr, len)` from `s.mem`, and routes every slice read
+    `[ptr, ptr+len)` through `guardRead`. Faults with an access violation on
+    the first out-of-region slice; runs `k s` once every slice is covered.
+
+    Mirrors the per-slice loop agave runs AFTER translating the descriptor
+    array itself: `for val in vals { translate_vm_slice(val, ...)? }` in
+    `SyscallHash` / `SyscallLogData` (`agave-syscalls-4.0.0-rc.0`). The
+    descriptor array `[descsAddr, descsAddr + count*16)` is guarded
+    separately by the caller (agave's `translate_slice::<VmSlice<u8>>` of
+    the array precedes this loop). A `guardRead` miss never mutates `s`, so
+    each descriptor is read against the same memory the caller saw. -/
+def State.guardSlices (s : State) (descsAddr count : Nat) (k : State → State) : State :=
+  (List.range count).foldr
+    (fun i (kont : State → State) (s' : State) =>
+      s'.guardRead (Memory.readU64 s'.mem (descsAddr + i * 16))
+        (Memory.readU64 s'.mem (descsAddr + i * 16 + 8)) kont)
+    k s
+
+/-- The descriptor walk either faults (some slice out of region) or runs
+    its continuation on the unmodified state — the reads never change `s`,
+    so the success state is exactly `k s` and the fault state is exactly
+    `s.accessFault`. This is the keystone the `Bounded` sweeps and the
+    syscall fault lemmas reuse: it collapses the recursive guard to a
+    two-way case without unfolding the `foldr`. -/
+theorem State.guardSlices_eq (s : State) (descsAddr count : Nat) (k : State → State) :
+    s.guardSlices descsAddr count k = s.accessFault
+      ∨ s.guardSlices descsAddr count k = k s := by
+  simp only [State.guardSlices]
+  generalize List.range count = l
+  induction l with
+  | nil => right; rfl
+  | cons i t ih =>
+    -- `rw`, NOT `simp only [List.foldr_cons]`: the latter re-traverses the
+    -- beta-reduced term and builds congruence lemmas over the 16-field `State`,
+    -- blowing elaboration up to ~10GB. `rw` does the single keyed rewrite and
+    -- leaves the goal in `s.guardRead …` form directly.
+    rw [List.foldr_cons]
+    by_cases hc :
+        Memory.readU64 s.mem (descsAddr + i * 16 + 8) = 0
+          ∨ s.regions.containsRange (Memory.readU64 s.mem (descsAddr + i * 16))
+              (Memory.readU64 s.mem (descsAddr + i * 16 + 8)) = true
+    · rw [State.guardRead_pos _ _ _ _ hc]; exact ih
+    · rw [State.guardRead_neg _ _ _ _ hc]; left; rfl
+
+/-- A register predicate that holds on `s.regs` and on the continuation's
+    result holds on a guarded read's result (fault keeps `s.regs`; success is
+    `(k s).regs`). Lets `Bounded` discharge a guarded syscall's `regs` bound by
+    `apply`-ing the guard away and proving the two leaf states. -/
+theorem State.guardRead_regs_of_k {motive : RegFile → Prop} (s : State)
+    (addr len : Nat) (k : State → State)
+    (h0 : motive s.regs) (hk : motive (k s).regs) :
+    motive (s.guardRead addr len k).regs := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · exact h0
+
+/-- The descriptor-walk analog of `guardRead_regs_of_k`: a register predicate
+    surviving both leaves survives the whole walk. -/
+theorem State.guardSlices_regs_of_k {motive : RegFile → Prop} (s : State)
+    (descsAddr count : Nat) (k : State → State)
+    (h0 : motive s.regs) (hk : motive (k s).regs) :
+    motive (s.guardSlices descsAddr count k).regs := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · exact h0
+  · exact hk
+
+/-- A guarded read leaves `mem` exactly as its continuation does when the
+    continuation itself preserves `mem` (the fault branch never writes). -/
+theorem State.guardRead_mem_eq_of_k (s : State) (addr len : Nat) (k : State → State)
+    (hk : ∀ s', (k s').mem = s'.mem) :
+    (s.guardRead addr len k).mem = s.mem := by
+  simp only [State.guardRead]; split
+  · exact hk s
+  · rfl
+
+/-- The descriptor walk only reads memory, so a `mem`-preserving continuation
+    makes the whole walk `mem`-preserving. -/
+theorem State.guardSlices_mem_eq_of_k (s : State) (descsAddr count : Nat)
+    (k : State → State) (hk : ∀ s', (k s').mem = s'.mem) :
+    (s.guardSlices descsAddr count k).mem = s.mem := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · rfl
+  · exact hk s
+
+/-- Generic field-projection collapse for `guardRead`: any projection `f` that
+    is invariant under both a guard miss (`accessFault`) and the continuation
+    is invariant under the whole guard. The field-agnostic core the syscall
+    `preserves_{callStack,regions,cuBudget,heapNext,returnData,r10}` sweeps use
+    to close their guarded-syscall arms without unfolding `guardSlices`. -/
+theorem State.guardRead_proj_eq_of_k {α} (f : State → α) (s : State)
+    (addr len : Nat) (k : State → State)
+    (hfault : f s.accessFault = f s) (hk : f (k s) = f s) :
+    f (s.guardRead addr len k) = f s := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · exact hfault
+
+/-- The descriptor-walk analog of `guardRead_proj_eq_of_k`: a projection
+    invariant under a miss and the continuation is invariant under the walk. -/
+theorem State.guardSlices_proj_eq_of_k {α} (f : State → α) (s : State)
+    (descsAddr count : Nat) (k : State → State)
+    (hfault : f s.accessFault = f s) (hk : f (k s) = f s) :
+    f (s.guardSlices descsAddr count k) = f s := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · exact hfault
+  · exact hk
 
 /-! ## Wrapping 64-bit arithmetic -/
 

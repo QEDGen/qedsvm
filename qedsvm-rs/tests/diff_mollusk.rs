@@ -167,6 +167,15 @@ const OOB_LOG_PUBKEY_SO: &[u8] = include_bytes!("fixtures/oob_log_pubkey.so");
 /// qedsvm read through a region-free `Mem` and returned Success; post-fix
 /// `Logging.execLog`'s `guardRead` faults. Source in `oob_log_src/`.
 const OOB_LOG_SO: &[u8] = include_bytes!("fixtures/oob_log.so");
+/// Out-of-bounds `sol_log_data` (audit H6, descriptor-array / logging
+/// tail). Calls `sol_log_data` with a 1-descriptor array 256 MiB past the
+/// input pointer; agave translates the 16-byte descriptor array first and
+/// `translate_slice` traps the read with `AccessViolation`. Pre-fix qedsvm
+/// read descriptors + slices through a region-free `Mem` and returned
+/// Success; post-fix `Logging.execLogData` routes the descriptor array
+/// through `guardRead` (and slices through `guardSlices`) and faults.
+/// Source in `oob_log_data_src/`.
+const OOB_LOG_DATA_SO: &[u8] = include_bytes!("fixtures/oob_log_data.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2568,6 +2577,40 @@ fn oob_log_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_log_, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log");
+}
+
+/// Audit H6 (syscall memory translation, descriptor-array / logging tail).
+/// The program calls `sol_log_data` with a 1-descriptor array 256 MiB past
+/// the input pointer. agave translates the 16-byte descriptor array via
+/// `translate_slice::<VmSlice<u8>>` BEFORE dereferencing any slice, so the
+/// array read itself traps with `AccessViolation`; post-fix
+/// `Logging.execLogData`'s `guardRead` on `[r1, r1 + count*16)` VM-faults.
+/// Both engines must fail with the same observable outcome.
+#[test]
+fn oob_log_data_fails_on_both() {
+    let program_id = pid(56);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_LOG_DATA_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_log_data");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_LOG_DATA_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_log_data, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_data");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does

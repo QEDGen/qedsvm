@@ -414,7 +414,7 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
     simp only [execSyscall, commitOptional,
           State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
-          Logging.execLogComputeUnits, Logging.execLogData,
+          Logging.execLogComputeUnits,
           Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,
           Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
@@ -434,7 +434,12 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact hb.regs_lt r
       | exact RegFile.set_get_lt hb.regs_lt (by decide) _ r
       | exact RegFile.set_get_lt hb.regs_lt
-          (by simp only [U64_MODULUS] at h1 h2 h3 ⊢; omega) _ r)
+          (by simp only [U64_MODULUS] at h1 h2 h3 ⊢; omega) _ r
+      -- `sol_log_data` is kept folded (its recursive `guardSlices` walk does
+      -- not unfold under `simp only`): close it via the descriptor-walk
+      -- register lemma — the result is `s.regs` (fault) or `set .r0 0`.
+      | exact Logging.execLogData_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r))
 
 set_option maxHeartbeats 8000000 in
 set_option maxRecDepth 65536 in
@@ -451,7 +456,7 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
     simp only [execSyscall, commitOptional,
           State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
-          Logging.execLogComputeUnits, Logging.execLogData,
+          Logging.execLogComputeUnits,
           Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,
           Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
@@ -470,6 +475,9 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
     (first
       | exact hb.mem_lt a
       | exact hb.mem_lt _
+      -- `sol_log_data` stays folded (recursive `guardSlices`): it never
+      -- writes memory, so rewrite `(execLogData s).mem` to `s.mem`.
+      | (rw [Logging.execLogData_mem]; exact hb.mem_lt a)
       | exact writeBytes_lt _ _ _ _ hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt _
       | exact writeByWidth_lt _ _ _ .word hb.mem_lt a

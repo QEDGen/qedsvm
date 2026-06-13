@@ -153,24 +153,20 @@ theorem call_sol_log_compute_units_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
 
 `sol_log_data(fields_ptr, count)`: read `count` SliceDesc descriptors
 from r1, base64-encode each slice they point to, emit joined message.
-Memory is read (descriptors + each slice) but not written. r0 := 0. -/
+Memory is read (descriptors + each slice) but not written. r0 := 0.
 
-theorem call_sol_log_data_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_log_data) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_log_data))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_data 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s hex => by simp [step, execSyscall, Logging.execLogData]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => h_step_cu s)
-    r0Old
+H6: `Logging.execLogData` region-checks BOTH the descriptor array
+`[r1, r1 + count*16)` and each dereferenced slice `[ptr, ptr+len)`, so an
+out-of-region access traps with `vmError := some .accessViolation`. Unlike
+the single-slice log syscalls, this read region is NOT expressible as an
+`rr : Memory.RegionTable → Prop` side-condition: the per-slice ranges are
+read FROM memory the precondition does not own, and `rr` cannot see `s.mem`.
+There is therefore no register-footprint happy-path triple for
+`sol_log_data` — the prior unconditional `(.r0 ↦ᵣ r0Old) ⟶ (.r0 ↦ᵣ 0)` spec
+became false once the guards can fault and had no consumers. The boundary is
+pinned cross-engine by the `oob_log_data.so` diff fixture, and on the model
+side by `SVM.SBPF.Logging.execLogData_faults_oob` (the descriptor-array
+fault direction). -/
 
 /-! ## Syscall: `sol_get_epoch_stake`
 
