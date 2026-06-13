@@ -412,6 +412,7 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
   -- deep-recursion hazard — see the H7 notes in `SysvarData.lean`).
   cases sc <;>
     simp only [execSyscall, commitOptional,
+          State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
           Logging.execLogComputeUnits, Logging.execLogData,
           Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,
@@ -448,6 +449,7 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
   -- are literals, `% 256` reads, `ByteArray` bytes, or the old memory.
   cases sc <;>
     simp only [execSyscall, commitOptional,
+          State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
           Logging.execLogComputeUnits, Logging.execLogData,
           Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,

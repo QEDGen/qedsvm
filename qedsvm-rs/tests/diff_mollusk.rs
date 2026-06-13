@@ -147,6 +147,13 @@ const PDA_FINDER_SO: &[u8] = include_bytes!("fixtures/pda_finder.so");
 /// with `AccessViolation` and returns Failure. Source in
 /// `oob_read_src/`.
 const OOB_READ_SO: &[u8] = include_bytes!("fixtures/oob_read.so");
+/// Out-of-bounds SYSCALL write (audit H6). Calls `sol_memset_` with a
+/// destination 256 MiB past the input pointer; agave's
+/// `translate_slice_mut` traps with `AccessViolation`. Pre-fix qedsvm
+/// let the syscall write through a region-free `Mem` and returned
+/// Success; post-fix `MemOps.execSet`'s `guardWrite` faults. Source in
+/// `oob_memset_src/`.
+const OOB_MEMSET_SO: &[u8] = include_bytes!("fixtures/oob_memset.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2448,6 +2455,42 @@ fn oob_read_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB read, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_read");
+}
+
+/// Audit H6 (syscall memory translation). The program calls
+/// `sol_memset_` with a destination 256 MiB past the input pointer.
+/// agave's `translate_slice_mut` traps with `AccessViolation`; pre-fix
+/// qedsvm wrote through a region-free `Mem` and returned Success. Post-fix
+/// `MemOps.execSet`'s `guardWrite` consults the runtime region table and
+/// VM-faults. Both engines must fail with the same observable outcome.
+#[test]
+fn oob_memset_fails_on_both() {
+    let program_id = pid(52);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_MEMSET_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_memset");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_MEMSET_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    // The syscall's region check fails closed: the model VM-faults
+    // (access violation), agave surfaces it as
+    // UnknownError(ProgramFailedToComplete) — same observable outcome.
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_memset_, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_memset");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does

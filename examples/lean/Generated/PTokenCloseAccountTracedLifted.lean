@@ -2082,7 +2082,7 @@ theorem PTokenCloseAccount_lifted_spec
       (effectiveAddr addr4 72 ↦U64 0) **
       (effectiveAddr addr0 72 ↦U64 wrapAdd oldMemD_34 oldMemD_33) **
       (wrapAdd (addr4) (toU64 40) ↦Bytes replicateByte ((toU64 0) % 256).toUInt8 32))
-      (fun rt => (((((((((((((((((((((((((((((((((((rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
+      (fun rt => ((((((((((((((((((((((((((((((((((((rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 10512) 1 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 10592) 8 = true) ∧
@@ -2117,7 +2117,8 @@ theorem PTokenCloseAccount_lifted_spec
                   rt.containsRange (effectiveAddr addr2 1) 1 = true) ∧
                   rt.containsRange (effectiveAddr addr4 72) 8 = true) ∧
                   rt.containsRange (effectiveAddr addr0 72) 8 = true) ∧
-                  rt.containsWritable (effectiveAddr addr0 72) 8 = true) := by
+                  rt.containsWritable (effectiveAddr addr0 72) 8 = true) ∧
+                  rt.containsWritable (wrapAdd (addr4) (toU64 40)) (toU64 48) = true) := by
   have h_198 := ldxb_spec .r2 .r1 0 (vR2Old) (baseAddr) oldMemB_0 198 (by decide)
   have h_199 := jeq_imm_taken_spec .r2 3 (oldMemB_0 % 256) 199 304 h_branch0
   have h_304 := ldxdw_spec .r2 .r1 88 (oldMemB_0 % 256) (baseAddr) oldMemD_1 304 (by decide) holdMemD_1_lt
@@ -2641,7 +2642,7 @@ theorem PTokenCloseAccount_balance_correct
       (effectiveAddr addr4 72 ↦U64 0) **
       (effectiveAddr addr0 72 ↦U64 oldMemD_34 + oldMemD_33) **
       (wrapAdd (addr4) (toU64 40) ↦Bytes replicateByte ((toU64 0) % 256).toUInt8 32))
-      (fun rt => (((((((((((((((((((((((((((((((((((rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
+      (fun rt => ((((((((((((((((((((((((((((((((((((rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 10512) 1 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 10592) 8 = true) ∧
@@ -2676,7 +2677,8 @@ theorem PTokenCloseAccount_balance_correct
                   rt.containsRange (effectiveAddr addr2 1) 1 = true) ∧
                   rt.containsRange (effectiveAddr addr4 72) 8 = true) ∧
                   rt.containsRange (effectiveAddr addr0 72) 8 = true) ∧
-                  rt.containsWritable (effectiveAddr addr0 72) 8 = true) := by
+                  rt.containsWritable (effectiveAddr addr0 72) 8 = true) ∧
+                  rt.containsWritable (wrapAdd (addr4) (toU64 40)) (toU64 48) = true) := by
   have h := PTokenCloseAccount_lifted_spec baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 vR0Old oldMemB_4 oldMemB_5 oldMemB_6 oldMemB_7 oldMemB_8 oldMemB_9 oldMemB_10 vR7Old vR10Old oldMemD_11 vR3Old oldMemB_12 oldMemD_13 oldMemD_14 oldMemB_15 oldMemD_16 oldMemD_17 vR4Old oldMemD_18 vR9Old oldMemB_19 vR5Old vR8Old oldMemB_20 oldMemB_21 oldMemD_22 oldMemB_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 vR6Old oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemB_32 oldMemD_33 oldMemD_34 addr0 addr1 addr2 addr3 addr4 addr5 h_addr0 h_addr1 h_addr2 h_addr3 h_addr4 h_addr5 holdMemD_1_lt holdMemD_3_lt holdMemB_0_lt holdMemB_4_lt holdMemB_5_lt holdMemB_6_lt holdMemB_7_lt holdMemB_8_lt holdMemB_9_lt holdMemB_10_lt holdMemD_14_lt holdMemD_17_lt holdMemD_18_lt holdMemD_22_lt holdMemD_24_lt holdMemD_25_lt holdMemD_26_lt holdMemD_27_lt holdMemD_28_lt holdMemD_29_lt holdMemD_30_lt holdMemD_31_lt holdMemD_33_lt holdMemD_34_lt h_branch0 h_branch1 h_branch2 h_branch3 h_branch4 h_branch5 h_branch6 h_branch7 h_branch8 h_branch9 h_branch10 h_branch11 h_branch12 h_branch13 h_branch14 h_branch15 h_branch16 h_branch17 h_branch18 h_branch19 h_branch20 h_branch21 h_branch22 h_branch23 h_branch24 h_branch25 h_branch26 h_branch27 h_branch28 h_branch29 h_branch30 h_branch31 h_branch32 h_branch33 h_branch34 hReloadLt_3547 h_alias_3547 h_alias_3550 hReloadLt_4426 h_alias_4426 h_alias_4428 h_msplit_4554_a1 h_msplit_4554_a2 memsetBs_35 hmemsetBs_35_sz nCuMemset35 hCuMemset35
   rw [← wrapAdd_of_lt h_noovf0]
   exact h

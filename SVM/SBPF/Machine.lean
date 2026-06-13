@@ -294,6 +294,70 @@ def VmError.toSentinel : VmError → Nat
     return data; a larger `sol_set_return_data` aborts. -/
 def MAX_RETURN_DATA : Nat := 1024
 
+/-! ## Checked syscall memory access (audit H6)
+
+`step` region-checks `.ldx`/`.st`/`.stx` against `s.regions`, but a
+syscall body reads and writes `s.mem` through the total `Nat → Nat`
+function with no bounds layer — so a syscall could touch any address and
+silently succeed. That is the fail-open the audit flagged as H6
+(`SVM/Syscalls/*` translate slices without consulting the region table).
+
+These guards close it: each syscall that translates a `[addr, addr+len)`
+slice routes through `guardRead` / `guardWrite`, which consult the SAME
+`RegionTable` as `step` and fault to `ERR_ACCESS_VIOLATION` (typed
+`vmError := some .accessViolation`, L1) on a miss. The check matches
+agave's `MemoryMapping::map`: the whole range must fall inside one mapped
+region (writable too, for stores). agave's `translate_slice_inner!`
+short-circuits a zero-length access (`if len == 0 { return Ok(&[]) }` in
+`solana-program-runtime::memory`), so `len = 0` is always allowed; a
+fixed-size translation (`translate_type`, size ≥ 1) passes its constant
+size and so is always checked. -/
+
+/-- Fault the state with an access violation. Mirrors the `step`
+    ldx/st/stx miss branch: sets the sentinel exit code and the typed
+    fault channel (L1), leaving `mem`/`regs` and every other field
+    untouched. -/
+@[simp] def State.accessFault (s : State) : State :=
+  { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
+
+/-- Region-gated read guard for a syscall slice translation. Runs `k s`
+    if `[addr, addr+len)` lies within a mapped region (or `len = 0`, which
+    agave never checks), else faults with an access violation. -/
+@[simp] def State.guardRead (s : State) (addr len : Nat) (k : State → State) : State :=
+  if len = 0 ∨ s.regions.containsRange addr len = true then k s else s.accessFault
+
+/-- Region-gated write guard: like `guardRead` but the range must be
+    covered by a WRITABLE region (`translate_slice_mut` / `translate_type_mut`). -/
+@[simp] def State.guardWrite (s : State) (addr len : Nat) (k : State → State) : State :=
+  if len = 0 ∨ s.regions.containsWritable addr len = true then k s else s.accessFault
+
+/-- The guard collapses to its continuation when the read range is
+    covered. Lets a syscall spec, given its `rr` region requirement,
+    rewrite `guardRead` away and reduce to the unguarded core. -/
+theorem State.guardRead_pos (s : State) (addr len : Nat) (k : State → State)
+    (h : len = 0 ∨ s.regions.containsRange addr len = true) :
+    s.guardRead addr len k = k s := if_pos h
+
+theorem State.guardWrite_pos (s : State) (addr len : Nat) (k : State → State)
+    (h : len = 0 ∨ s.regions.containsWritable addr len = true) :
+    s.guardWrite addr len k = k s := if_pos h
+
+/-- A guard never touches `regs` beyond what its continuation does, so the
+    read-only frame pointer is preserved in both branches. -/
+theorem State.guardRead_r10 (s : State) (addr len : Nat) (k : State → State)
+    (hk : (k s).regs.r10 = s.regs.r10) :
+    (s.guardRead addr len k).regs.r10 = s.regs.r10 := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · rfl
+
+theorem State.guardWrite_r10 (s : State) (addr len : Nat) (k : State → State)
+    (hk : (k s).regs.r10 = s.regs.r10) :
+    (s.guardWrite addr len k).regs.r10 = s.regs.r10 := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · rfl
+
 /-! ## Wrapping 64-bit arithmetic -/
 
 @[simp] def wrapAdd (a b : Nat) : Nat := (a + b) % U64_MODULUS

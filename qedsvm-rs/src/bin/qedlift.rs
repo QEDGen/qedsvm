@@ -550,6 +550,15 @@ mod layout_tests {
             Some(module.to_string()), Some(&trace), arm, None)
             .expect("lift p_token arm");
 
+        // Set QEDLIFT_BLESS=1 to rewrite the pinned artifacts from the
+        // current emitter output (used when an intentional emitter change
+        // — e.g. the H6 memset `rr` clause — regenerates a lift).
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(lift_path, &result.lean).expect("write lift");
+            if let (Some(rp), Some((_, rlean))) = (refine_path, result.refinement.as_ref()) {
+                std::fs::write(rp, rlean).expect("write refinement");
+            }
+        }
         let on_disk = std::fs::read_to_string(lift_path).expect("read lift");
         assert_eq!(result.lean, on_disk,
             "{lift_path} is out of sync with the qedlift emitter \
@@ -1404,8 +1413,13 @@ struct SymState {
     /// `containsRange`; each store contributes `containsWritable`.
     /// Order matches the chain's left-fold ordering, so the emitted
     /// goal rr structurally equals what `slBlockIter` produces.
-    /// Entries: (addr_base, off, width, is_writable).
-    rr_walk: Vec<(Expr, i64, Width, bool)>,
+    /// Entries: (addr_base, off, width, is_writable, memset_override).
+    /// `memset_override = Some((dst, count))` is a variable-length
+    /// `containsWritable dst count` clause (audit H6: `MemOps.execSet`'s
+    /// `guardWrite` carries this as the memset spec's `rr`); the leading
+    /// fixed fields are then ignored and the address is rendered raw
+    /// (no `effectiveAddr`) like the memset's `↦Bytes` atom.
+    rr_walk: Vec<(Expr, i64, Width, bool, Option<(Expr, Expr)>)>,
     /// Post-state contents of `↦Bytes` blobs written by memory
     /// syscalls (`sol_memset_`), keyed by the rendered destination
     /// address. `post_atoms` reads this to transform the pre `↦Bytes`
@@ -1645,7 +1659,7 @@ impl SymState {
             let i = self.hot_slot(&base_expr, off, k);
             self.mem[i].value = Expr::Const(bytes[k as usize] as i64);
         }
-        self.rr_walk.push((base_expr, off, Width::Word, true));
+        self.rr_walk.push((base_expr, off, Width::Word, true, None));
     }
     /// Serve a wide LOAD whose span is hot: the region is byte-granular,
     /// so reuse/materialize the 8 byte cells and return their Horner
@@ -1665,7 +1679,7 @@ impl SymState {
             let i = self.hot_slot(&base_expr, off, k);
             vals.push(self.mem[i].value.clone());
         }
-        self.rr_walk.push((base_expr, off, Width::Dword, false));
+        self.rr_walk.push((base_expr, off, Width::Dword, false, None));
         Expr::ByteCombo(vals)
     }
     /// Canon-aware cell lookup: the rendered key first (exact match),
@@ -1747,9 +1761,9 @@ impl SymState {
                     format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
                     rhs,
                 ));
-                self.rr_walk.push((cell_base, cell_off, width, false));
+                self.rr_walk.push((cell_base, cell_off, width, false, None));
             } else {
-                self.rr_walk.push((base_expr, off, width, false));
+                self.rr_walk.push((base_expr, off, width, false, None));
             }
             return v;
         }
@@ -1781,7 +1795,7 @@ impl SymState {
         });
         // rr contribution: every load needs containsRange at the
         // accessed cell.
-        self.rr_walk.push((base_expr, off, width, false));
+        self.rr_walk.push((base_expr, off, width, false, None));
         v
     }
     fn write_mem(&mut self, base: u8, off: i64, width: Width, value: Expr) {
@@ -1845,9 +1859,9 @@ impl SymState {
                     format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
                     rhs,
                 ));
-                self.rr_walk.push((cell_base, cell_off, width, true));
+                self.rr_walk.push((cell_base, cell_off, width, true, None));
             } else {
-                self.rr_walk.push((base_expr, off, width, true));
+                self.rr_walk.push((base_expr, off, width, true, None));
             }
         }
     }
@@ -3736,6 +3750,13 @@ fn emit_sol_memset(
     let r2v = state.read_reg(2);
     let r3v = state.read_reg(3);
 
+    // H6: the memset spec's `rr` requires the `[r1V, r1V + r3V)`
+    // destination to be in a writable region. Record it in walk order so
+    // the goal rr carries the same `containsWritable r1V r3V` clause that
+    // `sl_block_iter` folds in from `call_sol_memset_*_spec`.
+    state.rr_walk.push((r1v.clone(), 0, Width::Byte, true,
+        Some((r1v.clone(), r3v.clone()))));
+
     let idx = state.fresh; state.fresh += 1;
     let bs_name  = format!("memsetBs_{}", idx);
     let bs_sz    = format!("hmemsetBs_{}_sz", idx);
@@ -4149,7 +4170,18 @@ fn region_req(
     // Walk-order rr contributions: each load → containsRange; each
     // store → containsWritable. Order matches what slBlockIter
     // produces by left-folding per chain step.
-    for (addr_base, addr_off, width, writable) in &state.rr_walk {
+    for (addr_base, addr_off, width, writable, memset) in &state.rr_walk {
+        // H6 memset override: a variable-length writable requirement,
+        // `containsWritable dst count`, with the destination rendered raw
+        // (subst-folded, no `effectiveAddr`) exactly like the memset's
+        // `↦Bytes` atom — so it matches the `rr` carried by
+        // `call_sol_memset_*_spec` after `sl_rw_abs`.
+        if let Some((dst, count)) = memset {
+            let dst_str = fold_abstractions(dst.to_lean(), subst);
+            clauses.push(format!(
+                "rt.containsWritable ({}) ({}) = true", dst_str, count.to_lean()));
+            continue;
+        }
         let width_bytes = match width {
             Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
         };
