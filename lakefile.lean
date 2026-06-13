@@ -69,6 +69,7 @@ lean_lib Examples where
     `H2Pin,
     `M4Pin,
     `M1Pin,
+    `L1Pin,
     `ByteIncrement,
     `DischargePoC,
     `ProofDemo,

@@ -161,7 +161,7 @@ caller still pays *something*. -/
     -- Unsupported curve_id: agave aborts with `InvalidAttribute` when
     -- `abort_on_invalid_curve` is active (it is, under all_enabled).
     -- Fail closed rather than return r0:=2. See docs/SOUNDNESS_AUDIT_* (M7).
-    { s with exitCode := some ERR_INVALID_ATTRIBUTE }
+    { s with exitCode := some ERR_INVALID_ATTRIBUTE, vmError := some .invalidAttribute }
 
 /-- Execute `sol_curve_group_op`.
     ABI: r1 = curve_id, r2 = op_id (0=ADD/1=SUB/2=MUL),
@@ -187,7 +187,7 @@ caller still pays *something*. -/
        else if opId = OP_SUB then ristrettoSub leftB rightB
        else if opId = OP_MUL then ristrettoMul leftB rightB
        else none)
-  else { s with exitCode := some ERR_INVALID_ATTRIBUTE }
+  else { s with exitCode := some ERR_INVALID_ATTRIBUTE, vmError := some .invalidAttribute }
 
 /-- Execute `sol_curve_multiscalar_mul`.
     ABI: r1 = curve_id, r2 = `*const PodScalar*`,
@@ -199,7 +199,7 @@ caller still pays *something*. -/
   -- (agave-syscalls lib.rs:1258). Fail closed. (n = 0 and compute
   -- failures return Ok(1) on chain, so they stay in-band.) See M9.
   if pointsLen > 512 then
-    { s with exitCode := some ERR_INVALID_LENGTH }
+    { s with exitCode := some ERR_INVALID_LENGTH, vmError := some .invalidLength }
   else
     let scalarsB  := readBytes s.mem s.regs.r2 (32 * pointsLen)
     let pointsB   := readBytes s.mem s.regs.r3 (32 * pointsLen)

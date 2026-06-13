@@ -85,6 +85,32 @@ structure CallFrame where
   savedR10 : Nat
   deriving Inhabited, Repr
 
+/-- Typed VM-fault channel (audit L1). The `ERR_*` sentinels (defined below) live
+    in `exitCode : Option Nat`, where an `exit` of exactly the sentinel
+    VALUE is indistinguishable from the fault — a spec phrased
+    `exitCode = some ERR_X` is satisfiable by a pathological clean exit.
+    The collision is observable on chain (the `sentinel_exit.so`
+    experiment: agave reports `UnknownError(InvalidError)` for the clean
+    exit, distinct from a real fault's error), so the model carries the
+    fault as a TYPED value in `State.vmError`, set by every abort site
+    alongside the sentinel; a clean `exit` never sets it. `exitCode`
+    behavior is unchanged (all existing specs still hold verbatim);
+    `vmError` is the authoritative channel for fault-vs-exit and the
+    input to the cross-engine error-code mapping (M14). -/
+inductive VmError
+  | divideByZero
+  | invalidPc
+  | abort
+  | accessViolation
+  | unsupportedInstruction
+  | callDepthExceeded
+  | returnDataTooLarge
+  | invalidLength
+  | invalidAttribute
+  | badSeeds
+  | readonlyModified
+  deriving Repr, DecidableEq, Inhabited
+
 /-- sBPF machine state -/
 structure State where
   /-- Register file -/
@@ -99,6 +125,12 @@ structure State where
   pc : Nat
   /-- Exit status: None if running, Some n if exited with code n -/
   exitCode : Option Nat := none
+  /-- Typed fault channel (audit L1): `some e` iff execution halted on a
+      VM fault; a clean `exit` leaves it `none` even when r0 numerically
+      equals a sentinel. Every abort site sets this ALONGSIDE the
+      `exitCode` sentinel (which is unchanged, so specs phrased over
+      `exitCode` still hold); `vmError` is what distinguishes the two. -/
+  vmError : Option VmError := none
   /-- Side channel: messages written via `sol_log_*` syscalls.
       Each entry is one message. Observable from the runner; not owned
       by any separation-logic assertion. -/
@@ -242,6 +274,21 @@ def ERR_BAD_SEEDS : Nat := 0xFFFFFFFFFFFFFFF5
     model that rollback exactly: on violation the runner discards the
     callee's write-back (caller mem unchanged) and sets r0 to this code. -/
 def ERR_READONLY_MODIFIED : Nat := 0xFFFFFFFFFFFFFFF4
+
+/-- The `exitCode` sentinel each fault writes (the wire keeps reporting
+    this value, so the diff-suite observables are unchanged). -/
+def VmError.toSentinel : VmError → Nat
+  | .divideByZero           => ERR_DIVIDE_BY_ZERO
+  | .invalidPc              => ERR_INVALID_PC
+  | .abort                  => ERR_ABORT
+  | .accessViolation        => ERR_ACCESS_VIOLATION
+  | .unsupportedInstruction => ERR_UNSUPPORTED_INSTRUCTION
+  | .callDepthExceeded      => ERR_CALL_DEPTH_EXCEEDED
+  | .returnDataTooLarge     => ERR_RETURN_DATA_TOO_LARGE
+  | .invalidLength          => ERR_INVALID_LENGTH
+  | .invalidAttribute       => ERR_INVALID_ATTRIBUTE
+  | .badSeeds               => ERR_BAD_SEEDS
+  | .readonlyModified       => ERR_READONLY_MODIFIED
 
 /-- `MAX_RETURN_DATA` (agave): a program may set at most 1024 bytes of
     return data; a larger `sol_set_return_data` aborts. -/

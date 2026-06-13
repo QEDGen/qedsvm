@@ -28,7 +28,7 @@ def cu : Nat := 946
 /-- Fail closed: the proof-facing CPI is not modeled, so refuse to run
     rather than fabricate a successful, no-effect invoke. -/
 @[simp] def exec (s : State) : State :=
-  { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION }
+  { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction }
 
 end Cpi
 end SVM.SBPF

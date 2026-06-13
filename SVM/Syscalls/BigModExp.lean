@@ -73,7 +73,7 @@ def cu (s : State) : Nat :=
                          (readBytes s.mem modPtr  modLen)
     commitOptional s s.regs.r2 modLen (some result)
   else
-    { s with exitCode := some ERR_INVALID_LENGTH }
+    { s with exitCode := some ERR_INVALID_LENGTH, vmError := some .invalidLength }
 
 end BigModExp
 end SVM.SBPF

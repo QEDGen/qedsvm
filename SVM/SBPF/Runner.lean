@@ -783,7 +783,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
       if s.cuConsumed > s.cuBudget then (s, fuel)
       else
       match fetch s.pc with
-      | none => ({ s with exitCode := some ERR_INVALID_PC }, fuel')
+      | none => ({ s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }, fuel')
       | some insn =>
         -- The runCallee closure captures `s`, `parsedAccts`/`pidBytes`
         -- (recomputed inside cpiCallNextState — see comment there), and
@@ -930,7 +930,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             -- the error in r0 via the callee's exitCode (cpiCallNextState
             -- reads `subFinal.exitCode.getD 1` into r0).
             if roViolated then
-              some ({ subFinal with exitCode := some ERR_READONLY_MODIFIED },
+              some ({ subFinal with exitCode := some ERR_READONLY_MODIFIED, vmError := some .readonlyModified },
                     s.mem, subFuelRemaining)
             else
               some (subFinal, newCallerMem, subFuelRemaining)

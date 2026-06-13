@@ -318,9 +318,20 @@ theorem StateBounded.with_pc {s : State} (h : StateBounded s) (pc' : Nat) :
     cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
     returnData_le := h.returnData_le, mem_lt := h.mem_lt }
 
-/-- Arms `{ s with exitCode := … }` (every fail-closed abort). -/
+/-- Arms `{ s with exitCode := … }` (the clean program exit). -/
 theorem StateBounded.with_exitCode {s : State} (h : StateBounded s)
     (e : Option Nat) : StateBounded { s with exitCode := e } :=
+  { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
+    stack_depth := h.stack_depth, frames_lt := h.frames_lt
+    cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
+    returnData_le := h.returnData_le, mem_lt := h.mem_lt }
+
+/-- Arms `{ s with exitCode := …, vmError := … }` (every fail-closed
+    abort — audit L1: abort sites set the typed fault channel alongside
+    the sentinel). -/
+theorem StateBounded.with_abort {s : State} (h : StateBounded s)
+    (e : Option Nat) (v : Option VmError) :
+    StateBounded { s with exitCode := e, vmError := v } :=
   { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
     stack_depth := h.stack_depth, frames_lt := h.frames_lt
     cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
@@ -521,7 +532,7 @@ theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
     simp only [step]
     split
     · -- depth-64 guard tripped: fail-closed abort.
-      exact h.with_exitCode _
+      exact h.with_abort _ _
     · next hdepth =>
       -- Push: frame saves the (bounded) registers; r10 climbs one frame,
       -- re-establishing the discipline at depth+1.
@@ -595,6 +606,7 @@ theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
   all_goals
     simp only [step] <;> (repeat' split) <;>
       first
+        | exact h.with_abort _ _
         | exact h.with_exitCode _
         | exact h.with_pc _
         | exact h.with_mem (writeByWidth_lt _ _ _ _ h.mem_lt) _
@@ -646,7 +658,7 @@ theorem executeFn_bounded (fetch : Nat → Option Insn) {s : State}
     · split
       · exact h                       -- budget exhausted: halt as-is
       · split
-        · exact h.with_exitCode _     -- invalid PC: fail closed
+        · exact h.with_abort _ _      -- invalid PC: fail closed
         · exact ih (chargeCu_bounded (step_bounded _ h))
 
 /-! ## The L5 / L3 closes -/

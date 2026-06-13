@@ -30,7 +30,7 @@ namespace ReturnData
   let ptr := s.regs.r1
   let len := s.regs.r2
   if len > MAX_RETURN_DATA then
-    { s with exitCode := some ERR_RETURN_DATA_TOO_LARGE }
+    { s with exitCode := some ERR_RETURN_DATA_TOO_LARGE, vmError := some .returnDataTooLarge }
   else
     { s with regs := s.regs.set .r0 0
              returnData := readBytes s.mem ptr len

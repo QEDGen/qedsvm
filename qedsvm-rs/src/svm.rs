@@ -422,6 +422,13 @@ impl Svm {
         let program_result = match raw.outcome {
             ExitOutcome::OutOfBudget => ProgramResult::OutOfBudget,
             ExitOutcome::Halted(n) => ProgramResult::from_bpf_r0(n),
+            // A VM fault maps through the same sentinel decode as a
+            // halted run FOR NOW — byte-identical observables. The M14
+            // error-code mapping will route this to the agave
+            // InstructionError table instead (the L1 experiment showed
+            // agave reports faults and sentinel-valued clean exits
+            // differently).
+            ExitOutcome::Faulted(n) => ProgramResult::from_bpf_r0(n),
         };
 
         let resulting_accounts = if accounts.is_empty() && instruction.accounts.is_empty() {

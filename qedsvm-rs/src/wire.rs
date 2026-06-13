@@ -23,10 +23,17 @@ use std::fmt;
 pub enum ExitOutcome {
     /// The CU budget was exhausted before the program halted.
     OutOfBudget,
-    /// The program halted (cleanly via `exit` or via a runtime error
-    /// code in the upper portion of the u64 space — see
-    /// `SVM.SBPF.Execute.ERR_*`). `0` means clean success.
+    /// The program halted via a clean `exit`. `0` means success. NOTE
+    /// (audit L1): a clean exit can carry ANY r0, including values
+    /// numerically equal to the fault sentinels — `Faulted` is what
+    /// distinguishes a real VM fault.
     Halted(u64),
+    /// The VM faulted (access violation, unsupported instruction,
+    /// divide-by-zero, … — the Lean `State.vmError` channel). The
+    /// payload is the legacy `ERR_*` sentinel for that fault, so the
+    /// downstream mapping is unchanged until the M14 error-code table
+    /// consumes the distinction.
+    Faulted(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -73,6 +80,7 @@ pub fn decode(bytes: &[u8]) -> Result<RawResult, DecodeError> {
             let outcome = match r.u8()? {
                 0 => ExitOutcome::OutOfBudget,
                 1 => ExitOutcome::Halted(r.u64()?),
+                2 => ExitOutcome::Faulted(r.u64()?),
                 _ => return Err(DecodeError::Malformed("unknown exit_kind")),
             };
             let compute_units_consumed = r.u64()?;
