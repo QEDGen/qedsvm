@@ -73,31 +73,38 @@ def cu : Nat := 100
     on zero vs. non-zero inputs — agave's interpreter under
     `FeatureSet::all_enabled()` always sees the real values, so we
     must too for CU equality to hold. -/
-@[simp] def execRent           (s : State) : State :=
+-- H6: `guardWrite r1 17` region-checks the output (`translate_type_mut::<Rent>`)
+-- before filling. NOT `@[simp]`: the 17-byte `if`-chain `mem'` makes simp expand
+-- the whole record inside the guard `if`, and the blanket `Execute` preserves
+-- sweeps then choke (simp's `ite`-congruence won't push field projections through
+-- the big record). The `@[simp]` field lemmas below close those sweeps with
+-- `execRent` folded; `regs_lt`/`mem_lt` use the `execRent_regs_of_k`/`_mem_lt`
+-- closers. (4a's single-`if` `zeroFillR1` sysvars stay `@[simp]`.)
+def execRent           (s : State) : State :=
   let outA := s.regs.r1
-  -- Construct the 17 bytes byte-by-byte; the address-keyed `if`
-  -- chain stays decidable for proofs without dragging in
-  -- `writeU64`'s axioms.
-  let mem' : Memory.Mem := fun a =>
-    if      a = outA + 0  then 0x98  -- lamports_per_byte_year = 3480 = 0x0000_0000_0000_0D98
-    else if a = outA + 1  then 0x0D
-    else if a = outA + 2  then 0
-    else if a = outA + 3  then 0
-    else if a = outA + 4  then 0
-    else if a = outA + 5  then 0
-    else if a = outA + 6  then 0
-    else if a = outA + 7  then 0
-    else if a = outA + 8  then 0     -- exemption_threshold = 2.0 (f64 bits = 0x4000_0000_0000_0000)
-    else if a = outA + 9  then 0
-    else if a = outA + 10 then 0
-    else if a = outA + 11 then 0
-    else if a = outA + 12 then 0
-    else if a = outA + 13 then 0
-    else if a = outA + 14 then 0
-    else if a = outA + 15 then 0x40
-    else if a = outA + 16 then 50    -- burn_percent = 50
-    else s.mem a
-  { s with regs := s.regs.set .r0 0, mem := mem' }
+  s.guardWrite outA 17 fun s =>
+    -- Construct the 17 bytes byte-by-byte; the address-keyed `if` chain stays
+    -- decidable for proofs without dragging in `writeU64`'s axioms.
+    let mem' : Memory.Mem := fun a =>
+      if      a = outA + 0  then 0x98  -- lamports_per_byte_year = 3480 = 0x0000_0000_0000_0D98
+      else if a = outA + 1  then 0x0D
+      else if a = outA + 2  then 0
+      else if a = outA + 3  then 0
+      else if a = outA + 4  then 0
+      else if a = outA + 5  then 0
+      else if a = outA + 6  then 0
+      else if a = outA + 7  then 0
+      else if a = outA + 8  then 0     -- exemption_threshold = 2.0 (f64 bits = 0x4000_0000_0000_0000)
+      else if a = outA + 9  then 0
+      else if a = outA + 10 then 0
+      else if a = outA + 11 then 0
+      else if a = outA + 12 then 0
+      else if a = outA + 13 then 0
+      else if a = outA + 14 then 0
+      else if a = outA + 15 then 0x40
+      else if a = outA + 16 then 50    -- burn_percent = 50
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
 /-- `sol_get_epoch_schedule_sysvar`: 40 bytes (`size_of::<EpochSchedule>()`
     with repr(C) alignment padding). Mollusk's default is
     `EpochSchedule::without_warmup()` — `slots_per_epoch =
@@ -113,29 +120,33 @@ def cu : Nat := 100
     [32..40) first_normal_slot             : u64 LE = 0
     ```
     432_000 = 0x69780 → little-endian bytes `[0x80, 0x97, 0x06, 0, 0, 0, 0, 0]`. -/
-@[simp] def execEpochSchedule  (s : State) : State :=
+-- H6: `guardWrite r1 40` region-checks the output before filling. Same de-simp
+-- treatment as `execRent` (multi-`if` `mem'`); closed by the `@[simp]` field
+-- lemmas + `execEpochSchedule_regs_of_k`/`_mem_lt`.
+def execEpochSchedule  (s : State) : State :=
   let outA := s.regs.r1
-  -- 432_000 = 0x69780 → 0x80, 0x97, 0x06 in LE; remaining 5 bytes zero.
-  let mem' : Memory.Mem := fun a =>
-    if      a = outA + 0  then 0x80
-    else if a = outA + 1  then 0x97
-    else if a = outA + 2  then 0x06
-    else if a = outA + 3  then 0
-    else if a = outA + 4  then 0
-    else if a = outA + 5  then 0
-    else if a = outA + 6  then 0
-    else if a = outA + 7  then 0
-    else if a = outA + 8  then 0x80
-    else if a = outA + 9  then 0x97
-    else if a = outA + 10 then 0x06
-    else if a = outA + 11 then 0
-    else if a = outA + 12 then 0
-    else if a = outA + 13 then 0
-    else if a = outA + 14 then 0
-    else if a = outA + 15 then 0
-    else if a ≥ outA + 16 ∧ a < outA + 40 then 0  -- warmup + padding + remaining u64s
-    else s.mem a
-  { s with regs := s.regs.set .r0 0, mem := mem' }
+  s.guardWrite outA 40 fun s =>
+    -- 432_000 = 0x69780 → 0x80, 0x97, 0x06 in LE; remaining 5 bytes zero.
+    let mem' : Memory.Mem := fun a =>
+      if      a = outA + 0  then 0x80
+      else if a = outA + 1  then 0x97
+      else if a = outA + 2  then 0x06
+      else if a = outA + 3  then 0
+      else if a = outA + 4  then 0
+      else if a = outA + 5  then 0
+      else if a = outA + 6  then 0
+      else if a = outA + 7  then 0
+      else if a = outA + 8  then 0x80
+      else if a = outA + 9  then 0x97
+      else if a = outA + 10 then 0x06
+      else if a = outA + 11 then 0
+      else if a = outA + 12 then 0
+      else if a = outA + 13 then 0
+      else if a = outA + 14 then 0
+      else if a = outA + 15 then 0
+      else if a ≥ outA + 16 ∧ a < outA + 40 then 0  -- warmup + padding + remaining u64s
+      else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
 /-- `sol_get_last_restart_slot`: u64. -/
 @[simp] def execLastRestartSlot (s : State) : State := zeroFillR1 s 8
 /-- `sol_get_fees_sysvar` (deprecated): 8 bytes. -/
@@ -156,6 +167,80 @@ theorem zeroFillR1_faults_oob (s : State) (n : Nat) (hne : n ≠ 0)
   rw [if_neg (by
     rintro (h | h)
     · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+/-! `execRent` / `execEpochSchedule` are NOT `@[simp]` (their multi-`if` `mem'`
+chokes the blanket sweeps); these `@[simp]` field lemmas + the `regs_of_k`
+closers discharge the sweeps with the exec folded. -/
+
+@[simp] theorem execRent_callStack (s : State) :
+    (execRent s).callStack = s.callStack := by
+  simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl rfl
+@[simp] theorem execRent_regions (s : State) :
+    (execRent s).regions = s.regions := by
+  simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl rfl
+@[simp] theorem execRent_cuBudget (s : State) :
+    (execRent s).cuBudget = s.cuBudget := by
+  simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+@[simp] theorem execRent_heapNext (s : State) :
+    (execRent s).heapNext = s.heapNext := by
+  simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl rfl
+@[simp] theorem execRent_returnData (s : State) :
+    (execRent s).returnData = s.returnData := by
+  simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl rfl
+@[simp] theorem execRent_r10 (s : State) :
+    (execRent s).regs.r10 = s.regs.r10 := by
+  simp only [execRent]
+  exact State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl
+    (RegFile.set_preserves_r10 s.regs .r0 0)
+theorem execRent_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (execRent s).regs := by
+  simp only [execRent]
+  apply State.guardWrite_regs_of_k (motive := motive) (h0 := h0); exact hk
+theorem execRent_faults_oob (s : State)
+    (hoob : s.regions.containsWritable s.regs.r1 17 = false) :
+    (execRent s).vmError = some .accessViolation := by
+  simp only [execRent, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+@[simp] theorem execEpochSchedule_callStack (s : State) :
+    (execEpochSchedule s).callStack = s.callStack := by
+  simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl rfl
+@[simp] theorem execEpochSchedule_regions (s : State) :
+    (execEpochSchedule s).regions = s.regions := by
+  simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl rfl
+@[simp] theorem execEpochSchedule_cuBudget (s : State) :
+    (execEpochSchedule s).cuBudget = s.cuBudget := by
+  simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+@[simp] theorem execEpochSchedule_heapNext (s : State) :
+    (execEpochSchedule s).heapNext = s.heapNext := by
+  simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl rfl
+@[simp] theorem execEpochSchedule_returnData (s : State) :
+    (execEpochSchedule s).returnData = s.returnData := by
+  simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl rfl
+@[simp] theorem execEpochSchedule_r10 (s : State) :
+    (execEpochSchedule s).regs.r10 = s.regs.r10 := by
+  simp only [execEpochSchedule]
+  exact State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl
+    (RegFile.set_preserves_r10 s.regs .r0 0)
+theorem execEpochSchedule_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (execEpochSchedule s).regs := by
+  simp only [execEpochSchedule]
+  apply State.guardWrite_regs_of_k (motive := motive) (h0 := h0); exact hk
+theorem execEpochSchedule_faults_oob (s : State)
+    (hoob : s.regions.containsWritable s.regs.r1 40 = false) :
+    (execEpochSchedule s).vmError = some .accessViolation := by
+  simp only [execEpochSchedule, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 

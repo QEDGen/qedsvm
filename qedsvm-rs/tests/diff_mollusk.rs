@@ -205,6 +205,11 @@ const OOB_CLOCK_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_clock_sysvar.so"
 /// routes the input through `guardRead` and faults. Source in
 /// `oob_set_return_data_src/`.
 const OOB_SET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_set_return_data.so");
+/// Calls `sol_get_rent_sysvar` with a 17-byte output buffer 256 MiB out of
+/// region. agave's `translate_type_mut::<Rent>` traps; post-fix (stage 4c)
+/// `Sysvar.execRent` (de-simp'd) routes the write through `guardWrite` and
+/// faults. Source in `oob_rent_sysvar_src/`.
+const OOB_RENT_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_rent_sysvar.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2805,6 +2810,38 @@ fn oob_set_return_data_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_set_return_data, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_set_return_data");
+}
+
+/// Audit H6 (syscall memory translation, sysvar family / de-simp'd hand-coded
+/// getters, stage 4c). The program calls `sol_get_rent_sysvar` with a 17-byte
+/// output buffer 256 MiB out of region. agave's `translate_type_mut::<Rent>`
+/// traps with `AccessViolation`; post-fix `Sysvar.execRent`'s `guardWrite` on
+/// `[r1, r1 + 17)` VM-faults. Both engines fail alike.
+#[test]
+fn oob_rent_sysvar_fails_on_both() {
+    let program_id = pid(247);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_RENT_SYSVAR_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_rent_sysvar");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_RENT_SYSVAR_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_get_rent_sysvar, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_rent_sysvar");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does
