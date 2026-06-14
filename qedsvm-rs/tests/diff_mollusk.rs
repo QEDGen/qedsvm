@@ -221,6 +221,12 @@ const OOB_GET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_get_return_da
 /// recovery; post-fix (stage 5a) `Secp256k1.exec` routes the hash/sig/output
 /// through `guardRead`/`guardWrite` and faults. Source in `oob_secp256k1_src/`.
 const OOB_SECP256K1_SO: &[u8] = include_bytes!("fixtures/oob_secp256k1.so");
+/// Calls `sol_create_program_address` with zero seeds and a program_id /
+/// output buffer 256 MiB out of region. agave's `translate_slice` traps;
+/// post-fix (stage 5b) `Pda.execCreate` routes the program_id through
+/// `guardRead` and the output + seeds through `guardedCommit` and faults.
+/// Source in `oob_create_pda_src/`.
+const OOB_CREATE_PDA_SO: &[u8] = include_bytes!("fixtures/oob_create_pda.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2922,6 +2928,39 @@ fn oob_secp256k1_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_secp256k1_recover, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_secp256k1");
+}
+
+/// Audit H6 (syscall memory translation, PDA family, stage 5b). The program
+/// calls `sol_create_program_address` with zero seeds and an out-of-region
+/// program_id / output. agave's `translate_slice` traps with `AccessViolation`;
+/// post-fix `Pda.execCreate`'s `guardRead` (program_id) / `guardedCommit`
+/// (output + seeds) VM-faults. Both engines fail alike. Also covers
+/// `sol_try_find_program_address` (`Pda.execTryFind`, same guard envelope).
+#[test]
+fn oob_create_pda_fails_on_both() {
+    let program_id = pid(250);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_CREATE_PDA_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_create_pda");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_CREATE_PDA_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_create_program_address, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_create_pda");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does

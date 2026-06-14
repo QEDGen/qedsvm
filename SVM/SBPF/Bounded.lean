@@ -313,6 +313,50 @@ theorem Poseidon_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (Poseidon.exec s).mem a < 256 := by
   simp only [Poseidon.exec]; exact guardedCommit_mem_lt s _ _ _ _ _ h a
 
+/-- A real byte. (`UInt8.toNat` is the shape every `ByteArray` read in
+    a syscall bulk-write lambda produces.) -/
+theorem byte_toNat_lt (u : UInt8) : u.toNat < 256 := by
+  first
+    | exact u.toNat_lt_size
+    | exact u.toNat_lt
+    | exact Nat.lt_of_lt_of_le u.toBitVec.isLt (by decide)
+
+/-- `execCreate` = `guardRead` (program_id) wrapping `guardedCommit` (output +
+    descriptors + slices + `commitOptional`); its `regs` is `s.regs` (a guard
+    miss) or `set .r0 {0,1}` (commitOptional). The PDA `regs_lt` closer. -/
+theorem Pda_execCreate_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk0 : motive (s.regs.set .r0 0))
+    (hk1 : motive (s.regs.set .r0 1)) :
+    motive (Pda.execCreate s).regs := by
+  simp only [Pda.execCreate]
+  refine State.guardRead_regs_of_k s _ _ _ h0 ?_
+  exact State.guardedCommit_regs_of_k s _ _ _ _ _ h0 hk0 hk1
+
+theorem Pda_execCreate_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (Pda.execCreate s).mem a < 256 := by
+  simp only [Pda.execCreate]
+  refine State.guardRead_mem_lt_of_k s _ _ _ a (h a) ?_
+  exact guardedCommit_mem_lt s _ _ _ _ _ h a
+
+/-- `execTryFind` = three input guards (program_id / descriptors / slices)
+    wrapping a `some` arm (two output guards → PDA + bump write) or a `none`
+    arm (`set .r0 1`). Its `regs` is `s.regs` (a guard miss) or `set .r0 {0,1}`.
+    The PDA-try-find `regs_lt` closer. -/
+theorem Pda_execTryFind_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk0 : motive (s.regs.set .r0 0))
+    (hk1 : motive (s.regs.set .r0 1)) :
+    motive (Pda.execTryFind s).regs := by
+  simp only [Pda.execTryFind]
+  refine State.guardRead_regs_of_k s _ _ _ h0 ?_
+  refine State.guardRead_regs_of_k s _ _ _ h0 ?_
+  refine State.guardSlices_regs_of_k s _ _ _ h0 ?_
+  split
+  · refine State.guardWrite_regs_of_k s _ _ _ h0 ?_
+    refine State.guardWrite_regs_of_k s _ _ _ h0 ?_
+    exact hk0
+  · exact hk1
+
+
 /-- Width-dispatched stores preserve byte-boundedness: every width is a
     chain of `Mem.put`s. -/
 theorem writeByWidth_lt (m : Mem) (addr val : Nat) (w : Width)
@@ -332,13 +376,6 @@ theorem Mem.read_coe (f : Nat → Nat) (a : Nat) : ((f : Mem) : Nat → Nat) a =
   unfold Mem.read
   simp
 
-/-- A real byte. (`UInt8.toNat` is the shape every `ByteArray` read in
-    a syscall bulk-write lambda produces.) -/
-theorem byte_toNat_lt (u : UInt8) : u.toNat < 256 := by
-  first
-    | exact u.toNat_lt_size
-    | exact u.toNat_lt
-    | exact Nat.lt_of_lt_of_le u.toBitVec.isLt (by decide)
 
 /-- Bound for reading ANY constructor-literal `Mem` (the shape a
     syscall's `let mem' : Memory.Mem := fun a => …` coercion produces),
@@ -391,6 +428,26 @@ theorem execEpochSchedule_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat
     | omega
     | exact h _
     | apply ite_lt
+
+/-- `execTryFind` `mem_lt` closer (placed after `Mem.read_mk_lt` / `ite_lt`):
+    peel the three input guards (mem-preserving) → `some` arm's two output
+    guards → the coerced `mem'` lambda (bump byte / 32-byte PDA `writeBytes`);
+    the `none` arm keeps `s.mem`. -/
+theorem Pda_execTryFind_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (Pda.execTryFind s).mem a < 256 := by
+  simp only [Pda.execTryFind]
+  refine State.guardRead_mem_lt_of_k s _ _ _ a (h a) ?_
+  refine State.guardRead_mem_lt_of_k s _ _ _ a (h a) ?_
+  refine State.guardSlices_mem_lt_of_k s _ _ _ a (h a) ?_
+  split
+  · refine State.guardWrite_mem_lt_of_k s _ _ _ a (h a) ?_
+    refine State.guardWrite_mem_lt_of_k s _ _ _ a (h a) ?_
+    apply Mem.read_mk_lt
+    intro x
+    apply ite_lt
+    · exact byte_toNat_lt _
+    · exact writeBytes_lt _ _ _ _ h _
+  · exact h a
 
 /-! ## State-shape preservation lemmas
 
@@ -482,13 +539,27 @@ a status code / length / address — all bounded), and memory (bulk writes
 @[simp] theorem _root_.SVM.SBPF.Pda.execTryFind_heapNext (s : State) :
     (Pda.execTryFind s).heapNext = s.heapNext := by
   simp only [Pda.execTryFind]
-  split <;> rfl
+  refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+    rfl
+  · rfl
 
 /-- `execTryFind` never touches the return data. -/
 @[simp] theorem _root_.SVM.SBPF.Pda.execTryFind_returnData (s : State) :
     (Pda.execTryFind s).returnData = s.returnData := by
   simp only [Pda.execTryFind]
-  split <;> rfl
+  refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+    rfl
+  · rfl
 
 theorem execSyscall_heapNext_le (sc : Syscall) (s : State)
     (h : s.heapNext ≤ 0x300008000) :
@@ -524,7 +595,7 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
           AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
-          Pda.execCreate, Pda.execTryFind, Cpi.exec,
+          Cpi.exec,
           Sysvar.execClock,
           Sysvar.execLastRestartSlot, Sysvar.execFees,
           Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
@@ -559,6 +630,16 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact Poseidon_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
           (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+      -- PDA create: `guardRead` (program_id) wrapping `guardedCommit`; folded
+      -- exec, regs = s.regs / set .r0 {0,1}.
+      | exact Pda_execCreate_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+          (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+      -- PDA try-find: input guards wrapping a some/none body; regs = s.regs /
+      -- set .r0 {0,1}.
+      | exact Pda_execTryFind_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+          (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
       -- rent / epoch_schedule (de-simp'd, out of roster): folded exec, set .r0 0.
       | exact Sysvar.execRent_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
@@ -585,7 +666,7 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
           AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
-          Pda.execCreate, Pda.execTryFind, Cpi.exec,
+          Cpi.exec,
           Sysvar.execClock,
           Sysvar.execLastRestartSlot, Sysvar.execFees,
           Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
@@ -608,6 +689,8 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact Keccak256_exec_mem_lt s hb.mem_lt a
       | exact Blake3_exec_mem_lt s hb.mem_lt a
       | exact Poseidon_exec_mem_lt s hb.mem_lt a
+      | exact Pda_execCreate_mem_lt s hb.mem_lt a
+      | exact Pda_execTryFind_mem_lt s hb.mem_lt a
       -- rent / epoch_schedule (de-simp'd, out of roster): head-match on the
       -- folded exec; its lambda write is byte-bounded.
       | exact execRent_mem_lt s hb.mem_lt a

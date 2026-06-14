@@ -533,7 +533,14 @@ def Insn.isCallLocal : Insn → Bool
 @[simp] theorem execTryFind_preserves_callStack (s : State) :
     (Pda.execTryFind s).callStack = s.callStack := by
   simp only [Pda.execTryFind]
-  split <;> simp
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+    rfl
+  · rfl
 
 /-- `execSyscall` never modifies `callStack`. The CPI-stub
     `Cpi.exec` just sets `r0 := 0`; all other syscalls touch only
@@ -695,7 +702,14 @@ the intermediate state's budget equals the initial one. -/
 @[simp] theorem execTryFind_preserves_cuBudget (s : State) :
     (Pda.execTryFind s).cuBudget = s.cuBudget := by
   simp only [Pda.execTryFind]
-  split <;> simp
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+    rfl
+  · rfl
 
 @[simp] theorem execSyscall_preserves_cuBudget (sc : Syscall) (s : State) :
     (execSyscall sc s).cuBudget = s.cuBudget := by
