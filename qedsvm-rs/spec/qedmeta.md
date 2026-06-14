@@ -100,8 +100,8 @@ Top-level fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `schema_version` | int | Bumped on breaking changes |
-| `spec_version` | string | Human-readable version tag (`"qedmeta/0.1"`) |
+| `schema_version` | int | Bumped on breaking changes. **v2** (issue #41): qedlift now CONSUMES `[instruction.recovered].arm_entry_pc` to seed/cross-check its walk instead of re-deriving the arm. v1 (or unset) sidecars still load — `recovered` is optional and its absence degrades to the disc-guided walk. A sidecar declaring a version newer than the consumer understands is rejected. |
+| `spec_version` | string | Human-readable version tag (`"qedmeta/0.2"`) |
 
 ## Extension points reserved in v0.1
 

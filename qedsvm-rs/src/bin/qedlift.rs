@@ -89,12 +89,22 @@ struct Args {
 }
 
 // -----------------------------------------------------------------------------
-// qedmeta sidecar (subset). Only the fields qedlift needs for targeting;
-// serde ignores the rest (target/idl/account/recovered/blocks).
+// qedmeta sidecar (subset). qedlift reads targeting (name/discriminator/
+// cu_budget) AND, as of schema v2 (issue #41 Phase 4), the qedrecover
+// `[instruction.recovered]` arm decomposition — previously dropped and
+// re-derived via a disc-guided walk. serde ignores undeclared fields
+// (target/idl/account/blocks/proofs), so v0.1 sidecars still parse.
 // -----------------------------------------------------------------------------
+
+/// Newest sidecar schema qedlift understands. v1 = targeting only; v2 =
+/// recovered arm decomposition consumed (this commit). Older sidecars
+/// (no `recovered`) still load — the walk falls back to disc-guided.
+const QEDMETA_SCHEMA_MAX: u32 = 2;
 
 #[derive(Debug, serde::Deserialize)]
 struct QedMeta {
+    #[serde(default)]
+    schema_version: u32,
     #[serde(rename = "instruction")]
     instructions: Vec<QedMetaIx>,
 }
@@ -105,6 +115,12 @@ struct QedMetaIx {
     #[allow(dead_code)] refines: Option<String>,
     cu_budget:     Option<u64>,
     discriminator: QedMetaDisc,
+    /// Recovered facts qedrecover computed over the CFG and serialized
+    /// here. qedlift now CONSUMES `arm_entry_pc` to seed/validate its
+    /// walk instead of re-deriving the arm (the issue's "lossy handoff").
+    /// `None` for v0.1 sidecars that predate this section.
+    #[serde(default)]
+    recovered: Option<QedMetaRecovered>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -112,9 +128,32 @@ struct QedMetaDisc {
     value: i64,
 }
 
+/// The `[instruction.recovered]` sub-table. Only `arm_entry_pc` is
+/// consumed today (the dispatch PCs are kept for diagnostics/symmetry;
+/// `block_count`/`blocks`/etc. are left to serde to ignore).
+#[derive(Debug, serde::Deserialize)]
+struct QedMetaRecovered {
+    /// LOGICAL arm-entry PC (decoded-array index — the same space as the
+    /// walker and `.pcs` traces, NOT a raw slot).
+    arm_entry_pc: usize,
+    #[allow(dead_code)] #[serde(default)] dispatch_load_pc: Option<usize>,
+    #[allow(dead_code)] #[serde(default)] dispatch_jeq_pc: Option<usize>,
+}
+
 fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(path)?;
-    Ok(toml::from_str(&text)?)
+    let meta: QedMeta = toml::from_str(&text)?;
+    // A sidecar declaring a NEWER schema than we understand may carry
+    // semantics we'd silently mis-consume — fail closed. Older (or
+    // unset, == 0) versions are fine: the `recovered` field is optional
+    // and absent fields degrade to the disc-guided fallback.
+    if meta.schema_version > QEDMETA_SCHEMA_MAX {
+        return Err(format!(
+            "--qedmeta {}: schema_version {} is newer than this qedlift \
+             understands (max {})",
+            path.display(), meta.schema_version, QEDMETA_SCHEMA_MAX).into());
+    }
+    Ok(meta)
 }
 
 // -----------------------------------------------------------------------------
@@ -264,7 +303,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load counter.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse counter.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("Counter".to_string()),
-            None, Some("counterIncrement"), None).expect("lift counter.so");
+            None, Some("counterIncrement"), None, None).expect("lift counter.so");
 
         let lift_on_disk =
             std::fs::read_to_string("../examples/lean/Generated/CounterTracedLifted.lean")
@@ -295,7 +334,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load vault.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("Vault".to_string()),
-            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault.so");
+            None, Some("VaultIncrement"), Some(&idl), None).expect("lift vault.so");
 
         let lift_on_disk =
             std::fs::read_to_string("../examples/lean/Generated/VaultTracedLifted.lean")
@@ -328,7 +367,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load vault.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("VaultBlob".to_string()),
-            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault.so (blob)");
+            None, Some("VaultIncrement"), Some(&idl), None).expect("lift vault.so (blob)");
 
         let lift_on_disk =
             std::fs::read_to_string("../examples/lean/Generated/VaultBlobTracedLifted.lean")
@@ -361,7 +400,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load vault_split.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_split.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("VaultSplit".to_string()),
-            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault_split.so");
+            None, Some("VaultIncrement"), Some(&idl), None).expect("lift vault_split.so");
 
         let lift_path = "../examples/lean/Generated/VaultSplitTracedLifted.lean";
         let refine_path = "../examples/lean/Generated/VaultSplitRefinement.lean";
@@ -388,7 +427,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load heap_alloc.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse heap_alloc.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("HeapAlloc".to_string()),
-            None, None, None).expect("lift heap_alloc.so");
+            None, None, None, None).expect("lift heap_alloc.so");
 
         let on_disk =
             std::fs::read_to_string("../examples/lean/Generated/HeapAllocLifted.lean")
@@ -406,7 +445,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load halfword_store.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse halfword_store.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("HalfwordStore".to_string()),
-            None, None, None).expect("lift halfword_store.so");
+            None, None, None, None).expect("lift halfword_store.so");
 
         let on_disk =
             std::fs::read_to_string("../examples/lean/Generated/HalfwordStoreLifted.lean")
@@ -414,6 +453,84 @@ mod layout_tests {
         assert_eq!(result.lean, on_disk,
             "HalfwordStoreLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
+    }
+
+    // ── #41 Phase 4: qedlift consumes the recovered arm entry ──────────
+
+    /// The qedmeta deserializer now READS the `[instruction.recovered]`
+    /// arm decomposition it used to drop (issue #41 grievance #2). The
+    /// real p_token sidecar's `arm_entry_pc` must parse as logical 304
+    /// (the post slot/logical-bug value the `transfer_arm_entry_spaces`
+    /// pin establishes).
+    #[test]
+    fn qedmeta_recovered_arm_is_parsed() {
+        let meta = load_qedmeta(std::path::Path::new("tests/fixtures/p_token.qedmeta.toml"))
+            .expect("load p_token.qedmeta.toml");
+        let transfer = meta.instructions.iter().find(|i| i.name == "transfer")
+            .expect("transfer instruction present in sidecar");
+        let rec = transfer.recovered.as_ref()
+            .expect("transfer carries [instruction.recovered] (dropped pre-#41)");
+        assert_eq!(rec.arm_entry_pc, 304, "recovered arm entry must be logical 304");
+    }
+
+    /// Feeding the recovered arm entry (304) into a trace-guided transfer
+    /// lift CROSS-CHECKS the trace reaches it AND leaves the emitted Lean
+    /// byte-identical to the trace-only path — the sidecar value is
+    /// consumed without perturbing output. Run on the real p_token binary.
+    #[test]
+    fn qedmeta_arm_entry_trace_lift_is_byte_identical() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer.pcs"))
+            .expect("load transfer trace");
+        let result = lift_one(so, &ctx, &analysis, None,
+            Some("PTokenTransfer".to_string()), Some(&trace), Some("Transfer"),
+            None, Some(304)).expect("lift transfer with recovered arm");
+        let on_disk = std::fs::read_to_string(
+            "../examples/lean/Generated/PTokenTransferTracedLifted.lean")
+            .expect("read PTokenTransferTracedLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "consuming arm_entry perturbed the trace-guided transfer lift");
+    }
+
+    /// The cross-check fires: a recovered arm entry that is NOT on the
+    /// execution trace is a sidecar/binary/trace mismatch and must be
+    /// rejected, not silently lifted against the wrong arm.
+    #[test]
+    fn qedmeta_arm_entry_off_trace_is_rejected() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer.pcs"))
+            .expect("load transfer trace");
+        let err = lift_one(so, &ctx, &analysis, None,
+            Some("PTokenTransfer".to_string()), Some(&trace), Some("Transfer"),
+            None, Some(999_999));
+        assert!(err.is_err(),
+            "an off-trace recovered arm_entry must be rejected by the cross-check");
+    }
+
+    /// No-trace seed mechanism: supplying the recovered arm entry SEEDS
+    /// the static walk's start PC (replacing the disc-guided cascade
+    /// navigation). Seeding it at the natural entrypoint must therefore
+    /// reproduce the unseeded walk byte-for-byte — pinning that the seed
+    /// consumes the supplied value and that `unwrap_or(entry_pc)` is the
+    /// faithful fallback. (A non-entrypoint seed can't be pinned on
+    /// p_token: its arm has `call_local`s the no-trace walk can't resolve
+    /// without trace guidance, a pre-existing limitation.)
+    #[test]
+    fn qedmeta_arm_entry_seed_at_entrypoint_is_noop() {
+        let so = std::path::Path::new("tests/fixtures/heap_alloc.so");
+        let ctx = load_binary(so).expect("load heap_alloc.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse heap_alloc.so");
+        let entry = ctx.executable.get_entrypoint_instruction_offset();
+        let base = lift_one(so, &ctx, &analysis, None, Some("HeapAlloc".to_string()),
+            None, None, None, None).expect("base lift");
+        let seeded = lift_one(so, &ctx, &analysis, None, Some("HeapAlloc".to_string()),
+            None, None, None, Some(entry)).expect("seeded lift");
+        assert_eq!(base.lean, seeded.lean,
+            "seeding the walk at the entrypoint must equal the unseeded walk");
     }
 
     /// Re-emit one p_token trace-guided arm and diff the lift (and,
@@ -431,7 +548,7 @@ mod layout_tests {
             .expect("analyse p_token.so");
         let trace = load_trace(std::path::Path::new(pcs)).expect("load trace");
         let result = lift_one(so, &ctx, &analysis, None,
-            Some(module.to_string()), Some(&trace), arm, None)
+            Some(module.to_string()), Some(&trace), arm, None, None)
             .expect("lift p_token arm");
 
         // Set QEDLIFT_BLESS=1 to rewrite the pinned artifacts from the
@@ -6063,6 +6180,14 @@ fn lift_one(
     trace:           Option<&[usize]>,
     arm_name:        Option<&str>,
     idl:             Option<&serde_json::Value>,
+    // Recovered LOGICAL arm-entry PC from the qedrecover sidecar
+    // (`[instruction.recovered].arm_entry_pc`), issue #41 Phase 4. When
+    // present it is the authoritative arm head: it SEEDS the no-trace
+    // static walk (replacing the fragile disc-guided cascade navigation)
+    // and CROSS-CHECKS a trace-guided walk (the trace must reach it).
+    // `None` reproduces the prior behaviour exactly (disc-walk / trace
+    // as-is), so every pre-#41 call site stays byte-identical.
+    arm_entry:       Option<usize>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
     let text_offset = ctx.text_offset;
@@ -6290,8 +6415,27 @@ fn lift_one(
         // is the cursor into it and `pc_iter` mirrors `trace[ti]`.
         let mut ti: usize = 0;
         let mut pc_iter: usize = match trace {
-            Some(t) => t[0], // load_trace guarantees non-empty
-            None     => entry_pc,
+            Some(t) => {
+                // #41 Phase 4: when the sidecar supplies the recovered arm
+                // entry, cross-check that the recorded path actually reaches
+                // it — a trace/sidecar/binary mismatch otherwise lifts a
+                // chain the sidecar's claims don't describe. Consumes the
+                // recovered fact without changing the walk (output identical).
+                if let Some(arm) = arm_entry {
+                    if !t.contains(&arm) {
+                        return Err(format!(
+                            "qedmeta/trace mismatch: recovered arm_entry_pc {} \
+                             is not on the execution trace (the sidecar describes \
+                             a different arm than the trace executes)", arm).into());
+                    }
+                }
+                t[0] // load_trace guarantees non-empty
+            }
+            // #41 Phase 4: no trace — seed the static walk from the
+            // recovered arm entry instead of re-deriving it by navigating
+            // the dispatcher cascade from the entrypoint. Falls back to
+            // `entry_pc` (the disc-guided walk) when no arm was supplied.
+            None => arm_entry.unwrap_or(entry_pc),
         };
         // Safety cap on walk length. Without this, an unmodelled
         // back-branch (e.g. a copy loop whose conditional jump we
@@ -7363,9 +7507,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for ix in selected {
             let arm = pascal_case(&ix.name);
             let module_name = format!("{}{}", so_stem, arm);
+            // #41 Phase 4: consume the recovered arm entry instead of
+            // dropping it — seeds the no-trace walk, cross-checks a trace.
+            let arm_entry = ix.recovered.as_ref().map(|r| r.arm_entry_pc);
             let result = lift_one(&args.so, &ctx, &analysis,
                 Some(ix.discriminator.value), Some(module_name.clone()),
-                trace.as_deref(), Some(&arm), idl_value.as_ref())?;
+                trace.as_deref(), Some(&arm), idl_value.as_ref(), arm_entry)?;
 
             // Cross-check the claimed CU budget against the lifted triple.
             // The budget is an upper bound on the verified CU; the lifted
@@ -7433,7 +7580,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // opcode (in either the .text renderer or the symbolic
             // executor) is reported and skipped, not fatal. This makes
             // the batch a coverage probe.
-            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value.as_ref()) {
+            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value.as_ref(), None) {
                 Ok(result) => {
                     let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
                     if let Some(parent) = out_path.parent() {
@@ -7464,7 +7611,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Single-instruction mode (unchanged behaviour).
     let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone(),
-                          trace.as_deref(), args.arm_name.as_deref(), idl_value.as_ref())?;
+                          trace.as_deref(), args.arm_name.as_deref(), idl_value.as_ref(), None)?;
     match args.output {
         Some(path) => {
             if let Some(parent) = path.parent() {

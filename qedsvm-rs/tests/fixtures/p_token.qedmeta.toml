@@ -17,8 +17,8 @@
 #
 # Schema: see qedsvm-rs/spec/qedmeta.md.
 
-schema_version = 1
-spec_version   = "qedmeta/0.1"
+schema_version = 2
+spec_version   = "qedmeta/0.2"
 
 # ---------------------------------------------------------------- target
 # Binds this sidecar to one specific deployed .so. Verifier fails fast
