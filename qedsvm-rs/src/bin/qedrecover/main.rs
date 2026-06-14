@@ -25,6 +25,8 @@ use solana_sbpf::{
     vm::ContextObject,
 };
 
+use qedsvm::analysis::PcMap;
+
 // -----------------------------------------------------------------------------
 // Overlay (qedsvm-specific layer over the IDL)
 // -----------------------------------------------------------------------------
@@ -143,15 +145,6 @@ fn parse_args() -> Result<Args, String> {
         output,
         trace,
     })
-}
-
-/// Convert a slot PC (raw insn-slot index — `cfg_nodes` keys, jump
-/// targets) to a logical PC (index into `analysis.instructions`, the
-/// numbering Lean decode / qedlift / `.pcs` traces use). The two
-/// spaces agree up to the first `lddw` (two slots, one element) and
-/// drift after it. `None` when the slot isn't an instruction start.
-fn slot_to_logical(analysis: &Analysis, slot: usize) -> Option<usize> {
-    analysis.instructions.binary_search_by(|i| i.ptr.cmp(&slot)).ok()
 }
 
 /// Classify a constant error-exit block. Three tail shapes, all
@@ -418,6 +411,7 @@ fn emit_lean<W: std::io::Write>(
     ovix:       &OverlayIx,
     idl_ix:     &IdlInstruction,
     analysis:   &Analysis,
+    pc_map:     &PcMap,
     disc_value: i64,
     disc_size:  usize,
     load_pc:    usize,
@@ -518,7 +512,7 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "  [")?;
     for (i, b) in arm_blocks.iter().enumerate() {
         let dests = b.destinations.iter()
-            .map(|&d| slot_to_logical(analysis, d).unwrap_or(d).to_string())
+            .map(|&d| pc_map.slot_to_logical(d).unwrap_or(d).to_string())
             .collect::<Vec<_>>()
             .join(", ");
         let sep = if i + 1 < arm_blocks.len() { "," } else { "" };
@@ -725,6 +719,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let loader = Arc::new(BuiltinProgram::new_mock());
     let executable: Executable<NoopCtx> = Executable::load(&bytes, loader)?;
     let analysis = Analysis::from_executable(&executable)?;
+    // One slot<->logical converter, shared with qedlift. Derived from
+    // the decoded insn list; `pc_map_matches_analysis_ptrs` pins that it
+    // agrees with `analysis.instructions[].ptr` (issue #41).
+    let pc_map = PcMap::from_insns(&analysis.instructions);
 
     // 4. Sanity dump.
     println!("=== inputs ===");
@@ -784,7 +782,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(r) => {
                 recovered_ok += 1;
                 let dpc = format!("{}/{}", r.load_pc, r.jeq_pc);
-                let arm_logical = slot_to_logical(&analysis, r.arm_entry)
+                let arm_logical = pc_map.slot_to_logical(r.arm_entry)
                     .unwrap_or(r.arm_entry);
                 println!("  {:24}  {:>4}  {:>15}  {:>6}  {:>5}  {:>5}  {}",
                          idl_ix.name, r.disc_value, dpc, arm_logical,
@@ -929,7 +927,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // `load_pc`/`jeq_pc` are logical (decoded-array index);
                 // `arm_entry` is a slot PC (the space cfg_nodes/slicing
                 // use). Report the logical arm entry alongside.
-                let arm_entry_logical = slot_to_logical(&analysis, arm_entry)
+                let arm_entry_logical = pc_map.slot_to_logical(arm_entry)
                     .unwrap_or(arm_entry);
                 println!("    dispatch:");
                 println!("      discriminator load:  pc {}", load_pc);
@@ -1010,7 +1008,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(path) = &args.output {
                     let mut f = std::fs::File::create(path)?;
                     emit_lean(&mut f, &args, &overlay, ovix, idl_ix,
-                              &analysis, disc_value, disc_size,
+                              &analysis, &pc_map, disc_value, disc_size,
                               load_pc, jeq_pc, arm_entry_logical, &arm_blocks,
                               &idiom_tags, trace_pcs.as_ref())?;
                     println!();
@@ -1022,7 +1020,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let stdout = std::io::stdout();
                     let mut lock = stdout.lock();
                     emit_lean(&mut lock, &args, &overlay, ovix, idl_ix,
-                              &analysis, disc_value, disc_size,
+                              &analysis, &pc_map, disc_value, disc_size,
                               load_pc, jeq_pc, arm_entry_logical, &arm_blocks,
                               &idiom_tags, trace_pcs.as_ref())?;
                 }
@@ -1063,7 +1061,8 @@ mod tests {
 
         assert_eq!((load_pc, jeq_pc), (198, 199), "dispatcher site moved");
         assert_eq!(arm_entry_slot, 336, "arm entry must be a slot PC");
-        assert_eq!(slot_to_logical(&analysis, arm_entry_slot), Some(304),
+        let pc_map = PcMap::from_insns(&analysis.instructions);
+        assert_eq!(pc_map.slot_to_logical(arm_entry_slot), Some(304),
             "slot 336 must resolve to logical 304 (the PC the trace jumps to)");
 
         // The slice rooted at the slot entry must contain the blocks the
@@ -1090,6 +1089,34 @@ mod tests {
         assert_eq!(codes.len(), 9, "constant-exit block count drifted");
         assert!(codes.iter().all(|&c| c == 0),
             "transfer arm has no constant nonzero exits; got {:?}", codes);
+    }
+
+    /// Pins the issue-#41 invariant that the shared `PcMap` (built from
+    /// the decoded insn list) agrees with sbpf's own `analysis
+    /// .instructions[].ptr` numbering on the real p_token binary — the
+    /// equivalence that lets qedrecover swap its former
+    /// `binary_search`-over-`.ptr` `slot_to_logical` for the shared
+    /// converter byte-identically. Checks the full round trip in both
+    /// directions over every instruction.
+    #[test]
+    fn pc_map_matches_analysis_ptrs() {
+        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let loader = Arc::new(BuiltinProgram::new_mock());
+        let executable: Executable<NoopCtx> =
+            Executable::load(&bytes, loader).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&executable).expect("analyse p_token.so");
+
+        let pc_map = PcMap::from_insns(&analysis.instructions);
+        assert_eq!(pc_map.logical_len(), analysis.instructions.len(),
+            "shared PcMap covers a different instruction count than analysis");
+        for (logical, insn) in analysis.instructions.iter().enumerate() {
+            // logical -> slot agrees with sbpf's recorded ptr.
+            assert_eq!(pc_map.logical_to_slot(logical), Some(insn.ptr),
+                "logical {} maps to a different slot than analysis .ptr", logical);
+            // slot -> logical inverts it (matches the old binary_search result).
+            assert_eq!(pc_map.slot_to_logical(insn.ptr), Some(logical),
+                "slot {} (logical {}) failed to round-trip", insn.ptr, logical);
+        }
     }
 
     /// The constant ERROR landings live in the entrypoint prelude:

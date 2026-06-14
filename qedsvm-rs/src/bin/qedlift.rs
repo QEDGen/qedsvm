@@ -40,6 +40,8 @@ use solana_sbpf::{
     vm::ContextObject,
 };
 
+use qedsvm::analysis::PcMap;
+
 struct NoopCtx;
 impl ContextObject for NoopCtx {
     fn consume(&mut self, _amount: u64) {}
@@ -906,10 +908,8 @@ fn resolve_call_target_logical(
     ctx: &BinaryCtx, analysis: &Analysis, insn: &ebpf::Insn,
 ) -> Option<usize> {
     let slot = resolve_call_target(analysis, insn)?;
-    match ctx.slot_to_logical.get(slot) {
-        Some(Some(logical)) => Some(*logical),
-        _ => Some(slot), // out of range / mid-lddw: fall back (fail loudly downstream)
-    }
+    // out of range / mid-lddw: fall back to the slot (fail loudly downstream).
+    Some(ctx.pc_map.slot_to_logical(slot).unwrap_or(slot))
 }
 
 /// Render a symbolic call stack as a Lean `List CallFrame` literal,
@@ -4729,17 +4729,11 @@ struct BinaryCtx {
     text_offset: u64,
     text_bytes:  Vec<u8>,
     insns:       Vec<ebpf::Insn>,
-    /// `logical_to_slot[i]` = the 8-byte slot index where logical
-    /// instruction `insns[i]` begins. lddw occupies 2 slots, so the
-    /// logical index and slot index diverge once any lddw appears.
-    logical_to_slot: Vec<usize>,
-    /// `slot_to_logical[s]` = the logical index of the instruction
-    /// occupying slot `s` (both slots of an lddw map to its logical
-    /// index). `None` for slots past the end. Mirror of the slotMap
-    /// in `SVM/SBPF/Decode.lean` pass 1 — needed because jump `off`
-    /// fields are slot-relative but our `insns`/CodeReq PCs are
-    /// logical indices.
-    slot_to_logical: Vec<Option<usize>>,
+    /// Slot<->logical PC converter (shared with qedrecover via
+    /// `qedsvm::analysis::PcMap`). Needed because jump `off` fields are
+    /// slot-relative but our `insns`/CodeReq PCs are logical indices;
+    /// mirrors the slot map in `SVM/SBPF/Decode.lean` pass 1.
+    pc_map:      PcMap,
 }
 
 /// Resolve a slot-relative jump from logical PC `logical_pc` with raw
@@ -4749,21 +4743,7 @@ struct BinaryCtx {
 /// to `logical_pc + 1 + off` when the maps don't cover the PC (e.g.
 /// the synthetic two_op fixture has no lddw, so slot == logical).
 fn resolve_jump_target(ctx: &BinaryCtx, logical_pc: usize, off: i64) -> i64 {
-    match ctx.logical_to_slot.get(logical_pc) {
-        Some(&slot) => {
-            let target_slot = slot as i64 + 1 + off;
-            if target_slot < 0 {
-                return target_slot; // out of range; render as-is to fail loudly
-            }
-            match ctx.slot_to_logical.get(target_slot as usize) {
-                Some(Some(logical)) => *logical as i64,
-                // Target slot is past the end (e.g. exit fall-off) or the
-                // middle of an lddw (malformed) — fall back to the raw sum.
-                _ => target_slot,
-            }
-        }
-        None => logical_pc as i64 + 1 + off,
-    }
+    ctx.pc_map.resolve_jump_target(logical_pc, off)
 }
 
 /// The V0 function registry (murmur3 key → target SLOT index) that
@@ -4828,8 +4808,6 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
         (o, b.to_vec())
     };
     let mut insns = Vec::new();
-    let mut logical_to_slot = Vec::new();
-    let mut slot_to_logical: Vec<Option<usize>> = Vec::new();
     let mut pc = 0;
     while pc * ebpf::INSN_SIZE < text_bytes.len() {
         let mut insn = ebpf::get_insn(&text_bytes, pc);
@@ -4840,18 +4818,14 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
         if opc == ebpf::LD_DW_IMM {
             ebpf::augment_lddw_unchecked(&text_bytes, &mut insn);
         }
-        let logical = insns.len();
-        logical_to_slot.push(pc);
         let span = if opc == ebpf::LD_DW_IMM { 2 } else { 1 };
-        // Map every slot this instruction occupies back to its logical index.
-        for s in pc..pc + span {
-            while slot_to_logical.len() <= s { slot_to_logical.push(None); }
-            slot_to_logical[s] = Some(logical);
-        }
         insns.push(insn);
         pc += span;
     }
-    Ok(BinaryCtx { executable, text_offset, text_bytes, insns, logical_to_slot, slot_to_logical })
+    // One slot<->logical converter, derived from the decoded insns
+    // (shared with qedrecover; see `qedsvm::analysis::PcMap`).
+    let pc_map = PcMap::from_insns(&insns);
+    Ok(BinaryCtx { executable, text_offset, text_bytes, insns, pc_map })
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -6826,7 +6800,7 @@ fn lift_one(
                 let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
                 insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
             };
-            let byte_off = ctx.logical_to_slot[pc] * 8;
+            let byte_off = ctx.pc_map.logical_to_slot(pc).expect("logical pc in range") * 8;
             let sz = if insns[pc].opc == 0x18 { 16 } else { 8 };
             pin_offs.push(byte_off.to_string());
             pin_exps.push(format!("some ({}, {})", lean_insn, sz));

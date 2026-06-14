@@ -24,6 +24,12 @@ mod wire;
 #[cfg(feature = "diff-mollusk")]
 pub mod diff;
 
+/// Shared program-analysis substrate for the qedlift / qedrecover
+/// pipeline (issue #41). Only compiled under the `qedrecover` feature,
+/// same gate as the `solana-sbpf` dependency it analyses through.
+#[cfg(feature = "qedrecover")]
+pub mod analysis;
+
 pub use deserialize::{deserialize_account_writes, DeserializeError};
 pub use serialize::{serialize_parameters, SerializeError};
 pub use svm::{vm_fault_name, InstructionResult, PostStateError, ProgramResult, Svm,
