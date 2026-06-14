@@ -1,0 +1,359 @@
+# qedmeta sidecar — emitted by qedrecover (do not edit by hand).
+# Schema: see qedsvm-rs/spec/qedmeta.md.
+
+schema_version = 2
+spec_version   = "qedmeta/0.2"
+
+[target]
+sha256       = "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697"
+program_name = "token"
+program_id   = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+
+[idl]
+format = "codama"
+inline = false
+ref    = "spl_token.codama.json"
+sha256 = "c89ff1397238d09605423e2012e2d2d0a919ef469133df5b4127fd4348484994"
+
+[[instruction]]
+name      = "transfer"
+refines   = "Mir.tokenTransfer"
+cu_budget = 76
+
+[instruction.discriminator]
+value       = 3
+width_bytes = 1
+format      = "u8"
+
+[[instruction.account]]
+name     = "source"
+writable = true
+signer   = false
+[[instruction.account]]
+name     = "destination"
+writable = true
+signer   = false
+[[instruction.account]]
+name     = "authority"
+writable = false
+signer   = "either"
+
+[instruction.recovered]
+dispatch_load_pc   = 198
+dispatch_jeq_pc    = 199
+arm_entry_pc       = 304
+enclosing_func_pc  = 198
+block_count        = 1940
+total_instructions = 6498
+blocks = []
+
+[[instruction.idiom]]
+pc      = 198
+pattern = "read_discriminator"
+detail  = "width=1"
+[[instruction.idiom]]
+pc      = 1286
+pattern = "error_propagation_check"
+detail  = "call_pc=1286 test_pc=1288"
+[[instruction.idiom]]
+pc      = 1400
+pattern = "error_propagation_check"
+detail  = "call_pc=1400 test_pc=1402"
+[[instruction.idiom]]
+pc      = 1514
+pattern = "error_propagation_check"
+detail  = "call_pc=1514 test_pc=1516"
+[[instruction.idiom]]
+pc      = 1571
+pattern = "error_propagation_check"
+detail  = "call_pc=1571 test_pc=1573"
+[[instruction.idiom]]
+pc      = 1709
+pattern = "error_propagation_check"
+detail  = "call_pc=1709 test_pc=1711"
+[[instruction.idiom]]
+pc      = 1732
+pattern = "error_propagation_check"
+detail  = "call_pc=1732 test_pc=1734"
+[[instruction.idiom]]
+pc      = 1775
+pattern = "u64_field_increment"
+detail  = "base=r3 off=152 amount=r5"
+[[instruction.idiom]]
+pc      = 1796
+pattern = "u64_field_decrement"
+detail  = "base=r2 off=124 amount=r4"
+[[instruction.idiom]]
+pc      = 1817
+pattern = "u64_field_increment"
+detail  = "base=r3 off=152 amount=r5"
+[[instruction.idiom]]
+pc      = 1822
+pattern = "u64_field_decrement"
+detail  = "base=r4 off=72 amount=r5"
+[[instruction.idiom]]
+pc      = 1825
+pattern = "u64_field_increment"
+detail  = "base=r3 off=72 amount=r5"
+[[instruction.idiom]]
+pc      = 1844
+pattern = "u64_field_increment"
+detail  = "base=r3 off=72 amount=r2"
+[[instruction.idiom]]
+pc      = 1950
+pattern = "u64_field_decrement"
+detail  = "base=r2 off=124 amount=r4"
+[[instruction.idiom]]
+pc      = 1966
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2080 amount=r3"
+[[instruction.idiom]]
+pc      = 2722
+pattern = "u64_field_increment"
+detail  = "base=r3 off=152 amount=r5"
+[[instruction.idiom]]
+pc      = 2727
+pattern = "u64_field_decrement"
+detail  = "base=r4 off=72 amount=r5"
+[[instruction.idiom]]
+pc      = 2730
+pattern = "u64_field_increment"
+detail  = "base=r3 off=72 amount=r5"
+[[instruction.idiom]]
+pc      = 3526
+pattern = "error_propagation_check"
+detail  = "call_pc=3526 test_pc=3528"
+[[instruction.idiom]]
+pc      = 4085
+pattern = "error_propagation_check"
+detail  = "call_pc=4085 test_pc=4087"
+[[instruction.idiom]]
+pc      = 4198
+pattern = "error_propagation_check"
+detail  = "call_pc=4198 test_pc=4200"
+[[instruction.idiom]]
+pc      = 4254
+pattern = "error_propagation_check"
+detail  = "call_pc=4254 test_pc=4256"
+[[instruction.idiom]]
+pc      = 4365
+pattern = "error_propagation_check"
+detail  = "call_pc=4365 test_pc=4367"
+[[instruction.idiom]]
+pc      = 4508
+pattern = "error_propagation_check"
+detail  = "call_pc=4508 test_pc=4510"
+[[instruction.idiom]]
+pc      = 4547
+pattern = "u64_field_increment"
+detail  = "base=r3 off=72 amount=r4"
+[[instruction.idiom]]
+pc      = 4667
+pattern = "u64_field_increment"
+detail  = "base=r3 off=152 amount=r8"
+[[instruction.idiom]]
+pc      = 4673
+pattern = "u64_field_decrement"
+detail  = "base=r5 off=72 amount=r8"
+[[instruction.idiom]]
+pc      = 4676
+pattern = "u64_field_increment"
+detail  = "base=r3 off=72 amount=r8"
+[[instruction.idiom]]
+pc      = 4755
+pattern = "u64_field_increment"
+detail  = "base=r3 off=152 amount=r4"
+[[instruction.idiom]]
+pc      = 4789
+pattern = "u64_field_decrement"
+detail  = "base=r3 off=124 amount=r5"
+[[instruction.idiom]]
+pc      = 4820
+pattern = "u64_field_increment"
+detail  = "base=r1 off=10664 amount=r2"
+[[instruction.idiom]]
+pc      = 4826
+pattern = "u64_field_decrement"
+detail  = "base=r1 off=80 amount=r2"
+[[instruction.idiom]]
+pc      = 4829
+pattern = "u64_field_increment"
+detail  = "base=r1 off=10584 amount=r2"
+[[instruction.idiom]]
+pc      = 5058
+pattern = "u64_field_increment"
+detail  = "base=r1 off=21088 amount=r2"
+[[instruction.idiom]]
+pc      = 5064
+pattern = "u64_field_decrement"
+detail  = "base=r1 off=80 amount=r2"
+[[instruction.idiom]]
+pc      = 5067
+pattern = "u64_field_increment"
+detail  = "base=r1 off=21008 amount=r2"
+[[instruction.idiom]]
+pc      = 5105
+pattern = "u64_field_decrement"
+detail  = "base=r3 off=124 amount=r4"
+[[instruction.idiom]]
+pc      = 5527
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2096 amount=r1"
+[[instruction.idiom]]
+pc      = 5634
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2120 amount=r1"
+[[instruction.idiom]]
+pc      = 5745
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2112 amount=r1"
+[[instruction.idiom]]
+pc      = 5829
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2120 amount=r1"
+[[instruction.idiom]]
+pc      = 6130
+pattern = "u64_field_increment"
+detail  = "base=r3 off=72 amount=r4"
+[[instruction.idiom]]
+pc      = 6148
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2112 amount=r1"
+[[instruction.idiom]]
+pc      = 6262
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2128 amount=r1"
+[[instruction.idiom]]
+pc      = 6346
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2112 amount=r1"
+[[instruction.idiom]]
+pc      = 6555
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2112 amount=r1"
+[[instruction.idiom]]
+pc      = 6684
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2112 amount=r1"
+[[instruction.idiom]]
+pc      = 6782
+pattern = "u64_field_increment"
+detail  = "base=r10 off=-2112 amount=r1"
+
+[[instruction.const_exit]]
+block_start = 4288
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 3583
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 4119
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 4523
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 4546
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 4328
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 4786
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 4159
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 4754
+exit_code   = 0
+role        = "success"
+[[instruction.tag]]
+block_start = 304
+role        = "happy"
+[[instruction.tag]]
+block_start = 306
+role        = "happy"
+[[instruction.tag]]
+block_start = 308
+role        = "happy"
+[[instruction.tag]]
+block_start = 310
+role        = "happy"
+[[instruction.tag]]
+block_start = 3991
+role        = "happy"
+[[instruction.tag]]
+block_start = 3999
+role        = "happy"
+[[instruction.tag]]
+block_start = 4001
+role        = "happy"
+[[instruction.tag]]
+block_start = 3542
+role        = "happy"
+[[instruction.tag]]
+block_start = 4005
+role        = "happy"
+[[instruction.tag]]
+block_start = 4006
+role        = "happy"
+[[instruction.tag]]
+block_start = 4008
+role        = "happy"
+[[instruction.tag]]
+block_start = 4009
+role        = "happy"
+[[instruction.tag]]
+block_start = 4012
+role        = "happy"
+[[instruction.tag]]
+block_start = 4013
+role        = "happy"
+[[instruction.tag]]
+block_start = 4017
+role        = "happy"
+[[instruction.tag]]
+block_start = 4020
+role        = "happy"
+[[instruction.tag]]
+block_start = 4023
+role        = "happy"
+[[instruction.tag]]
+block_start = 4026
+role        = "happy"
+[[instruction.tag]]
+block_start = 4029
+role        = "happy"
+[[instruction.tag]]
+block_start = 4457
+role        = "happy"
+[[instruction.tag]]
+block_start = 4460
+role        = "happy"
+[[instruction.tag]]
+block_start = 4463
+role        = "happy"
+[[instruction.tag]]
+block_start = 4466
+role        = "happy"
+[[instruction.tag]]
+block_start = 4469
+role        = "happy"
+[[instruction.tag]]
+block_start = 4815
+role        = "happy"
+[[instruction.tag]]
+block_start = 4817
+role        = "happy"
+[[instruction.tag]]
+block_start = 4818
+role        = "happy"
