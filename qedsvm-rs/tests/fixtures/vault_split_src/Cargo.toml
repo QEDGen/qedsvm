@@ -1,0 +1,20 @@
+[package]
+name = "qedsvm-vault-split"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# No solana-program — hand-written entrypoint mirroring counter_src/ so
+# LLVM emits the tightest possible .text. A multi-field NON-token account
+# ({ owner: [u8;32]@0, total: u64@32, bump: u8@40 }); the handler bumps
+# `total` only, leaving owner/bump untouched — so the lift owns the total
+# cell and frames the rest, exercising the layout-general account codec.
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

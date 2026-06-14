@@ -494,6 +494,38 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// The SPLIT-blob codegen: `vault_split.so` reads+writes back a byte
+    /// INSIDE the `owner: [u8;32]` blob, so the lift owns `owner[5]` and the
+    /// account-codec aggregation must split the blob into `[.gap, .byte, .gap]`
+    /// (the mechanized multisig-style split) rather than one opaque gap. Both
+    /// the lift and the refinement (with the split FieldSeg list + its `< 256`
+    /// validity) are `lake build`-verified under `Generated.VaultSplit*`.
+    #[test]
+    fn vault_split_refinement_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/vault_split.so");
+        let idl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault_blob.codama.json")
+                .expect("read vault_blob.codama.json")).expect("parse vault_blob IDL");
+        let ctx = load_binary(so).expect("load vault_split.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_split.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("VaultSplit".to_string()),
+            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault_split.so");
+
+        let lift_path = "../examples/lean/Generated/VaultSplitTracedLifted.lean";
+        let refine_path = "../examples/lean/Generated/VaultSplitRefinement.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(lift_path, &result.lean).expect("write lift");
+            if let Some((_, rlean)) = result.refinement.as_ref() {
+                std::fs::write(refine_path, rlean).expect("write refinement");
+            }
+        }
+        assert_eq!(result.lean, std::fs::read_to_string(lift_path).expect("read lift"),
+            "VaultSplitTracedLifted.lean is out of sync with the qedlift emitter");
+        let (_, rlean) = result.refinement.expect("vault split refinement emitted");
+        assert_eq!(rlean, std::fs::read_to_string(refine_path).expect("read refinement"),
+            "VaultSplitRefinement.lean is out of sync with the qedlift emitter");
+    }
+
     /// The heap-allocating lift, including the mechanically-emitted
     /// `HeapAlloc_allocates` corollary (heap cells folded into
     /// `heapBumpPtr`/`heapBlockU64`) and the conditional `HeapSL` import,
@@ -5917,6 +5949,19 @@ fn emit_vault_refinement(
     let mut pre_fields: Vec<String> = Vec::new();
     let mut post_fields: Vec<String> = Vec::new();
     let mut frame: Vec<String> = Vec::new();
+    // Absolute offsets of blob bytes the lift owns (a SPLIT blob exposes them
+    // as fine `.byte` atoms) — excluded from `setup` below, like the updated
+    // u64. `true` if the split emitted any `.byte` seg (its `< 256` validity
+    // needs `omega` after the codecValid `simp`).
+    let mut owned_blob_offs: Vec<i64> = Vec::new();
+    // `< 256` validity hypotheses for the split's owned bytes (raw cell values
+    // are not `% 256`-bounded by the lift, so the codecValid discharge needs
+    // them; `omega` reads them from context).
+    let mut byte_hyps: Vec<String> = Vec::new();
+    // `(name, "g.size = len")` for gaps preceding an owned byte — pins the
+    // running offset so the split's fine atoms land at the lift's addresses.
+    let mut gap_size_hyps: Vec<(String, String)> = Vec::new();
+    let base_raw_blob = base.to_lean();
     let mut updated_seen = false;
     for f in &layout.fields {
         let off = f.offset as i64;
@@ -5957,22 +6002,71 @@ fn emit_vault_refinement(
             // condition. The byte size is not pinned in the obligation (the
             // gap is a free `ByteArray`), so the theorem holds for any
             // contents of that region.
-            FieldKind::Bytes(_) => {
-                let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
-                pre_fields.push(format!("({}, .blob [.gap {}])", off, g));
-                post_fields.push(format!("({}, .blob [.gap {}])", off, g));
-                frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off, g));
+            FieldKind::Bytes(len) => {
+                let len = *len as i64;
+                // Lift-owned byte cells inside `[off, off+len)` (an array-element
+                // read/write, a sub-field touch). If none, the whole field is one
+                // opaque gap (the prior behaviour); otherwise SPLIT it into an
+                // ordered `[.gap, .byte owned, .gap, …]` segment list so the owned
+                // cells surface as fine atoms the lift's frame matches — the
+                // mechanized multisig-style split.
+                let owned: Vec<(i64, String)> = (0..len).filter_map(|rel| {
+                    cell_val(pre, &base_raw_blob, off + rel, true)
+                        .map(|v| (rel, fold(v)))
+                }).collect();
+                if owned.is_empty() {
+                    let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
+                    pre_fields.push(format!("({}, .blob [.gap {}])", off, g));
+                    post_fields.push(format!("({}, .blob [.gap {}])", off, g));
+                    frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off, g));
+                } else {
+                    let mut segs: Vec<String> = Vec::new();
+                    let mut cursor = 0i64;
+                    for (rel, val) in &owned {
+                        if *rel > cursor {
+                            // A gap PRECEDING an owned byte: its size must be
+                            // pinned (`fg.size = len`) so `segsSL`'s running
+                            // offset places the byte at `base + rel`, matching
+                            // the lift. The proof rewrites with it.
+                            let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
+                            gap_size_hyps.push((format!("h{}_sz", g), format!("{}.size = {}", g, rel - cursor)));
+                            segs.push(format!(".gap {}", g));
+                            frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off + cursor, g));
+                        }
+                        // Owned byte: use the lift's value. It is NOT framed —
+                        // the lift owns it (it read the cell), and the codec's
+                        // fine `.byte` atom matches the lift's atom directly. Its
+                        // `< 256` validity is surfaced as a theorem hypothesis.
+                        segs.push(format!(".byte ({})", val));
+                        owned_blob_offs.push(off + rel);
+                        byte_hyps.push(format!("(h_blob{} : {} < 256)", off + rel, val));
+                        cursor = rel + 1;
+                    }
+                    if cursor < len {
+                        // Trailing gap (last seg): no following atom, so its size
+                        // needs no hyp — it stays a free `ByteArray`.
+                        let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
+                        segs.push(format!(".gap {}", g));
+                        frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off + cursor, g));
+                    }
+                    let seglist = format!("[{}]", segs.join(", "));
+                    pre_fields.push(format!("({}, .blob {})", off, seglist));
+                    post_fields.push(format!("({}, .blob {})", off, seglist));
+                }
             }
         }
     }
     if !updated_seen { return None; }
 
-    // setup = lift atoms not owning the updated cell (registers, etc.).
+    // setup = lift atoms not owning the codec cells (the updated u64 dword
+    // AND every owned blob byte the split exposes) — those flow through the
+    // codec's fine form, not the setup frame.
     let owned_base = base.to_lean();
     let is_owned = |a: &Atom| match a {
         Atom::Mem { addr_base, addr_off, width, .. } =>
-            addr_base.to_lean() == owned_base && *addr_off == upd_off
-                && matches!(width, Width::Dword),
+            addr_base.to_lean() == owned_base
+                && ((*addr_off == upd_off && matches!(width, Width::Dword))
+                    || (matches!(width, Width::Byte) && owned_blob_offs.contains(addr_off))),
         _ => false,
     };
     let setup_pre: Vec<Atom> = pre.iter().filter(|a| !is_owned(a)).cloned().collect();
@@ -5981,7 +6075,8 @@ fn emit_vault_refinement(
     let module = format!("{}Refinement", lift_module);
     let lean = render_vault_refinement(spec, &module, &base_l, &pre_fields, &post_fields,
         &frame, &params, &ba_params, pre, post_clean, &setup_pre, &setup_post,
-        abs_subst, vars, n_cu, start_pc, exit_pc, upd_off, delta, &upd_pre_l);
+        abs_subst, vars, n_cu, start_pc, exit_pc, upd_off, delta, &upd_pre_l,
+        &byte_hyps, &gap_size_hyps);
     Some((module, lean, None))
 }
 
@@ -5995,7 +6090,8 @@ fn render_vault_refinement(
     pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
     n_cu: usize, start_pc: usize, exit_pc: usize,
-    upd_off: i64, delta: i64, upd_pre_l: &str,
+    upd_off: i64, delta: i64, upd_pre_l: &str, byte_hyps: &[String],
+    gap_size_hyps: &[(String, String)],
 ) -> String {
     let mut nat_params = vars.join(" ");
     for p in params { nat_params.push(' '); nat_params.push_str(p); }
@@ -6014,6 +6110,10 @@ fn render_vault_refinement(
     if !ba_params.is_empty() {
         binders.push_str(&format!("\n    ({} : ByteArray)", ba_params.join(" ")));
     }
+    // `< 256` validity hypotheses for the split blob's owned bytes + the
+    // gap-size hyps that pin the split's running offsets.
+    for h in byte_hyps { binders.push_str(&format!("\n    {}", h)); }
+    for (name, prop) in gap_size_hyps { binders.push_str(&format!("\n    ({} : {})", name, prop)); }
     // Compose the simp sets from the field kinds actually present, so each
     // lemma is used (no `unusedSimpArgs` lint) and a blob-free vault emits
     // byte-identically to before. `pubkeyIs` only when a pubkey field is
@@ -6021,15 +6121,30 @@ fn render_vault_refinement(
     // `FieldSeg.valid`) only when a blob field is present.
     let has_pubkey = pre_fields.iter().any(|f| f.contains(".pubkey"));
     let has_blob = !ba_params.is_empty();
-    let mut fine = vec!["codecFine", "FieldVal.fine"];
-    if has_pubkey { fine.push("pubkeyIs"); }
-    if has_blob { fine.push("segsSL"); fine.push("FieldSeg.sl"); }
-    fine.push("sepConj_emp_right_eq");
-    fine.push("Nat.add_zero");
+    let mut fine: Vec<String> = vec!["codecFine".into(), "FieldVal.fine".into()];
+    if has_pubkey { fine.push("pubkeyIs".into()); }
+    if has_blob { fine.push("segsSL".into()); fine.push("FieldSeg.sl".into()); }
+    // A SPLIT blob: unfold `FieldSeg.size` and rewrite the gap-size hyps so the
+    // running offsets reduce to the lift's concrete addresses.
+    if !gap_size_hyps.is_empty() {
+        fine.push("FieldSeg.size".into());
+        for (name, _) in gap_size_hyps { fine.push(name.clone()); }
+    }
+    fine.push("sepConj_emp_right_eq".into());
+    fine.push("Nat.add_zero".into());
     let fine_simp = fine.join(", ");
     let mut valid = vec!["codecValid", "FieldVal.fineValid"];
     if has_blob { valid.push("segsValid"); valid.push("FieldSeg.valid"); }
     let valid_simp = valid.join(", ");
+    // A SPLIT blob's owned `.byte` segs leave a `(v % 256) < 256` residual
+    // after the `codecValid` simp — close it with `omega`. Whole-gap blobs
+    // (and the non-split vault) close in `simp` alone, so they stay
+    // byte-identical.
+    let valid_tac = if byte_hyps.is_empty() {
+        format!("by simp [{valid_simp}]")
+    } else {
+        format!("by simp [{valid_simp}] <;> omega")
+    };
     let pre_list = pre_fields.join(", ");
     let post_list = post_fields.join(", ");
     let frame_s = frame.join(" **\n      ");
@@ -6070,10 +6185,10 @@ theorem refines_asm
   unfold SVM.Solana.Abstract.{pred}
   rw [codecCoarse_eq_fine {base}
         [{pre_list}]
-        (by simp [{valid_simp}]),
+        ({valid_tac}),
       codecCoarse_eq_fine {base}
         [{post_list}]
-        (by simp [{valid_simp}])]
+        ({valid_tac})]
   simp only [{fine_simp}]
   have framed := cuTripleWithinMem_frame_right
     ( {frame} )
@@ -6099,7 +6214,7 @@ end Examples.{module}
         binders = binders,
         ensures_binders = ensures_binders,
         upd_off = upd_off, delta = delta,
-        valid_simp = valid_simp,
+        valid_tac = valid_tac,
         fine_simp = fine_simp,
         n = n_cu, entry = start_pc, exit = exit_pc,
         lift_pre = lift_pre, lift_post = lift_post,
