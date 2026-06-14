@@ -2353,4 +2353,62 @@ example : ∃ s,
     (by native_decide)
   exact w
 
+/-! ## Branch-satisfiability witness (Phase 7 sub-item 1)
+
+The triple's value-level path hypotheses (`h_branch*`) and load
+bounds (`h*_lt`) are uncertified parameters — an UNSATISFIABLE
+conjunction of them would make the triple vacuously true. The
+assignment below satisfies every (modeled) path hypothesis
+SIMULTANEOUSLY; `native_decide` machine-checks it, so a
+contradictory path-constraint set cannot ship silently. This
+complements the H8 footprint witness above (disjoint variable
+sets: address roots vs. discriminant/flag cells). -/
+
+example :
+      (1 % 256 ≠ toU64 3) ∧
+      (1 % 256 ≠ toU64 4) ∧
+      (1 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) ≠ toU64 0) ∧
+      (1 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) = toU64 1) ∧
+      (35 ≠ toU64 0) ∧
+      (20 % 256 ≠ toU64 255) ∧
+      (toSigned64 (20 % 256) > toSigned64 (toU64 11)) ∧
+      (toSigned64 (20 % 256) > toSigned64 (toU64 17)) ∧
+      (20 % 256 ≠ toU64 18) ∧
+      (20 % 256 = toU64 20) ∧
+      (¬ wrapAdd 35 (toU64 (-1)) < toU64 34) ∧
+      (0 % 256 = toU64 0) ∧
+      (1 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) ≠ toU64 0) ∧
+      (0 = toU64 0) ∧
+      (toU64 0 ≠ toU64 1) ∧
+      (4611686018427387904 ≠ toU64 4607182418800017408) ∧
+      (4611686018427387904 = toU64 4611686018427387904) ∧
+      (82 = toU64 82) ∧
+      (0 % 256 = toU64 0) ∧
+      (¬ 1461600 < ((wrapMul 3480 (wrapAdd 82 (toU64 128))) <<< (toU64 1 % 64)) % U64_MODULUS) ∧
+      (toU64 0 = toU64 0) ∧
+      (1 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (82 < 2 ^ 64) ∧
+      (35 < 2 ^ 64) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (1461600 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> native_decide
+
 end Examples.Lifted.PTokenInitializeMint2

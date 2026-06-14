@@ -30,10 +30,12 @@ table entry covers all four hash families). -/
     `max(10, len/2)`. See `Sha256.cu` for the agave reference. -/
 @[simp] def cu (s : State) : Nat := 85 + hashSliceCost s.mem s.regs.r1 s.regs.r2
 
+/-- H6: full region envelope via `State.hashWrite` — output `[r3, r3+64)`
+    checked first (`translate_slice_mut`), then the `r1` descriptor array
+    (`r2` × 16 bytes) and each input slice. -/
 @[simp] def exec (s : State) : State :=
-  let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)
-  { s with regs := s.regs.set .r0 0
-           mem  := writeBytes s.mem s.regs.r3 64 digest }
+  s.hashWrite s.regs.r3 64 s.regs.r1 s.regs.r2
+    (hash (readSlices s.mem s.regs.r1 s.regs.r2))
 
 end Sha512
 end SVM.SBPF

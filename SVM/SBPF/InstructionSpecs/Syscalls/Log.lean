@@ -10,20 +10,39 @@ open Memory
 Memory is read but not written; r1 and r2 are unchanged. `State.log` is
 silent in `PartialState` by design. -/
 
-theorem call_sol_log_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
+theorem call_sol_log_spec (r0Old r1V r2V : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
         (step (.call .sol_log_) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: the logged message `[r1V, r1V + r2V)` must be in a mapped region.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_log_))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_ 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s hex => by simp [step, execSyscall, Logging.execLog]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLog])
-    (fun s => by simp [step, execSyscall, Logging.execLog])
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V))
+      (fun rt => rt.containsRange r1V r2V = true) :=
+  cuTripleWithinMem_syscall_writes_r0_reads_var .sol_log_ 0 pc nCu
+    .r1 .r2 r1V r2V (by decide) (by decide) (by decide)
+    (fun s hr1 hr2 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      have hr2' : s.regs.r2 = r2V := hr2
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, hr1', hr2']
+      rw [if_pos (Or.inr hreg)])
+    (fun s hr1 hr2 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      have hr2' : s.regs.r2 = r2V := hr2
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, hr1', hr2']
+      rw [if_pos (Or.inr hreg)])
+    (fun s => by simp only [step, execSyscall, Logging.execLog])
+    (fun s hex hr1 hr2 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      have hr2' : s.regs.r2 = r2V := hr2
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, hr1', hr2']
+      rw [if_pos (Or.inr hreg)]; exact hex)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, State.accessFault]
+      split <;> rfl)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLog, State.guardRead, State.accessFault]
+      split <;> rfl)
     (fun s => h_step_cu s)
     r0Old
 
@@ -32,20 +51,36 @@ theorem call_sol_log_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
 `sol_log_pubkey(ptr)`: log 32 bytes from `[r1..r1+32)`, set `r0 := 0`.
 Same single-atom shape as `sol_log_`. -/
 
-theorem call_sol_log_pubkey_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
+theorem call_sol_log_pubkey_spec (r0Old r1V : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
         (step (.call .sol_log_pubkey) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: the 32-byte pubkey at `[r1V, r1V + 32)` must be in a mapped region.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_log_pubkey))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_pubkey 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s hex => by simp [step, execSyscall, Logging.execLogPubkey]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
-    (fun s => by simp [step, execSyscall, Logging.execLogPubkey])
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V))
+      (fun rt => rt.containsRange r1V 32 = true) :=
+  cuTripleWithinMem_syscall_writes_r0_reads_fixed .sol_log_pubkey 0 pc nCu
+    .r1 r1V 32 (by decide)
+    (fun s hr1 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, hr1']
+      rw [if_pos (Or.inr hreg)])
+    (fun s hr1 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, hr1']
+      rw [if_pos (Or.inr hreg)])
+    (fun s => by simp only [step, execSyscall, Logging.execLogPubkey])
+    (fun s hex hr1 hreg => by
+      have hr1' : s.regs.r1 = r1V := hr1
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, hr1']
+      rw [if_pos (Or.inr hreg)]; exact hex)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, State.accessFault]
+      split <;> rfl)
+    (fun s => by
+      simp only [step, execSyscall, Logging.execLogPubkey, State.guardRead, State.accessFault]
+      split <;> rfl)
     (fun s => h_step_cu s)
     r0Old
 
@@ -118,24 +153,20 @@ theorem call_sol_log_compute_units_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
 
 `sol_log_data(fields_ptr, count)`: read `count` SliceDesc descriptors
 from r1, base64-encode each slice they point to, emit joined message.
-Memory is read (descriptors + each slice) but not written. r0 := 0. -/
+Memory is read (descriptors + each slice) but not written. r0 := 0.
 
-theorem call_sol_log_data_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_log_data) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_log_data))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_data 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s hex => by simp [step, execSyscall, Logging.execLogData]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => by simp [step, execSyscall, Logging.execLogData])
-    (fun s => h_step_cu s)
-    r0Old
+H6: `Logging.execLogData` region-checks BOTH the descriptor array
+`[r1, r1 + count*16)` and each dereferenced slice `[ptr, ptr+len)`, so an
+out-of-region access traps with `vmError := some .accessViolation`. Unlike
+the single-slice log syscalls, this read region is NOT expressible as an
+`rr : Memory.RegionTable → Prop` side-condition: the per-slice ranges are
+read FROM memory the precondition does not own, and `rr` cannot see `s.mem`.
+There is therefore no register-footprint happy-path triple for
+`sol_log_data` — the prior unconditional `(.r0 ↦ᵣ r0Old) ⟶ (.r0 ↦ᵣ 0)` spec
+became false once the guards can fault and had no consumers. The boundary is
+pinned cross-engine by the `oob_log_data.so` diff fixture, and on the model
+side by `SVM.SBPF.Logging.execLogData_faults_oob` (the descriptor-array
+fault direction). -/
 
 /-! ## Syscall: `sol_get_epoch_stake`
 

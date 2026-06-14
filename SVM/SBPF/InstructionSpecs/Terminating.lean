@@ -23,23 +23,20 @@ sets `exitCode := some (r0)`. The callStack discipline is not yet
 modelled by `PartialState` (see deferred lift #3); the `exit_aborts_spec`
 theorem therefore takes `s.callStack = []` as an extra hypothesis. -/
 
-/-- `.call .abort`: unconditional abort. The syscall ignores all
-    register inputs and sets `exitCode := some ERR_ABORT`. Precondition is
-    `emp`: the spec owns no resources; the universally-quantified frame
-    carries everything else through unobserved up to the point of
-    abort. -/
-theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
+/-- `.call .abort`: unconditional abort. The syscall ignores all register
+    inputs and sets `exitCode := some ERR_ABORT, vmError := some .abort`.
+    PRE-PARAMETRIC: the abort reads nothing, so it faults from ANY
+    precondition `P` — letting a per-lift fault corollary compose the
+    running prefix's post (`Q`) straight into the abort tail
+    (`cuTripleWithinMem_seq_fault_pure`). -/
+theorem call_abort_faults_spec (P : Assertion) (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleAbortsWithin 1 nCu pc
+    cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .abort))
-      emp ERR_ABORT := by
+      P .abort := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
-  -- emp pre: h1 = empty.
-  rw [hP1, PartialState.union_empty_left] at hu
-  rw [hP1] at hd
-  clear hP1 h1
+  -- The abort ignores its pre, so `hPR` is not destructured.
   have hfetch : fetch s.pc = some (.call .abort) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .abort) s) := by
@@ -54,14 +51,67 @@ theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
         executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
   · rw [hexec]
-    -- post: exitCode = some ERR_ABORT
-    show (Abort.execAbort s).exitCode = some ERR_ABORT
+    -- post: exitCode = some (VmError.abort).toSentinel = some ERR_ABORT
+    show (Abort.execAbort s).exitCode = some VmError.abort.toSentinel
+    rfl
+  · rw [hexec]
+    -- post: the TYPED fault is `.abort` (L1)
+    show (Abort.execAbort s).vmError = some .abort
     rfl
   · rw [hstep_eq]
     show (step (.call .abort) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := hCu s; omega
+
+/-- The original abort triple, derived from the typed-fault spec by
+    forgetting the `vmError` conjunct (`VmError.abort.toSentinel = ERR_ABORT`).
+    Kept for the existing `cuTripleAbortsWithin` consumers. -/
+theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleAbortsWithin 1 nCu pc
+      (CodeReq.singleton pc (.call .abort))
+      emp ERR_ABORT :=
+  cuTripleFaultsWithin_toAborts (call_abort_faults_spec emp pc nCu hCu)
+
+/-! ## The per-lift fault corollary (Phase 7 sub-item 3 — emitter shape)
+
+The canonical `*_fault_correct` corollary the emitter mechanizes for a lift
+whose walked trace ends in a typed fault: compose the running prefix
+(`cuTripleWithin[Mem]`, the existing lift machinery) with the terminal fault
+spec via `cuTripleFaultsWithin_seq_fault` (or its Mem variant
+`cuTripleWithinMem_seq_fault_pure`), surfacing `vmError = some e`. The
+pre-parametric `call_abort_faults_spec` lets the prefix's post `Q` flow
+straight into the abort tail. Below: the minimal worked instance
+(`mov r0, 5; abort`), proving the program FAULTS with the typed `.abort`
+(distinct from a clean exit of the same `ERR_ABORT` sentinel value, L1). -/
+
+theorem mov_then_abort_fault_correct (vR0Old : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithin (1 + 1) (0 + nCu) 0
+      ((CodeReq.singleton 0 (.mov64 .r0 (.imm 5))).union
+        (CodeReq.singleton 1 (.call .abort)))
+      (.r0 ↦ᵣ vR0Old) .abort :=
+  cuTripleFaultsWithin_seq_fault
+    (CodeReq.singleton_disjoint_singleton _ _ (by decide))
+    (mov64_imm_spec .r0 5 vR0Old 0 (by decide))
+    (call_abort_faults_spec (.r0 ↦ᵣ toU64 5) 1 nCu hCu)
+
+/-- The Mem-variant (the shape a real region-carrying lift composes): the
+    running prefix is a `cuTripleWithinMem`, the abort tail a pure fault. -/
+theorem mov_then_abort_fault_correct_mem (vR0Old : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithinMem (1 + 1) (0 + nCu) 0
+      ((CodeReq.singleton 0 (.mov64 .r0 (.imm 5))).union
+        (CodeReq.singleton 1 (.call .abort)))
+      (.r0 ↦ᵣ vR0Old) (fun _ => True) .abort :=
+  cuTripleWithinMem_seq_fault_pure
+    (CodeReq.singleton_disjoint_singleton _ _ (by decide))
+    (mov64_imm_spec .r0 5 vR0Old 0 (by decide)).toMem
+    (call_abort_faults_spec (.r0 ↦ᵣ toU64 5) 1 nCu hCu)
 
 /-- `.call .sol_panic_`: unconditional abort with logging of the message
     pointed to by r1/r2 (file/line in r3/r4/r5 are diagnostic and silent
@@ -71,12 +121,12 @@ theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
     registers are not constrained by this triple — they're already loaded
     by the caller and the resulting `log` entry is silent in
     `PartialState`. -/
-theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
+theorem call_sol_panic_faults_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleAbortsWithin 1 nCu pc
+    cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_panic_))
-      emp ERR_ABORT := by
+      emp .abort := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   rw [hP1, PartialState.union_empty_left] at hu
@@ -96,13 +146,26 @@ theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
         executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
   · rw [hexec]
-    show (Abort.execPanic s).exitCode = some ERR_ABORT
+    show (Abort.execPanic s).exitCode = some VmError.abort.toSentinel
+    rfl
+  · rw [hexec]
+    show (Abort.execPanic s).vmError = some .abort
     rfl
   · rw [hstep_eq]
     show (step (.call .sol_panic_) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := hCu s; omega
+
+/-- The original `sol_panic_` abort triple, derived from the typed-fault
+    spec. -/
+theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleAbortsWithin 1 nCu pc
+      (CodeReq.singleton pc (.call .sol_panic_))
+      emp ERR_ABORT :=
+  cuTripleFaultsWithin_toAborts (call_sol_panic_faults_spec pc nCu hCu)
 
 /-- `Insn.exit` with empty callStack: the success-exit instruction sets
     `exitCode := some (r0)`, picking up the program's return value from

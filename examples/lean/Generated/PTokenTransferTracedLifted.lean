@@ -2184,6 +2184,70 @@ example : ∃ s,
     (by native_decide)
   exact w
 
+/-! ## Branch-satisfiability witness (Phase 7 sub-item 1)
+
+The triple's value-level path hypotheses (`h_branch*`) and load
+bounds (`h*_lt`) are uncertified parameters — an UNSATISFIABLE
+conjunction of them would make the triple vacuously true. The
+assignment below satisfies every (modeled) path hypothesis
+SIMULTANEOUSLY; `native_decide` machine-checks it, so a
+contradictory path-constraint set cannot ship silently. This
+complements the H8 footprint witness above (disjoint variable
+sets: address roots vs. discriminant/flag cells). -/
+
+example :
+      (3 % 256 = toU64 3) ∧
+      (165 = toU64 165) ∧
+      (255 % 256 = toU64 255) ∧
+      (165 = toU64 165) ∧
+      (255 % 256 = toU64 255) ∧
+      (¬ 9 < toU64 9) ∧
+      (3 % 256 = toU64 3) ∧
+      (¬ 1 % 256 > toU64 2) ∧
+      (1 % 256 ≠ toU64 0) ∧
+      (¬ 1 % 256 > toU64 2) ∧
+      (1 % 256 ≠ toU64 0) ∧
+      (1 % 256 ≠ toU64 2) ∧
+      (1 % 256 ≠ toU64 2) ∧
+      (¬ 1 < 1) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 % 256 ≠ toU64 1) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 ≠ toU64 355) ∧
+      (1 % 256 ≠ toU64 0) ∧
+      (1 ≠ toU64 0) ∧
+      (0 % 256 ≠ toU64 1) ∧
+      (165 < 2 ^ 64) ∧
+      (165 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (9 < 2 ^ 64) ∧
+      (1 < 2 ^ 64) ∧
+      (1 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> native_decide
+
 open Memory in
 theorem PTokenTransfer_balance_correct
     (baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 oldMemB_4 oldMemD_5 vR4Old vR3Old oldMemD_6 oldMemB_7 vR6Old vR7Old oldMemB_8 oldMemB_9 vR5Old oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 vR0Old oldMemD_14 oldMemD_15 oldMemD_16 oldMemD_17 oldMemD_18 oldMemD_19 oldMemD_20 oldMemB_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 oldMemD_28 oldMemB_29 oldMemD_30 oldMemB_31 : Nat)

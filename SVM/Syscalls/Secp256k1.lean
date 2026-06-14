@@ -72,21 +72,41 @@ def cu : Nat := 25_000
 @[simp] def exec (s : State) : State :=
   let recId  := s.regs.r2
   let outA   := s.regs.r4
-  let result : RecoverResult :=
-    if recId > 3 then .invalidRecoveryId
-    else recover (readBytes s.mem s.regs.r1 32) recId.toUInt8
-                  (readBytes s.mem s.regs.r3 64)
-  let errCode : Nat :=
-    match result with
-    | .success _         => 0
-    | .invalidHash       => 1
-    | .invalidRecoveryId => 2
-    | .invalidSignature  => 3
-  let mem' : Memory.Mem :=
-    match result with
-    | .success pubkey => writeBytes s.mem outA 64 pubkey
-    | _               => s.mem
-  { s with regs := s.regs.set .r0 errCode, mem := mem' }
+  -- H6: agave translates the 32-byte hash (`[r1,32)`, Load), the 64-byte
+  -- signature (`[r3,64)`, Load) and the 64-byte output (`[r4,64)`, Store)
+  -- before the recovery — an out-of-region (or non-writable output) slice
+  -- traps. Only the `.success` arm actually writes the recovered pubkey.
+  s.guardRead s.regs.r1 32 fun s =>
+  s.guardRead s.regs.r3 64 fun s =>
+  s.guardWrite outA 64 fun s =>
+    let result : RecoverResult :=
+      if recId > 3 then .invalidRecoveryId
+      else recover (readBytes s.mem s.regs.r1 32) recId.toUInt8
+                    (readBytes s.mem s.regs.r3 64)
+    let errCode : Nat :=
+      match result with
+      | .success _         => 0
+      | .invalidHash       => 1
+      | .invalidRecoveryId => 2
+      | .invalidSignature  => 3
+    let mem' : Memory.Mem :=
+      match result with
+      | .success pubkey => writeBytes s.mem outA 64 pubkey
+      | _               => s.mem
+    { s with regs := s.regs.set .r0 errCode, mem := mem' }
+
+/-- H6 fault direction: an out-of-region 32-byte hash input `[r1,32)` traps
+    with a typed access violation (the first of the three guarded slices —
+    hash `[r1,32)`, signature `[r3,64)`, output `[r4,64)`). -/
+theorem exec_faults_oob (s : State)
+    (hoob : s.regions.containsRange s.regs.r1 32 = false) :
+    (exec s).vmError = some .accessViolation := by
+  simp only [exec, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 end Secp256k1
 end SVM.SBPF

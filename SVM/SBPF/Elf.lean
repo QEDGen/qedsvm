@@ -91,6 +91,12 @@ def parseHeader (bytes : ByteArray) : Option Header :=
   else if readU8 bytes 3 ≠ 0x46 then none  -- 'F'
   else if readU8 bytes 4 ≠ 2 then none     -- ei_class = ELFCLASS64
   else if readU8 bytes 5 ≠ 1 then none     -- ei_data = ELFDATA2LSB
+  -- ei_osabi (byte 7): agave rejects ≠ ELFOSABI_NONE (`WrongAbi`,
+  -- solana-sbpf 0.14.4 elf.rs:721). M1.
+  else if readU8 bytes 7 ≠ 0 then none
+  -- e_type (offset 16): agave rejects ≠ ET_DYN = 3 (`WrongType`,
+  -- elf.rs:727) — sBPF programs are shared objects. M1.
+  else if readU16LE bytes 16 ≠ 3 then none
   -- e_machine (offset 18): EM_BPF = 247 or EM_SBPF = 263.
   else if readU16LE bytes 18 ≠ 247 ∧ readU16LE bytes 18 ≠ 263 then none
   -- e_flags (offset 48): SBPF version. Only V0 (0) is modeled.
@@ -98,7 +104,10 @@ def parseHeader (bytes : ByteArray) : Option Header :=
   -- M1: section-table structural validation — fail closed on a malformed
   -- header rather than read past the file via zero-fill. `e_shstrndx`
   -- must index a real section, and the section header table must lie
-  -- within the file. See docs/SOUNDNESS_AUDIT_* (M1).
+  -- within the file. NOTE this check also rejects `SHN_XINDEX`
+  -- (`e_shstrndx = 0xFFFF`, the extended-index sentinel): `shnum` is a
+  -- u16, so `0xFFFF ≥ shnum` always — extended section numbering is
+  -- deliberately not modeled. See docs/SOUNDNESS_AUDIT_* (M1).
   else if readU16LE bytes 62 ≥ readU16LE bytes 60 then none      -- shstrndx ≥ shnum
   else if readU64LE bytes 40 + readU16LE bytes 60 * readU16LE bytes 58 > bytes.size then none
   else some {
@@ -559,6 +568,58 @@ def buildFnRegistry (elfBytes : ByteArray) (h : Header)
         else acc) []
     | _, _, _ => []
   entryPair :: pass1 ++ relocPairs
+
+/-- Whether the function registry is free of key collisions — agave's
+    `SymbolHashCollision` load rejection (audit H2 residual).
+    `register_function_hashed_legacy` errors when a key is re-registered
+    with a DIFFERENT target slot; re-registering the same `(key, slot)`
+    pair is normal (every call site of a function registers the same
+    pair). The `entrypointHash` key is exempt: agave explicitly
+    unregisters any symbol-derived "entrypoint" entry and re-registers it
+    from `e_entry` (elf.rs:637-643), so an entry-key mismatch resolves by
+    e_entry precedence (our first-match lookup, the entry pair is
+    registered first) rather than by a collision error.
+
+    A real collision needs `murmur3(LE8 slotA) = murmur3(LE8 slotB)` (or a
+    clash with a syscall name hash) — astronomically unlikely for honest
+    binaries, so this is a pure fail-closed hardening: pre-gate, first-match
+    lookup silently picked the first registration. Checked by the runners
+    next to `relocationsResolvable`. -/
+def registryCollisionFree (reg : List (Nat × Nat)) : Bool :=
+  match reg with
+  | [] => true
+  | (k, v) :: rest =>
+    (k == entrypointHash || rest.all fun p => p.1 != k || p.2 == v)
+      && registryCollisionFree rest
+
+/-- Whether every symbol-using relocation can resolve its symbol — the
+    fail-closed gate for audit M1. solana-sbpf 0.14.4 `relocate`
+    (elf.rs:969-973) reads each `R_Bpf_64_64` / `R_Bpf_64_32`
+    relocation's symbol as
+    `dynamic_symbol_table().and_then(|t| t.get(r_sym)).ok_or(UnknownSymbol)?`,
+    so a relocation table that references a missing `.dynsym` or an
+    out-of-range symbol index fails the LOAD. The total `applyRelocations`
+    instead 0-fills such reads (OOB → 0) and silently patches a wrong
+    address; the runners (`runElf`/`runElfWithFuel`/CPI) call this first and
+    fail closed when it is `false`.
+
+    A binary with NO relocation table is trivially resolvable (agave's
+    `dynamic_relocations_table().unwrap_or_default()` yields an empty
+    iterator — a valid static binary). `R_Bpf_64_Relative` relocations do
+    not use the symbol table, so they never make this `false`. -/
+def relocationsResolvable (elfBytes : ByteArray) (h : Header) : Bool :=
+  match findSectionByType elfBytes h SHT_REL with
+  | none => true
+  | some reltab =>
+    let nRels  := reltab.size / 16
+    let symtab? := findSectionByType elfBytes h SHT_DYNSYM
+    let nSyms  := match symtab? with | some s => s.size / 24 | none => 0
+    (List.range nRels).all fun i =>
+      let rel := parseRelocationEntry elfBytes (reltab.offset + i * 16)
+      if rel.type = R_BPF_64_64 ∨ rel.type = R_BPF_64_32 then
+        symtab?.isSome && rel.sym < nSyms
+      else
+        true
 
 /-- Apply `R_BPF_64_RELATIVE` relocations that fall inside a non-text
     section (typically `.data.rel.ro`). Each reloc names a byte offset

@@ -70,7 +70,7 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_curve_pairing_map                       => Bls12_381.cuPairing
   | .sol_alt_bn128_group_op                      => AltBn128.cuGroupOp s
   | .sol_alt_bn128_compression                   => AltBn128.cuCompression s
-  | .sol_big_mod_exp                             => BigModExp.cu
+  | .sol_big_mod_exp                             => BigModExp.cu s
   -- PDA. `create` is a fixed `cuPerAttempt`; `try_find` scales
   -- per bump-loop iteration (matches agave's pre-loop + per-failed
   -- iter charging in `SyscallTryFindProgramAddress::rust`).
@@ -196,7 +196,7 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
       let val := readByWidth mem addr w
       { s with regs := rf.set dst val, pc := pc' }
     else
-      { s with exitCode := some ERR_ACCESS_VIOLATION }
+      { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
 
   | .st w dst off imm =>
     let addr := effectiveAddr (rf.get dst) off
@@ -204,7 +204,7 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
       let val := (toU64 imm) % (2 ^ (w.bytes * 8))
       { s with mem := writeByWidth mem addr val w, pc := pc' }
     else
-      { s with exitCode := some ERR_ACCESS_VIOLATION }
+      { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
 
   | .stx w dst off src =>
     let addr := effectiveAddr (rf.get dst) off
@@ -212,7 +212,7 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
       let val := rf.get src % (2 ^ (w.bytes * 8))
       { s with mem := writeByWidth mem addr val w, pc := pc' }
     else
-      { s with exitCode := some ERR_ACCESS_VIOLATION }
+      { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
 
   | .add64 dst src =>
     { s with regs := rf.set dst (wrapAdd (rf.get dst) (resolveSrc rf src)), pc := pc' }
@@ -222,11 +222,11 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
     { s with regs := rf.set dst (wrapMul (rf.get dst) (resolveSrc rf src)), pc := pc' }
   | .div64 dst src =>
     let b := resolveSrc rf src
-    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO }
+    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero }
     else { s with regs := rf.set dst ((rf.get dst / b) % U64_MODULUS), pc := pc' }
   | .mod64 dst src =>
     let b := resolveSrc rf src
-    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO }
+    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero }
     else { s with regs := rf.set dst (rf.get dst % b), pc := pc' }
   | .or64 dst src =>
     { s with regs := rf.set dst ((rf.get dst ||| resolveSrc rf src) % U64_MODULUS), pc := pc' }
@@ -262,11 +262,11 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
     { s with regs := rf.set dst (wrapMul32 (rf.get dst) (resolveSrc rf src)), pc := pc' }
   | .div32 dst src =>
     let b := resolveSrc rf src % U32_MODULUS
-    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO }
+    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero }
     else { s with regs := rf.set dst ((rf.get dst % U32_MODULUS / b) % U32_MODULUS), pc := pc' }
   | .mod32 dst src =>
     let b := resolveSrc rf src % U32_MODULUS
-    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO }
+    if b = 0 then { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero }
     else { s with regs := rf.set dst (rf.get dst % U32_MODULUS % b), pc := pc' }
   | .or32 dst src =>
     { s with regs := rf.set dst ((rf.get dst ||| resolveSrc rf src) % U32_MODULUS), pc := pc' }
@@ -346,7 +346,7 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
     -- Call-depth limit (H4): the 65th nested frame aborts with
     -- `CallDepthExceeded` in solana-sbpf. Fail closed at MAX_CALL_DEPTH.
     if s.callStack.length ≥ MAX_CALL_DEPTH then
-      { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED }
+      { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED, vmError := some .callDepthExceeded }
     else
       let frame : CallFrame := {
         retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
@@ -362,7 +362,7 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
     -- field differs across SBPF versions). Rather than fabricate a bare
     -- jump — which could prove a false exit code — we fail closed.
     -- See docs/SOUNDNESS_AUDIT_*.md (C2).
-    { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION }
+    { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction }
 
   | .exit =>
     match s.callStack with
@@ -403,7 +403,7 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
     | none =>
       if s.cuConsumed > s.cuBudget then s
       else match fetch s.pc with
-      | none => { s with exitCode := some ERR_INVALID_PC }
+      | none => { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }
       | some insn => executeFn fetch (chargeCu (step insn s)) fuel'
 
 /-- Create an initial machine state with r1 pointing to the input buffer.
@@ -489,7 +489,7 @@ theorem executeFn_compose (fetch : Nat → Option Insn) (s : State) (n m : Nat) 
         cases h_f : fetch s.pc with
         | none =>
           -- invalid PC: first step sets exitCode, then both sides stay halted
-          have hbad : ∀ k, executeFn fetch s (k + 1) = { s with exitCode := some ERR_INVALID_PC } := by
+          have hbad : ∀ k, executeFn fetch s (k + 1) = { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc } := by
             intro k; simp [executeFn, h_ec, h_f, Nat.not_lt.mpr h_le]
           rw [show n + 1 + m = (n + m) + 1 from by omega, hbad (n + m), hbad n,
               executeFn_halted fetch _ m ERR_INVALID_PC rfl]
@@ -533,7 +533,14 @@ def Insn.isCallLocal : Insn → Bool
 @[simp] theorem execTryFind_preserves_callStack (s : State) :
     (Pda.execTryFind s).callStack = s.callStack := by
   simp only [Pda.execTryFind]
-  split <;> simp
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+    rfl
+  · rfl
 
 /-- `execSyscall` never modifies `callStack`. The CPI-stub
     `Cpi.exec` just sets `r0 := 0`; all other syscalls touch only
@@ -695,7 +702,14 @@ the intermediate state's budget equals the initial one. -/
 @[simp] theorem execTryFind_preserves_cuBudget (s : State) :
     (Pda.execTryFind s).cuBudget = s.cuBudget := by
   simp only [Pda.execTryFind]
-  split <;> simp
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+    rfl
+  · rfl
 
 @[simp] theorem execSyscall_preserves_cuBudget (sc : Syscall) (s : State) :
     (execSyscall sc s).cuBudget = s.cuBudget := by
@@ -761,7 +775,7 @@ abbrev Step := State → PUnit × State
       let val := readByWidth mem addr w
       ((), { s with regs := rf.set dst val, pc := pc' })
     else
-      ((), { s with exitCode := some ERR_ACCESS_VIOLATION })
+      ((), { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation })
 
   | .st w dst off imm =>
     let addr := effectiveAddr (rf.get dst) off
@@ -769,7 +783,7 @@ abbrev Step := State → PUnit × State
       let val := (toU64 imm) % (2 ^ (w.bytes * 8))
       ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
     else
-      ((), { s with exitCode := some ERR_ACCESS_VIOLATION })
+      ((), { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation })
 
   | .stx w dst off src =>
     let addr := effectiveAddr (rf.get dst) off
@@ -777,7 +791,7 @@ abbrev Step := State → PUnit × State
       let val := rf.get src % (2 ^ (w.bytes * 8))
       ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
     else
-      ((), { s with exitCode := some ERR_ACCESS_VIOLATION })
+      ((), { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation })
 
   | .add64 dst src =>
     ((), { s with regs := rf.set dst (wrapAdd (rf.get dst) (resolveSrc rf src)), pc := pc' })
@@ -787,11 +801,11 @@ abbrev Step := State → PUnit × State
     ((), { s with regs := rf.set dst (wrapMul (rf.get dst) (resolveSrc rf src)), pc := pc' })
   | .div64 dst src =>
     let b := resolveSrc rf src
-    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO })
+    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero })
     else ((), { s with regs := rf.set dst ((rf.get dst / b) % U64_MODULUS), pc := pc' })
   | .mod64 dst src =>
     let b := resolveSrc rf src
-    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO })
+    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero })
     else ((), { s with regs := rf.set dst (rf.get dst % b), pc := pc' })
   | .or64 dst src =>
     ((), { s with regs := rf.set dst ((rf.get dst ||| resolveSrc rf src) % U64_MODULUS), pc := pc' })
@@ -827,11 +841,11 @@ abbrev Step := State → PUnit × State
     ((), { s with regs := rf.set dst (wrapMul32 (rf.get dst) (resolveSrc rf src)), pc := pc' })
   | .div32 dst src =>
     let b := resolveSrc rf src % U32_MODULUS
-    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO })
+    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero })
     else ((), { s with regs := rf.set dst ((rf.get dst % U32_MODULUS / b) % U32_MODULUS), pc := pc' })
   | .mod32 dst src =>
     let b := resolveSrc rf src % U32_MODULUS
-    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO })
+    if b = 0 then ((), { s with exitCode := some ERR_DIVIDE_BY_ZERO, vmError := some .divideByZero })
     else ((), { s with regs := rf.set dst (rf.get dst % U32_MODULUS % b), pc := pc' })
   | .or32 dst src =>
     ((), { s with regs := rf.set dst ((rf.get dst ||| resolveSrc rf src) % U32_MODULUS), pc := pc' })
@@ -894,7 +908,7 @@ abbrev Step := State → PUnit × State
   | .call_local target =>
     -- Call-depth limit (H4) — mirror of step's `.call_local` guard.
     if s.callStack.length ≥ MAX_CALL_DEPTH then
-      ((), { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED })
+      ((), { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED, vmError := some .callDepthExceeded })
     else
       let frame : CallFrame := {
         retPc := pc', savedR6 := rf.r6, savedR7 := rf.r7,
@@ -905,7 +919,7 @@ abbrev Step := State → PUnit × State
 
   -- Indirect call — see step's `.callx` arm (fail closed, C2).
   | .callx _reg =>
-    ((), { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION })
+    ((), { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction })
 
   -- Exit
   | .exit =>
@@ -933,7 +947,7 @@ def execSegment (fetch : Nat → Option Insn) : Nat → Step
     | none =>
       if s.cuConsumed > s.cuBudget then ((), s)
       else match fetch s.pc with
-      | none => ((), { s with exitCode := some ERR_INVALID_PC })
+      | none => ((), { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc })
       | some insn =>
         let (_, s') := execInsn insn s
         execSegment fetch fuel (chargeCu s')

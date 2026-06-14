@@ -168,8 +168,25 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
     if slotInt < 0 then none
     else
       let n := slotInt.toNat
-      if h : n < slotMap.size then some (slotMap[n]'h) else none
+      if h : n < slotMap.size then
+        let pc := slotMap[n]'h
+        -- M4: a target landing on the 2nd slot of an `lddw` is
+        -- `JumpToMiddleOfLddw` (agave verifier rejection). `buildSlotMap`
+        -- maps both slots of an `lddw` to the SAME logical PC and every
+        -- other instruction to a fresh one, so a continuation slot is
+        -- exactly one where `slotMap[n] = slotMap[n-1]`. Fail closed.
+        if n > 0 ∧ slotMap[n - 1]? = some pc then none else some pc
+      else none
   let targetPc? : Option Nat := resolveTarget (currentSlot + 1 + off16)
+  -- M4: agave's verifier rejects any instruction that WRITES the read-only
+  -- frame pointer r10 (`CannotWriteR10`). The register-writing classes are
+  -- LDX (low3 = 1), ALU32 (low3 = 4), ALU64 (low3 = 7), and `lddw` (0x18);
+  -- stores (low3 = 2/3) use the dst nibble as a memory BASE, not a register
+  -- write, so stack stores `stx [r10+off], rN` stay valid. Fail closed.
+  let writesDstReg : Bool :=
+    (opcode &&& 0x07) == 0x01 || (opcode &&& 0x07) == 0x04
+      || (opcode &&& 0x07) == 0x07 || opcode == 0x18
+  if writesDstReg && dstN == 10 then none else
   match opcode with
   -- ALU 64-bit immediate (class = 7, source = 0)
   | 0x07 => dst?.map fun d => (.add64 d (.imm imm), 8)
@@ -178,13 +195,17 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0x37 => dst?.map fun d => (.div64 d (.imm imm), 8)
   | 0x47 => dst?.map fun d => (.or64  d (.imm imm), 8)
   | 0x57 => dst?.map fun d => (.and64 d (.imm imm), 8)
-  | 0x67 => dst?.map fun d => (.lsh64 d (.imm imm), 8)
-  | 0x77 => dst?.map fun d => (.rsh64 d (.imm imm), 8)
+  -- M4: agave's verifier rejects an immediate shift ≥ the register width
+  -- (`ShiftWithOverflow`); the model previously masked `imm % 64`. Fail
+  -- closed at decode. (Register-sourced shifts are runtime-masked by both
+  -- agave and the model, so only the imm forms are gated.)
+  | 0x67 => if imm < 0 ∨ imm ≥ 64 then none else dst?.map fun d => (.lsh64 d (.imm imm), 8)
+  | 0x77 => if imm < 0 ∨ imm ≥ 64 then none else dst?.map fun d => (.rsh64 d (.imm imm), 8)
   | 0x87 => dst?.map fun d => (.neg64 d, 8)
   | 0x97 => dst?.map fun d => (.mod64 d (.imm imm), 8)
   | 0xa7 => dst?.map fun d => (.xor64 d (.imm imm), 8)
   | 0xb7 => dst?.map fun d => (.mov64 d (.imm imm), 8)
-  | 0xc7 => dst?.map fun d => (.arsh64 d (.imm imm), 8)
+  | 0xc7 => if imm < 0 ∨ imm ≥ 64 then none else dst?.map fun d => (.arsh64 d (.imm imm), 8)
   -- ALU 64-bit register (class = 7, source = 1)
   | 0x0f => match dst?, src? with | some d, some s => some (.add64  d (.reg s), 8) | _, _ => none
   | 0x1f => match dst?, src? with | some d, some s => some (.sub64  d (.reg s), 8) | _, _ => none
@@ -205,13 +226,13 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0x34 => dst?.map fun d => (.div32 d (.imm imm), 8)
   | 0x44 => dst?.map fun d => (.or32  d (.imm imm), 8)
   | 0x54 => dst?.map fun d => (.and32 d (.imm imm), 8)
-  | 0x64 => dst?.map fun d => (.lsh32 d (.imm imm), 8)
-  | 0x74 => dst?.map fun d => (.rsh32 d (.imm imm), 8)
+  | 0x64 => if imm < 0 ∨ imm ≥ 32 then none else dst?.map fun d => (.lsh32 d (.imm imm), 8)
+  | 0x74 => if imm < 0 ∨ imm ≥ 32 then none else dst?.map fun d => (.rsh32 d (.imm imm), 8)
   | 0x84 => dst?.map fun d => (.neg32 d, 8)
   | 0x94 => dst?.map fun d => (.mod32 d (.imm imm), 8)
   | 0xa4 => dst?.map fun d => (.xor32 d (.imm imm), 8)
   | 0xb4 => dst?.map fun d => (.mov32 d (.imm imm), 8)
-  | 0xc4 => dst?.map fun d => (.arsh32 d (.imm imm), 8)
+  | 0xc4 => if imm < 0 ∨ imm ≥ 32 then none else dst?.map fun d => (.arsh32 d (.imm imm), 8)
   -- ALU 32-bit register
   | 0x0c => match dst?, src? with | some d, some s => some (.add32  d (.reg s), 8) | _, _ => none
   | 0x1c => match dst?, src? with | some d, some s => some (.sub32  d (.reg s), 8) | _, _ => none

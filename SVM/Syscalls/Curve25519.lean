@@ -132,13 +132,18 @@ caller still pays *something*. -/
     else 521
   else 473
 
-/-- `sol_curve_multiscalar_mul`. Base + n × incremental:
-    edwards = 2273 + n·758, ristretto = 2303 + n·788. `n` is the
-    point count in `r4`. -/
+/-- `sol_curve_multiscalar_mul`. Agave charges
+    `msm_base_cost + msm_incremental_cost · (points_len − 1)`
+    (`agave-syscalls-4.0.0-rc.0/src/lib.rs:1711-1716`,
+    `points_len.saturating_sub(1)`): edwards = 2273 + 758·(n−1),
+    ristretto = 2303 + 788·(n−1). `n` is the point count in `r4`. The
+    `− 1` is Nat-truncated, matching agave's `saturating_sub(1)` (n=0 and
+    n=1 both charge the bare base). Audit M9: the pre-fix `n ·` form
+    over-charged by one increment for every n ≥ 2. -/
 @[simp] def cuMSM (s : State) : Nat :=
   let n := s.regs.r4
-  if s.regs.r1 = CURVE25519_EDWARDS then 2_273 + n * 758
-  else if s.regs.r1 = CURVE25519_RISTRETTO then 2_303 + n * 788
+  if s.regs.r1 = CURVE25519_EDWARDS then 2_273 + (n - 1) * 758
+  else if s.regs.r1 = CURVE25519_RISTRETTO then 2_303 + (n - 1) * 788
   else 2_273
 
 /-- Execute `sol_curve_validate_point`.
@@ -147,16 +152,19 @@ caller still pays *something*. -/
 @[simp] def execValidate (s : State) : State :=
   let curveId  := s.regs.r1
   let pointA   := s.regs.r2
-  let pointB   := readBytes s.mem pointA 32
+  -- Unsupported curve_id: agave aborts with `InvalidAttribute` when
+  -- `abort_on_invalid_curve` is active (it is, under all_enabled).
+  -- Fail closed rather than return r0:=2. See docs/SOUNDNESS_AUDIT_* (M7).
+  -- H6: inside a valid-curve branch agave translates the 32-byte input
+  -- point (`[r2,32)`, Load) — an out-of-region slice traps.
   if curveId = CURVE25519_EDWARDS then
-    { s with regs := s.regs.set .r0 (if validateEdwards pointB then 0 else 1) }
+    s.guardRead pointA 32 fun s =>
+      { s with regs := s.regs.set .r0 (if validateEdwards (readBytes s.mem pointA 32) then 0 else 1) }
   else if curveId = CURVE25519_RISTRETTO then
-    { s with regs := s.regs.set .r0 (if validateRistretto pointB then 0 else 1) }
+    s.guardRead pointA 32 fun s =>
+      { s with regs := s.regs.set .r0 (if validateRistretto (readBytes s.mem pointA 32) then 0 else 1) }
   else
-    -- Unsupported curve_id: agave aborts with `InvalidAttribute` when
-    -- `abort_on_invalid_curve` is active (it is, under all_enabled).
-    -- Fail closed rather than return r0:=2. See docs/SOUNDNESS_AUDIT_* (M7).
-    { s with exitCode := some ERR_INVALID_ATTRIBUTE }
+    { s with exitCode := some ERR_INVALID_ATTRIBUTE, vmError := some .invalidAttribute }
 
 /-- Execute `sol_curve_group_op`.
     ABI: r1 = curve_id, r2 = op_id (0=ADD/1=SUB/2=MUL),
@@ -164,25 +172,37 @@ caller still pays *something*. -/
 @[simp] def execGroupOp (s : State) : State :=
   let curveId := s.regs.r1
   let opId    := s.regs.r2
-  let leftB   := readBytes s.mem s.regs.r3 32
-  let rightB  := readBytes s.mem s.regs.r4 32
   -- Unsupported curve_id aborts with `InvalidAttribute` under
   -- `abort_on_invalid_curve` (active in all_enabled — agave-syscalls
   -- lib.rs:1119). A valid curve with a failed/invalid op returns Ok(1)
   -- (commitOptional none), unchanged. See docs/SOUNDNESS_AUDIT_* (M7).
+  -- H6: inside a valid-curve branch agave translates both 32-byte inputs
+  -- (`[r3,32)`, `[r4,32)`, Load) then the 32-byte output (`[r5,32)`,
+  -- Store) — an out-of-region (or non-writable output) slice traps. The
+  -- guards are plain `if`s; `commitOptional` carries the some/none body.
   if curveId = CURVE25519_EDWARDS then
-    commitOptional s s.regs.r5 32
-      (if opId = OP_ADD then edwardsAdd leftB rightB
-       else if opId = OP_SUB then edwardsSub leftB rightB
-       else if opId = OP_MUL then edwardsMul leftB rightB
-       else none)
+    s.guardRead s.regs.r3 32 fun s =>
+    s.guardRead s.regs.r4 32 fun s =>
+    s.guardWrite s.regs.r5 32 fun s =>
+      let leftB  := readBytes s.mem s.regs.r3 32
+      let rightB := readBytes s.mem s.regs.r4 32
+      commitOptional s s.regs.r5 32
+        (if opId = OP_ADD then edwardsAdd leftB rightB
+         else if opId = OP_SUB then edwardsSub leftB rightB
+         else if opId = OP_MUL then edwardsMul leftB rightB
+         else none)
   else if curveId = CURVE25519_RISTRETTO then
-    commitOptional s s.regs.r5 32
-      (if opId = OP_ADD then ristrettoAdd leftB rightB
-       else if opId = OP_SUB then ristrettoSub leftB rightB
-       else if opId = OP_MUL then ristrettoMul leftB rightB
-       else none)
-  else { s with exitCode := some ERR_INVALID_ATTRIBUTE }
+    s.guardRead s.regs.r3 32 fun s =>
+    s.guardRead s.regs.r4 32 fun s =>
+    s.guardWrite s.regs.r5 32 fun s =>
+      let leftB  := readBytes s.mem s.regs.r3 32
+      let rightB := readBytes s.mem s.regs.r4 32
+      commitOptional s s.regs.r5 32
+        (if opId = OP_ADD then ristrettoAdd leftB rightB
+         else if opId = OP_SUB then ristrettoSub leftB rightB
+         else if opId = OP_MUL then ristrettoMul leftB rightB
+         else none)
+  else { s with exitCode := some ERR_INVALID_ATTRIBUTE, vmError := some .invalidAttribute }
 
 /-- Execute `sol_curve_multiscalar_mul`.
     ABI: r1 = curve_id, r2 = `*const PodScalar*`,
@@ -194,16 +214,68 @@ caller still pays *something*. -/
   -- (agave-syscalls lib.rs:1258). Fail closed. (n = 0 and compute
   -- failures return Ok(1) on chain, so they stay in-band.) See M9.
   if pointsLen > 512 then
-    { s with exitCode := some ERR_INVALID_LENGTH }
+    { s with exitCode := some ERR_INVALID_LENGTH, vmError := some .invalidLength }
   else
-    let scalarsB  := readBytes s.mem s.regs.r2 (32 * pointsLen)
-    let pointsB   := readBytes s.mem s.regs.r3 (32 * pointsLen)
-    let result : Option ByteArray :=
-      if pointsLen = 0 then none
-      else if curveId = CURVE25519_EDWARDS then edwardsMSM scalarsB pointsB
-      else if curveId = CURVE25519_RISTRETTO then ristrettoMSM scalarsB pointsB
-      else none
-    commitOptional s s.regs.r5 32 result
+    -- H6: agave translates both `32·n`-byte input buffers (scalars `[r2,·)`
+    -- and points `[r3,·)`, Load) then the 32-byte output (`[r5,32)`, Store).
+    s.guardRead s.regs.r2 (32 * pointsLen) fun s =>
+    s.guardRead s.regs.r3 (32 * pointsLen) fun s =>
+    s.guardWrite s.regs.r5 32 fun s =>
+      let scalarsB  := readBytes s.mem s.regs.r2 (32 * pointsLen)
+      let pointsB   := readBytes s.mem s.regs.r3 (32 * pointsLen)
+      let result : Option ByteArray :=
+        if pointsLen = 0 then none
+        else if curveId = CURVE25519_EDWARDS then edwardsMSM scalarsB pointsB
+        else if curveId = CURVE25519_RISTRETTO then ristrettoMSM scalarsB pointsB
+        else none
+      commitOptional s s.regs.r5 32 result
+
+/-! ## H6 fault-direction lemmas
+
+Each curve syscall now traps on an out-of-region slice. These lemmas
+characterize the honest H6 behaviour (they replace the retired
+short-circuit bookkeeping triples in `InstructionSpecs/Crypto.lean`). -/
+
+/-- `sol_curve_validate_point`: on a supported curve_id, an out-of-region
+    32-byte input point `[r2,32)` traps with a typed access violation. -/
+theorem execValidate_faults_oob (s : State)
+    (hcurve : s.regs.r1 = CURVE25519_EDWARDS)
+    (hoob : s.regions.containsRange s.regs.r2 32 = false) :
+    (execValidate s).vmError = some .accessViolation := by
+  simp only [execValidate, State.guardRead]
+  rw [if_pos hcurve, if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+/-- `sol_curve_group_op`: on a supported curve_id, an out-of-region left
+    input `[r3,32)` traps (the first of left `[r3,32)` / right `[r4,32)` /
+    output `[r5,32)`). -/
+theorem execGroupOp_faults_oob (s : State)
+    (hcurve : s.regs.r1 = CURVE25519_EDWARDS)
+    (hoob : s.regions.containsRange s.regs.r3 32 = false) :
+    (execGroupOp s).vmError = some .accessViolation := by
+  simp only [execGroupOp, State.guardRead]
+  rw [if_pos hcurve, if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+/-- `sol_curve_multiscalar_mul`: within the `n ≤ 512` bound and for a
+    non-empty input (`n ≠ 0`), an out-of-region scalars buffer `[r2, 32·n)`
+    traps. -/
+theorem execMSM_faults_oob (s : State)
+    (hle : ¬ s.regs.r4 > 512) (hn0 : s.regs.r4 ≠ 0)
+    (hoob : s.regions.containsRange s.regs.r2 (32 * s.regs.r4) = false) :
+    (execMSM s).vmError = some .accessViolation := by
+  simp only [execMSM, State.guardRead]
+  rw [if_neg hle, if_neg (by
+    rintro (h | h)
+    · exact absurd (by omega : s.regs.r4 = 0) hn0
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 end Curve25519
 end SVM.SBPF

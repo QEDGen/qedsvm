@@ -250,31 +250,24 @@ FFI is trusted to do, and they are the only soundness foothold the SL
 proofs can use. The matching consumer-facing Hoare triples in
 `InstructionSpecs.lean` are bookkeeping on top of these axioms.
 
-**Shipped this lift** (6 triples, all using a new helper
-`cuTripleWithin_syscall_writes_r0_only_pinned` — a generalization of
-`writes_r0_only` that pins one extra register and makes the regs/mem
-post-state conditional on that pinning):
-
-- (`sol_curve_validate_point` unsupported curve_id now FAILS CLOSED
-  with `ERR_INVALID_ATTRIBUTE` — matches agave under
-  `abort_on_invalid_curve` — so the old "r0 := 2" triple was removed; see
-  `InstructionSpecs/Crypto.lean` and SOUNDNESS_AUDIT M7)
-- `call_sol_secp256k1_recover_invalid_recid_spec` (recovery_id > 3
-  ⇒ r0 := 2, mem untouched, no FFI call)
-- (`sol_curve_group_op` unsupported curve_id now FAILS CLOSED with
-  `ERR_INVALID_ATTRIBUTE` too; the old "r0 := 1" triple was removed — M7)
-- `call_sol_curve_multiscalar_mul_zero_n_spec` (n = 0 ⇒ r0 := 1,
-  mem untouched)
-- `call_sol_curve_decompress_unsupported_spec` (unsupported BLS
-  curve_id ⇒ r0 := 1, mem untouched)
-- `call_sol_curve_pairing_map_unsupported_spec` (unsupported BLS
-  curve_id ⇒ r0 := 1, mem untouched)
-
-These triples cover the syscalls' **error / shortcircuit paths** where
-no FFI call happens, so they need no axiom support from this file.
-They establish the pattern; the corresponding **success paths** —
+**H6 update.** The four short-circuit bookkeeping triples that once
+documented the no-FFI error paths (`secp256k1_recover` recovery_id > 3,
+`multiscalar_mul` n = 0, BLS `curve_decompress` / `pairing_map`
+unsupported curve_id ⇒ `r0 := errCode, mem untouched`) have been
+RETIRED. Under H6 every crypto syscall now routes its input/output
+slices through the region guards (`State.guardRead` / `guardWrite`), so
+those error paths sit behind the guard and the unconditional "mem
+untouched" claim no longer holds for an out-of-region buffer (agave
+traps there too). The triples were unconsumed (only cited here in
+prose), so instead of threading region requirements through the old
+PartialState proofs they are replaced by model-side fault-direction
+lemmas `*_faults_oob` in `SVM/Syscalls/{Curve25519,Bls12_381,AltBn128,
+BigModExp,Secp256k1}.lean` (out-of-region access ⇒ typed
+`accessViolation`); cross-engine-pinned by the `oob_*` diff fixtures.
+The generic `cuTripleWithin_syscall_writes_r0_only_pinned` helper is
+kept (a valid r0-only template). The corresponding **success paths** —
 where the FFI is called and writes a digest at the output address —
-are deferred to a follow-on SL session because they require the
+remain deferred to a follow-on SL session because they require the
 ~400-line PDA n=0 proof template (`call_create_program_address_n0_spec`)
 parameterized by:
 

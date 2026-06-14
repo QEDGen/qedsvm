@@ -353,15 +353,20 @@ for memset). -/
 
 theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     (sc : Syscall) (bsNew : ByteArray) (pc : Nat) (nCu : Nat) (r2V r3V : Nat)
-    (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs.set .r0 0)
+    (h_step_regs : ∀ s : State,
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
+        (step (.call sc) s).regs = s.regs.set .r0 0)
     (h_step_mem_in  : ∀ s : State, s.regs.r2 = r2V → s.regs.r3 = r3V →
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
         ∀ i, i < bsNew.size →
         (step (.call sc) s).mem (s.regs.r1 + i) = (bsNew.get! i).toNat)
     (h_step_mem_out : ∀ s : State, s.regs.r3 = r3V →
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
         ∀ a, (a < s.regs.r1 ∨ a ≥ s.regs.r1 + bsNew.size) →
         (step (.call sc) s).mem a = s.mem a)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
         (step (.call sc) s).exitCode = none)
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
@@ -370,13 +375,17 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     (h_step_cu : ∀ s : State,
         (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = bsNew.size →
-      cuTripleWithin 1 nCu pc (pc + 1)
+      -- H6: the `[r1V, r1V + r3V)` destination slice must be in a writable
+      -- region (`guardWrite` in `MemOps.execSet`); the spec carries that as
+      -- its `rr` region requirement, discharged by the projection bullets.
+      cuTripleWithinMem 1 nCu pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
         ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
          ** (r1V ↦Bytes bsOld))
         ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
-         ** (r1V ↦Bytes bsNew)) := by
-  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud
+         ** (r1V ↦Bytes bsNew))
+        (fun rt => rt.containsWritable r1V r3V = true) := by
+  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud h_region
   let N : Nat := bsNew.size
   -- ==== Phase 1: destructure the 5-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -461,6 +470,10 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
   have hs_r1_field : s.regs.r1 = r1V := hs_regs_r1
   have hs_r2_field : s.regs.r2 = r2V := hs_regs_r2
   have hs_r3_field : s.regs.r3 = r3V := hs_regs_r3
+  -- The `rr` region requirement, specialised to this state's registers:
+  -- the `guardWrite` inside `step (.call sc)` collapses under it.
+  have hreg : s.regions.containsWritable s.regs.r1 s.regs.r3 = true := by
+    rw [hs_r1_field, hs_r3_field]; exact h_region
   -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
@@ -470,21 +483,21 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
-    rw [hstep_eq]; exact h_step_exit s hex
+    rw [hstep_eq]; exact h_step_exit s hex hreg
   have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
     rw [hstep_eq]
     show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
-    rw [hstep_eq]; exact h_step_regs s
+    rw [hstep_eq]; exact h_step_regs s hreg
   have hexec_mem_in (i : Nat) (hi : i < N) :
       (executeFn fetch s 1).mem (r1V + i) = (bsNew.get! i).toNat := by
     rw [hstep_eq, ← hs_r1_field]
-    exact h_step_mem_in s hs_r2_field hs_r3_field i hi
+    exact h_step_mem_in s hs_r2_field hs_r3_field hreg i hi
   have hexec_mem_out (a : Nat) (h : a < r1V ∨ a ≥ r1V + N) :
       (executeFn fetch s 1).mem a = s.mem a := by
     rw [hstep_eq]
-    apply h_step_mem_out s hs_r3_field a
+    apply h_step_mem_out s hs_r3_field hreg a
     rw [hs_r1_field]; exact h
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
   have hd_PR_regs := hd_PR.regs
@@ -812,20 +825,24 @@ theorem call_sol_memset_spec
     (r0Old r1V r2V r3V pc nCu : Nat) (bsOld : ByteArray) (hbs : bsOld.size = r3V)
     (hCu : ∀ s : State,
         (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: the `[r1V, r1V + r3V)` destination must be in a writable region.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memset))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
-       ** (r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 r3V))) := by
+       ** (r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 r3V)))
+      (fun rt => rt.containsWritable r1V r3V = true) := by
   refine cuTripleWithin_syscall_writesR1Bytes_r2r3
     .sol_memset (replicateByte (r2V % 256).toUInt8 r3V) pc nCu r2V r3V
     ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld ?_
-  · intro s
-    simp only [step, execSyscall, MemOps.execSet]
-  · intro s hr2 hr3 i hi
+  · intro s hreg
+    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
+    rw [if_pos (Or.inr hreg)]
+  · intro s hr2 hr3 hreg i hi
     rw [replicateByte_size] at hi
-    simp only [step, execSyscall, MemOps.execSet]
+    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
+    rw [if_pos (Or.inr hreg)]
     rw [Mem_read_default]
     rw [if_pos ⟨Nat.le_add_right _ _, by rw [hr3]; omega⟩]
     rw [replicateByte_get! _ _ _ hi]
@@ -834,9 +851,10 @@ theorem call_sol_memset_spec
     show r2V % 256 = (UInt8.ofNat (r2V % 256)).toNat
     unfold UInt8.ofNat UInt8.toNat
     simp
-  · intro s hr3 a ha
+  · intro s hr3 hreg a ha
     rw [replicateByte_size] at ha
-    simp only [step, execSyscall, MemOps.execSet]
+    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
+    rw [if_pos (Or.inr hreg)]
     rw [Mem_read_default]
     have hneg : ¬(a ≥ s.regs.r1 ∧ a - s.regs.r1 < s.regs.r3) := by
       rintro ⟨h1, h2⟩
@@ -847,13 +865,16 @@ theorem call_sol_memset_spec
     rw [if_neg hneg]
   · intro s
     simp only [step, execSyscall, MemOps.execSet]
-  · intro s hex
-    simp only [step, execSyscall, MemOps.execSet]
+  · intro s hex hreg
+    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
+    rw [if_pos (Or.inr hreg)]
     exact hex
   · intro s
-    simp only [step, execSyscall, MemOps.execSet]
+    simp only [step, execSyscall, MemOps.execSet, State.guardWrite, State.accessFault]
+    split <;> rfl
   · intro s
-    simp only [step, execSyscall, MemOps.execSet]
+    simp only [step, execSyscall, MemOps.execSet, State.guardWrite, State.accessFault]
+    split <;> rfl
   · rw [replicateByte_size]; exact hbs
 
 /-! ## 6-atom mem-copy helper: `cuTripleWithin_syscall_copiesR2ToR1`
@@ -878,15 +899,24 @@ assumption. Overlapping memmove would need a different spec. -/
 theorem cuTripleWithin_syscall_copiesR2ToR1
     (sc : Syscall) (pc : Nat) (nCu : Nat) (r2V r3V : Nat) (srcBytes : ByteArray)
     (hsrcSize : srcBytes.size = r3V)
-    (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs.set .r0 0)
+    (h_step_regs : ∀ s : State,
+        s.regions.containsRange s.regs.r2 s.regs.r3 = true →
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
+        (step (.call sc) s).regs = s.regs.set .r0 0)
     (h_step_mem_in  : ∀ s : State, s.regs.r2 = r2V → s.regs.r3 = r3V →
+        s.regions.containsRange s.regs.r2 s.regs.r3 = true →
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
         ∀ i, i < r3V →
         (step (.call sc) s).mem (s.regs.r1 + i) = s.mem (s.regs.r2 + i) % 256)
     (h_step_mem_out : ∀ s : State, s.regs.r3 = r3V →
+        s.regions.containsRange s.regs.r2 s.regs.r3 = true →
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
         ∀ a, (a < s.regs.r1 ∨ a ≥ s.regs.r1 + r3V) →
         (step (.call sc) s).mem a = s.mem a)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     (h_step_exit : ∀ s : State, s.exitCode = none →
+        s.regions.containsRange s.regs.r2 s.regs.r3 = true →
+        s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
         (step (.call sc) s).exitCode = none)
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
@@ -895,13 +925,17 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     (h_step_cu : ∀ s : State,
         (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = r3V →
-      cuTripleWithin 1 nCu pc (pc + 1)
+      -- H6: `[r2V, r2V+r3V)` (src) must be readable, `[r1V, r1V+r3V)`
+      -- (dst) writable; both ride the `rr` region requirement.
+      cuTripleWithinMem 1 nCu pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
         ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
          ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld))
         ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
-         ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
-  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud
+         ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes))
+        (fun rt => rt.containsRange r2V r3V = true ∧
+                   rt.containsWritable r1V r3V = true) := by
+  intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud h_region
   -- ==== Phase 1: destructure the 6-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
@@ -1043,6 +1077,12 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   have hs_r3_field : s.regs.r3 = r3V := hs_regs_r3
   have hs_mem_src (j : Nat) (hj : j < r3V) :
       s.mem (r2V + j) = (srcBytes.get! j).toNat := hcm_mem _ _ (hp_mem_src j hj)
+  -- The `rr` region requirements, specialised to this state's registers:
+  -- the nested `guardRead`/`guardWrite` in `step (.call sc)` collapse.
+  have hRd : s.regions.containsRange s.regs.r2 s.regs.r3 = true := by
+    rw [hs_r2_field, hs_r3_field]; exact h_region.1
+  have hWr : s.regions.containsWritable s.regs.r1 s.regs.r3 = true := by
+    rw [hs_r1_field, hs_r3_field]; exact h_region.2
   -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
@@ -1052,19 +1092,19 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
-    rw [hstep_eq]; exact h_step_exit s hex
+    rw [hstep_eq]; exact h_step_exit s hex hRd hWr
   have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
     rw [hstep_eq]
     show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
-    rw [hstep_eq]; exact h_step_regs s
+    rw [hstep_eq]; exact h_step_regs s hRd hWr
   -- Compose the in-range mem fact with the source-bytes value.
   have hexec_mem_in (i : Nat) (hi : i < r3V) :
       (executeFn fetch s 1).mem (r1V + i) = (srcBytes.get! i).toNat := by
     rw [hstep_eq, ← hs_r1_field]
     show (step (.call sc) s).mem (s.regs.r1 + i) = (srcBytes.get! i).toNat
-    have h1 := h_step_mem_in s hs_r2_field hs_r3_field i hi
+    have h1 := h_step_mem_in s hs_r2_field hs_r3_field hRd hWr i hi
     rw [hs_r2_field] at h1
     rw [h1, hs_mem_src i hi]
     -- (UInt8.toNat _) < 256, so % 256 is a no-op.
@@ -1073,7 +1113,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   have hexec_mem_out (a : Nat) (h : a < r1V ∨ a ≥ r1V + r3V) :
       (executeFn fetch s 1).mem a = s.mem a := by
     rw [hstep_eq]
-    apply h_step_mem_out s hs_r3_field a
+    apply h_step_mem_out s hs_r3_field hRd hWr a
     rw [hs_r1_field]; exact h
   -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
   have hd_PR_regs := hd_PR.regs
@@ -1518,25 +1558,31 @@ theorem call_sol_memcpy_spec
     (hsrc : srcBytes.size = r3V) (hbs : bsOld.size = r3V)
     (hCu : ∀ s : State,
         (step (.call .sol_memcpy) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: `[r2V, r2V+r3V)` (src) readable, `[r1V, r1V+r3V)` (dst) writable.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memcpy))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
-       ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
+       ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes))
+      (fun rt => rt.containsRange r2V r3V = true ∧
+                 rt.containsWritable r1V r3V = true) := by
   refine cuTripleWithin_syscall_copiesR2ToR1
     .sol_memcpy pc nCu r2V r3V srcBytes hsrc
     ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld hbs
-  · intro s
-    simp only [step, execSyscall, MemOps.execCopy]
-  · intro s hr2 hr3 i hi
-    simp only [step, execSyscall, MemOps.execCopy]
+  · intro s hRd hWr
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
+  · intro s hr2 hr3 hRd hWr i hi
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
     rw [Mem_read_default]
     rw [if_pos ⟨Nat.le_add_right _ _, by rw [hr3]; omega⟩]
     have : s.regs.r1 + i - s.regs.r1 = i := by omega
     rw [this]
-  · intro s hr3 a ha
-    simp only [step, execSyscall, MemOps.execCopy]
+  · intro s hr3 hRd hWr a ha
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
     rw [Mem_read_default]
     have hneg : ¬(a ≥ s.regs.r1 ∧ a - s.regs.r1 < s.regs.r3) := by
       rintro ⟨h1, h2⟩
@@ -1547,39 +1593,49 @@ theorem call_sol_memcpy_spec
     rw [if_neg hneg]
   · intro s
     simp only [step, execSyscall, MemOps.execCopy]
-  · intro s hex
-    simp only [step, execSyscall, MemOps.execCopy]
+  · intro s hex hRd hWr
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
     exact hex
   · intro s
-    simp only [step, execSyscall, MemOps.execCopy]
-
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite,
+      State.accessFault]
+    (repeat' split) <;> rfl
   · intro s
-    simp only [step, execSyscall, MemOps.execCopy]
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite,
+      State.accessFault]
+    (repeat' split) <;> rfl
 
 theorem call_sol_memmove_spec
     (r0Old r1V r2V r3V pc nCu : Nat) (srcBytes bsOld : ByteArray)
     (hsrc : srcBytes.size = r3V) (hbs : bsOld.size = r3V)
     (hCu : ∀ s : State,
         (step (.call .sol_memmove) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: `[r2V, r2V+r3V)` (src) readable, `[r1V, r1V+r3V)` (dst) writable.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memmove))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
-       ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes)) := by
+       ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes))
+      (fun rt => rt.containsRange r2V r3V = true ∧
+                 rt.containsWritable r1V r3V = true) := by
   refine cuTripleWithin_syscall_copiesR2ToR1
     .sol_memmove pc nCu r2V r3V srcBytes hsrc
     ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld hbs
-  · intro s
-    simp only [step, execSyscall, MemOps.execCopy]
-  · intro s hr2 hr3 i hi
-    simp only [step, execSyscall, MemOps.execCopy]
+  · intro s hRd hWr
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
+  · intro s hr2 hr3 hRd hWr i hi
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
     rw [Mem_read_default]
     rw [if_pos ⟨Nat.le_add_right _ _, by rw [hr3]; omega⟩]
     have : s.regs.r1 + i - s.regs.r1 = i := by omega
     rw [this]
-  · intro s hr3 a ha
-    simp only [step, execSyscall, MemOps.execCopy]
+  · intro s hr3 hRd hWr a ha
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
     rw [Mem_read_default]
     have hneg : ¬(a ≥ s.regs.r1 ∧ a - s.regs.r1 < s.regs.r3) := by
       rintro ⟨h1, h2⟩
@@ -1590,14 +1646,18 @@ theorem call_sol_memmove_spec
     rw [if_neg hneg]
   · intro s
     simp only [step, execSyscall, MemOps.execCopy]
-  · intro s hex
-    simp only [step, execSyscall, MemOps.execCopy]
+  · intro s hex hRd hWr
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
     exact hex
   · intro s
-    simp only [step, execSyscall, MemOps.execCopy]
-
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite,
+      State.accessFault]
+    (repeat' split) <;> rfl
   · intro s
-    simp only [step, execSyscall, MemOps.execCopy]
+    simp only [step, execSyscall, MemOps.execCopy, State.guardRead, State.guardWrite,
+      State.accessFault]
+    (repeat' split) <;> rfl
 
 /-! ## Syscall: `sol_memcmp`
 
@@ -1677,14 +1737,18 @@ theorem call_sol_memcmp_spec
     (hsz1 : p1Bytes.size = r3V) (hsz2 : p2Bytes.size = r3V)
     (hCu : ∀ s : State,
         (step (.call .sol_memcmp) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: `[r1V, r1V+r3V)` and `[r2V, r2V+r3V)` (inputs) readable, and the
+    -- fixed 4-byte `[r4V, r4V+4)` result must be in a writable region.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memcmp))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V)
        ** (r1V ↦Bytes p1Bytes) ** (r2V ↦Bytes p2Bytes) ** (r4V ↦U32 outOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V)
        ** (r1V ↦Bytes p1Bytes) ** (r2V ↦Bytes p2Bytes)
-       ** (r4V ↦U32 (memcmpResultU32 p1Bytes p2Bytes r3V))) := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
+       ** (r4V ↦U32 (memcmpResultU32 p1Bytes p2Bytes r3V)))
+      (fun rt => rt.containsRange r1V r3V = true ∧ rt.containsRange r2V r3V = true ∧
+                 rt.containsWritable r4V 4 = true) := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   let cmpResult := memcmpResultU32 p1Bytes p2Bytes r3V
   -- ==== Phase 1: 8-atom destructure. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -1792,6 +1856,14 @@ theorem call_sol_memcmp_spec
   have hs_r2_field : s.regs.r2 = r2V := hs_regs_r2
   have hs_r3_field : s.regs.r3 = r3V := hs_regs_r3
   have hs_r4_field : s.regs.r4 = r4V := hs_regs_r4
+  -- The `rr` region requirements, specialised to this state's registers:
+  -- collapse the three nested guards in `step (.call .sol_memcmp)`.
+  have hRd1 : s.regions.containsRange s.regs.r1 s.regs.r3 = true := by
+    rw [hs_r1_field, hs_r3_field]; exact h_region.1
+  have hRd2 : s.regions.containsRange s.regs.r2 s.regs.r3 = true := by
+    rw [hs_r2_field, hs_r3_field]; exact h_region.2.1
+  have hWr : s.regions.containsWritable s.regs.r4 4 = true := by
+    rw [hs_r4_field]; exact h_region.2.2
   -- ==== Phase 2 (cont'd): mem facts for p1, p2, out ====
   -- p1 at r1V (sits at h_T5 layer).
   have h_T5_mem_p1 (i : Nat) (hi : i < r3V) :
@@ -1899,9 +1971,14 @@ theorem call_sol_memcmp_spec
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
-    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]; exact hex
+    rw [hstep_eq]
+    simp only [step, execSyscall, MemOps.execCmp, chargeCu, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd1), if_pos (Or.inr hRd2), if_pos (Or.inr hWr)]
+    exact hex
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
-    rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]
+    rw [hstep_eq]
+    simp only [step, execSyscall, MemOps.execCmp, chargeCu, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd1), if_pos (Or.inr hRd2), if_pos (Or.inr hWr)]
   -- The mem after step equals writeU32 s.mem s.regs.r4 cmpResult, where cmpResult
   -- is the i32-encoded comparison value derived from execCmp's fold. The fold
   -- equality lemma (execCmp_fold_eq) converts the s.mem-based fold to memcmpFold
@@ -1910,7 +1987,8 @@ theorem call_sol_memcmp_spec
       (executeFn fetch s 1).mem =
         Memory.writeU32 s.mem r4V cmpResult := by
     rw [hstep_eq]
-    simp only [step, execSyscall, MemOps.execCmp, chargeCu]
+    simp only [step, execSyscall, MemOps.execCmp, chargeCu, State.guardRead, State.guardWrite]
+    rw [if_pos (Or.inr hRd1), if_pos (Or.inr hRd2), if_pos (Or.inr hWr)]
     -- Convert all s.regs.{r1, r2, r3, r4} → fixed parameter values
     rw [hs_r4_field, hs_r1_field, hs_r2_field, hs_r3_field]
     show Memory.writeU32 s.mem r4V _ = Memory.writeU32 s.mem r4V cmpResult
@@ -2703,7 +2781,8 @@ theorem call_sol_memcmp_spec
         rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
         exact hva
       have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
-        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb]
+        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb,
+          hRd1, hRd2, hWr]
       rw [hexec_rd]
       exact hcompat.returnData rd hp_rd
     · intro cs hva
@@ -2715,7 +2794,8 @@ theorem call_sol_memcmp_spec
         rw [← hu_PR, PartialState.union_callStack_of_left_none h_P_cs]
         exact hva
       have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
-        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb]
+        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb,
+          hRd1, hRd2, hWr]
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
 
@@ -2781,13 +2861,14 @@ theorem call_sol_memset_split_u64_spec
     (hw7 : w / 0x100000000000000 % 256 = r2V % 256)
     (hCu : ∀ s : State,
         (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memset))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** (r1V ↦Bytes bsOld))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** ((r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 n)) **
-           (a ↦U64 w))) := by
+           (a ↦U64 w)))
+      (fun rt => rt.containsWritable r1V r3V = true) := by
   have hsplit : ∀ h',
       memBytesIs r1V (replicateByte (r2V % 256).toUInt8 r3V) h'
       ↔ ((r1V ↦Bytes replicateByte (r2V % 256).toUInt8 n) **
@@ -2803,7 +2884,7 @@ theorem call_sol_memset_split_u64_spec
       rw [replicateByte8_eq_u64LE r2V w hw0 hw1 hw2 hw3 hw4 hw5 hw6 hw7]
       exact (memU64Is_eq_memBytesIs (r1V + n) _ h'').symm) h'
   -- (the `ha` rewrite above moved the split-cell address to `a`)
-  refine cuTripleWithin_weaken (fun _ x => x) ?_
+  refine cuTripleWithinMem_weaken (fun _ x => x) ?_ (fun _ x => x)
     (call_sol_memset_spec r0Old r1V r2V r3V pc nCu bsOld hbs hCu)
   intro h hh
   exact (sepConj_iff_congr_right _ (fun h1 =>
@@ -2832,13 +2913,14 @@ theorem call_sol_memset_presplit_u64_spec
     (hw7 : w / 0x100000000000000 % 256 = r2V % 256)
     (hCu : ∀ s : State,
         (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memset))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** ((r1V ↦Bytes bsOld) ** (a ↦U64 oldV)))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** ((r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 n)) **
-           (a ↦U64 w))) := by
+           (a ↦U64 w)))
+      (fun rt => rt.containsWritable r1V r3V = true) := by
   have hpre : ∀ h',
       ((r1V ↦Bytes bsOld) ** (a ↦U64 oldV)) h'
       ↔ memBytesIs r1V (bsOld ++ PartialState.u64LE oldV) h' := by
@@ -2862,7 +2944,7 @@ theorem call_sol_memset_presplit_u64_spec
     exact sepConj_iff_congr_right _ (fun h'' => by
       rw [replicateByte8_eq_u64LE r2V w hw0 hw1 hw2 hw3 hw4 hw5 hw6 hw7]
       exact (memU64Is_eq_memBytesIs (r1V + n) _ h'').symm) h'
-  refine cuTripleWithin_weaken ?_ ?_
+  refine cuTripleWithinMem_weaken ?_ ?_ (fun _ x => x)
     (call_sol_memset_spec r0Old r1V r2V r3V pc nCu
       (bsOld ++ PartialState.u64LE oldV)
       (by simp [ByteArray.size_append, hbs, hn]) hCu)
@@ -2897,13 +2979,14 @@ theorem call_sol_memset_presplit_2u64_spec
     (hw7 : w / 0x100000000000000 % 256 = r2V % 256)
     (hCu : ∀ s : State,
         (step (.call .sol_memset) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_memset))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** ((r1V ↦Bytes bsOld) ** ((a1 ↦U64 oldV1) ** (a2 ↦U64 oldV2))))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
        ** ((r1V ↦Bytes (replicateByte (r2V % 256).toUInt8 n)) **
-           ((a1 ↦U64 w) ** (a2 ↦U64 w)))) := by
+           ((a1 ↦U64 w) ** (a2 ↦U64 w))))
+      (fun rt => rt.containsWritable r1V r3V = true) := by
   -- Old tail: two adjacent `↦U64` cells ↔ the 16-byte blob of their
   -- LE encodings.
   have htail : ∀ h',
@@ -2963,7 +3046,7 @@ theorem call_sol_memset_presplit_2u64_spec
     rw [replicateByte_size] at happ
     rw [happ]
     exact sepConj_iff_congr_right _ (fun h'' => htailw h'') h'
-  refine cuTripleWithin_weaken ?_ ?_
+  refine cuTripleWithinMem_weaken ?_ ?_ (fun _ x => x)
     (call_sol_memset_spec r0Old r1V r2V r3V pc nCu
       (bsOld ++ (PartialState.u64LE oldV1 ++ PartialState.u64LE oldV2))
       (by simp [ByteArray.size_append, hbs, hn]) hCu)

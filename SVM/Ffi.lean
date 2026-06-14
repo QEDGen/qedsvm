@@ -83,7 +83,12 @@ def encodeRun (s : State) (inputLen : Nat) (cuConsumed : UInt64) : ByteArray := 
   | none =>
     out := out.push 0
   | some n =>
-    out := out.push 1
+    -- L1: exit_kind 1 = CLEAN exit, 2 = VM FAULT (`State.vmError`
+    -- set). Same u64 sentinel payload either way, so every downstream
+    -- observable is unchanged until the M14 error-code mapping
+    -- consumes the distinction — but a clean exit whose r0 happens to
+    -- equal a fault sentinel is no longer conflated with the fault.
+    out := out.push (if s.vmError.isSome then 2 else 1)
     out := out ++ encodeU64 (UInt64.ofNat n)
   out := out ++ encodeU64 cuConsumed
   -- Modified input region.

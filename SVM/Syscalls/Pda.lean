@@ -162,26 +162,55 @@ def cuTryFind (s : State) : Nat :=
 -- reduce `execCreate` to `commitOptional`. Left as-is. (Programs use
 -- valid seeds, so the divergence is rarely reachable.)
 @[simp] def execCreate (s : State) : State :=
-  let seeds  := readSeeds s.mem s.regs.r1 s.regs.r2
-  let pid    := readBytes s.mem s.regs.r3 32
-  let result := createProgramAddress seeds pid
-  commitOptional s s.regs.r4 32 result
+  -- H6: agave translates the program_id `[r3,32)` (Load), the seed descriptor
+  -- array `[r1, r2·16)` plus each seed slice (Load), and the 32-byte output
+  -- `[r4,32)` (Store). `guardedCommit` checks output → descriptor array →
+  -- each slice → `commitOptional`; the extra `guardRead` covers the program_id.
+  -- Any out-of-region (or non-writable output) access traps. The guards reuse
+  -- the poseidon `guardedCommit` combinator, so `execCreate` stays `@[simp]`.
+  s.guardRead s.regs.r3 32 fun s =>
+    s.guardedCommit s.regs.r4 32 s.regs.r1 s.regs.r2
+      (createProgramAddress (readSeeds s.mem s.regs.r1 s.regs.r2)
+                            (readBytes s.mem s.regs.r3 32))
+
+/-- H6 fault direction: an out-of-region program_id `[r3,32)` traps with a
+    typed access violation (the first guarded slice; the output `[r4,32)`,
+    the seed descriptor array and each seed slice are the others). -/
+theorem execCreate_faults_oob (s : State)
+    (hoob : s.regions.containsRange s.regs.r3 32 = false) :
+    (execCreate s).vmError = some .accessViolation := by
+  simp only [execCreate, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 /-- Execute `sol_try_find_program_address`.
     Same as `execCreate` plus r5 = `*mut [u8; 1]` bump output. -/
 def execTryFind (s : State) : State :=
-  let outA   := s.regs.r4
-  let bumpA  := s.regs.r5
-  let seeds  := readSeeds s.mem s.regs.r1 s.regs.r2
-  let pid    := readBytes s.mem s.regs.r3 32
-  let result := tryFindProgramAddress seeds pid
-  match result with
-  | some (pda, bump) =>
-    let mem' : Memory.Mem := fun a =>
-      if a = bumpA then bump.toNat
-      else writeBytes s.mem outA 32 pda a
-    { s with regs := s.regs.set .r0 0, mem := mem' }
-  | none => { s with regs := s.regs.set .r0 1 }
+  -- H6: agave translates the program_id `[r3,32)`, the seed descriptor array
+  -- `[r1, r2·16)` and each seed slice (Load) up front; on a successful search
+  -- it then translates the 32-byte PDA output `[r4,32)` and the 1-byte bump
+  -- output `[r5,1)` (Store) before writing. Any out-of-region (or non-writable
+  -- output) access traps with a typed access violation.
+  s.guardRead s.regs.r3 32 fun s =>
+  s.guardRead s.regs.r1 (s.regs.r2 * 16) fun s =>
+  s.guardSlices s.regs.r1 s.regs.r2 fun s =>
+    let outA   := s.regs.r4
+    let bumpA  := s.regs.r5
+    let seeds  := readSeeds s.mem s.regs.r1 s.regs.r2
+    let pid    := readBytes s.mem s.regs.r3 32
+    let result := tryFindProgramAddress seeds pid
+    match result with
+    | some (pda, bump) =>
+      s.guardWrite outA 32 fun s =>
+      s.guardWrite bumpA 1 fun s =>
+        let mem' : Memory.Mem := fun a =>
+          if a = bumpA then bump.toNat
+          else writeBytes s.mem outA 32 pda a
+        { s with regs := s.regs.set .r0 0, mem := mem' }
+    | none => { s with regs := s.regs.set .r0 1 }
 
 /-- `execTryFind` preserves r10 in both match arms. Marked `@[simp]`
     so `execSyscall_preserves_r10`'s blanket simp closes the
@@ -191,7 +220,14 @@ def execTryFind (s : State) : State :=
 @[simp] theorem execTryFind_preserves_r10 (s : State) :
     (execTryFind s).regs.r10 = s.regs.r10 := by
   simp only [execTryFind]
-  split <;> simp
+  refine State.guardRead_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+    simp
+  · simp
 
 /-- `execTryFind` preserves the region table in both match arms.
     Companion to `execTryFind_preserves_r10`; lets the blanket
@@ -200,7 +236,26 @@ def execTryFind (s : State) : State :=
 @[simp] theorem execTryFind_preserves_regions (s : State) :
     (execTryFind s).regions = s.regions := by
   simp only [execTryFind]
-  split <;> simp
+  refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+    rfl
+  · rfl
+
+/-- H6 fault direction: an out-of-region program_id `[r3,32)` traps with a
+    typed access violation (the first guarded slice). -/
+theorem execTryFind_faults_oob (s : State)
+    (hoob : s.regions.containsRange s.regs.r3 32 = false) :
+    (execTryFind s).vmError = some .accessViolation := by
+  simp only [execTryFind, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 end Pda
 end SVM.SBPF

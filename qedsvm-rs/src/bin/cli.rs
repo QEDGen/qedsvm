@@ -101,6 +101,7 @@ fn real_main() -> Result<ExitCode, String> {
     let outcome_str = match &result.outcome {
         ExitOutcome::OutOfBudget => "out-of-budget".to_string(),
         ExitOutcome::Halted(r0) => format!("halted r0={r0:#x} ({r0})"),
+        ExitOutcome::Faulted(code) => format!("faulted (vmError, sentinel {code:#x})"),
     };
     println!("outcome:                {outcome_str}");
     println!("compute_units_consumed: {}", result.compute_units_consumed);

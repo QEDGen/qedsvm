@@ -46,6 +46,7 @@ use mollusk_svm::result::ProgramResult as MlProgramResult;
 use mollusk_svm::Mollusk;
 use solana_account::{Account, AccountSharedData, ReadableAccount};
 use solana_instruction::{AccountMeta, Instruction};
+use solana_instruction::error::InstructionError;
 use solana_pubkey::Pubkey;
 
 const NOOP_SO: &[u8] = include_bytes!("fixtures/noop.so");
@@ -109,6 +110,17 @@ const CPI_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_caller.so");
 /// through the CPI write-back path. Source in
 /// `cpi_increment_caller_src/`.
 const CPI_INCREMENT_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_increment_caller.so");
+/// CPI callee that GROWS its writable account by 8 bytes (within the
+/// `MAX_PERMITTED_DATA_INCREASE` reserve) and writes a sentinel into the grown
+/// tail. Paired with `cpi_increment_caller.so` to exercise the M6r CPI realloc
+/// write-back. Source in `cpi_realloc_callee_src/`.
+const CPI_REALLOC_CALLEE_SO: &[u8] = include_bytes!("fixtures/cpi_realloc_callee.so");
+/// CPI callee that attempts to grow its account BEYOND
+/// `MAX_PERMITTED_DATA_INCREASE` (`realloc(old + 10241)`). Both engines reject
+/// the over-grow and leave the account unchanged. Source in
+/// `cpi_realloc_overflow_callee_src/`.
+const CPI_REALLOC_OVERFLOW_CALLEE_SO: &[u8] =
+    include_bytes!("fixtures/cpi_realloc_overflow_callee.so");
 /// Forwards TWO writable accounts via `invoke(&ix, &[a, b])` to a
 /// target program. Exercises Phase 3-N marshaling: both AccountInfo
 /// blocks must serialize into the callee's input region with the
@@ -125,6 +137,14 @@ const CPI_TWO_ACCOUNT_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_two_accoun
 /// diverge from mollusk on return_data. Source in
 /// `rodata_addr_returner_src/`.
 const RODATA_ADDR_RETURNER_SO: &[u8] = include_bytes!("fixtures/rodata_addr_returner.so");
+/// Calls `sol_curve_multiscalar_mul` (Edwards) with n=1 then n=2 — the
+/// M9 CU referee for the `base + incr*(n-1)` formula (the n=1 call
+/// charges the bare base). Source in `curve_msm_probe_src/`.
+const CURVE_MSM_PROBE_SO: &[u8] = include_bytes!("fixtures/curve_msm_probe.so");
+/// CLEAN exit with r0 = 0xFFFFFFFFFFFFFFFD (the model's ERR_ABORT
+/// sentinel) — the L1 sentinel-collision experiment. Source in
+/// `sentinel_exit_src/`.
+const SENTINEL_EXIT_SO: &[u8] = include_bytes!("fixtures/sentinel_exit.so");
 /// Calls `sol_try_find_program_address(&[b"vault"], program_id)` and
 /// writes the resulting (PDA, bump) as 33-byte return_data. Exercises
 /// the per-iteration CU charge for `sol_try_find_program_address`
@@ -138,6 +158,86 @@ const PDA_FINDER_SO: &[u8] = include_bytes!("fixtures/pda_finder.so");
 /// with `AccessViolation` and returns Failure. Source in
 /// `oob_read_src/`.
 const OOB_READ_SO: &[u8] = include_bytes!("fixtures/oob_read.so");
+/// Out-of-bounds SYSCALL write (audit H6). Calls `sol_memset_` with a
+/// destination 256 MiB past the input pointer; agave's
+/// `translate_slice_mut` traps with `AccessViolation`. Pre-fix qedsvm
+/// let the syscall write through a region-free `Mem` and returned
+/// Success; post-fix `MemOps.execSet`'s `guardWrite` faults. Source in
+/// `oob_memset_src/`.
+const OOB_MEMSET_SO: &[u8] = include_bytes!("fixtures/oob_memset.so");
+/// Out-of-bounds SYSCALL pubkey log (audit H6). Calls `sol_log_pubkey`
+/// with a pointer 256 MiB past the input pointer; agave's
+/// `translate_type::<Pubkey>` traps the 32-byte read with
+/// `AccessViolation`. Pre-fix qedsvm read through a region-free `Mem`
+/// and returned Success; post-fix `Logging.execLogPubkey`'s `guardRead`
+/// faults. Source in `oob_log_pubkey_src/`.
+const OOB_LOG_PUBKEY_SO: &[u8] = include_bytes!("fixtures/oob_log_pubkey.so");
+/// Out-of-bounds SYSCALL message log (audit H6). Calls `sol_log_` with a
+/// 16-byte message 256 MiB past the input pointer; agave's
+/// `translate_slice` traps the read with `AccessViolation`. Pre-fix
+/// qedsvm read through a region-free `Mem` and returned Success; post-fix
+/// `Logging.execLog`'s `guardRead` faults. Source in `oob_log_src/`.
+const OOB_LOG_SO: &[u8] = include_bytes!("fixtures/oob_log.so");
+/// Out-of-bounds `sol_log_data` (audit H6, descriptor-array / logging
+/// tail). Calls `sol_log_data` with a 1-descriptor array 256 MiB past the
+/// input pointer; agave translates the 16-byte descriptor array first and
+/// `translate_slice` traps the read with `AccessViolation`. Pre-fix qedsvm
+/// read descriptors + slices through a region-free `Mem` and returned
+/// Success; post-fix `Logging.execLogData` routes the descriptor array
+/// through `guardRead` (and slices through `guardSlices`) and faults.
+/// Source in `oob_log_data_src/`.
+const OOB_LOG_DATA_SO: &[u8] = include_bytes!("fixtures/oob_log_data.so");
+/// Calls `sol_sha256` with a 0-slice input and a 32-byte output buffer
+/// 256 MiB past the input pointer. agave's `SyscallSha256` translates the
+/// output (`translate_slice_mut`, 32 bytes) before the input, so the
+/// out-of-region store traps; post-fix (stage 3a) `Sha256.exec` routes the
+/// output through `guardWrite` and faults. Source in `oob_sha256_src/`.
+const OOB_SHA256_SO: &[u8] = include_bytes!("fixtures/oob_sha256.so");
+/// Calls `sol_sha256` with a VALID (writable, in-region) 32-byte output but a
+/// 1-descriptor input array 256 MiB out of region. agave translates the output
+/// first (passes), then the descriptor array (out of region → traps); post-fix
+/// (stage 3b) `Sha256.exec` routes the input through `guardRead`/`guardSlices`
+/// and faults. Source in `oob_sha256_input_src/`.
+const OOB_SHA256_INPUT_SO: &[u8] = include_bytes!("fixtures/oob_sha256_input.so");
+/// Calls `sol_poseidon` with a VALID 32-byte output but a 1-descriptor input
+/// array 256 MiB out of region. agave translates the output first (passes),
+/// then the descriptor array (out of region → traps); post-fix (stage 3c)
+/// `Poseidon.exec`'s `guardedCommit` routes the input through
+/// `guardRead`/`guardSlices` and faults. Source in `oob_poseidon_input_src/`.
+const OOB_POSEIDON_INPUT_SO: &[u8] = include_bytes!("fixtures/oob_poseidon_input.so");
+/// Calls `sol_get_clock_sysvar` with a 40-byte output buffer 256 MiB out of
+/// region. agave translates the output (`translate_type_mut::<Clock>`) and
+/// traps; post-fix (stage 4a) `Sysvar.execClock` (via `zeroFillR1`) routes the
+/// write through `guardWrite` and faults. Source in `oob_clock_sysvar_src/`.
+const OOB_CLOCK_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_clock_sysvar.so");
+/// Calls `sol_set_return_data` with an 8-byte input slice (<= MAX_RETURN_DATA)
+/// 256 MiB out of region. agave checks the length first (passes), then
+/// translates the input slice and traps; post-fix (stage 4b) `ReturnData.execSet`
+/// routes the input through `guardRead` and faults. Source in
+/// `oob_set_return_data_src/`.
+const OOB_SET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_set_return_data.so");
+/// Calls `sol_get_rent_sysvar` with a 17-byte output buffer 256 MiB out of
+/// region. agave's `translate_type_mut::<Rent>` traps; post-fix (stage 4c)
+/// `Sysvar.execRent` (de-simp'd) routes the write through `guardWrite` and
+/// faults. Source in `oob_rent_sysvar_src/`.
+const OOB_RENT_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_rent_sysvar.so");
+/// Seeds 8 bytes of return data, then calls `sol_get_return_data` with a
+/// return-data output buffer 256 MiB out of region. agave's
+/// `translate_slice_mut::<u8>` traps; post-fix (stage 4d) `ReturnData.execGet`
+/// routes both output writes through `guardWrite` and faults. Source in
+/// `oob_get_return_data_src/`.
+const OOB_GET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_get_return_data.so");
+/// Calls `sol_secp256k1_recover` with a 32-byte message hash 256 MiB out of
+/// region. agave's `translate_slice::<u8>(hash, 32)` traps before the FFI
+/// recovery; post-fix (stage 5a) `Secp256k1.exec` routes the hash/sig/output
+/// through `guardRead`/`guardWrite` and faults. Source in `oob_secp256k1_src/`.
+const OOB_SECP256K1_SO: &[u8] = include_bytes!("fixtures/oob_secp256k1.so");
+/// Calls `sol_create_program_address` with zero seeds and a program_id /
+/// output buffer 256 MiB out of region. agave's `translate_slice` traps;
+/// post-fix (stage 5b) `Pda.execCreate` routes the program_id through
+/// `guardRead` and the output + seeds through `guardedCommit` and faults.
+/// Source in `oob_create_pda_src/`.
+const OOB_CREATE_PDA_SO: &[u8] = include_bytes!("fixtures/oob_create_pda.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -232,6 +332,67 @@ fn assert_no_poststate_backstop(fs_r: &qedsvm::InstructionResult) {
          model soundness bug behind ERR_INVALID_POSTSTATE",
         fs_r.poststate_violation,
     );
+}
+
+/// Cross-engine OUTCOME agreement at the granularity agave observably
+/// distinguishes (soundness-audit M14). Before this, the diff tests only
+/// asserted "both non-Success" on the fault paths, so the model could
+/// report the WRONG outcome class (e.g. a clean exit where agave faults,
+/// or the wrong program-error code) undetected.
+///
+/// agave collapses essentially every VM-level fault to
+/// `InstructionError::ProgramFailedToComplete` (mollusk
+/// `UnknownError(ProgramFailedToComplete)`) — see the source map in
+/// docs/SOUNDNESS_AUDIT_* (M14) — including budget exhaustion
+/// (`ExceededMaxInstructions`). So a model `VmFault` / `OutOfBudget`
+/// matches that catch-all regardless of WHICH fault it was (the model's
+/// finer `sentinel` is diagnostics only). A program-RETURNED error
+/// (`ProgramError`, r0 high bits set) compares against mollusk's
+/// `Failure(ProgramError)` by the exact code. The by-design divergences
+/// (M6/C5 read-only-modified, where the model produces
+/// `ERR_READONLY_MODIFIED` and agave a specific account-verification
+/// `InstructionError`) are NOT routed here — those tests assert their own
+/// expected pair.
+fn outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult) -> Result<(), String> {
+    use FsProgramResult as F;
+    use MlProgramResult as M;
+    // agave's catch-all for VM faults + meter exhaustion.
+    let is_failed_to_complete =
+        |ie: &InstructionError| matches!(ie, InstructionError::ProgramFailedToComplete);
+    match (fs, ml) {
+        (F::Success, M::Success) => Ok(()),
+        (F::VmFault { sentinel }, M::UnknownError(ie)) => {
+            if is_failed_to_complete(ie) {
+                Ok(())
+            } else {
+                Err(format!(
+                    "model VmFault({}) but mollusk InstructionError {ie:?} \
+                     (not the ProgramFailedToComplete catch-all)",
+                    qedsvm::vm_fault_name(*sentinel)))
+            }
+        }
+        (F::OutOfBudget, M::UnknownError(ie)) => {
+            if is_failed_to_complete(ie) {
+                Ok(())
+            } else {
+                Err(format!("model OutOfBudget but mollusk InstructionError {ie:?}"))
+            }
+        }
+        (F::ProgramError(pe), M::Failure(mpe)) => {
+            if pe == mpe { Ok(()) }
+            else { Err(format!("ProgramError diverged: model {pe:?} mollusk {mpe:?}")) }
+        }
+        _ => Err(format!("outcome class diverged: model {fs:?} mollusk {ml:?}")),
+    }
+}
+
+/// Assert cross-engine outcome agreement (M14); panics with the precise
+/// mismatch. The replacement for the old "both non-Success" assertions on
+/// fault fixtures.
+fn assert_outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult, ctx: &str) {
+    if let Err(why) = outcome_matches(fs, ml) {
+        panic!("{ctx}: cross-engine outcome mismatch (M14): {why}");
+    }
 }
 
 /// L10: resolve a resulting account by key instead of indexing
@@ -420,8 +581,10 @@ fn logger_surcharge_overrun_matches_mollusk() {
     assert!(matches!(fs_r.program_result, FsProgramResult::OutOfBudget),
         "qedsvm: expected OutOfBudget on surcharge overrun, got {:?}",
         fs_r.program_result);
-    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected a failure on surcharge overrun, got Success");
+    // M14: agave's meter exhaustion (ExceededMaxInstructions) also
+    // collapses to UnknownError(ProgramFailedToComplete) — same outcome.
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result,
+        "logger_surcharge_overrun");
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "consumed-CU diverged at the surcharge-overrun boundary: ours={} mollusk={}",
@@ -1758,6 +1921,178 @@ fn cpi_caller_forwards_account_to_incrementer() {
     assert_eq!(m_acct.data.as_slice(), expected.as_slice());
 }
 
+/// Audit M6r — CPI realloc write-back (BPF callee grows its account). The SAME
+/// caller -> callee CPI shape as `cpi_caller_forwards_account_to_incrementer`,
+/// but the callee `realloc`s the forwarded 16-byte account up to 24 bytes
+/// (within the 10240 reserve) and writes a sentinel into the grown tail. agave
+/// re-serializes the grown account into the caller's view; post-fix qedsvm's
+/// `cpiCallNextState` harvests the callee's post-CPI `data_len` (block offset
+/// 80), writes that many bytes, and dual-writes the new length to the caller's
+/// length slots. Pre-fix the grow was lost (model reported the old length).
+/// `assert_no_poststate_backstop` proves the VM harvested the realloc rather
+/// than the M13 Rust backstop papering over it.
+#[test]
+fn cpi_callee_reallocs_account_grow() {
+    let caller_id = pid(53);
+    let callee_id = pid(54);
+    let acct_key  = pid(55);
+
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    };
+    let callee_program_shared = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_mollusk = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
+    fs.add_program(&callee_id, CPI_REALLOC_CALLEE_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct_key, pre_shared),
+        (callee_id, callee_program_shared),
+    ]).expect("qedsvm runs CPI→realloc");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_INCREMENT_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), CPI_REALLOC_CALLEE_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, pre_mollusk),
+        (callee_id, callee_program_mollusk),
+    ]);
+
+    let our_logs: Vec<String> = fs_r.logs.iter()
+        .map(|b| String::from_utf8_lossy(b).into_owned()).collect();
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on CPI→realloc, got {:?}; logs: {our_logs:?}",
+        fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on CPI→realloc, got {:?}", m_r.program_result);
+
+    // 24 bytes: [0..16) the original zeros, [16..24) the callee's sentinel.
+    let mut expected = vec![0u8; 24];
+    expected[16..24].copy_from_slice(&0xA1A2A3A4A5A6A7A8u64.to_le_bytes());
+
+    assert_no_poststate_backstop(&fs_r);
+    let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
+    assert_eq!(fs_acct.data(), expected.as_slice(),
+        "qedsvm: realloc grow not visible after CPI; got {:?}", fs_acct.data());
+
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(m_acct.data.as_slice(), expected.as_slice(),
+        "mollusk: realloc grow mismatch");
+    assert_eq!(fs_acct.data(), m_acct.data.as_slice(),
+        "cross-engine realloc data mismatch");
+}
+
+/// Audit M6r — realloc bound (negative). The callee tries to grow its account
+/// beyond `MAX_PERMITTED_DATA_INCREASE` (`realloc(old + 10241)`). Both engines
+/// reject the over-grow; the account data MUST be unchanged (16 zero bytes) on
+/// both. The exact error code is engine-specific (agave's runtime
+/// `InvalidRealloc` / SDK bound check vs the model's `reallocViolated` rollback
+/// to `ERR_INVALID_REALLOC`), so this asserts the account STATE, not the code —
+/// the read-only-violation test pattern.
+#[test]
+fn cpi_callee_realloc_overflow_rejected_on_both() {
+    let caller_id = pid(56);
+    let callee_id = pid(57);
+    let acct_key  = pid(58);
+
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    };
+    let callee_program_shared = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_mollusk = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
+    fs.add_program(&callee_id, CPI_REALLOC_OVERFLOW_CALLEE_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct_key, pre_shared),
+        (callee_id, callee_program_shared),
+    ]).expect("qedsvm runs CPI→realloc-overflow");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_INCREMENT_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_REALLOC_OVERFLOW_CALLEE_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, pre_mollusk),
+        (callee_id, callee_program_mollusk),
+    ]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    // Both engines must FAIL the over-grow (not Success).
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: over-grow realloc should fail, got {:?}", fs_r.program_result);
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: over-grow realloc should fail, got {:?}", m_r.program_result);
+
+    // The account data is unchanged (16 zero bytes) on both engines — the
+    // over-grow rolled back.
+    let unchanged = vec![0u8; 16];
+    let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
+    assert_eq!(fs_acct.data(), unchanged.as_slice(),
+        "qedsvm: over-grow account should be unchanged; got len {}", fs_acct.data().len());
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(m_acct.data.as_slice(), unchanged.as_slice(),
+        "mollusk: over-grow account should be unchanged; got len {}", m_acct.data.len());
+}
+
 /// M6 read-only write-back protection. The SAME caller -> incrementer CPI
 /// as `cpi_caller_forwards_account_to_incrementer`, but the forwarded
 /// account is passed READ-ONLY at the top level. agave rejects the
@@ -2179,6 +2514,110 @@ fn rodata_addr_returner_matches_mollusk() {
         "CU diverged: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
+
+    // Soundness-audit M5 pin (lddw CU weight): this `.text` is 5 byte-slots
+    // = 4 LOGICAL instructions — `lddw` (slots 0-1, the rodata address
+    // materialization), `ldx`, `rsh`, `exit` — and the entrypoint is
+    // branchless, so all 4 execute exactly once. Both engines report CU=4,
+    // NOT 5. That refutes the audit's "lddw is metered by slot-delta so it
+    // costs 2" hypothesis: agave meters `lddw` as ONE logical instruction
+    // (the interpreter's meter ticks once per step even though `lddw`
+    // advances pc by 2), exactly as the Lean model's `chargeCu` does. A
+    // regression that double-charged `lddw` would make ours=4, mollusk=4
+    // still agree, so pin the concrete agave value too.
+    assert_eq!(m_r.compute_units_consumed, 4,
+        "M5: agave must meter the 4-logical-insn (1 lddw) program at 4 CU, \
+         got {} — lddw CU weight changed in agave", m_r.compute_units_consumed);
+}
+
+/// `sol_curve_multiscalar_mul` CU referee (soundness-audit M9). The
+/// fixture calls Edwards MSM with n=1 (boundary: agave charges the bare
+/// `msm_base_cost` 2273 — the incremental cost is `758*(n-1)`,
+/// agave-syscalls lib.rs:1711-1716) and n=2 (2273 + 758), returning
+/// `r0_1 + r0_2` (0 iff both succeed). Under the pre-M9 model formula
+/// (`base + incr*n`) the model would over-charge by 758 per call (1516
+/// total), so CU equality here discriminates the `(n-1)` form, n=1
+/// boundary included.
+#[test]
+fn curve_msm_cu_matches_mollusk() {
+    let program_id = pid(73);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, CURVE_MSM_PROBE_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs curve_msm_probe");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CURVE_MSM_PROBE_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: both MSM calls must succeed (r0=0), got {:?}",
+        fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: both MSM calls must succeed, got {:?}", m_r.program_result);
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "M9 MSM CU diverged (the base + 758*(n-1) formula): ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// L1 sentinel-collision experiment (soundness-audit L1, closure-plan
+/// phase 3 step 0): a healthy program CLEANLY exits with
+/// r0 = 0xFFFFFFFFFFFFFFFD — numerically identical to the model's
+/// ERR_ABORT fault sentinel. This prints what each engine observably
+/// reports, pinning the wire mapping BEFORE the vmError exit-shape
+/// refactor. Both engines must at least agree (the clean exit and the
+/// fault land in the same observable class today — that sameness is
+/// exactly the L1 incompleteness being closed).
+#[test]
+fn sentinel_clean_exit_observability() {
+    let program_id = pid(74);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, SENTINEL_EXIT_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs sentinel_exit");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SENTINEL_EXIT_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("L1 EXPERIMENT: clean exit with r0 = 0xFFFFFFFFFFFFFFFD");
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+
+    // Cross-engine agreement on the observable class: both non-Success.
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: nonzero r0 must not be Success, got {:?}", fs_r.program_result);
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: nonzero r0 must not be Success, got {:?}", m_r.program_result);
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
 }
 
 /// Exercises `sol_try_find_program_address` end-to-end with one seed
@@ -2266,15 +2705,445 @@ fn oob_read_fails_on_both() {
     eprintln!("fs.program_result  = {:?}", fs_r.program_result);
     eprintln!("mol.program_result = {:?}", m_r.program_result);
 
-    // Both engines must reject the OOB read.
-    assert!(
-        !matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm should fail on OOB read, got {:?}", fs_r.program_result,
+    // M14: the model VM-faults (access violation) and agave surfaces it
+    // as UnknownError(ProgramFailedToComplete) — same observable outcome,
+    // not merely "both non-Success".
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB read, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_read");
+}
+
+/// Audit H6 (syscall memory translation). The program calls
+/// `sol_memset_` with a destination 256 MiB past the input pointer.
+/// agave's `translate_slice_mut` traps with `AccessViolation`; pre-fix
+/// qedsvm wrote through a region-free `Mem` and returned Success. Post-fix
+/// `MemOps.execSet`'s `guardWrite` consults the runtime region table and
+/// VM-faults. Both engines must fail with the same observable outcome.
+#[test]
+fn oob_memset_fails_on_both() {
+    let program_id = pid(52);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_MEMSET_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_memset");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_MEMSET_SO,
     );
-    assert!(
-        !matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk should fail on OOB read, got {:?}", m_r.program_result,
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    // The syscall's region check fails closed: the model VM-faults
+    // (access violation), agave surfaces it as
+    // UnknownError(ProgramFailedToComplete) — same observable outcome.
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_memset_, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_memset");
+}
+
+/// Audit H6 (syscall memory translation, logging family). The program
+/// calls `sol_log_pubkey` with a pointer 256 MiB past the input pointer.
+/// agave's `translate_type::<Pubkey>` traps the 32-byte read with
+/// `AccessViolation`; post-fix `Logging.execLogPubkey`'s `guardRead`
+/// VM-faults. Both engines must fail with the same observable outcome.
+#[test]
+fn oob_log_pubkey_fails_on_both() {
+    let program_id = pid(53);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_LOG_PUBKEY_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_log_pubkey");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_LOG_PUBKEY_SO,
     );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_log_pubkey, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_pubkey");
+}
+
+/// Audit H6 (syscall memory translation, logging family). The program
+/// calls `sol_log_` with a 16-byte message 256 MiB past the input
+/// pointer. agave's `translate_slice` traps the read with
+/// `AccessViolation`; post-fix `Logging.execLog`'s `guardRead` VM-faults.
+/// Both engines must fail with the same observable outcome.
+#[test]
+fn oob_log_fails_on_both() {
+    let program_id = pid(54);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_LOG_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_log");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_LOG_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_log_, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log");
+}
+
+/// Audit H6 (syscall memory translation, descriptor-array / logging tail).
+/// The program calls `sol_log_data` with a 1-descriptor array 256 MiB past
+/// the input pointer. agave translates the 16-byte descriptor array via
+/// `translate_slice::<VmSlice<u8>>` BEFORE dereferencing any slice, so the
+/// array read itself traps with `AccessViolation`; post-fix
+/// `Logging.execLogData`'s `guardRead` on `[r1, r1 + count*16)` VM-faults.
+/// Both engines must fail with the same observable outcome.
+#[test]
+fn oob_log_data_fails_on_both() {
+    let program_id = pid(56);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_LOG_DATA_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_log_data");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_LOG_DATA_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_log_data, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_data");
+}
+
+/// Audit H6 (syscall memory translation, hashing family, stage 3a /
+/// output-write guard). The program calls `sol_sha256` with a 0-slice input
+/// and a 32-byte output buffer 256 MiB past the input pointer. agave
+/// translates the output via `translate_slice_mut::<u8>(out, 32)` BEFORE the
+/// (empty) input, so the out-of-region store traps with `AccessViolation`;
+/// post-fix `Sha256.exec`'s `guardWrite` on `[r3, r3 + 32)` VM-faults.
+/// Both engines must fail with the same observable outcome.
+#[test]
+fn oob_sha256_output_fails_on_both() {
+    let program_id = pid(242);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_SHA256_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_sha256");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_SHA256_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_sha256 output, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256");
+}
+
+/// Audit H6 (syscall memory translation, hashing family, stage 3b /
+/// input-slice guard). The program calls `sol_sha256` with a valid writable
+/// output but a 1-descriptor input array 256 MiB out of region. agave
+/// translates the output first (passes), then the descriptor array (out of
+/// region → `AccessViolation`); post-fix `Sha256.exec`'s `guardRead` on
+/// `[r1, r1 + r2*16)` VM-faults. Both engines fail with the same outcome.
+#[test]
+fn oob_sha256_input_fails_on_both() {
+    let program_id = pid(243);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_SHA256_INPUT_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_sha256_input");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_SHA256_INPUT_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_sha256 input, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256_input");
+}
+
+/// Audit H6 (syscall memory translation, hashing family, stage 3c / poseidon
+/// input-slice guard). The program calls `sol_poseidon` with a valid writable
+/// output but a 1-descriptor input array 256 MiB out of region. agave
+/// translates the output first (passes), then the descriptor array (out of
+/// region → `AccessViolation`); post-fix `Poseidon.exec`'s `guardedCommit`
+/// `guardRead` on `[r3, r3 + r4*16)` VM-faults. Both engines fail alike.
+#[test]
+fn oob_poseidon_input_fails_on_both() {
+    let program_id = pid(244);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_POSEIDON_INPUT_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_poseidon_input");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_POSEIDON_INPUT_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_poseidon input, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_poseidon_input");
+}
+
+/// Audit H6 (syscall memory translation, sysvar family / fixed-size getters,
+/// stage 4a). The program calls `sol_get_clock_sysvar` with a 40-byte output
+/// buffer 256 MiB out of region. agave's `translate_type_mut::<Clock>` traps
+/// with `AccessViolation`; post-fix `Sysvar.execClock` (via `zeroFillR1`)
+/// `guardWrite` on `[r1, r1 + 40)` VM-faults. Both engines fail alike.
+#[test]
+fn oob_clock_sysvar_fails_on_both() {
+    let program_id = pid(245);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_CLOCK_SYSVAR_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_clock_sysvar");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_CLOCK_SYSVAR_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_get_clock_sysvar, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_clock_sysvar");
+}
+
+/// Audit H6 (syscall memory translation, return-data family, stage 4b /
+/// input read guard). The program calls `sol_set_return_data` with an 8-byte
+/// input slice (within MAX_RETURN_DATA) 256 MiB out of region. agave checks
+/// the length first (passes), then `translate_slice` traps with
+/// `AccessViolation`; post-fix `ReturnData.execSet`'s `guardRead` on
+/// `[r1, r1 + r2)` VM-faults. Both engines fail alike.
+#[test]
+fn oob_set_return_data_fails_on_both() {
+    let program_id = pid(246);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_SET_RETURN_DATA_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_set_return_data");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_SET_RETURN_DATA_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_set_return_data, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_set_return_data");
+}
+
+/// Audit H6 (syscall memory translation, sysvar family / de-simp'd hand-coded
+/// getters, stage 4c). The program calls `sol_get_rent_sysvar` with a 17-byte
+/// output buffer 256 MiB out of region. agave's `translate_type_mut::<Rent>`
+/// traps with `AccessViolation`; post-fix `Sysvar.execRent`'s `guardWrite` on
+/// `[r1, r1 + 17)` VM-faults. Both engines fail alike.
+#[test]
+fn oob_rent_sysvar_fails_on_both() {
+    let program_id = pid(247);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_RENT_SYSVAR_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_rent_sysvar");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_RENT_SYSVAR_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_get_rent_sysvar, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_rent_sysvar");
+}
+
+/// Audit H6 (syscall memory translation, return-data family / output write
+/// guard, stage 4d). The program seeds 8 bytes of return data, then calls
+/// `sol_get_return_data` with a return-data output buffer 256 MiB out of
+/// region. agave computes `length = min(max_len, data_len) = 8 != 0`, then
+/// `translate_slice_mut::<u8>(out, 8)` traps with `AccessViolation`; post-fix
+/// `ReturnData.execGet`'s `guardWrite` on `[r1, r1 + copyLen)` VM-faults. Both
+/// engines fail alike.
+#[test]
+fn oob_get_return_data_fails_on_both() {
+    let program_id = pid(248);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_GET_RETURN_DATA_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_get_return_data");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_GET_RETURN_DATA_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_get_return_data, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_get_return_data");
+}
+
+/// Audit H6 (syscall memory translation, curve / crypto family, stage 5a).
+/// The program calls `sol_secp256k1_recover` with a 32-byte message hash
+/// 256 MiB out of region. agave's `translate_slice::<u8>(hash, 32)` traps with
+/// `AccessViolation` before the `libsecp256k1` recovery; post-fix
+/// `Secp256k1.exec`'s `guardRead` on `[r1,32)` VM-faults. Both engines fail
+/// alike. Representative of the whole curve family (`sol_curve_*`,
+/// `sol_alt_bn128_*`, `sol_big_mod_exp`), which now all region-check their
+/// input/output slices (`*_faults_oob` lemmas).
+#[test]
+fn oob_secp256k1_fails_on_both() {
+    let program_id = pid(249);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_SECP256K1_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_secp256k1");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_SECP256K1_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_secp256k1_recover, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_secp256k1");
+}
+
+/// Audit H6 (syscall memory translation, PDA family, stage 5b). The program
+/// calls `sol_create_program_address` with zero seeds and an out-of-region
+/// program_id / output. agave's `translate_slice` traps with `AccessViolation`;
+/// post-fix `Pda.execCreate`'s `guardRead` (program_id) / `guardedCommit`
+/// (output + seeds) VM-faults. Both engines fail alike. Also covers
+/// `sol_try_find_program_address` (`Pda.execTryFind`, same guard envelope).
+#[test]
+fn oob_create_pda_fails_on_both() {
+    let program_id = pid(250);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_CREATE_PDA_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_create_pda");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_CREATE_PDA_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_create_program_address, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_create_pda");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does

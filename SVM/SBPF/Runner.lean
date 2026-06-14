@@ -491,7 +491,8 @@ def buildCpiSubInputN (slots : List AcctSlot)
     three modifiable fields inside a non-dup block. -/
 def CPI_BLOCK_OWNER_OFFSET    : Nat := 40   -- dup_marker(1)+flags(3)+pad(4)+key(32) = 40
 def CPI_BLOCK_LAMPORTS_OFFSET : Nat := 72   -- ...+owner(32) = 72
-def CPI_BLOCK_DATA_OFFSET     : Nat := 88   -- ...+lamports(8)+data_len(8) = 88
+def CPI_BLOCK_DATALEN_OFFSET  : Nat := 80   -- ...+lamports(8) = 80 (the data_len u64)
+def CPI_BLOCK_DATA_OFFSET     : Nat := 88   -- ...+data_len(8) = 88
 
 /-! ## Run configuration -/
 
@@ -757,6 +758,173 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
                cuConsumed := s.cuConsumed + Cpi.cu
                                           + subFinal.cuConsumed }
 
+/-- The pre-invocation half of a CPI sub-VM launch (M1 / H2 / M2): parse the
+    callee ELF (or fall back to raw text), fail closed on unresolvable
+    relocations / function-registry collisions / decode failure, then build the
+    callee's decoded instruction stream, its fresh sub-state `subS` (constant
+    entry regs, `loadInput` + section-loaded memory, `cuBudget := fuel'`,
+    `invokeDepth+1`, transaction-wide return-data inherited from the caller),
+    and the account slots. Extracted from `executeFnCpiWithFuel`'s `runCallee`
+    closure so the recursive sub-VM call stays the ONLY thing inline (keeping
+    termination structural on `fuel`) and this build is reasoned about by name
+    (the Stage-B boundedness proof, BoundedCpi.lean). Pure factoring — `do`
+    desugaring is identical to the original inline body. -/
+def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
+    (parsedAcctsIn : List ParsedAcct) (ixDataIn : ByteArray)
+    (calleeBytes : ByteArray) : Option (Array Insn × State × List AcctSlot) :=
+  let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader
+                       × List (Nat × Nat)) := do
+    let h ← Elf.parseHeader calleeBytes
+    let textSec ← Elf.findSection calleeBytes h Elf.textName
+    let rawText  := Elf.extractSection calleeBytes textSec
+    let textBytes := Elf.applyRelocations calleeBytes h textSec.addr rawText
+    let fnReg := Elf.buildFnRegistry calleeBytes h textSec.addr rawText
+    some (textBytes, h, textSec, fnReg)
+  do
+    -- M1 + H2: an ELF callee whose relocations cannot resolve their symbols
+    -- (agave: `UnknownSymbol`) or whose function registry has a key collision
+    -- (agave: `SymbolHashCollision`) fails the CPI load OUTRIGHT — it must NOT
+    -- fall through to the raw-text branch, which would reinterpret the ELF
+    -- bytes as code.
+    if let some h := Elf.parseHeader calleeBytes then do
+      guard (Elf.relocationsResolvable calleeBytes h)
+      if let some textSec := Elf.findSection calleeBytes h Elf.textName then
+        let rawText := Elf.extractSection calleeBytes textSec
+        guard (Elf.registryCollisionFree
+          (Elf.buildFnRegistry calleeBytes h textSec.addr rawText))
+    let (textBytes, headerOpt, textSecOpt, fnReg) :
+        ByteArray × Option Elf.Header × Option Elf.SectionHeader
+        × List (Nat × Nat) :=
+      match tryElf with
+      | some (tb, h, ts, fr) => (tb, some h, some ts, fr)
+      -- Raw text (no ELF wrapper): registry = entrypoint at slot 0, mirroring
+      -- solana-sbpf's `new_from_text_bytes`.
+      | none => (calleeBytes, none, none, [(Elf.entrypointHash, 0)])
+    let calleeInsns ← Decode.decodeProgram textBytes fnReg
+    let slots : List AcctSlot := buildAcctSlots parsedAcctsIn
+    let subInput : ByteArray :=
+      buildCpiSubInputN slots pidBytesIn ixDataIn
+    let subMem : Mem :=
+      let baseMem := loadInput emptyMem subInput
+      match headerOpt with
+      | none => baseMem
+      | some h =>
+        -- Load the callee's .text into its program region too (M2).
+        let mText := match textSecOpt with
+          | some textSec =>
+            loadBytesAt baseMem textBytes (Elf.relocateSecAddr textSec.addr)
+          | none => baseMem
+        let m1 := match Elf.findSection calleeBytes h Elf.rodataName with
+          | some sec =>
+            loadBytesAt mText (Elf.extractSection calleeBytes sec)
+              (Elf.relocateSecAddr sec.addr)
+          | none => mText
+        match Elf.findSection calleeBytes h Elf.dataRelRoName with
+        | some sec =>
+          let raw       := Elf.extractSection calleeBytes sec
+          let relocated := Elf.applyDataRelocations calleeBytes h sec.addr raw
+          loadBytesAt m1 relocated (Elf.relocateSecAddr sec.addr)
+        | none => m1
+    let entryPc :=
+      match headerOpt, textSecOpt with
+      | some h, some textSec =>
+        let slotMap := Decode.buildSlotMap textBytes
+        let byteOff := if h.entry ≥ textSec.addr
+                       then h.entry - textSec.addr else 0
+        let slot := byteOff / 8
+        if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
+      | _, _ => 0
+    let subRegions : Memory.RegionTable :=
+      match headerOpt, textSecOpt with
+      | some h, some textSec =>
+        elfRegions calleeBytes h textSec subInput.size
+      | _, _ => runtimeRegions subInput.size
+    let subS : State :=
+      { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+        mem         := subMem
+        regions     := subRegions
+        pc          := entryPc
+        exitCode    := none
+        log         := s.log
+        returnData  := s.returnData
+        returnDataProgId := s.returnDataProgId
+        cuBudget    := fuel'
+        progIdBytes := pidBytesIn
+        origPrivs   := parseInputPrivileges subInput
+        invokeDepth := s.invokeDepth + 1 }
+    some (calleeInsns, subS, slots)
+
+/-- The post-invocation half of a CPI sub-VM launch: M6 read-only re-verify
+    (a non-writable account modified by the callee fails the whole call), M6r
+    realloc-bound check (a writable account grown past
+    `original_data_len + MAX_PERMITTED_DATA_INCREASE` fails), and the
+    writable-account write-back (harvest the callee's POST-CPI `data_len` at
+    block offset 80, dual-write both caller length slots). A realloc or
+    read-only violation rolls every account back (`callerMem`) and surfaces the
+    typed fault in the callee's exitCode; the honest path commits
+    `newCallerMem`. Extracted from `runCallee` (was inline, reading the
+    caller's `s.mem` — now the `callerMem` parameter). -/
+def commitCallee (callerMem : Mem) (slots : List AcctSlot) (subFinal : State)
+    (subFuelRemaining : Nat) : State × Mem × Nat :=
+  let roViolated : Bool := slots.any (fun slot =>
+    match slot.dupOf? with
+    | some _ => false
+    | none =>
+      let p := slot.parsed
+      if p.isWritable then false
+      else
+        let blockBase := INPUT_START + slot.blockOff
+        let postLen := Memory.readU64 subFinal.mem
+          (blockBase + CPI_BLOCK_DATALEN_OFFSET)
+        let postData := readMemBytes subFinal.mem
+          (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
+        let postLam := Memory.readU64 subFinal.mem
+          (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
+        let postOwner := readMemBytes subFinal.mem
+          (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
+        postLen != p.dataLen || postData != p.data
+          || postLam != p.lamports || postOwner != p.owner)
+  let reallocViolated : Bool := slots.any (fun slot =>
+    match slot.dupOf? with
+    | some _ => false
+    | none =>
+      let p := slot.parsed
+      if !p.isWritable then false
+      else
+        let blockBase := INPUT_START + slot.blockOff
+        let postLen := Memory.readU64 subFinal.mem
+          (blockBase + CPI_BLOCK_DATALEN_OFFSET)
+        decide (postLen > p.dataLen + MAX_PERMITTED_DATA_INCREASE))
+  let newCallerMem : Mem := slots.foldl (fun mem slot =>
+    match slot.dupOf? with
+    | some _ => mem
+    | none =>
+      let p := slot.parsed
+      if !p.isWritable then mem
+      else
+      let blockBase := INPUT_START + slot.blockOff
+      let postLen := Memory.readU64 subFinal.mem
+        (blockBase + CPI_BLOCK_DATALEN_OFFSET)
+      let newData := readMemBytes subFinal.mem
+        (blockBase + CPI_BLOCK_DATA_OFFSET) postLen
+      let m1 := loadBytesAt mem newData p.dataPtr
+      let m1' := Memory.writeU64 m1 p.dataLenRefAddr postLen
+      let m1'' := Memory.writeU64 m1' (p.dataPtr - 8) postLen
+      let newLamports := Memory.readU64 subFinal.mem
+        (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
+      let m2 := Memory.writeU64 m1'' p.lamportsRefAddr newLamports
+      let newOwner := readMemBytes subFinal.mem
+        (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
+      loadBytesAt m2 newOwner p.ownerPtr) callerMem
+  if reallocViolated then
+    ({ subFinal with exitCode := some ERR_INVALID_REALLOC, vmError := some .invalidRealloc },
+      callerMem, subFuelRemaining)
+  else if roViolated then
+    ({ subFinal with exitCode := some ERR_READONLY_MODIFIED, vmError := some .readonlyModified },
+      callerMem, subFuelRemaining)
+  else
+    (subFinal, newCallerMem, subFuelRemaining)
+
 /-- CU-accounting variant of `executeFnCpi`. Returns the final state
     plus the remaining fuel — `cuConsumed = initial_fuel - returned_fuel`.
 
@@ -783,145 +951,23 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
       if s.cuConsumed > s.cuBudget then (s, fuel)
       else
       match fetch s.pc with
-      | none => ({ s with exitCode := some ERR_INVALID_PC }, fuel')
+      | none => ({ s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }, fuel')
       | some insn =>
         -- The runCallee closure captures `s`, `parsedAccts`/`pidBytes`
         -- (recomputed inside cpiCallNextState — see comment there), and
         -- the recursive `executeFnCpiWithFuel` invocation at `fuel'`
         -- (strictly smaller, so termination on `fuel` still holds).
+        -- `runCallee` keeps ONLY the recursive sub-VM invocation inline (so
+        -- termination stays structural on `fuel`); the pre-build and the
+        -- post-commit are the top-level `buildCalleeVM` / `commitCallee`.
         let runCallee (pidBytesIn : ByteArray) (parsedAcctsIn : List ParsedAcct)
             (ixDataIn : ByteArray) (calleeBytes : ByteArray)
-            : Option (State × Mem × Nat) :=
-          let tryElf : Option (ByteArray × Elf.Header × Elf.SectionHeader
-                               × List (Nat × Nat)) := do
-            let h ← Elf.parseHeader calleeBytes
-            let textSec ← Elf.findSection calleeBytes h Elf.textName
-            let rawText  := Elf.extractSection calleeBytes textSec
-            let textBytes := Elf.applyRelocations calleeBytes h textSec.addr rawText
-            let fnReg := Elf.buildFnRegistry calleeBytes h textSec.addr rawText
-            some (textBytes, h, textSec, fnReg)
-          do
-            let (textBytes, headerOpt, textSecOpt, fnReg) :
-                ByteArray × Option Elf.Header × Option Elf.SectionHeader
-                × List (Nat × Nat) :=
-              match tryElf with
-              | some (tb, h, ts, fr) => (tb, some h, some ts, fr)
-              -- Raw text (no ELF wrapper): registry = entrypoint at
-              -- slot 0, mirroring solana-sbpf's `new_from_text_bytes`.
-              | none => (calleeBytes, none, none, [(Elf.entrypointHash, 0)])
-            let calleeInsns ← Decode.decodeProgram textBytes fnReg
-            let slots : List AcctSlot := buildAcctSlots parsedAcctsIn
-            let subInput : ByteArray :=
-              buildCpiSubInputN slots pidBytesIn ixDataIn
-            let subMem : Mem :=
-              let baseMem := loadInput emptyMem subInput
-              match headerOpt with
-              | none => baseMem
-              | some h =>
-                -- Load the callee's .text into its program region too (M2).
-                let mText := match textSecOpt with
-                  | some textSec =>
-                    loadBytesAt baseMem textBytes (Elf.relocateSecAddr textSec.addr)
-                  | none => baseMem
-                let m1 := match Elf.findSection calleeBytes h Elf.rodataName with
-                  | some sec =>
-                    loadBytesAt mText (Elf.extractSection calleeBytes sec)
-                      (Elf.relocateSecAddr sec.addr)
-                  | none => mText
-                match Elf.findSection calleeBytes h Elf.dataRelRoName with
-                | some sec =>
-                  let raw       := Elf.extractSection calleeBytes sec
-                  let relocated := Elf.applyDataRelocations calleeBytes h sec.addr raw
-                  loadBytesAt m1 relocated (Elf.relocateSecAddr sec.addr)
-                | none => m1
-            let entryPc :=
-              match headerOpt, textSecOpt with
-              | some h, some textSec =>
-                let slotMap := Decode.buildSlotMap textBytes
-                let byteOff := if h.entry ≥ textSec.addr
-                               then h.entry - textSec.addr else 0
-                let slot := byteOff / 8
-                if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
-              | _, _ => 0
-            let subRegions : Memory.RegionTable :=
-              match headerOpt, textSecOpt with
-              | some h, some textSec =>
-                elfRegions calleeBytes h textSec subInput.size
-              | _, _ => runtimeRegions subInput.size
-            let subS : State :=
-              { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
-                mem         := subMem
-                regions     := subRegions
-                pc          := entryPc
-                exitCode    := none
-                log         := s.log
-                -- Return data is TRANSACTION-wide in agave: cleared only
-                -- between top-level instructions, never on CPI entry. The
-                -- callee inherits the caller's buffer (so its
-                -- get_return_data sees prior data) and the caller takes
-                -- `subFinal.returnData` back — if the callee never set it,
-                -- that IS the caller's own data, not a wipe (M6). The
-                -- setter id travels with the buffer (H7).
-                returnData  := s.returnData
-                returnDataProgId := s.returnDataProgId
-                cuBudget    := fuel'
-                progIdBytes := pidBytesIn
-                origPrivs   := parseInputPrivileges subInput
-                invokeDepth := s.invokeDepth + 1 }
-            let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
-              (fetchFromArray calleeInsns) subS fuel'
-            -- M6 read-only protection: agave re-verifies every account
-            -- after a sub-instruction returns and FAILS the whole call if
-            -- the callee modified a non-writable account's data, lamports,
-            -- or owner. Compare each read-only slot's post-call block
-            -- against its pre-call snapshot (`p.data`/`p.lamports`/
-            -- `p.owner`, captured at parse time).
-            let roViolated : Bool := slots.any (fun slot =>
-              match slot.dupOf? with
-              | some _ => false
-              | none =>
-                let p := slot.parsed
-                if p.isWritable then false
-                else
-                  let blockBase := INPUT_START + slot.blockOff
-                  let postData := readMemBytes subFinal.mem
-                    (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
-                  let postLam := Memory.readU64 subFinal.mem
-                    (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
-                  let postOwner := readMemBytes subFinal.mem
-                    (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
-                  postData != p.data || postLam != p.lamports
-                    || postOwner != p.owner)
-            -- Commit only writable accounts back to the caller. Read-only
-            -- slots are unmodified on the honest path (checked above), so
-            -- the guard is a no-op there and a rollback-safety net under a
-            -- violation.
-            let newCallerMem : Mem := slots.foldl (fun mem slot =>
-              match slot.dupOf? with
-              | some _ => mem
-              | none =>
-                let p := slot.parsed
-                if !p.isWritable then mem
-                else
-                let blockBase := INPUT_START + slot.blockOff
-                let newData := readMemBytes subFinal.mem
-                  (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
-                let m1 := loadBytesAt mem newData p.dataPtr
-                let newLamports := Memory.readU64 subFinal.mem
-                  (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
-                let m2 := Memory.writeU64 m1 p.lamportsRefAddr newLamports
-                let newOwner := readMemBytes subFinal.mem
-                  (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
-                loadBytesAt m2 newOwner p.ownerPtr) s.mem
-            -- On a read-only violation agave fails the whole sub-instruction
-            -- and rolls every account back: return pre-CPI memory and surface
-            -- the error in r0 via the callee's exitCode (cpiCallNextState
-            -- reads `subFinal.exitCode.getD 1` into r0).
-            if roViolated then
-              some ({ subFinal with exitCode := some ERR_READONLY_MODIFIED },
-                    s.mem, subFuelRemaining)
-            else
-              some (subFinal, newCallerMem, subFuelRemaining)
+            : Option (State × Mem × Nat) := do
+          let (calleeInsns, subS, slots) ←
+            buildCalleeVM s fuel' pidBytesIn parsedAcctsIn ixDataIn calleeBytes
+          let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
+            (fetchFromArray calleeInsns) subS fuel'
+          some (commitCallee s.mem slots subFinal subFuelRemaining)
         let s' : State :=
           match insn with
           | .call .sol_invoke_signed =>
@@ -1040,11 +1086,20 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
     match Elf.findSection elfBytes header Elf.textName with
     | none => none
     | some textSec =>
+      -- M1: fail closed when a relocation references a missing `.dynsym`
+      -- or an out-of-range symbol index (agave: `UnknownSymbol` at load,
+      -- solana-sbpf elf.rs:969-973). `applyRelocations` would otherwise
+      -- 0-fill the bad symbol read and patch a wrong address.
+      if !Elf.relocationsResolvable elfBytes header then none else
       let rawText   := Elf.extractSection elfBytes textSec
       -- Patch R_BPF_64_64 relocations (lddw → .rodata-relative pointers).
       -- A no-op when the ELF has no .dynsym/.rel.dyn sections.
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
       let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
+      -- H2 residual: a registry key collision is agave's load-time
+      -- `SymbolHashCollision` — fail closed instead of silently resolving
+      -- by first-match.
+      if !Elf.registryCollisionFree fnReg then none else
       match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>
@@ -1111,9 +1166,15 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
     match Elf.findSection elfBytes header Elf.textName with
     | none => none
     | some textSec =>
+      -- M1: fail closed on an unresolvable relocation symbol (see `runElf`).
+      if !Elf.relocationsResolvable elfBytes header then none else
       let rawText   := Elf.extractSection elfBytes textSec
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
       let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
+      -- H2 residual: a registry key collision is agave's load-time
+      -- `SymbolHashCollision` — fail closed instead of silently resolving
+      -- by first-match.
+      if !Elf.registryCollisionFree fnReg then none else
       match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>

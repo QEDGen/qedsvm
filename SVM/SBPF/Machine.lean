@@ -85,6 +85,33 @@ structure CallFrame where
   savedR10 : Nat
   deriving Inhabited, Repr
 
+/-- Typed VM-fault channel (audit L1). The `ERR_*` sentinels (defined below) live
+    in `exitCode : Option Nat`, where an `exit` of exactly the sentinel
+    VALUE is indistinguishable from the fault — a spec phrased
+    `exitCode = some ERR_X` is satisfiable by a pathological clean exit.
+    The collision is observable on chain (the `sentinel_exit.so`
+    experiment: agave reports `UnknownError(InvalidError)` for the clean
+    exit, distinct from a real fault's error), so the model carries the
+    fault as a TYPED value in `State.vmError`, set by every abort site
+    alongside the sentinel; a clean `exit` never sets it. `exitCode`
+    behavior is unchanged (all existing specs still hold verbatim);
+    `vmError` is the authoritative channel for fault-vs-exit and the
+    input to the cross-engine error-code mapping (M14). -/
+inductive VmError
+  | divideByZero
+  | invalidPc
+  | abort
+  | accessViolation
+  | unsupportedInstruction
+  | callDepthExceeded
+  | returnDataTooLarge
+  | invalidLength
+  | invalidAttribute
+  | badSeeds
+  | readonlyModified
+  | invalidRealloc
+  deriving Repr, DecidableEq, Inhabited
+
 /-- sBPF machine state -/
 structure State where
   /-- Register file -/
@@ -99,6 +126,12 @@ structure State where
   pc : Nat
   /-- Exit status: None if running, Some n if exited with code n -/
   exitCode : Option Nat := none
+  /-- Typed fault channel (audit L1): `some e` iff execution halted on a
+      VM fault; a clean `exit` leaves it `none` even when r0 numerically
+      equals a sentinel. Every abort site sets this ALONGSIDE the
+      `exitCode` sentinel (which is unchanged, so specs phrased over
+      `exitCode` still hold); `vmError` is what distinguishes the two. -/
+  vmError : Option VmError := none
   /-- Side channel: messages written via `sol_log_*` syscalls.
       Each entry is one message. Observable from the runner; not owned
       by any separation-logic assertion. -/
@@ -243,9 +276,262 @@ def ERR_BAD_SEEDS : Nat := 0xFFFFFFFFFFFFFFF5
     callee's write-back (caller mem unchanged) and sets r0 to this code. -/
 def ERR_READONLY_MODIFIED : Nat := 0xFFFFFFFFFFFFFFF4
 
+/-- Exit code for a CPI whose BPF callee resized an account beyond
+    `original_data_len + MAX_PERMITTED_DATA_INCREASE` (10240). agave's account
+    re-serialization after a sub-instruction rejects the over-grow
+    (`InstructionError::InvalidRealloc`) and rolls back the whole call; we model
+    that rollback exactly (caller mem unchanged, this code in r0). M6r. -/
+def ERR_INVALID_REALLOC : Nat := 0xFFFFFFFFFFFFFFF3
+
+/-- The `exitCode` sentinel each fault writes (the wire keeps reporting
+    this value, so the diff-suite observables are unchanged). -/
+def VmError.toSentinel : VmError → Nat
+  | .divideByZero           => ERR_DIVIDE_BY_ZERO
+  | .invalidPc              => ERR_INVALID_PC
+  | .abort                  => ERR_ABORT
+  | .accessViolation        => ERR_ACCESS_VIOLATION
+  | .unsupportedInstruction => ERR_UNSUPPORTED_INSTRUCTION
+  | .callDepthExceeded      => ERR_CALL_DEPTH_EXCEEDED
+  | .returnDataTooLarge     => ERR_RETURN_DATA_TOO_LARGE
+  | .invalidLength          => ERR_INVALID_LENGTH
+  | .invalidAttribute       => ERR_INVALID_ATTRIBUTE
+  | .badSeeds               => ERR_BAD_SEEDS
+  | .readonlyModified       => ERR_READONLY_MODIFIED
+  | .invalidRealloc         => ERR_INVALID_REALLOC
+
 /-- `MAX_RETURN_DATA` (agave): a program may set at most 1024 bytes of
     return data; a larger `sol_set_return_data` aborts. -/
 def MAX_RETURN_DATA : Nat := 1024
+
+/-! ## Checked syscall memory access (audit H6)
+
+`step` region-checks `.ldx`/`.st`/`.stx` against `s.regions`, but a
+syscall body reads and writes `s.mem` through the total `Nat → Nat`
+function with no bounds layer — so a syscall could touch any address and
+silently succeed. That is the fail-open the audit flagged as H6
+(`SVM/Syscalls/*` translate slices without consulting the region table).
+
+These guards close it: each syscall that translates a `[addr, addr+len)`
+slice routes through `guardRead` / `guardWrite`, which consult the SAME
+`RegionTable` as `step` and fault to `ERR_ACCESS_VIOLATION` (typed
+`vmError := some .accessViolation`, L1) on a miss. The check matches
+agave's `MemoryMapping::map`: the whole range must fall inside one mapped
+region (writable too, for stores). agave's `translate_slice_inner!`
+short-circuits a zero-length access (`if len == 0 { return Ok(&[]) }` in
+`solana-program-runtime::memory`), so `len = 0` is always allowed; a
+fixed-size translation (`translate_type`, size ≥ 1) passes its constant
+size and so is always checked. -/
+
+/-- Fault the state with an access violation. Mirrors the `step`
+    ldx/st/stx miss branch: sets the sentinel exit code and the typed
+    fault channel (L1), leaving `mem`/`regs` and every other field
+    untouched. -/
+@[simp] def State.accessFault (s : State) : State :=
+  { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
+
+/-- Region-gated read guard for a syscall slice translation. Runs `k s`
+    if `[addr, addr+len)` lies within a mapped region (or `len = 0`, which
+    agave never checks), else faults with an access violation. -/
+@[simp] def State.guardRead (s : State) (addr len : Nat) (k : State → State) : State :=
+  if len = 0 ∨ s.regions.containsRange addr len = true then k s else s.accessFault
+
+/-- Region-gated write guard: like `guardRead` but the range must be
+    covered by a WRITABLE region (`translate_slice_mut` / `translate_type_mut`). -/
+@[simp] def State.guardWrite (s : State) (addr len : Nat) (k : State → State) : State :=
+  if len = 0 ∨ s.regions.containsWritable addr len = true then k s else s.accessFault
+
+/-- The guard collapses to its continuation when the read range is
+    covered. Lets a syscall spec, given its `rr` region requirement,
+    rewrite `guardRead` away and reduce to the unguarded core. -/
+theorem State.guardRead_pos (s : State) (addr len : Nat) (k : State → State)
+    (h : len = 0 ∨ s.regions.containsRange addr len = true) :
+    s.guardRead addr len k = k s := if_pos h
+
+/-- The fault branch of `guardRead`: a non-empty out-of-region range collapses
+    the guard to `accessFault`. The opaque counterpart of `guardRead_pos` —
+    rewriting with this (rather than `simp only [State.guardRead, if_neg h]`)
+    keeps the 16-field `State` record folded, which is what makes
+    `guardSlices_eq` elaborate in milliseconds instead of exhausting memory. -/
+theorem State.guardRead_neg (s : State) (addr len : Nat) (k : State → State)
+    (h : ¬(len = 0 ∨ s.regions.containsRange addr len = true)) :
+    s.guardRead addr len k = s.accessFault := if_neg h
+
+theorem State.guardWrite_pos (s : State) (addr len : Nat) (k : State → State)
+    (h : len = 0 ∨ s.regions.containsWritable addr len = true) :
+    s.guardWrite addr len k = k s := if_pos h
+
+/-- A guard never touches `regs` beyond what its continuation does, so the
+    read-only frame pointer is preserved in both branches. -/
+theorem State.guardRead_r10 (s : State) (addr len : Nat) (k : State → State)
+    (hk : (k s).regs.r10 = s.regs.r10) :
+    (s.guardRead addr len k).regs.r10 = s.regs.r10 := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · rfl
+
+theorem State.guardWrite_r10 (s : State) (addr len : Nat) (k : State → State)
+    (hk : (k s).regs.r10 = s.regs.r10) :
+    (s.guardWrite addr len k).regs.r10 = s.regs.r10 := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · rfl
+
+/-- Region-gated read guard for a `SliceDesc { ptr : u64, len : u64 }[count]`
+    descriptor array at `descsAddr`. Walks the `count` 16-byte descriptors,
+    reading each `(ptr, len)` from `s.mem`, and routes every slice read
+    `[ptr, ptr+len)` through `guardRead`. Faults with an access violation on
+    the first out-of-region slice; runs `k s` once every slice is covered.
+
+    Mirrors the per-slice loop agave runs AFTER translating the descriptor
+    array itself: `for val in vals { translate_vm_slice(val, ...)? }` in
+    `SyscallHash` / `SyscallLogData` (`agave-syscalls-4.0.0-rc.0`). The
+    descriptor array `[descsAddr, descsAddr + count*16)` is guarded
+    separately by the caller (agave's `translate_slice::<VmSlice<u8>>` of
+    the array precedes this loop). A `guardRead` miss never mutates `s`, so
+    each descriptor is read against the same memory the caller saw. -/
+def State.guardSlices (s : State) (descsAddr count : Nat) (k : State → State) : State :=
+  (List.range count).foldr
+    (fun i (kont : State → State) (s' : State) =>
+      s'.guardRead (Memory.readU64 s'.mem (descsAddr + i * 16))
+        (Memory.readU64 s'.mem (descsAddr + i * 16 + 8)) kont)
+    k s
+
+/-- The descriptor walk either faults (some slice out of region) or runs
+    its continuation on the unmodified state — the reads never change `s`,
+    so the success state is exactly `k s` and the fault state is exactly
+    `s.accessFault`. This is the keystone the `Bounded` sweeps and the
+    syscall fault lemmas reuse: it collapses the recursive guard to a
+    two-way case without unfolding the `foldr`. -/
+theorem State.guardSlices_eq (s : State) (descsAddr count : Nat) (k : State → State) :
+    s.guardSlices descsAddr count k = s.accessFault
+      ∨ s.guardSlices descsAddr count k = k s := by
+  simp only [State.guardSlices]
+  generalize List.range count = l
+  induction l with
+  | nil => right; rfl
+  | cons i t ih =>
+    -- `rw`, NOT `simp only [List.foldr_cons]`: the latter re-traverses the
+    -- beta-reduced term and builds congruence lemmas over the 16-field `State`,
+    -- blowing elaboration up to ~10GB. `rw` does the single keyed rewrite and
+    -- leaves the goal in `s.guardRead …` form directly.
+    rw [List.foldr_cons]
+    by_cases hc :
+        Memory.readU64 s.mem (descsAddr + i * 16 + 8) = 0
+          ∨ s.regions.containsRange (Memory.readU64 s.mem (descsAddr + i * 16))
+              (Memory.readU64 s.mem (descsAddr + i * 16 + 8)) = true
+    · rw [State.guardRead_pos _ _ _ _ hc]; exact ih
+    · rw [State.guardRead_neg _ _ _ _ hc]; left; rfl
+
+/-- A register predicate that holds on `s.regs` and on the continuation's
+    result holds on a guarded read's result (fault keeps `s.regs`; success is
+    `(k s).regs`). Lets `Bounded` discharge a guarded syscall's `regs` bound by
+    `apply`-ing the guard away and proving the two leaf states. -/
+theorem State.guardRead_regs_of_k {motive : RegFile → Prop} (s : State)
+    (addr len : Nat) (k : State → State)
+    (h0 : motive s.regs) (hk : motive (k s).regs) :
+    motive (s.guardRead addr len k).regs := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · exact h0
+
+/-- The descriptor-walk analog of `guardRead_regs_of_k`: a register predicate
+    surviving both leaves survives the whole walk. -/
+theorem State.guardSlices_regs_of_k {motive : RegFile → Prop} (s : State)
+    (descsAddr count : Nat) (k : State → State)
+    (h0 : motive s.regs) (hk : motive (k s).regs) :
+    motive (s.guardSlices descsAddr count k).regs := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · exact h0
+  · exact hk
+
+/-- A guarded read leaves `mem` exactly as its continuation does when the
+    continuation itself preserves `mem` (the fault branch never writes). -/
+theorem State.guardRead_mem_eq_of_k (s : State) (addr len : Nat) (k : State → State)
+    (hk : ∀ s', (k s').mem = s'.mem) :
+    (s.guardRead addr len k).mem = s.mem := by
+  simp only [State.guardRead]; split
+  · exact hk s
+  · rfl
+
+/-- The descriptor walk only reads memory, so a `mem`-preserving continuation
+    makes the whole walk `mem`-preserving. -/
+theorem State.guardSlices_mem_eq_of_k (s : State) (descsAddr count : Nat)
+    (k : State → State) (hk : ∀ s', (k s').mem = s'.mem) :
+    (s.guardSlices descsAddr count k).mem = s.mem := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · rfl
+  · exact hk s
+
+/-- Generic field-projection collapse for `guardRead`: any projection `f` that
+    is invariant under both a guard miss (`accessFault`) and the continuation
+    is invariant under the whole guard. The field-agnostic core the syscall
+    `preserves_{callStack,regions,cuBudget,heapNext,returnData,r10}` sweeps use
+    to close their guarded-syscall arms without unfolding `guardSlices`. -/
+theorem State.guardRead_proj_eq_of_k {α} (f : State → α) (s : State)
+    (addr len : Nat) (k : State → State)
+    (hfault : f s.accessFault = f s) (hk : f (k s) = f s) :
+    f (s.guardRead addr len k) = f s := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · exact hfault
+
+/-- The descriptor-walk analog of `guardRead_proj_eq_of_k`: a projection
+    invariant under a miss and the continuation is invariant under the walk. -/
+theorem State.guardSlices_proj_eq_of_k {α} (f : State → α) (s : State)
+    (descsAddr count : Nat) (k : State → State)
+    (hfault : f s.accessFault = f s) (hk : f (k s) = f s) :
+    f (s.guardSlices descsAddr count k) = f s := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · exact hfault
+  · exact hk
+
+/-- `guardWrite` analog of `guardRead_proj_eq_of_k` (the output-write guard the
+    hash family checks first). -/
+theorem State.guardWrite_proj_eq_of_k {α} (f : State → α) (s : State)
+    (addr len : Nat) (k : State → State)
+    (hfault : f s.accessFault = f s) (hk : f (k s) = f s) :
+    f (s.guardWrite addr len k) = f s := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · exact hfault
+
+/-- `guardWrite` analog of `guardRead_regs_of_k`. -/
+theorem State.guardWrite_regs_of_k {motive : RegFile → Prop} (s : State)
+    (addr len : Nat) (k : State → State)
+    (h0 : motive s.regs) (hk : motive (k s).regs) :
+    motive (s.guardWrite addr len k).regs := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · exact h0
+
+/-- Memory-bound propagation through a guard: a per-byte bound surviving both
+    the fault state (`accessFault` keeps `s.mem`) and the continuation survives
+    the whole guard. The bound counterpart of `guardRead_mem_eq_of_k`, used by
+    the `Bounded` `mem_lt` sweep for guarded mem-writing syscalls (the hash
+    family writes a digest, so its `mem` is NOT preserved — only bounded). -/
+theorem State.guardRead_mem_lt_of_k (s : State) (addr len : Nat) (k : State → State)
+    (a : Nat) (h0 : s.mem a < 256) (hk : (k s).mem a < 256) :
+    (s.guardRead addr len k).mem a < 256 := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · exact h0
+
+/-- `guardWrite` analog of `guardRead_mem_lt_of_k`. -/
+theorem State.guardWrite_mem_lt_of_k (s : State) (addr len : Nat) (k : State → State)
+    (a : Nat) (h0 : s.mem a < 256) (hk : (k s).mem a < 256) :
+    (s.guardWrite addr len k).mem a < 256 := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · exact h0
+
+/-- The descriptor-walk analog: a per-byte mem bound surviving a miss and the
+    continuation survives the whole walk. -/
+theorem State.guardSlices_mem_lt_of_k (s : State) (descsAddr count : Nat)
+    (k : State → State) (a : Nat) (h0 : s.mem a < 256) (hk : (k s).mem a < 256) :
+    (s.guardSlices descsAddr count k).mem a < 256 := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · exact h0
+  · exact hk
 
 /-! ## Wrapping 64-bit arithmetic -/
 
@@ -458,6 +744,100 @@ theorem writeBytes_read_inside (mem : Memory.Mem) (out len i : Nat) (bs : ByteAr
       apply ih
       omega
 
+/-- The agave hash-syscall write envelope (sha256 / sha512 / keccak256 /
+    blake3): check the fixed-size OUTPUT region FIRST (`translate_slice_mut`,
+    agave's order), then the input descriptor array, then each input slice; on
+    success write `digest` to `[outPtr, outPtr+outLen)` and set `r0 := 0`. A
+    guard miss at any layer traps with a typed access violation.
+
+    Deliberately *not* `@[simp]`: the recursive `guardSlices` walk inside must
+    stay folded so the blanket `Bounded`/`Execute` syscall sweeps don't choke
+    on it (the `sol_log_data` lesson). The `@[simp]` field-preservation lemmas
+    below close those sweeps with `hashWrite` folded; `regs_lt`/`mem_lt` use the
+    dedicated `hashWrite_regs_of_k` / `hashWrite_mem_lt` closers.
+
+    `@[irreducible]`: the `Bounded` `regs_lt`/`mem_lt` sweeps close the hash arms
+    by an `exact hashWrite_{regs_of_k,mem_lt} …` inside a `first` block that is
+    also tried (and must fail) on every other syscall's fall-through leaf.
+    Without irreducibility, `exact` whnf-unfolds this `def` (5 metavars) against
+    big non-hash goals to discover the head mismatch — ~160s across the sweep.
+    Irreducible ⇒ the head stays `hashWrite`, so the match succeeds on hash arms
+    and fails instantly elsewhere. simp still unfolds it via its equation lemma
+    (the field lemmas below), and the compiler still runs it (diff tests). -/
+@[irreducible] def State.hashWrite (s : State) (outPtr outLen inPtr inN : Nat)
+    (digest : ByteArray) : State :=
+  s.guardWrite outPtr outLen fun s =>
+    s.guardRead inPtr (inN * 16) fun s =>
+      s.guardSlices inPtr inN fun s =>
+        { s with regs := s.regs.set .r0 0
+                 mem  := writeBytes s.mem outPtr outLen digest }
+
+/-- `hashWrite` only rewrites `regs` (to set `r0`) and `mem` (the digest write);
+    every other `State` field is preserved on the fault branch (`accessFault`)
+    and the success branch. `@[simp]` so the blanket sweeps close every hash arm
+    with `hashWrite` left folded (one set of lemmas covers all four hashes). -/
+@[simp] theorem State.hashWrite_callStack (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).callStack = s.callStack := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.callStack) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_regions (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).regions = s.regions := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.regions) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_cuBudget (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).cuBudget = s.cuBudget := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_heapNext (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).heapNext = s.heapNext := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.heapNext) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_returnData (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).returnData = s.returnData := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.returnData) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_r10 (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).regs.r10 = s.regs.r10 := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  exact RegFile.set_preserves_r10 s.regs .r0 0
+
+/-- `hashWrite`'s `regs` is either `s.regs` (a guard faulted) or `s.regs.set .r0 0`
+    (success) — a register predicate surviving both survives `hashWrite`. The
+    `Bounded` `regs_lt` closer for the hash arms. -/
+theorem State.hashWrite_regs_of_k {motive : RegFile → Prop} (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (s.hashWrite outPtr outLen inPtr inN digest).regs := by
+  simp only [State.hashWrite]
+  apply State.guardWrite_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardRead_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardSlices_regs_of_k (motive := motive) (h0 := h0)
+  exact hk
+
 /-- Commit an `Option ByteArray` result to state: success writes the
     bytes to `*out` (sized `outSize`) and sets `r0 := 0`; failure sets
     `r0 := 1` and leaves memory unchanged. The 0/1 convention matches
@@ -508,5 +888,93 @@ def commitOptional (s : State) (out outSize : Nat)
     (result : Option ByteArray) :
     (commitOptional s out outSize result).callStack = s.callStack := by
   cases result <;> simp [commitOptional]
+
+/-- The poseidon-syscall write envelope: like `hashWrite`, but the body is
+    `commitOptional` (poseidon returns an `Option` — `some` writes the 32-byte
+    result and sets r0:=0, `none` sets r0:=1). Checks the output region FIRST
+    (`translate_slice_mut`), then the input descriptor array, then each slice.
+
+    `@[irreducible]` for the same `Bounded`-sweep reason as `hashWrite`: the
+    closers must fail fast by head-symbol in the `first` block, not by
+    whnf-unfolding the def. -/
+@[irreducible] def State.guardedCommit (s : State) (outPtr outLen inPtr inN : Nat)
+    (result : Option ByteArray) : State :=
+  s.guardWrite outPtr outLen fun s =>
+    s.guardRead inPtr (inN * 16) fun s =>
+      s.guardSlices inPtr inN fun s =>
+        commitOptional s outPtr outLen result
+
+/-- `guardedCommit` only rewrites `regs` (set r0) and `mem` (the `some` write);
+    every other field is preserved on the fault branch and the `commitOptional`
+    body. `@[simp]` so the blanket sweeps close the `sol_poseidon` arm folded. -/
+@[simp] theorem State.guardedCommit_callStack (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).callStack = s.callStack := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  exact commitOptional_preserves_callStack s _ _ _
+
+@[simp] theorem State.guardedCommit_regions (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).regions = s.regions := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  exact commitOptional_preserves_regions s _ _ _
+
+@[simp] theorem State.guardedCommit_returnData (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).returnData = s.returnData := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  exact commitOptional_preserves_returnData s _ _ _
+
+@[simp] theorem State.guardedCommit_r10 (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).regs.r10 = s.regs.r10 := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  exact commitOptional_preserves_r10 s _ _ _
+
+@[simp] theorem State.guardedCommit_cuBudget (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).cuBudget = s.cuBudget := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  cases result <;> rfl
+
+@[simp] theorem State.guardedCommit_heapNext (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).heapNext = s.heapNext := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  cases result <;> rfl
+
+/-- `guardedCommit`'s `regs` is `s.regs` (a guard faulted) or `s.regs.set .r0 v`
+    with `v ∈ {0,1}` (commitOptional's success / failure). A predicate holding
+    on all three survives. The `Bounded` `regs_lt` closer for the poseidon arm. -/
+theorem State.guardedCommit_regs_of_k {motive : RegFile → Prop} (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray)
+    (h0 : motive s.regs) (hk0 : motive (s.regs.set .r0 0))
+    (hk1 : motive (s.regs.set .r0 1)) :
+    motive (s.guardedCommit outPtr outLen inPtr inN result).regs := by
+  simp only [State.guardedCommit]
+  apply State.guardWrite_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardRead_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardSlices_regs_of_k (motive := motive) (h0 := h0)
+  cases result
+  · exact hk1
+  · exact hk0
 
 end SVM.SBPF

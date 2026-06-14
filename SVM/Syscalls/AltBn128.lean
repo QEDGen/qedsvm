@@ -138,16 +138,50 @@ private def baseOp (opId : Nat) : Nat := opId &&& (LE_FLAG - 1)
     ABI: r1 = op_id, r2 = input, r3 = input_size, r4 = out. r0 = 0/1. -/
 @[simp] def execGroupOp (s : State) : State :=
   let opId   := s.regs.r1
-  let inputB := readBytes s.mem s.regs.r2 s.regs.r3
-  let result := groupOp opId.toUInt64 inputB
-  commitOptional s s.regs.r4 (groupOpOutSize opId) result
+  -- H6: agave translates the caller-sized input (`[r2, r2+r3)`, Load) then
+  -- the op-determined output (`[r4, r4+groupOpOutSize)`, Store).
+  s.guardRead s.regs.r2 s.regs.r3 fun s =>
+  s.guardWrite s.regs.r4 (groupOpOutSize opId) fun s =>
+    let inputB := readBytes s.mem s.regs.r2 s.regs.r3
+    let result := groupOp opId.toUInt64 inputB
+    commitOptional s s.regs.r4 (groupOpOutSize opId) result
 
 /-- Execute `sol_alt_bn128_compression`. Same ABI shape as `execGroupOp`. -/
 @[simp] def execCompression (s : State) : State :=
   let opId   := s.regs.r1
-  let inputB := readBytes s.mem s.regs.r2 s.regs.r3
-  let result := compression opId.toUInt64 inputB
-  commitOptional s s.regs.r4 (compressionOutSize opId) result
+  -- H6: same envelope as `execGroupOp` — input `[r2, r2+r3)` (Load), output
+  -- `[r4, r4+compressionOutSize)` (Store).
+  s.guardRead s.regs.r2 s.regs.r3 fun s =>
+  s.guardWrite s.regs.r4 (compressionOutSize opId) fun s =>
+    let inputB := readBytes s.mem s.regs.r2 s.regs.r3
+    let result := compression opId.toUInt64 inputB
+    commitOptional s s.regs.r4 (compressionOutSize opId) result
+
+/-- H6 fault direction: a non-empty out-of-region input `[r2, r2+r3)` traps
+    with a typed access violation (the first guarded slice; the output
+    `[r4, r4+groupOpOutSize)` is the second). -/
+theorem execGroupOp_faults_oob (s : State)
+    (hn0 : s.regs.r3 ≠ 0)
+    (hoob : s.regions.containsRange s.regs.r2 s.regs.r3 = false) :
+    (execGroupOp s).vmError = some .accessViolation := by
+  simp only [execGroupOp, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h hn0
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+/-- H6 fault direction for `sol_alt_bn128_compression`: same envelope. -/
+theorem execCompression_faults_oob (s : State)
+    (hn0 : s.regs.r3 ≠ 0)
+    (hoob : s.regions.containsRange s.regs.r2 s.regs.r3 = false) :
+    (execCompression s).vmError = some .accessViolation := by
+  simp only [execCompression, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h hn0
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 end AltBn128
 end SVM.SBPF

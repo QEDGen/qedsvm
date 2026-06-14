@@ -34,10 +34,12 @@ Same `SliceDesc`-list ABI and base cost as `sol_sha256`. -/
 
 @[simp] def cu (s : State) : Nat := 85 + hashSliceCost s.mem s.regs.r1 s.regs.r2
 
+/-- H6: full region envelope via `State.hashWrite` — output `[r3, r3+32)`
+    checked first (`translate_slice_mut`), then the `r1` descriptor array
+    (`r2` × 16 bytes) and each input slice. -/
 @[simp] def exec (s : State) : State :=
-  let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)
-  { s with regs := s.regs.set .r0 0
-           mem  := writeBytes s.mem s.regs.r3 32 digest }
+  s.hashWrite s.regs.r3 32 s.regs.r1 s.regs.r2
+    (hash (readSlices s.mem s.regs.r1 s.regs.r2))
 
 end Keccak256
 end SVM.SBPF

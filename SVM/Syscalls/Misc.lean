@@ -106,9 +106,9 @@ def cu : Nat := 100
   let off  := s.regs.r3
   let len  := s.regs.r4
   if outA ≥ Memory.INPUT_START then
-    { s with exitCode := some ERR_ACCESS_VIOLATION }
+    { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
   else if off + len ≥ U64_MODULUS ∨ outA + len ≥ U64_MODULUS then
-    { s with exitCode := some ERR_INVALID_LENGTH }
+    { s with exitCode := some ERR_INVALID_LENGTH, vmError := some .invalidLength }
   else
     match SysvarData.sysvarBuffer (readBytes s.mem idA 32) with
     | none => { s with regs := s.regs.set .r0 2 }
@@ -127,7 +127,7 @@ def cu : Nat := 100
     fabricate success (`r0 := 0`), which would let a proof continue past
     a call the real VM never executes. See docs/SOUNDNESS_AUDIT_* (H7). -/
 @[simp] def execUnknown (s : State) : State :=
-  { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION }
+  { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction }
 
 end Misc
 end SVM.SBPF

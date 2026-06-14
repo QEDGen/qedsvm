@@ -118,18 +118,26 @@ partial def base64Encode (bs : ByteArray) : String :=
 
 /-! ## Bodies -/
 
-/-- `sol_log_(ptr, len)`: log the byte slice verbatim, set r0 = 0. -/
+/-- `sol_log_(ptr, len)`: log the byte slice verbatim, set r0 = 0.
+    H6: agave's `translate_string_and_do` reads `[ptr, ptr+len)` via
+    `translate_slice` (Load); out of region traps with `AccessViolation`,
+    `len = 0` is allowed. -/
 @[simp] def execLog (s : State) : State :=
   let ptr := s.regs.r1
   let len := s.regs.r2
-  { s with regs := s.regs.set .r0 0
-           log  := s.log.push (readBytes s.mem ptr len) }
+  s.guardRead ptr len fun s =>
+    { s with regs := s.regs.set .r0 0
+             log  := s.log.push (readBytes s.mem ptr len) }
 
-/-- `sol_log_pubkey(ptr)`: log 32 bytes from `*r1`, set r0 = 0. -/
+/-- `sol_log_pubkey(ptr)`: log 32 bytes from `*r1`, set r0 = 0.
+    H6: agave reads the 32-byte pubkey via `translate_type::<Pubkey>`
+    (Load, fixed size, always checked); out of region traps with
+    `AccessViolation`. -/
 @[simp] def execLogPubkey (s : State) : State :=
   let ptr := s.regs.r1
-  { s with regs := s.regs.set .r0 0
-           log  := s.log.push (readBytes s.mem ptr 32) }
+  s.guardRead ptr 32 fun s =>
+    { s with regs := s.regs.set .r0 0
+             log  := s.log.push (readBytes s.mem ptr 32) }
 
 /-- `sol_log_64_(a, b, c, d, e)`: emit "0x<a>, 0x<b>, 0x<c>, 0x<d>,
     0x<e>" as the log message body. -/
@@ -160,22 +168,122 @@ partial def base64Encode (bs : ByteArray) : String :=
 
     Matches agave's `stable_log::program_data` body byte-for-byte
     modulo the "Program data: " prefix that `stable_log` would
-    prepend (we store raw message bodies, no prefix). -/
-@[simp] def execLogData (s : State) : State :=
+    prepend (we store raw message bodies, no prefix).
+
+    H6: agave reads the descriptor array `[r1, r1 + count*16)` via
+    `translate_slice::<VmSlice<u8>>` (Load), then dereferences each
+    descriptor's slice `[ptr, ptr+len)` via `translate_vm_slice` (Load).
+    Both routes are region-checked, so an out-of-region descriptor array
+    OR any out-of-region slice traps with `AccessViolation`. The model
+    mirrors this: `guardRead` on the descriptor array, then `guardSlices`
+    over the per-descriptor slices. (Unlike the single-slice log syscalls
+    this read region cannot be surfaced as an `rr : RegionTable → Prop`
+    side-condition — the per-slice ranges are read FROM memory the
+    precondition does not own — so `sol_log_data` keeps no register-only
+    happy-path triple; the boundary is pinned by the `oob_log_data.so`
+    diff fixture and `execLogData_faults_oob` below.)
+
+    NOT `@[simp]`: unfolding it re-exposes the recursive `guardSlices` walk that
+    blanket syscall `simp` sweeps cannot discharge (and blew `guardSlices_eq`'s
+    own elaboration up to ~10GB before that proof was de-simp'd). Specs that
+    need the body unfold it explicitly with `simp only [execLogData]`; the
+    field-preservation `@[simp]` lemmas below keep it folded for the sweeps. -/
+def execLogData (s : State) : State :=
   let descsAddr := s.regs.r1
   let count     := s.regs.r2
-  let fields : Array ByteArray :=
-    (List.range count).foldl (fun acc i =>
-      let descAddr := descsAddr + i * 16
-      let ptr := Memory.readU64 s.mem descAddr
-      let len := Memory.readU64 s.mem (descAddr + 8)
-      acc.push (readBytes s.mem ptr len)) #[]
-  let joined : String :=
-    fields.foldl (fun acc bs =>
-      if acc.isEmpty then base64Encode bs
-      else acc ++ " " ++ base64Encode bs) ""
-  { s with regs := s.regs.set .r0 0
-           log  := s.log.push joined.toUTF8 }
+  s.guardRead descsAddr (count * 16) fun s =>
+    s.guardSlices descsAddr count fun s =>
+      let fields : Array ByteArray :=
+        (List.range count).foldl (fun acc i =>
+          let descAddr := descsAddr + i * 16
+          let ptr := Memory.readU64 s.mem descAddr
+          let len := Memory.readU64 s.mem (descAddr + 8)
+          acc.push (readBytes s.mem ptr len)) #[]
+      let joined : String :=
+        fields.foldl (fun acc bs =>
+          if acc.isEmpty then base64Encode bs
+          else acc ++ " " ++ base64Encode bs) ""
+      { s with regs := s.regs.set .r0 0
+               log  := s.log.push joined.toUTF8 }
+
+/-- `execLogData` never writes memory (it only reads slices and pushes to
+    the log), so its `mem` is unchanged whether it faults or succeeds. The
+    `Bounded` `mem_lt` sweep closes the `sol_log_data` arm with this. -/
+theorem execLogData_mem (s : State) : (execLogData s).mem = s.mem := by
+  simp only [execLogData]
+  apply State.guardRead_mem_eq_of_k; intro s'
+  apply State.guardSlices_mem_eq_of_k; intro s''
+  rfl
+
+/-- `execLogData` only ever rewrites `regs` (to set `r0`) and pushes to `log`;
+    every other `State` field is preserved on BOTH the fault branch
+    (`accessFault`) and the success branch. `@[simp]` so the blanket
+    `execSyscall_preserves_*` (Execute.lean) and
+    `execSyscall_{callStack,cuBudget,heapNext_le,returnData_le}` (Bounded.lean)
+    sweeps discharge the `sol_log_data` arm with `execLogData` left FOLDED —
+    each is a two-line `guardRead`/`guardSlices` projection collapse. -/
+@[simp] theorem execLogData_preserves_callStack (s : State) :
+    (execLogData s).callStack = s.callStack := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.callStack) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_regions (s : State) :
+    (execLogData s).regions = s.regions := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.regions) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_cuBudget (s : State) :
+    (execLogData s).cuBudget = s.cuBudget := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_heapNext (s : State) :
+    (execLogData s).heapNext = s.heapNext := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.heapNext) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_returnData (s : State) :
+    (execLogData s).returnData = s.returnData := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.returnData) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_r10 (s : State) :
+    (execLogData s).regs.r10 = s.regs.r10 := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  exact RegFile.set_preserves_r10 s.regs .r0 0
+
+/-- `execLogData` either faults (leaving `regs = s.regs`) or sets only `r0`.
+    `Bounded`'s `regs_lt` sweep closes the `sol_log_data` arm via this. -/
+theorem execLogData_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (execLogData s).regs := by
+  simp only [execLogData]
+  apply State.guardRead_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardSlices_regs_of_k (motive := motive) (h0 := h0)
+  exact hk
+
+/-- Fault direction (replaces the now-false unconditional happy-path
+    triple): when the descriptor array `[r1, r1 + r2*16)` is not within any
+    mapped region (and is non-empty), `sol_log_data` traps with a typed
+    access violation. The contrapositive of the `guardRead` on the
+    descriptor array; complements the cross-engine `oob_log_data.so` pin. -/
+theorem execLogData_faults_oob (s : State)
+    (hne : s.regs.r2 ≠ 0)
+    (hoob : s.regions.containsRange s.regs.r1 (s.regs.r2 * 16) = false) :
+    (execLogData s).vmError = some .accessViolation := by
+  simp only [execLogData, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact hne (by omega)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 /-- Shared body retained for backwards compatibility — pushes an
     empty marker. No longer called from the dispatcher; kept so older

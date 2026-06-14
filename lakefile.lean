@@ -67,6 +67,9 @@ lean_lib Examples where
     `AxiomAudit,
     `SyscallHashPin,
     `H2Pin,
+    `M4Pin,
+    `M1Pin,
+    `L1Pin,
     `ByteIncrement,
     `DischargePoC,
     `ProofDemo,
@@ -138,6 +141,10 @@ lean_lib Examples where
     -- path (`.blob [.gap g]` framed as `↦Bytes`, `memBytesIs_segs` reshape).
     `Generated.VaultBlobTracedLifted,
     `Generated.VaultBlobRefinement,
+    -- A byte INSIDE the blob is lift-owned (read-only): the blob aggregation
+    -- SPLITS into `[.gap, .byte, .gap]` (mechanized multisig-style split).
+    `Generated.VaultSplitTracedLifted,
+    `Generated.VaultSplitRefinement,
     `Generated.GuardedCounterLifted,
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,

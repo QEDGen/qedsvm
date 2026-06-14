@@ -10,9 +10,9 @@ namespace Abort
 /-- Both abort/panic charge `syscall_base_cost = 100` before failing. -/
 def cu : Nat := 100
 
-/-- `abort`: no args. Sets `exitCode := some ERR_ABORT`. -/
+/-- `abort`: no args. Sets `exitCode := some ERR_ABORT, vmError := some .abort`. -/
 @[simp] def execAbort (s : State) : State :=
-  { s with exitCode := some ERR_ABORT }
+  { s with exitCode := some ERR_ABORT, vmError := some .abort }
 
 /-- `sol_panic_(file_ptr, file_len, line, column)` — agave's `SyscallPanic`
     (4 args; r1/r2 point at the source FILE name, not a user message;
@@ -24,7 +24,7 @@ def cu : Nat := 100
 @[simp] def execPanic (s : State) : State :=
   let ptr := s.regs.r1
   let len := s.regs.r2
-  { s with exitCode := some ERR_ABORT
+  { s with exitCode := some ERR_ABORT, vmError := some .abort
            log      := s.log.push (readBytes s.mem ptr len) }
 
 end Abort

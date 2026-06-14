@@ -96,10 +96,12 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
         | none =>
           -- Invalid PC: both write ERR_INVALID_PC and halt.
           have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 =
-              { s with exitCode := some ERR_INVALID_PC } := by
+              { s with exitCode := some ERR_INVALID_PC,
+                       vmError := some .invalidPc } := by
             simp only [executeFnCpiWithFuel, hex, if_neg h_over, hf]
           have hrhs : executeFn fetch s (fuel' + 1) =
-              { s with exitCode := some ERR_INVALID_PC } := by
+              { s with exitCode := some ERR_INVALID_PC,
+                       vmError := some .invalidPc } := by
             simp only [executeFn, hex, if_neg h_over, hf]
           rw [hlhs, hrhs]
         | some insn =>

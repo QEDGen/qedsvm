@@ -51,6 +51,39 @@ pub enum ProgramResult {
     ProgramError(ProgramError),
     /// The CU budget was exhausted before the program halted.
     OutOfBudget,
+    /// A VM-level FAULT (the Lean `State.vmError` channel — audit L1):
+    /// access violation, divide-by-zero, unsupported instruction,
+    /// call-depth exceeded, a syscall abort, etc. This is distinct from
+    /// a program-RETURNED error: agave collapses essentially every VM
+    /// fault to `InstructionError::ProgramFailedToComplete` (surfaced by
+    /// mollusk as `UnknownError(ProgramFailedToComplete)`), so the
+    /// `sentinel` (the legacy `ERR_*` value identifying the fault) is
+    /// finer-grained than agave observably distinguishes — it is for
+    /// diagnostics / the M14 expected-divergence list, not for the
+    /// cross-engine variant comparison. See `vm_fault_name`.
+    VmFault { sentinel: u64 },
+}
+
+/// The legacy `ERR_*` sentinel for each Lean `VmError`, kept in sync with
+/// `SVM.SBPF.VmError.toSentinel` (audit M14). Used only for diagnostics
+/// and the expected-divergence list — agave does not observably
+/// distinguish most of these.
+pub const fn vm_fault_name(sentinel: u64) -> &'static str {
+    match sentinel {
+        0xFFFFFFFFFFFFFFFE => "divideByZero",
+        0xFFFFFFFFFFFFFFFF => "invalidPc",
+        0xFFFFFFFFFFFFFFFD => "abort",
+        0xFFFFFFFFFFFFFFFC => "accessViolation",
+        0xFFFFFFFFFFFFFFFA => "unsupportedInstruction",
+        0xFFFFFFFFFFFFFFF9 => "callDepthExceeded",
+        0xFFFFFFFFFFFFFFF8 => "returnDataTooLarge",
+        0xFFFFFFFFFFFFFFF7 => "invalidLength",
+        0xFFFFFFFFFFFFFFF6 => "invalidAttribute",
+        0xFFFFFFFFFFFFFFF5 => "badSeeds",
+        0xFFFFFFFFFFFFFFF4 => "readonlyModified",
+        0xFFFFFFFFFFFFFFF3 => "invalidRealloc",
+        _ => "unknownFault",
+    }
 }
 
 impl ProgramResult {
@@ -422,6 +455,11 @@ impl Svm {
         let program_result = match raw.outcome {
             ExitOutcome::OutOfBudget => ProgramResult::OutOfBudget,
             ExitOutcome::Halted(n) => ProgramResult::from_bpf_r0(n),
+            // A VM fault is represented distinctly (audit M14/L1): NOT a
+            // program-returned error. agave surfaces it as
+            // `UnknownError(ProgramFailedToComplete)` — see the
+            // cross-engine comparison in `diff_mollusk.rs`.
+            ExitOutcome::Faulted(n) => ProgramResult::VmFault { sentinel: n },
         };
 
         let resulting_accounts = if accounts.is_empty() && instruction.accounts.is_empty() {

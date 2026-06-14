@@ -494,6 +494,38 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// The SPLIT-blob codegen: `vault_split.so` reads+writes back a byte
+    /// INSIDE the `owner: [u8;32]` blob, so the lift owns `owner[5]` and the
+    /// account-codec aggregation must split the blob into `[.gap, .byte, .gap]`
+    /// (the mechanized multisig-style split) rather than one opaque gap. Both
+    /// the lift and the refinement (with the split FieldSeg list + its `< 256`
+    /// validity) are `lake build`-verified under `Generated.VaultSplit*`.
+    #[test]
+    fn vault_split_refinement_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/vault_split.so");
+        let idl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault_blob.codama.json")
+                .expect("read vault_blob.codama.json")).expect("parse vault_blob IDL");
+        let ctx = load_binary(so).expect("load vault_split.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_split.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("VaultSplit".to_string()),
+            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault_split.so");
+
+        let lift_path = "../examples/lean/Generated/VaultSplitTracedLifted.lean";
+        let refine_path = "../examples/lean/Generated/VaultSplitRefinement.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(lift_path, &result.lean).expect("write lift");
+            if let Some((_, rlean)) = result.refinement.as_ref() {
+                std::fs::write(refine_path, rlean).expect("write refinement");
+            }
+        }
+        assert_eq!(result.lean, std::fs::read_to_string(lift_path).expect("read lift"),
+            "VaultSplitTracedLifted.lean is out of sync with the qedlift emitter");
+        let (_, rlean) = result.refinement.expect("vault split refinement emitted");
+        assert_eq!(rlean, std::fs::read_to_string(refine_path).expect("read refinement"),
+            "VaultSplitRefinement.lean is out of sync with the qedlift emitter");
+    }
+
     /// The heap-allocating lift, including the mechanically-emitted
     /// `HeapAlloc_allocates` corollary (heap cells folded into
     /// `heapBumpPtr`/`heapBlockU64`) and the conditional `HeapSL` import,
@@ -550,6 +582,15 @@ mod layout_tests {
             Some(module.to_string()), Some(&trace), arm, None)
             .expect("lift p_token arm");
 
+        // Set QEDLIFT_BLESS=1 to rewrite the pinned artifacts from the
+        // current emitter output (used when an intentional emitter change
+        // — e.g. the H6 memset `rr` clause — regenerates a lift).
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(lift_path, &result.lean).expect("write lift");
+            if let (Some(rp), Some((_, rlean))) = (refine_path, result.refinement.as_ref()) {
+                std::fs::write(rp, rlean).expect("write refinement");
+            }
+        }
         let on_disk = std::fs::read_to_string(lift_path).expect("read lift");
         assert_eq!(result.lean, on_disk,
             "{lift_path} is out of sync with the qedlift emitter \
@@ -1355,6 +1396,18 @@ fn solve_expr(
             if target & (*imm as u64) != target { return false; }
             solve_expr(a, target, env)
         }
+        Expr::ByteCombo(bs) => {
+            // Little-endian byte assembly `b0 + 256·b1 + 256²·b2 + …`:
+            // element `i` carries byte `i` of `target` (elements past byte
+            // 8 must be 0). Decompose and solve each element — constants
+            // are checked, variables assigned. Re-evaluate to confirm (a
+            // constant element conflicting with its required byte fails).
+            for (i, b) in bs.iter().enumerate() {
+                let byte = if i < 8 { (target >> (8 * i)) & 0xff } else { 0 };
+                if !solve_expr(b, byte, env) { return false; }
+            }
+            eval_expr(e, env) == Some(target)
+        }
         _ => false,
     }
 }
@@ -1404,8 +1457,13 @@ struct SymState {
     /// `containsRange`; each store contributes `containsWritable`.
     /// Order matches the chain's left-fold ordering, so the emitted
     /// goal rr structurally equals what `slBlockIter` produces.
-    /// Entries: (addr_base, off, width, is_writable).
-    rr_walk: Vec<(Expr, i64, Width, bool)>,
+    /// Entries: (addr_base, off, width, is_writable, memset_override).
+    /// `memset_override = Some((dst, count))` is a variable-length
+    /// `containsWritable dst count` clause (audit H6: `MemOps.execSet`'s
+    /// `guardWrite` carries this as the memset spec's `rr`); the leading
+    /// fixed fields are then ignored and the address is rendered raw
+    /// (no `effectiveAddr`) like the memset's `↦Bytes` atom.
+    rr_walk: Vec<(Expr, i64, Width, bool, Option<(Expr, Expr)>)>,
     /// Post-state contents of `↦Bytes` blobs written by memory
     /// syscalls (`sol_memset_`), keyed by the rendered destination
     /// address. `post_atoms` reads this to transform the pre `↦Bytes`
@@ -1645,7 +1703,7 @@ impl SymState {
             let i = self.hot_slot(&base_expr, off, k);
             self.mem[i].value = Expr::Const(bytes[k as usize] as i64);
         }
-        self.rr_walk.push((base_expr, off, Width::Word, true));
+        self.rr_walk.push((base_expr, off, Width::Word, true, None));
     }
     /// Serve a wide LOAD whose span is hot: the region is byte-granular,
     /// so reuse/materialize the 8 byte cells and return their Horner
@@ -1665,7 +1723,7 @@ impl SymState {
             let i = self.hot_slot(&base_expr, off, k);
             vals.push(self.mem[i].value.clone());
         }
-        self.rr_walk.push((base_expr, off, Width::Dword, false));
+        self.rr_walk.push((base_expr, off, Width::Dword, false, None));
         Expr::ByteCombo(vals)
     }
     /// Canon-aware cell lookup: the rendered key first (exact match),
@@ -1747,9 +1805,9 @@ impl SymState {
                     format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
                     rhs,
                 ));
-                self.rr_walk.push((cell_base, cell_off, width, false));
+                self.rr_walk.push((cell_base, cell_off, width, false, None));
             } else {
-                self.rr_walk.push((base_expr, off, width, false));
+                self.rr_walk.push((base_expr, off, width, false, None));
             }
             return v;
         }
@@ -1781,7 +1839,7 @@ impl SymState {
         });
         // rr contribution: every load needs containsRange at the
         // accessed cell.
-        self.rr_walk.push((base_expr, off, width, false));
+        self.rr_walk.push((base_expr, off, width, false, None));
         v
     }
     fn write_mem(&mut self, base: u8, off: i64, width: Width, value: Expr) {
@@ -1845,9 +1903,9 @@ impl SymState {
                     format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
                     rhs,
                 ));
-                self.rr_walk.push((cell_base, cell_off, width, true));
+                self.rr_walk.push((cell_base, cell_off, width, true, None));
             } else {
-                self.rr_walk.push((base_expr, off, width, true));
+                self.rr_walk.push((base_expr, off, width, true, None));
             }
         }
     }
@@ -3660,6 +3718,422 @@ fn build_sat_witness(
     Ok(w)
 }
 
+/// Evaluate a path hypothesis under a concrete variable assignment, with
+/// EXACTLY the Lean semantics of `BranchHyp::lean_hyp` (so a `Some(true)`
+/// here means `native_decide` will accept the substituted hypothesis).
+/// `None` = the branch kind (signed compares) is not modeled — those lifts
+/// get no branch witness (skipped, never failed).
+fn eval_branch(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
+    -> Option<bool> {
+    use BranchKind::*;
+    let dv = eval_expr(&bh.dst_value, env)?;
+    let immu = bh.imm as u64;
+    let sv = match &bh.src_value {
+        Some(s) => Some(eval_expr(s, env)?),
+        None => None,
+    };
+    let r = match (&bh.kind, bh.taken) {
+        (JeqImm, true) | (JneImm, false) => dv == immu,
+        (JeqImm, false) | (JneImm, true) => dv != immu,
+        (JgtImm, true)  => dv > immu,
+        (JgtImm, false) => !(dv > immu),
+        (JltImm, true)  => dv < immu,
+        (JltImm, false) => !(dv < immu),
+        (JleImm, true)  => dv <= immu,
+        (JleImm, false) => !(dv <= immu),
+        (JgeImm, true)  => dv >= immu,
+        (JgeImm, false) => !(dv >= immu),
+        (JsetImm, true)  => (dv & immu) != 0,
+        (JsetImm, false) => (dv & immu) == 0,
+        (JeqReg, true) | (JneReg, false) => dv == sv?,
+        (JeqReg, false) | (JneReg, true) => dv != sv?,
+        (JltReg, true)  => dv < sv?,
+        (JltReg, false) => !(dv < sv?),
+        (JgtReg, true)  => dv > sv?,
+        (JgtReg, false) => !(dv > sv?),
+        (JleReg, true)  => dv <= sv?,
+        (JleReg, false) => !(dv <= sv?),
+        (JgeReg, true)  => dv >= sv?,
+        (JgeReg, false) => !(dv >= sv?),
+        (JsetReg, true)  => (dv & sv?) != 0,
+        (JsetReg, false) => (dv & sv?) == 0,
+        // Signed compares: `toSigned64 v` is two's-complement reinterpretation
+        // = `v as i64`, so each Lean `toSigned64 a (op) toSigned64 b` matches
+        // the Rust `(a as i64) (op) (b as i64)`.
+        (JsgtImm, true)  => (dv as i64) > (immu as i64),
+        (JsgtImm, false) => !((dv as i64) > (immu as i64)),
+        (JsltImm, true)  => (dv as i64) < (immu as i64),
+        (JsltImm, false) => !((dv as i64) < (immu as i64)),
+        (JsleImm, true)  => (dv as i64) <= (immu as i64),
+        (JsleImm, false) => !((dv as i64) <= (immu as i64)),
+        (JsgeImm, true)  => (dv as i64) >= (immu as i64),
+        (JsgeImm, false) => !((dv as i64) >= (immu as i64)),
+        (JsgtReg, true)  => (dv as i64) > (sv? as i64),
+        (JsgtReg, false) => !((dv as i64) > (sv? as i64)),
+        (JsltReg, true)  => (dv as i64) < (sv? as i64),
+        (JsltReg, false) => !((dv as i64) < (sv? as i64)),
+        (JsleReg, true)  => (dv as i64) <= (sv? as i64),
+        (JsleReg, false) => !((dv as i64) <= (sv? as i64)),
+        (JsgeReg, true)  => (dv as i64) >= (sv? as i64),
+        (JsgeReg, false) => !((dv as i64) >= (sv? as i64)),
+    };
+    Some(r)
+}
+
+/// Candidate `(dst_target, src_target?)` value pairs that would satisfy the
+/// branch, given the current (partial) assignment. The driver tries each in
+/// order, `solve_expr`-ing the relevant variable(s), and keeps the first that
+/// `eval_branch`-verifies. Empty = unmodeled kind (signed) ⇒ the lift is
+/// skipped.
+fn branch_candidates(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
+    -> Vec<(u64, Option<u64>)> {
+    use BranchKind::*;
+    let immu = bh.imm as u64;
+    let sv = bh.src_value.as_ref().and_then(|s| eval_expr(s, env));
+    let dv = eval_expr(&bh.dst_value, env);
+    let ne_imm: Vec<(u64, Option<u64>)> =
+        [immu.wrapping_add(1), immu.wrapping_sub(1), 0, 1, 2, 3]
+            .into_iter().filter(|t| *t != immu).map(|t| (t, None)).collect();
+    match (&bh.kind, bh.taken) {
+        (JeqImm, true) | (JneImm, false) => vec![(immu, None)],
+        (JeqImm, false) | (JneImm, true) => ne_imm,
+        (JgtImm, true)  => vec![(immu.wrapping_add(1), None)],
+        (JgtImm, false) => vec![(0, None), (immu, None)],
+        (JltImm, true)  => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JltImm, false) => vec![(immu, None), (immu.wrapping_add(1), None)],
+        (JleImm, true)  => vec![(0, None), (immu, None)],
+        (JleImm, false) => vec![(immu.wrapping_add(1), None)],
+        (JgeImm, true)  => vec![(immu, None), (immu.wrapping_add(1), None)],
+        (JgeImm, false) => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JsetImm, true)  => if immu != 0 { vec![(immu, None)] } else { vec![] },
+        (JsetImm, false) => vec![(0, None)],
+        // reg-form: couple the two sides.
+        (JeqReg, true) | (JneReg, false) => match sv {
+            Some(v) => vec![(v, None)],
+            None => match dv { Some(v) => vec![(v, Some(v))], None => vec![(0, Some(0))] },
+        },
+        (JeqReg, false) | (JneReg, true) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None), (v.wrapping_sub(1), None)],
+            None => vec![(1, Some(0)), (0, Some(1))],
+        },
+        (JltReg, true) => match sv {
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
+        (JltReg, false) => match sv {           // dst ≥ src
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(1, Some(0)), (0, Some(0))],
+        },
+        (JgtReg, true) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JgtReg, false) => match sv {           // dst ≤ src
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(1)), (0, Some(0))],
+        },
+        (JleReg, true) => match sv {
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(0)), (0, Some(1))],
+        },
+        (JleReg, false) => match sv {           // dst > src
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JgeReg, true) => match sv {
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(0, Some(0)), (1, Some(0))],
+        },
+        (JgeReg, false) => match sv {           // dst < src
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
+        (JsetReg, true) => match sv {
+            Some(v) if v != 0 => vec![(v, None)],
+            _ => vec![(1, Some(1))],
+        },
+        (JsetReg, false) => vec![(0, None)],
+        // Signed compares. For the small non-negative immediates these lifts
+        // use (2/6/11/17), the witness values stay in the positive i64 range
+        // where signed = unsigned, so the candidate VALUES match the unsigned
+        // counterpart; the `256`/`65536` magnitudes let a byte-combo dst be
+        // steered into a higher byte when its low byte is already pinned.
+        (JsgtImm, true)  => vec![(immu.wrapping_add(1), None), (256, None), (65536, None)],
+        (JsgtImm, false) => vec![(0, None), (immu, None)],
+        (JsleImm, true)  => vec![(0, None), (immu, None)],
+        (JsleImm, false) => vec![(immu.wrapping_add(1), None), (256, None), (65536, None)],
+        (JsltImm, true)  => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JsltImm, false) => vec![(immu, None), (immu.wrapping_add(1), None)],
+        (JsgeImm, true)  => vec![(immu, None), (immu.wrapping_add(1), None), (256, None)],
+        (JsgeImm, false) => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JsgtReg, true) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JsgtReg, false) => match sv {
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(1)), (0, Some(0))],
+        },
+        (JsltReg, true) => match sv {
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
+        (JsltReg, false) => match sv {
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(1, Some(0)), (0, Some(0))],
+        },
+        (JsleReg, true) => match sv {
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(0)), (0, Some(1))],
+        },
+        (JsleReg, false) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JsgeReg, true) => match sv {
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(0, Some(0)), (1, Some(0))],
+        },
+        (JsgeReg, false) => match sv {
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
+    }
+}
+
+/// Union-find root with path compression (over variable-name nodes).
+fn uf_find(parent: &mut std::collections::BTreeMap<String, String>, x: &str) -> String {
+    let mut root = x.to_string();
+    while let Some(p) = parent.get(&root) { if *p == root { break; } root = p.clone(); }
+    let mut cur = x.to_string();
+    while cur != root {
+        let next = parent.get(&cur).cloned().unwrap_or_else(|| root.clone());
+        parent.insert(cur, root.clone());
+        cur = next;
+    }
+    root
+}
+
+/// Collect the free InitReg/InitMem variable names referenced by an expr.
+fn expr_vars(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::InitReg(n) | Expr::InitMem(n) => out.push(n.clone()),
+        Expr::ToU64(a) | Expr::Mod(a, _) | Expr::AndU64Imm(a, _)
+        | Expr::LshU64Imm(a, _) | Expr::RshU64Imm(a, _) => expr_vars(a, out),
+        Expr::WrapAdd(a, b) | Expr::WrapSub(a, b) | Expr::WrapMul(a, b)
+        | Expr::NatAdd(a, b) | Expr::CleanSub(a, b) => { expr_vars(a, out); expr_vars(b, out); }
+        Expr::ByteCombo(bs) => for b in bs { expr_vars(b, out); },
+        Expr::Const(_) | Expr::StHalfImm(_) | Expr::StWordImm(_)
+        | Expr::StDwordImm(_) | Expr::Raw(_) => {}
+    }
+}
+
+/// Steering order, most-constraining first:
+///   0  byte-combo EQUALITIES (`b0 + 256·b1 + … = k`) — pin several cells at
+///      once, so the per-byte `bN % 256 ≠ …` constraints are then free.
+///   1  single-cell / register EQUALITIES — pin one value.
+///   2  INEQUALITIES (define a value RANGE: `≥ 9`, `< 8`, …) — pick a value in
+///      range before a disequality forces an arbitrary one.
+///   3  DISEQUALITIES (`≠ k`) — exclude a single point, the most flexible, so
+///      last: whatever the pins/ranges left almost always already differs.
+fn branch_priority(bh: &BranchHyp) -> u8 {
+    use BranchKind::*;
+    let combo = matches!(&bh.dst_value, Expr::ByteCombo(_));
+    match (&bh.kind, bh.taken) {
+        (JeqImm, true) | (JneImm, false) | (JeqReg, true) | (JneReg, false) =>
+            if combo { 0 } else { 1 },
+        (JeqImm, false) | (JneImm, true) | (JeqReg, false) | (JneReg, true) => 3,
+        _ => 2,
+    }
+}
+
+/// Phase 7 sub-item 1: the BRANCH-satisfiability witness, complementing the
+/// H8 footprint witness in `build_sat_witness`. The lift theorem takes its
+/// value-level path hypotheses (`h_branch*`) and load bounds (`h*_lt`) as
+/// UNCERTIFIED parameters; an UNSATISFIABLE conjunction of them makes the
+/// triple vacuously true. This emits a concrete assignment that satisfies
+/// every modeled `h_branch*` (and `h*_lt`) SIMULTANEOUSLY, kernel-checked by
+/// `native_decide` — so the emitted assignment is a machine-checked
+/// certificate that the path constraints are jointly satisfiable.
+///
+/// Conservative: returns `None` (emit nothing — non-breaking) when the
+/// deterministic steerer cannot satisfy every branch (an unmodeled signed
+/// compare, an un-invertible `dst_value`, or a genuinely contradictory
+/// constraint set). It NEVER emits a witness it has not Rust-side verified.
+fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
+    use std::collections::BTreeMap;
+    if state.branch_hyps.is_empty() { return None; }
+
+    let mut env: BTreeMap<String, u64> = BTreeMap::new();
+    let mut order: Vec<usize> = (0..state.branch_hyps.len()).collect();
+    order.sort_by_key(|&i| branch_priority(&state.branch_hyps[i]));
+
+    for &i in &order {
+        let bh = &state.branch_hyps[i];
+        // Already satisfied by the committed (partial) assignment — e.g. a
+        // value pinned by an earlier branch already lands on the right side
+        // of this comparison.
+        if eval_branch(bh, &env) == Some(true) { continue; }
+        // NON-COMMITTING zero-fill probe — DISEQUALITIES only. Does the `≠`
+        // hold if its still-free cells were 0? (The common case for a
+        // byte-combo `≠ 1` whose discriminant byte is pinned nonzero.) If so,
+        // leave those cells FREE — committing them to 0 here would block a
+        // later `bN ≠ 0` on the same cell. The final zero-fill + verify
+        // confirms it. (Inequalities are NOT probed: they define a value
+        // RANGE, so they must COMMIT a value in range — a free cell, later
+        // pinned by a `≠`, could land outside it.)
+        if branch_priority(bh) == 3 {
+            let mut bvars = Vec::new();
+            expr_vars(&bh.dst_value, &mut bvars);
+            if let Some(s) = &bh.src_value { expr_vars(s, &mut bvars); }
+            let mut probe = env.clone();
+            for v in &bvars { probe.entry(v.clone()).or_insert(0); }
+            if eval_branch(bh, &probe) == Some(true) { continue; }
+        }
+        // Steer via candidates (assigns the relevant free cells). Try both
+        // solve orders: src-first unlocks a compound dst whose free sub-cell
+        // is the src (`wrapAdd d40 d38 ≥ d40` — pin d40 via src, then d38),
+        // dst-first the symmetric case.
+        let cands = branch_candidates(bh, &env);
+        'cand: for (dt, st) in cands {
+            for src_first in [false, true] {
+                let mut trial = env.clone();
+                let solve_src = |tr: &mut std::collections::BTreeMap<String, u64>| {
+                    match (&bh.src_value, st) {
+                        (Some(s), Some(t)) => solve_expr(s, t, tr),
+                        _ => true,
+                    }
+                };
+                let ok = if src_first {
+                    solve_src(&mut trial) && solve_expr(&bh.dst_value, dt, &mut trial)
+                } else {
+                    solve_expr(&bh.dst_value, dt, &mut trial) && solve_src(&mut trial)
+                };
+                if ok && eval_branch(bh, &trial) == Some(true) {
+                    env = trial;
+                    break 'cand;
+                }
+            }
+        }
+        // If not steered here (its cell was pinned by an earlier constraint it
+        // shares), the equality-class repair pass + final verify below handle
+        // it — no fail-hard.
+    }
+
+    // Zero-fill remaining theorem variables.
+    for v in vars { env.entry(v.clone()).or_insert(0); }
+
+    // Repair pass over EQUALITY CLASSES. The greedy pass satisfies each
+    // constraint in isolation, so it mis-handles (a) a single cell with
+    // several constraints (`≤ 2 ∧ ≠ 2 ∧ ≠ 0` ⇒ must be 1) and (b) a cell
+    // equality `a = b` where `a` is constrained elsewhere (so both need that
+    // value). Union reg-equalities into classes, then brute-force ONE shared
+    // value per class over a small pool, requiring every branch internal to
+    // the class (all its cells in the class) to hold jointly.
+    {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut allvars: Vec<String> = Vec::new();
+        for bh in &state.branch_hyps {
+            expr_vars(&bh.dst_value, &mut allvars);
+            if let Some(s) = &bh.src_value { expr_vars(s, &mut allvars); }
+        }
+        allvars.sort(); allvars.dedup();
+        let mut parent: BTreeMap<String, String> = BTreeMap::new();
+        for v in &allvars { parent.insert(v.clone(), v.clone()); }
+        for bh in &state.branch_hyps {
+            let is_eq = matches!((&bh.kind, bh.taken),
+                (BranchKind::JeqReg, true) | (BranchKind::JneReg, false));
+            if !is_eq { continue; }
+            let mut dv = Vec::new(); expr_vars(&bh.dst_value, &mut dv);
+            let mut sv = Vec::new();
+            if let Some(s) = &bh.src_value { expr_vars(s, &mut sv); }
+            if dv.len() == 1 && sv.len() == 1 {
+                let ra = uf_find(&mut parent, &dv[0]);
+                let rb = uf_find(&mut parent, &sv[0]);
+                if ra != rb { parent.insert(ra, rb); }
+            }
+        }
+        let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for v in &allvars { let r = uf_find(&mut parent, v); classes.entry(r).or_default().push(v.clone()); }
+        let mut pool: Vec<u64> = (0u64..=256).collect();
+        for bh in &state.branch_hyps {
+            let im = bh.imm as u64;
+            pool.push(im); pool.push(im.wrapping_add(1)); pool.push(im.wrapping_sub(1));
+        }
+        for members in classes.values() {
+            let mset: BTreeSet<&String> = members.iter().collect();
+            let internal: Vec<usize> = state.branch_hyps.iter().enumerate().filter_map(|(i, bh)| {
+                let mut vs = Vec::new();
+                expr_vars(&bh.dst_value, &mut vs);
+                if let Some(s) = &bh.src_value { expr_vars(s, &mut vs); }
+                if !vs.is_empty() && vs.iter().all(|v| mset.contains(v)) { Some(i) } else { None }
+            }).collect();
+            if internal.is_empty() { continue; }
+            let holds = |e: &BTreeMap<String, u64>| internal.iter().all(|&i|
+                eval_branch(&state.branch_hyps[i], e) == Some(true));
+            if holds(&env) { continue; }
+            for &cand in &pool {
+                let mut trial = env.clone();
+                for m in members { trial.insert(m.clone(), cand); }
+                if holds(&trial) { env = trial; break; }
+            }
+        }
+    }
+
+    // Final verification of EVERY branch at the complete assignment.
+    for (i, bh) in state.branch_hyps.iter().enumerate() {
+        if eval_branch(bh, &env) != Some(true) {
+            if std::env::var("QEDLIFT_DEBUG_BRANCH").is_ok() {
+                eprintln!("BRANCH-WITNESS skip: final verify failed h_branch{} : {}",
+                    i, bh.lean_hyp());
+            }
+            return None;
+        }
+    }
+
+    // Emit: substitute the assignment into each hypothesis, conjoin, and
+    // discharge by `native_decide`.
+    let sub = |s: &str| -> String {
+        let mut out = s.to_string();
+        for (k, val) in &env {
+            out = replace_token(&out, k, &val.to_string());
+        }
+        out
+    };
+    let mut conjuncts: Vec<String> = Vec::new();
+    for bh in &state.branch_hyps {
+        conjuncts.push(format!("({})", sub(&bh.lean_hyp())));
+    }
+    for (v, k) in &state.u64_load_vars {
+        let lit = env.get(v).copied().unwrap_or(0);
+        conjuncts.push(format!("({} < 2 ^ {})", lit, k));
+    }
+    let mut w = String::new();
+    w.push_str(
+        "/-! ## Branch-satisfiability witness (Phase 7 sub-item 1)\n\n\
+         The triple's value-level path hypotheses (`h_branch*`) and load\n\
+         bounds (`h*_lt`) are uncertified parameters — an UNSATISFIABLE\n\
+         conjunction of them would make the triple vacuously true. The\n\
+         assignment below satisfies every (modeled) path hypothesis\n\
+         SIMULTANEOUSLY; `native_decide` machine-checks it, so a\n\
+         contradictory path-constraint set cannot ship silently. This\n\
+         complements the H8 footprint witness above (disjoint variable\n\
+         sets: address roots vs. discriminant/flag cells). -/\n\n");
+    // Split the conjunction (`refine ⟨?_, …⟩`) so each conjunct is decided
+    // individually — a single `native_decide` over a deeply-nested `And`
+    // fails `Decidable`-instance synthesis past ~60 conjuncts.
+    let body = conjuncts.join(" ∧\n      ");
+    if conjuncts.len() == 1 {
+        w.push_str(&format!("example :\n      {} := by native_decide\n\n", body));
+    } else {
+        let holes = vec!["?_"; conjuncts.len()].join(", ");
+        w.push_str(&format!(
+            "example :\n      {} := by\n  refine ⟨{}⟩ <;> native_decide\n\n",
+            body, holes));
+    }
+    Some(w)
+}
+
 /// The BPF program heap: `[MM_HEAP_START, MM_HEAP_START + 0x8000)`.
 const HEAP_START_I: i64 = 0x300000000;
 const HEAP_END_I:   i64 = 0x300000000 + 0x8000;
@@ -3735,6 +4209,13 @@ fn emit_sol_memset(
     let r1v = state.read_reg(1);
     let r2v = state.read_reg(2);
     let r3v = state.read_reg(3);
+
+    // H6: the memset spec's `rr` requires the `[r1V, r1V + r3V)`
+    // destination to be in a writable region. Record it in walk order so
+    // the goal rr carries the same `containsWritable r1V r3V` clause that
+    // `sl_block_iter` folds in from `call_sol_memset_*_spec`.
+    state.rr_walk.push((r1v.clone(), 0, Width::Byte, true,
+        Some((r1v.clone(), r3v.clone()))));
 
     let idx = state.fresh; state.fresh += 1;
     let bs_name  = format!("memsetBs_{}", idx);
@@ -4093,6 +4574,38 @@ fn emit_r0_syscall(
     block_pcs.push(pc);
 }
 
+/// `sol_log_(ptr, len)` (audit H6). Like `emit_r0_syscall` but the spec
+/// `call_sol_log_spec` pins `r1`/`r2` (the message slice) and carries an
+/// `rr = containsRange r1 r2` requirement, so the emitter reads those
+/// registers, threads them into the spec call, and records the matching
+/// `containsRange` clause in `rr_walk` (writable = false).
+fn emit_sol_log(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1);
+    let r2v = state.read_reg(2);
+    // The logged slice `[r1, r1+r2)` must be in a readable region.
+    state.rr_walk.push((r1v.clone(), 0, Width::Byte, false,
+        Some((r1v.clone(), r2v.clone()))));
+    let idx = state.fresh; state.fresh += 1;
+    let ncu_name = format!("nCuLog{}", idx);
+    let hcu_name = format!("hCuLog{}", idx);
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_log_"));
+    state.syscall_pcs.insert(pc, ".sol_log_");
+    state.write_reg(0, Expr::Const(0));
+    let have_line = format!(
+        "have h_{pc} := call_sol_log_spec {r0} {r1} {r2} {pc} {ncu} {hcu}",
+        pc = pc, r0 = r0v.atom_lean(), r1 = r1v.atom_lean(), r2 = r2v.atom_lean(),
+        ncu = ncu_name, hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall { hyp_name: format!("h_{}", pc), have_line });
+    block_pcs.push(pc);
+}
+
 /// Build the postcondition atom list: same shape as pre, but each atom
 /// reflects the symbolic value at the end of the walk.
 fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
@@ -4149,7 +4662,20 @@ fn region_req(
     // Walk-order rr contributions: each load → containsRange; each
     // store → containsWritable. Order matches what slBlockIter
     // produces by left-folding per chain step.
-    for (addr_base, addr_off, width, writable) in &state.rr_walk {
+    for (addr_base, addr_off, width, writable, raw) in &state.rr_walk {
+        // H6 variable-length override (memset dst write / sol_log slice
+        // read): `contains{Writable,Range} addr count` with the address
+        // rendered raw (subst-folded, no `effectiveAddr`) exactly like the
+        // syscall's `↦Bytes`/register atom — so it matches the `rr`
+        // carried by `call_sol_{memset,log}_*_spec` after `sl_rw_abs`.
+        // `writable` picks the predicate (store vs load).
+        if let Some((addr, count)) = raw {
+            let addr_str = fold_abstractions(addr.to_lean(), subst);
+            let kind = if *writable { "containsWritable" } else { "containsRange" };
+            clauses.push(format!(
+                "rt.{} ({}) ({}) = true", kind, addr_str, count.to_lean()));
+            continue;
+        }
         let width_bytes = match width {
             Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
         };
@@ -5423,6 +5949,19 @@ fn emit_vault_refinement(
     let mut pre_fields: Vec<String> = Vec::new();
     let mut post_fields: Vec<String> = Vec::new();
     let mut frame: Vec<String> = Vec::new();
+    // Absolute offsets of blob bytes the lift owns (a SPLIT blob exposes them
+    // as fine `.byte` atoms) — excluded from `setup` below, like the updated
+    // u64. `true` if the split emitted any `.byte` seg (its `< 256` validity
+    // needs `omega` after the codecValid `simp`).
+    let mut owned_blob_offs: Vec<i64> = Vec::new();
+    // `< 256` validity hypotheses for the split's owned bytes (raw cell values
+    // are not `% 256`-bounded by the lift, so the codecValid discharge needs
+    // them; `omega` reads them from context).
+    let mut byte_hyps: Vec<String> = Vec::new();
+    // `(name, "g.size = len")` for gaps preceding an owned byte — pins the
+    // running offset so the split's fine atoms land at the lift's addresses.
+    let mut gap_size_hyps: Vec<(String, String)> = Vec::new();
+    let base_raw_blob = base.to_lean();
     let mut updated_seen = false;
     for f in &layout.fields {
         let off = f.offset as i64;
@@ -5463,22 +6002,71 @@ fn emit_vault_refinement(
             // condition. The byte size is not pinned in the obligation (the
             // gap is a free `ByteArray`), so the theorem holds for any
             // contents of that region.
-            FieldKind::Bytes(_) => {
-                let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
-                pre_fields.push(format!("({}, .blob [.gap {}])", off, g));
-                post_fields.push(format!("({}, .blob [.gap {}])", off, g));
-                frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off, g));
+            FieldKind::Bytes(len) => {
+                let len = *len as i64;
+                // Lift-owned byte cells inside `[off, off+len)` (an array-element
+                // read/write, a sub-field touch). If none, the whole field is one
+                // opaque gap (the prior behaviour); otherwise SPLIT it into an
+                // ordered `[.gap, .byte owned, .gap, …]` segment list so the owned
+                // cells surface as fine atoms the lift's frame matches — the
+                // mechanized multisig-style split.
+                let owned: Vec<(i64, String)> = (0..len).filter_map(|rel| {
+                    cell_val(pre, &base_raw_blob, off + rel, true)
+                        .map(|v| (rel, fold(v)))
+                }).collect();
+                if owned.is_empty() {
+                    let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
+                    pre_fields.push(format!("({}, .blob [.gap {}])", off, g));
+                    post_fields.push(format!("({}, .blob [.gap {}])", off, g));
+                    frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off, g));
+                } else {
+                    let mut segs: Vec<String> = Vec::new();
+                    let mut cursor = 0i64;
+                    for (rel, val) in &owned {
+                        if *rel > cursor {
+                            // A gap PRECEDING an owned byte: its size must be
+                            // pinned (`fg.size = len`) so `segsSL`'s running
+                            // offset places the byte at `base + rel`, matching
+                            // the lift. The proof rewrites with it.
+                            let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
+                            gap_size_hyps.push((format!("h{}_sz", g), format!("{}.size = {}", g, rel - cursor)));
+                            segs.push(format!(".gap {}", g));
+                            frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off + cursor, g));
+                        }
+                        // Owned byte: use the lift's value. It is NOT framed —
+                        // the lift owns it (it read the cell), and the codec's
+                        // fine `.byte` atom matches the lift's atom directly. Its
+                        // `< 256` validity is surfaced as a theorem hypothesis.
+                        segs.push(format!(".byte ({})", val));
+                        owned_blob_offs.push(off + rel);
+                        byte_hyps.push(format!("(h_blob{} : {} < 256)", off + rel, val));
+                        cursor = rel + 1;
+                    }
+                    if cursor < len {
+                        // Trailing gap (last seg): no following atom, so its size
+                        // needs no hyp — it stays a free `ByteArray`.
+                        let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
+                        segs.push(format!(".gap {}", g));
+                        frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off + cursor, g));
+                    }
+                    let seglist = format!("[{}]", segs.join(", "));
+                    pre_fields.push(format!("({}, .blob {})", off, seglist));
+                    post_fields.push(format!("({}, .blob {})", off, seglist));
+                }
             }
         }
     }
     if !updated_seen { return None; }
 
-    // setup = lift atoms not owning the updated cell (registers, etc.).
+    // setup = lift atoms not owning the codec cells (the updated u64 dword
+    // AND every owned blob byte the split exposes) — those flow through the
+    // codec's fine form, not the setup frame.
     let owned_base = base.to_lean();
     let is_owned = |a: &Atom| match a {
         Atom::Mem { addr_base, addr_off, width, .. } =>
-            addr_base.to_lean() == owned_base && *addr_off == upd_off
-                && matches!(width, Width::Dword),
+            addr_base.to_lean() == owned_base
+                && ((*addr_off == upd_off && matches!(width, Width::Dword))
+                    || (matches!(width, Width::Byte) && owned_blob_offs.contains(addr_off))),
         _ => false,
     };
     let setup_pre: Vec<Atom> = pre.iter().filter(|a| !is_owned(a)).cloned().collect();
@@ -5487,7 +6075,8 @@ fn emit_vault_refinement(
     let module = format!("{}Refinement", lift_module);
     let lean = render_vault_refinement(spec, &module, &base_l, &pre_fields, &post_fields,
         &frame, &params, &ba_params, pre, post_clean, &setup_pre, &setup_post,
-        abs_subst, vars, n_cu, start_pc, exit_pc, upd_off, delta, &upd_pre_l);
+        abs_subst, vars, n_cu, start_pc, exit_pc, upd_off, delta, &upd_pre_l,
+        &byte_hyps, &gap_size_hyps);
     Some((module, lean, None))
 }
 
@@ -5501,7 +6090,8 @@ fn render_vault_refinement(
     pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
     n_cu: usize, start_pc: usize, exit_pc: usize,
-    upd_off: i64, delta: i64, upd_pre_l: &str,
+    upd_off: i64, delta: i64, upd_pre_l: &str, byte_hyps: &[String],
+    gap_size_hyps: &[(String, String)],
 ) -> String {
     let mut nat_params = vars.join(" ");
     for p in params { nat_params.push(' '); nat_params.push_str(p); }
@@ -5520,6 +6110,10 @@ fn render_vault_refinement(
     if !ba_params.is_empty() {
         binders.push_str(&format!("\n    ({} : ByteArray)", ba_params.join(" ")));
     }
+    // `< 256` validity hypotheses for the split blob's owned bytes + the
+    // gap-size hyps that pin the split's running offsets.
+    for h in byte_hyps { binders.push_str(&format!("\n    {}", h)); }
+    for (name, prop) in gap_size_hyps { binders.push_str(&format!("\n    ({} : {})", name, prop)); }
     // Compose the simp sets from the field kinds actually present, so each
     // lemma is used (no `unusedSimpArgs` lint) and a blob-free vault emits
     // byte-identically to before. `pubkeyIs` only when a pubkey field is
@@ -5527,15 +6121,30 @@ fn render_vault_refinement(
     // `FieldSeg.valid`) only when a blob field is present.
     let has_pubkey = pre_fields.iter().any(|f| f.contains(".pubkey"));
     let has_blob = !ba_params.is_empty();
-    let mut fine = vec!["codecFine", "FieldVal.fine"];
-    if has_pubkey { fine.push("pubkeyIs"); }
-    if has_blob { fine.push("segsSL"); fine.push("FieldSeg.sl"); }
-    fine.push("sepConj_emp_right_eq");
-    fine.push("Nat.add_zero");
+    let mut fine: Vec<String> = vec!["codecFine".into(), "FieldVal.fine".into()];
+    if has_pubkey { fine.push("pubkeyIs".into()); }
+    if has_blob { fine.push("segsSL".into()); fine.push("FieldSeg.sl".into()); }
+    // A SPLIT blob: unfold `FieldSeg.size` and rewrite the gap-size hyps so the
+    // running offsets reduce to the lift's concrete addresses.
+    if !gap_size_hyps.is_empty() {
+        fine.push("FieldSeg.size".into());
+        for (name, _) in gap_size_hyps { fine.push(name.clone()); }
+    }
+    fine.push("sepConj_emp_right_eq".into());
+    fine.push("Nat.add_zero".into());
     let fine_simp = fine.join(", ");
     let mut valid = vec!["codecValid", "FieldVal.fineValid"];
     if has_blob { valid.push("segsValid"); valid.push("FieldSeg.valid"); }
     let valid_simp = valid.join(", ");
+    // A SPLIT blob's owned `.byte` segs leave a `(v % 256) < 256` residual
+    // after the `codecValid` simp — close it with `omega`. Whole-gap blobs
+    // (and the non-split vault) close in `simp` alone, so they stay
+    // byte-identical.
+    let valid_tac = if byte_hyps.is_empty() {
+        format!("by simp [{valid_simp}]")
+    } else {
+        format!("by simp [{valid_simp}] <;> omega")
+    };
     let pre_list = pre_fields.join(", ");
     let post_list = post_fields.join(", ");
     let frame_s = frame.join(" **\n      ");
@@ -5576,10 +6185,10 @@ theorem refines_asm
   unfold SVM.Solana.Abstract.{pred}
   rw [codecCoarse_eq_fine {base}
         [{pre_list}]
-        (by simp [{valid_simp}]),
+        ({valid_tac}),
       codecCoarse_eq_fine {base}
         [{post_list}]
-        (by simp [{valid_simp}])]
+        ({valid_tac})]
   simp only [{fine_simp}]
   have framed := cuTripleWithinMem_frame_right
     ( {frame} )
@@ -5605,7 +6214,7 @@ end Examples.{module}
         binders = binders,
         ensures_binders = ensures_binders,
         upd_off = upd_off, delta = delta,
-        valid_simp = valid_simp,
+        valid_tac = valid_tac,
         fine_simp = fine_simp,
         n = n_cu, entry = start_pc, exit = exit_pc,
         lift_pre = lift_pre, lift_post = lift_post,
@@ -5941,8 +6550,8 @@ fn lift_one(
                             continue;
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_log_") {
-                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter, "call_sol_log_spec", ".sol_log_", "Log");
+                            emit_sol_log(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter);
                             ti += 1;
                             continue;
                         }
@@ -6649,6 +7258,16 @@ fn lift_one(
         Ok(w) => out.push_str(&w),
         Err(e) => return Err(format!(
             "qedlift: satisfiability witness construction failed — {}", e).into()),
+    }
+
+    // ── Branch-satisfiability witness (Phase 7 sub-item 1) ──────────
+    // Complements the H8 footprint witness: certifies the value-level
+    // path hypotheses (`h_branch*` / `h*_lt`) are JOINTLY satisfiable at
+    // a concrete assignment (kernel-checked by `native_decide`), closing
+    // the branch-vacuity channel. Conservative — emits nothing when the
+    // steerer can't satisfy every branch (non-breaking).
+    if let Some(w) = build_branch_witness(&state, &vars) {
+        out.push_str(&w);
     }
 
     // ── Heap-allocation corollary ──────────────────────────────────
