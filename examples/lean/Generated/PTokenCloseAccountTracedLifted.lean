@@ -2353,6 +2353,79 @@ example : ∃ s,
     (by native_decide)
   exact w
 
+/-! ## Branch-satisfiability witness (Phase 7 sub-item 1)
+
+The triple's value-level path hypotheses (`h_branch*`) and load
+bounds (`h*_lt`) are uncertified parameters — an UNSATISFIABLE
+conjunction of them would make the triple vacuously true. The
+assignment below satisfies every (modeled) path hypothesis
+SIMULTANEOUSLY; `native_decide` machine-checks it, so a
+contradictory path-constraint set cannot ship silently. This
+complements the H8 footprint witness above (disjoint variable
+sets: address roots vs. discriminant/flag cells). -/
+
+example :
+      (3 % 256 = toU64 3) ∧
+      (165 = toU64 165) ∧
+      (255 % 256 = toU64 255) ∧
+      (0 ≠ toU64 165) ∧
+      (3 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) ≠ toU64 0) ∧
+      (3 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) ≠ toU64 1) ∧
+      (3 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) ≠ toU64 2) ∧
+      (3 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) < toU64 6) ∧
+      (¬ toSigned64 (3 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0))))))) ≤ toSigned64 (toU64 2)) ∧
+      (3 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) = toU64 3) ∧
+      (255 % 256 = toU64 255) ∧
+      (255 % 256 = toU64 255) ∧
+      (1 ≠ toU64 0) ∧
+      (9 % 256 ≠ toU64 255) ∧
+      (¬ toSigned64 (9 % 256) > toSigned64 (toU64 11)) ∧
+      (toSigned64 (9 % 256) > toSigned64 (toU64 6)) ∧
+      (9 % 256 ≠ toU64 7) ∧
+      (9 % 256 ≠ toU64 8) ∧
+      (9 % 256 = toU64 9) ∧
+      (¬ 3 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) < toU64 3) ∧
+      (wrapAdd 0 (toU64 8) ≠ ((wrapAdd (wrapAdd 0 165) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) ∧
+      (165 = toU64 165) ∧
+      (¬ 1 % 256 > toU64 2) ∧
+      (1 % 256 ≠ toU64 0) ∧
+      (0 % 256 ≠ toU64 1) ∧
+      (0 = toU64 0) ∧
+      (0 % 256 ≠ toU64 1) ∧
+      (1 ≠ toU64 6922371884362248960) ∧
+      (1 ≠ toU64 0) ∧
+      (1 = 1) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 = 0) ∧
+      (0 ≠ toU64 355) ∧
+      (1 % 256 ≠ toU64 0) ∧
+      (165 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (3 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 8) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (1 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (1 < 2 ^ 64) ∧
+      (1 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) ∧
+      (0 < 2 ^ 64) := by
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> native_decide
+
 open Memory in
 theorem PTokenCloseAccount_balance_correct
     (baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 vR0Old oldMemB_4 oldMemB_5 oldMemB_6 oldMemB_7 oldMemB_8 oldMemB_9 oldMemB_10 vR7Old vR10Old oldMemD_11 vR3Old oldMemB_12 oldMemD_13 oldMemD_14 oldMemB_15 oldMemD_16 oldMemD_17 vR4Old oldMemD_18 vR9Old oldMemB_19 vR5Old vR8Old oldMemB_20 oldMemB_21 oldMemD_22 oldMemB_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 vR6Old oldMemD_28 oldMemD_29 oldMemD_30 oldMemD_31 oldMemB_32 oldMemD_33 oldMemD_34 : Nat)

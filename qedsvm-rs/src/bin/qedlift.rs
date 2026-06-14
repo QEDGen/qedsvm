@@ -1364,6 +1364,18 @@ fn solve_expr(
             if target & (*imm as u64) != target { return false; }
             solve_expr(a, target, env)
         }
+        Expr::ByteCombo(bs) => {
+            // Little-endian byte assembly `b0 + 256·b1 + 256²·b2 + …`:
+            // element `i` carries byte `i` of `target` (elements past byte
+            // 8 must be 0). Decompose and solve each element — constants
+            // are checked, variables assigned. Re-evaluate to confirm (a
+            // constant element conflicting with its required byte fails).
+            for (i, b) in bs.iter().enumerate() {
+                let byte = if i < 8 { (target >> (8 * i)) & 0xff } else { 0 };
+                if !solve_expr(b, byte, env) { return false; }
+            }
+            eval_expr(e, env) == Some(target)
+        }
         _ => false,
     }
 }
@@ -3713,9 +3725,25 @@ fn eval_branch(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
         (JgeReg, false) => !(dv >= sv?),
         (JsetReg, true)  => (dv & sv?) != 0,
         (JsetReg, false) => (dv & sv?) == 0,
-        // Signed compares (Jsgt/Jslt/Jsle/Jsge, imm + reg): toSigned64 is
-        // not modeled here — fail closed to "skip".
-        _ => return None,
+        // Signed compares: `toSigned64 v` is two's-complement reinterpretation
+        // = `v as i64`, so each Lean `toSigned64 a (op) toSigned64 b` matches
+        // the Rust `(a as i64) (op) (b as i64)`.
+        (JsgtImm, true)  => (dv as i64) > (immu as i64),
+        (JsgtImm, false) => !((dv as i64) > (immu as i64)),
+        (JsltImm, true)  => (dv as i64) < (immu as i64),
+        (JsltImm, false) => !((dv as i64) < (immu as i64)),
+        (JsleImm, true)  => (dv as i64) <= (immu as i64),
+        (JsleImm, false) => !((dv as i64) <= (immu as i64)),
+        (JsgeImm, true)  => (dv as i64) >= (immu as i64),
+        (JsgeImm, false) => !((dv as i64) >= (immu as i64)),
+        (JsgtReg, true)  => (dv as i64) > (sv? as i64),
+        (JsgtReg, false) => !((dv as i64) > (sv? as i64)),
+        (JsltReg, true)  => (dv as i64) < (sv? as i64),
+        (JsltReg, false) => !((dv as i64) < (sv? as i64)),
+        (JsleReg, true)  => (dv as i64) <= (sv? as i64),
+        (JsleReg, false) => !((dv as i64) <= (sv? as i64)),
+        (JsgeReg, true)  => (dv as i64) >= (sv? as i64),
+        (JsgeReg, false) => !((dv as i64) >= (sv? as i64)),
     };
     Some(r)
 }
@@ -3793,18 +3821,96 @@ fn branch_candidates(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u6
             _ => vec![(1, Some(1))],
         },
         (JsetReg, false) => vec![(0, None)],
-        _ => vec![],   // signed: unmodeled
+        // Signed compares. For the small non-negative immediates these lifts
+        // use (2/6/11/17), the witness values stay in the positive i64 range
+        // where signed = unsigned, so the candidate VALUES match the unsigned
+        // counterpart; the `256`/`65536` magnitudes let a byte-combo dst be
+        // steered into a higher byte when its low byte is already pinned.
+        (JsgtImm, true)  => vec![(immu.wrapping_add(1), None), (256, None), (65536, None)],
+        (JsgtImm, false) => vec![(0, None), (immu, None)],
+        (JsleImm, true)  => vec![(0, None), (immu, None)],
+        (JsleImm, false) => vec![(immu.wrapping_add(1), None), (256, None), (65536, None)],
+        (JsltImm, true)  => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JsltImm, false) => vec![(immu, None), (immu.wrapping_add(1), None)],
+        (JsgeImm, true)  => vec![(immu, None), (immu.wrapping_add(1), None), (256, None)],
+        (JsgeImm, false) => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JsgtReg, true) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JsgtReg, false) => match sv {
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(1)), (0, Some(0))],
+        },
+        (JsltReg, true) => match sv {
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
+        (JsltReg, false) => match sv {
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(1, Some(0)), (0, Some(0))],
+        },
+        (JsleReg, true) => match sv {
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(0)), (0, Some(1))],
+        },
+        (JsleReg, false) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JsgeReg, true) => match sv {
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(0, Some(0)), (1, Some(0))],
+        },
+        (JsgeReg, false) => match sv {
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
     }
 }
 
-/// Process equality / inequality-to-constant and reg-equalities before the
-/// remaining (mostly reg-form inequality) branches, so the latter can read
-/// the already-pinned side.
+/// Union-find root with path compression (over variable-name nodes).
+fn uf_find(parent: &mut std::collections::BTreeMap<String, String>, x: &str) -> String {
+    let mut root = x.to_string();
+    while let Some(p) = parent.get(&root) { if *p == root { break; } root = p.clone(); }
+    let mut cur = x.to_string();
+    while cur != root {
+        let next = parent.get(&cur).cloned().unwrap_or_else(|| root.clone());
+        parent.insert(cur, root.clone());
+        cur = next;
+    }
+    root
+}
+
+/// Collect the free InitReg/InitMem variable names referenced by an expr.
+fn expr_vars(e: &Expr, out: &mut Vec<String>) {
+    match e {
+        Expr::InitReg(n) | Expr::InitMem(n) => out.push(n.clone()),
+        Expr::ToU64(a) | Expr::Mod(a, _) | Expr::AndU64Imm(a, _)
+        | Expr::LshU64Imm(a, _) | Expr::RshU64Imm(a, _) => expr_vars(a, out),
+        Expr::WrapAdd(a, b) | Expr::WrapSub(a, b) | Expr::WrapMul(a, b)
+        | Expr::NatAdd(a, b) | Expr::CleanSub(a, b) => { expr_vars(a, out); expr_vars(b, out); }
+        Expr::ByteCombo(bs) => for b in bs { expr_vars(b, out); },
+        Expr::Const(_) | Expr::StHalfImm(_) | Expr::StWordImm(_)
+        | Expr::StDwordImm(_) | Expr::Raw(_) => {}
+    }
+}
+
+/// Steering order, most-constraining first:
+///   0  byte-combo EQUALITIES (`b0 + 256·b1 + … = k`) — pin several cells at
+///      once, so the per-byte `bN % 256 ≠ …` constraints are then free.
+///   1  single-cell / register EQUALITIES — pin one value.
+///   2  INEQUALITIES (define a value RANGE: `≥ 9`, `< 8`, …) — pick a value in
+///      range before a disequality forces an arbitrary one.
+///   3  DISEQUALITIES (`≠ k`) — exclude a single point, the most flexible, so
+///      last: whatever the pins/ranges left almost always already differs.
 fn branch_priority(bh: &BranchHyp) -> u8 {
     use BranchKind::*;
-    match bh.kind {
-        JeqImm | JneImm | JsetImm => 0,
-        JeqReg | JneReg => 1,
+    let combo = matches!(&bh.dst_value, Expr::ByteCombo(_));
+    match (&bh.kind, bh.taken) {
+        (JeqImm, true) | (JneImm, false) | (JeqReg, true) | (JneReg, false) =>
+            if combo { 0 } else { 1 },
+        (JeqImm, false) | (JneImm, true) | (JeqReg, false) | (JneReg, true) => 3,
         _ => 2,
     }
 }
@@ -3834,36 +3940,123 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
         let bh = &state.branch_hyps[i];
         // Already satisfied by the committed (partial) assignment — e.g. a
         // value pinned by an earlier branch already lands on the right side
-        // of this comparison. No re-steering (which `solve_expr` would
-        // reject on an assigned variable).
+        // of this comparison.
         if eval_branch(bh, &env) == Some(true) { continue; }
+        // NON-COMMITTING zero-fill probe — DISEQUALITIES only. Does the `≠`
+        // hold if its still-free cells were 0? (The common case for a
+        // byte-combo `≠ 1` whose discriminant byte is pinned nonzero.) If so,
+        // leave those cells FREE — committing them to 0 here would block a
+        // later `bN ≠ 0` on the same cell. The final zero-fill + verify
+        // confirms it. (Inequalities are NOT probed: they define a value
+        // RANGE, so they must COMMIT a value in range — a free cell, later
+        // pinned by a `≠`, could land outside it.)
+        if branch_priority(bh) == 3 {
+            let mut bvars = Vec::new();
+            expr_vars(&bh.dst_value, &mut bvars);
+            if let Some(s) = &bh.src_value { expr_vars(s, &mut bvars); }
+            let mut probe = env.clone();
+            for v in &bvars { probe.entry(v.clone()).or_insert(0); }
+            if eval_branch(bh, &probe) == Some(true) { continue; }
+        }
+        // Steer via candidates (assigns the relevant free cells). Try both
+        // solve orders: src-first unlocks a compound dst whose free sub-cell
+        // is the src (`wrapAdd d40 d38 ≥ d40` — pin d40 via src, then d38),
+        // dst-first the symmetric case.
         let cands = branch_candidates(bh, &env);
-        let mut satisfied = false;
-        for (dt, st) in cands {
-            let mut trial = env.clone();
-            let ok_d = solve_expr(&bh.dst_value, dt, &mut trial);
-            let ok_s = match (&bh.src_value, st) {
-                (Some(s), Some(t)) => solve_expr(s, t, &mut trial),
-                _ => true,
-            };
-            if !(ok_d && ok_s) { continue; }
-            // After steering, this branch's variables are assigned, so
-            // `eval_branch` is decisive.
-            if eval_branch(bh, &trial) == Some(true) {
-                env = trial;
-                satisfied = true;
-                break;
+        'cand: for (dt, st) in cands {
+            for src_first in [false, true] {
+                let mut trial = env.clone();
+                let solve_src = |tr: &mut std::collections::BTreeMap<String, u64>| {
+                    match (&bh.src_value, st) {
+                        (Some(s), Some(t)) => solve_expr(s, t, tr),
+                        _ => true,
+                    }
+                };
+                let ok = if src_first {
+                    solve_src(&mut trial) && solve_expr(&bh.dst_value, dt, &mut trial)
+                } else {
+                    solve_expr(&bh.dst_value, dt, &mut trial) && solve_src(&mut trial)
+                };
+                if ok && eval_branch(bh, &trial) == Some(true) {
+                    env = trial;
+                    break 'cand;
+                }
             }
         }
-        if !satisfied { return None; }   // skip: cannot steer this branch
+        // If not steered here (its cell was pinned by an earlier constraint it
+        // shares), the equality-class repair pass + final verify below handle
+        // it — no fail-hard.
     }
 
     // Zero-fill remaining theorem variables.
     for v in vars { env.entry(v.clone()).or_insert(0); }
 
+    // Repair pass over EQUALITY CLASSES. The greedy pass satisfies each
+    // constraint in isolation, so it mis-handles (a) a single cell with
+    // several constraints (`≤ 2 ∧ ≠ 2 ∧ ≠ 0` ⇒ must be 1) and (b) a cell
+    // equality `a = b` where `a` is constrained elsewhere (so both need that
+    // value). Union reg-equalities into classes, then brute-force ONE shared
+    // value per class over a small pool, requiring every branch internal to
+    // the class (all its cells in the class) to hold jointly.
+    {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut allvars: Vec<String> = Vec::new();
+        for bh in &state.branch_hyps {
+            expr_vars(&bh.dst_value, &mut allvars);
+            if let Some(s) = &bh.src_value { expr_vars(s, &mut allvars); }
+        }
+        allvars.sort(); allvars.dedup();
+        let mut parent: BTreeMap<String, String> = BTreeMap::new();
+        for v in &allvars { parent.insert(v.clone(), v.clone()); }
+        for bh in &state.branch_hyps {
+            let is_eq = matches!((&bh.kind, bh.taken),
+                (BranchKind::JeqReg, true) | (BranchKind::JneReg, false));
+            if !is_eq { continue; }
+            let mut dv = Vec::new(); expr_vars(&bh.dst_value, &mut dv);
+            let mut sv = Vec::new();
+            if let Some(s) = &bh.src_value { expr_vars(s, &mut sv); }
+            if dv.len() == 1 && sv.len() == 1 {
+                let ra = uf_find(&mut parent, &dv[0]);
+                let rb = uf_find(&mut parent, &sv[0]);
+                if ra != rb { parent.insert(ra, rb); }
+            }
+        }
+        let mut classes: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for v in &allvars { let r = uf_find(&mut parent, v); classes.entry(r).or_default().push(v.clone()); }
+        let mut pool: Vec<u64> = (0u64..=256).collect();
+        for bh in &state.branch_hyps {
+            let im = bh.imm as u64;
+            pool.push(im); pool.push(im.wrapping_add(1)); pool.push(im.wrapping_sub(1));
+        }
+        for members in classes.values() {
+            let mset: BTreeSet<&String> = members.iter().collect();
+            let internal: Vec<usize> = state.branch_hyps.iter().enumerate().filter_map(|(i, bh)| {
+                let mut vs = Vec::new();
+                expr_vars(&bh.dst_value, &mut vs);
+                if let Some(s) = &bh.src_value { expr_vars(s, &mut vs); }
+                if !vs.is_empty() && vs.iter().all(|v| mset.contains(v)) { Some(i) } else { None }
+            }).collect();
+            if internal.is_empty() { continue; }
+            let holds = |e: &BTreeMap<String, u64>| internal.iter().all(|&i|
+                eval_branch(&state.branch_hyps[i], e) == Some(true));
+            if holds(&env) { continue; }
+            for &cand in &pool {
+                let mut trial = env.clone();
+                for m in members { trial.insert(m.clone(), cand); }
+                if holds(&trial) { env = trial; break; }
+            }
+        }
+    }
+
     // Final verification of EVERY branch at the complete assignment.
-    for bh in &state.branch_hyps {
-        if eval_branch(bh, &env) != Some(true) { return None; }
+    for (i, bh) in state.branch_hyps.iter().enumerate() {
+        if eval_branch(bh, &env) != Some(true) {
+            if std::env::var("QEDLIFT_DEBUG_BRANCH").is_ok() {
+                eprintln!("BRANCH-WITNESS skip: final verify failed h_branch{} : {}",
+                    i, bh.lean_hyp());
+            }
+            return None;
+        }
     }
 
     // Emit: substitute the assignment into each hypothesis, conjoin, and
