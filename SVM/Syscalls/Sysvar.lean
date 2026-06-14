@@ -42,12 +42,19 @@ def cu : Nat := 100
 @[simp] def cuFees           : Nat := cu + 8
 @[simp] def cuEpochRewards   : Nat := cu + 81
 
-/-- Build a state where `n` bytes at `*r1` are zeroed and r0 := 0. -/
+/-- Build a state where `n` bytes at `*r1` are zeroed and r0 := 0.
+
+    H6: agave translates the fixed-size output buffer (`translate_type_mut`,
+    e.g. `Clock`/`EpochRewards`/…) before filling it, so an out-of-region or
+    non-writable `*r1` traps with `AccessViolation`. `guardWrite r1 n` reproduces
+    that. A plain `if`, so it unfolds + `repeat' split`s in the `Bounded` sweeps
+    (the MemOps pattern); `exec` stays `@[simp]`, no de-simp. -/
 @[simp] def zeroFillR1 (s : State) (n : Nat) : State :=
   let outA := s.regs.r1
-  let mem' : Memory.Mem := fun a =>
-    if a ≥ outA ∧ a - outA < n then 0 else s.mem a
-  { s with regs := s.regs.set .r0 0, mem := mem' }
+  s.guardWrite outA n fun s =>
+    let mem' : Memory.Mem := fun a =>
+      if a ≥ outA ∧ a - outA < n then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
 
 /-- `sol_get_clock_sysvar`: 40 bytes
     (slot, epoch_start_ts, epoch, leader_epoch, unix_ts). -/
@@ -135,6 +142,22 @@ def cu : Nat := 100
 @[simp] def execFees           (s : State) : State := zeroFillR1 s 8
 /-- `sol_get_epoch_rewards_sysvar`: 81 bytes (active = false). -/
 @[simp] def execEpochRewards   (s : State) : State := zeroFillR1 s 81
+
+/-- Fault direction for the `zeroFillR1`-based sysvar getters (clock /
+    last_restart_slot / fees / epoch_rewards): when the fixed `n`-byte output
+    buffer at `*r1` is not within a WRITABLE region (and `n ≠ 0`), the syscall
+    traps with a typed access violation. The contrapositive of the `guardWrite`;
+    the H6 model-side boundary pin (replaces the now-false unconditional
+    success triples), complementing the cross-engine `oob_clock_sysvar.so`. -/
+theorem zeroFillR1_faults_oob (s : State) (n : Nat) (hne : n ≠ 0)
+    (hoob : s.regions.containsWritable s.regs.r1 n = false) :
+    (zeroFillR1 s n).vmError = some .accessViolation := by
+  simp only [zeroFillR1, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 /-- `sol_get_epoch_stake`: r1 = `*const Pubkey` vote account.
     Returns 0 in r0 (no stake modeled). -/

@@ -194,6 +194,11 @@ const OOB_SHA256_INPUT_SO: &[u8] = include_bytes!("fixtures/oob_sha256_input.so"
 /// `Poseidon.exec`'s `guardedCommit` routes the input through
 /// `guardRead`/`guardSlices` and faults. Source in `oob_poseidon_input_src/`.
 const OOB_POSEIDON_INPUT_SO: &[u8] = include_bytes!("fixtures/oob_poseidon_input.so");
+/// Calls `sol_get_clock_sysvar` with a 40-byte output buffer 256 MiB out of
+/// region. agave translates the output (`translate_type_mut::<Clock>`) and
+/// traps; post-fix (stage 4a) `Sysvar.execClock` (via `zeroFillR1`) routes the
+/// write through `guardWrite` and faults. Source in `oob_clock_sysvar_src/`.
+const OOB_CLOCK_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_clock_sysvar.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2729,6 +2734,38 @@ fn oob_poseidon_input_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_poseidon input, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_poseidon_input");
+}
+
+/// Audit H6 (syscall memory translation, sysvar family / fixed-size getters,
+/// stage 4a). The program calls `sol_get_clock_sysvar` with a 40-byte output
+/// buffer 256 MiB out of region. agave's `translate_type_mut::<Clock>` traps
+/// with `AccessViolation`; post-fix `Sysvar.execClock` (via `zeroFillR1`)
+/// `guardWrite` on `[r1, r1 + 40)` VM-faults. Both engines fail alike.
+#[test]
+fn oob_clock_sysvar_fails_on_both() {
+    let program_id = pid(245);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_CLOCK_SYSVAR_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_clock_sysvar");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_CLOCK_SYSVAR_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_get_clock_sysvar, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_clock_sysvar");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does
