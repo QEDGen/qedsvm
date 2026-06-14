@@ -219,4 +219,77 @@ theorem cpiCallNextState_exitCode (registry : Nat → Option ByteArray)
   repeat' split
   all_goals rfl
 
+/-! ## `commitCallee` / `buildCalleeVM` boundedness (Stage B wrapper supports)
+
+With `runCallee` factored into the top-level `buildCalleeVM` (pre-build) and
+`commitCallee` (write-back) (Runner.lean), the cross-CPI `hcallee` obligation
+reduces to named facts about those two: the committed caller memory is
+byte-bounded, the surfaced exit code / return-data stay within bounds (from the
+sub-VM's own boundedness), and the fresh sub-state is `StateBounded`. -/
+
+/-- A `List.foldl` whose step preserves byte-boundedness preserves it overall —
+    the generic core behind the CPI write-back fold. -/
+theorem foldl_mem_lt {α : Type} (f : Mem → α → Mem) (l : List α) (m0 : Mem)
+    (hf : ∀ (m : Mem) (x : α), (∀ a, m a < 256) → ∀ a, f m x a < 256)
+    (h0 : ∀ a, m0 a < 256) : ∀ a, (l.foldl f m0) a < 256 := by
+  induction l generalizing m0 with
+  | nil => exact h0
+  | cons x rest ih => exact ih (f m0 x) (hf m0 x h0)
+
+/-- The CPI write-back (`commitCallee`) preserves L3 byte-boundedness: a realloc
+    / read-only violation returns the caller's own memory unchanged; the honest
+    path folds writable accounts back via `loadBytesAt` + `writeU64` (both
+    byte-reducing), so the result is byte-bounded whenever `callerMem` is. -/
+theorem commitCallee_mem_lt (callerMem : Mem) (slots : List Runner.AcctSlot)
+    (subFinal : State) (fr : Nat) (h : ∀ a, callerMem a < 256) :
+    ∀ a, (Runner.commitCallee callerMem slots subFinal fr).2.1 a < 256 := by
+  unfold Runner.commitCallee
+  extract_lets roV reV nwm
+  have hnwm : ∀ a, nwm a < 256 := by
+    apply foldl_mem_lt _ _ _ ?_ h
+    intro m slot hm a
+    dsimp only
+    split
+    · exact hm a
+    · split
+      · exact hm a
+      · exact loadBytesAt_lt _ _ _
+          (writeU64_lt _ _ _ (writeU64_lt _ _ _ (writeU64_lt _ _ _
+            (loadBytesAt_lt _ _ _ hm)))) a
+  intro a
+  split
+  · exact h a
+  · split
+    · exact h a
+    · exact hnwm a
+
+/-- `commitCallee` keeps the sub-VM's return-data buffer (the violation
+    branches only rewrite exitCode/vmError; the honest branch passes `subFinal`
+    through). So the agave 1024-byte cap carries. -/
+theorem commitCallee_returnData (callerMem : Mem) (slots : List Runner.AcctSlot)
+    (subFinal : State) (fr : Nat) :
+    (Runner.commitCallee callerMem slots subFinal fr).1.returnData =
+      subFinal.returnData := by
+  unfold Runner.commitCallee
+  extract_lets
+  repeat' split
+  all_goals rfl
+
+/-- `commitCallee`'s surfaced exit code is a u64 whenever the sub-VM's is: a
+    violation surfaces a fixed `ERR_*` sentinel (`< 2^64` by decide), the honest
+    path surfaces `subFinal.exitCode`. -/
+theorem commitCallee_exitCode_lt (callerMem : Mem) (slots : List Runner.AcctSlot)
+    (subFinal : State) (fr : Nat) (h : subFinal.exitCode.getD 1 < U64_MODULUS) :
+    (Runner.commitCallee callerMem slots subFinal fr).1.exitCode.getD 1
+      < U64_MODULUS := by
+  unfold Runner.commitCallee
+  extract_lets
+  split
+  · show ERR_INVALID_REALLOC < U64_MODULUS
+    decide
+  · split
+    · show ERR_READONLY_MODIFIED < U64_MODULUS
+      decide
+    · exact h
+
 end SVM.SBPF
