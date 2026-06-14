@@ -33,3 +33,4 @@ import SVM.SBPF.Elf
 import SVM.SBPF.Runner
 import SVM.SBPF.Bounded
 import SVM.SBPF.RunnerBridge
+import SVM.SBPF.BoundedCpi
