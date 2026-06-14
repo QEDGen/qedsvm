@@ -176,6 +176,12 @@ const OOB_LOG_SO: &[u8] = include_bytes!("fixtures/oob_log.so");
 /// through `guardRead` (and slices through `guardSlices`) and faults.
 /// Source in `oob_log_data_src/`.
 const OOB_LOG_DATA_SO: &[u8] = include_bytes!("fixtures/oob_log_data.so");
+/// Calls `sol_sha256` with a 0-slice input and a 32-byte output buffer
+/// 256 MiB past the input pointer. agave's `SyscallSha256` translates the
+/// output (`translate_slice_mut`, 32 bytes) before the input, so the
+/// out-of-region store traps; post-fix (stage 3a) `Sha256.exec` routes the
+/// output through `guardWrite` and faults. Source in `oob_sha256_src/`.
+const OOB_SHA256_SO: &[u8] = include_bytes!("fixtures/oob_sha256.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2611,6 +2617,40 @@ fn oob_log_data_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_log_data, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_data");
+}
+
+/// Audit H6 (syscall memory translation, hashing family, stage 3a /
+/// output-write guard). The program calls `sol_sha256` with a 0-slice input
+/// and a 32-byte output buffer 256 MiB past the input pointer. agave
+/// translates the output via `translate_slice_mut::<u8>(out, 32)` BEFORE the
+/// (empty) input, so the out-of-region store traps with `AccessViolation`;
+/// post-fix `Sha256.exec`'s `guardWrite` on `[r3, r3 + 32)` VM-faults.
+/// Both engines must fail with the same observable outcome.
+#[test]
+fn oob_sha256_output_fails_on_both() {
+    let program_id = pid(242);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_SHA256_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_sha256");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_SHA256_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_sha256 output, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does

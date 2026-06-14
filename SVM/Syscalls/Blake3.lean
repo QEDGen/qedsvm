@@ -30,10 +30,13 @@ Same `SliceDesc`-list ABI and base cost as `sol_sha256`. -/
 
 @[simp] def cu (s : State) : Nat := 85 + hashSliceCost s.mem s.regs.r1 s.regs.r2
 
+/-- H6 (stage 3a): route the fixed 32-byte output `[r3, r3+32)` through
+    `guardWrite` (agave's `translate_slice_mut`, checked before hashing). -/
 @[simp] def exec (s : State) : State :=
   let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)
-  { s with regs := s.regs.set .r0 0
-           mem  := writeBytes s.mem s.regs.r3 32 digest }
+  s.guardWrite s.regs.r3 32 fun s =>
+    { s with regs := s.regs.set .r0 0
+             mem  := writeBytes s.mem s.regs.r3 32 digest }
 
 end Blake3
 end SVM.SBPF

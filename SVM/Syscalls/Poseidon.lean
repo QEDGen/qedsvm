@@ -51,11 +51,17 @@ r4 = n (1..=12), r5 = `*mut [u8; 32]`. r0 = 0 success / 1 failure. -/
   let n := s.regs.r4
   (61 * n + 542) * n
 
+/-- H6 (stage 3a): route the fixed 32-byte output `[r5, r5+32)` through
+    `guardWrite` (agave's `translate_slice_mut`, checked before hashing) —
+    a non-writable / out-of-region output traps even on the failure path,
+    since agave translates the output buffer before computing. The inner
+    `commitOptional` still handles the some/none (r0:=0 write / r0:=1). -/
 @[simp] def exec (s : State) : State :=
   let result := hash s.regs.r1.toUInt8 s.regs.r2.toUInt8
                      (readSlices s.mem s.regs.r3 s.regs.r4)
                      s.regs.r4.toUInt64
-  commitOptional s s.regs.r5 32 result
+  s.guardWrite s.regs.r5 32 fun s =>
+    commitOptional s s.regs.r5 32 result
 
 end Poseidon
 end SVM.SBPF

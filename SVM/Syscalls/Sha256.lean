@@ -220,11 +220,20 @@ pure-Lean `hash`, and writes the 32-byte big-endian digest to `*r3`.
 
     `@[simp]` so the original `execSyscall_preserves_r10` proof,
     which case-splits on `Syscall` and rewrites with
-    `simp [execSyscall]`, still discharges the sha256 arm. -/
+    `simp [execSyscall]`, still discharges the sha256 arm.
+
+    H6 (stage 3a): the fixed 32-byte output `[r3, r3+32)` is a
+    `translate_slice_mut` in agave, checked BEFORE the hash runs — route it
+    through `guardWrite` so an out-of-region (or non-writable) output traps
+    with a typed access violation instead of writing arbitrary memory.
+    Like the `MemOps` guards, the `if` unfolds + `repeat' split`s in the
+    `Bounded` sweeps, so `exec` stays `@[simp]` and needs no new closers.
+    (Input descriptor-array / per-slice region checks come in stage 3b.) -/
 @[simp] def exec (s : State) : State :=
   let digest := hash (readSlices s.mem s.regs.r1 s.regs.r2)
-  { s with regs := s.regs.set .r0 0
-           mem  := writeBytes s.mem s.regs.r3 32 digest }
+  s.guardWrite s.regs.r3 32 fun s =>
+    { s with regs := s.regs.set .r0 0
+             mem  := writeBytes s.mem s.regs.r3 32 digest }
 
 end Sha256
 end SVM.SBPF
