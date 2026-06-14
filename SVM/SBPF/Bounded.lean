@@ -233,6 +233,61 @@ theorem writeBytes_lt (out len : Nat) (bs : ByteArray) (m : Mem)
   unfold writeBytes
   exact foldl_writeU8_lt _ _ _ m h
 
+/-- `hashWrite`'s `mem` is either `s.mem` (a guard faulted) or
+    `writeBytes s.mem outPtr outLen digest` (success); both are byte-bounded
+    when `s.mem` is. The `mem_lt` sweep closes every hash arm with this (the
+    recursive `guardSlices` stays folded). -/
+theorem hashWrite_mem_lt (s : State) (outPtr outLen inPtr inN : Nat)
+    (digest : ByteArray) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (s.hashWrite outPtr outLen inPtr inN digest).mem a < 256 := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_mem_lt_of_k s _ _ _ a (h a) ?_
+  refine State.guardRead_mem_lt_of_k s _ _ _ a (h a) ?_
+  refine State.guardSlices_mem_lt_of_k s _ _ _ a (h a) ?_
+  exact writeBytes_lt _ _ _ _ h a
+
+/-! Per-hash `regs_lt` / `mem_lt` closers. Each unfolds its `exec` to the
+folded `hashWrite` and applies the generic bound in a SMALL context. The
+sweeps then close the hash arm by a cheap head-match (`exec` and its digest
+stay folded — no metavars): applying the 5-metavar generic `hashWrite_*`
+directly inside the 8M-heartbeat `mem_lt` sweep cost ~160s (the sha256
+pure-Lean digest worst); these wrappers move that cost out, once each. -/
+theorem Sha256_exec_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (Sha256.exec s).regs := by
+  simp only [Sha256.exec]; exact State.hashWrite_regs_of_k s _ _ _ _ _ h0 hk
+
+theorem Sha256_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (Sha256.exec s).mem a < 256 := by
+  simp only [Sha256.exec]; exact hashWrite_mem_lt s _ _ _ _ _ h a
+
+theorem Sha512_exec_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (Sha512.exec s).regs := by
+  simp only [Sha512.exec]; exact State.hashWrite_regs_of_k s _ _ _ _ _ h0 hk
+
+theorem Sha512_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (Sha512.exec s).mem a < 256 := by
+  simp only [Sha512.exec]; exact hashWrite_mem_lt s _ _ _ _ _ h a
+
+theorem Keccak256_exec_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (Keccak256.exec s).regs := by
+  simp only [Keccak256.exec]; exact State.hashWrite_regs_of_k s _ _ _ _ _ h0 hk
+
+theorem Keccak256_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (Keccak256.exec s).mem a < 256 := by
+  simp only [Keccak256.exec]; exact hashWrite_mem_lt s _ _ _ _ _ h a
+
+theorem Blake3_exec_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (Blake3.exec s).regs := by
+  simp only [Blake3.exec]; exact State.hashWrite_regs_of_k s _ _ _ _ _ h0 hk
+
+theorem Blake3_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (Blake3.exec s).mem a < 256 := by
+  simp only [Blake3.exec]; exact hashWrite_mem_lt s _ _ _ _ _ h a
+
 /-- Width-dispatched stores preserve byte-boundedness: every width is a
     chain of `Mem.put`s. -/
 theorem writeByWidth_lt (m : Mem) (addr val : Nat) (w : Width)
@@ -415,7 +470,6 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
           Logging.execLogComputeUnits,
-          Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,
           Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
@@ -439,6 +493,17 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       -- not unfold under `simp only`): close it via the descriptor-walk
       -- register lemma — the result is `s.regs` (fault) or `set .r0 0`.
       | exact Logging.execLogData_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+      -- hash family (sha256/512/keccak/blake3): kept OUT of the roster (digest
+      -- term stays folded); close each via its per-hash regs lemma — a cheap
+      -- head-match on the folded `exec`, no metavars in this 1M-heartbeat sweep.
+      | exact Sha256_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+      | exact Sha512_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+      | exact Keccak256_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+      | exact Blake3_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r))
 
 set_option maxHeartbeats 8000000 in
@@ -457,7 +522,6 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
           Logging.execLogComputeUnits,
-          Sha256.exec, Sha512.exec, Keccak256.exec, Blake3.exec,
           Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
@@ -478,6 +542,12 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       -- `sol_log_data` stays folded (recursive `guardSlices`): it never
       -- writes memory, so rewrite `(execLogData s).mem` to `s.mem`.
       | (rw [Logging.execLogData_mem]; exact hb.mem_lt a)
+      -- hash family (kept out of the roster, see regs_lt): per-hash closer,
+      -- a cheap head-match on the folded `exec` (no metavars in this sweep).
+      | exact Sha256_exec_mem_lt s hb.mem_lt a
+      | exact Sha512_exec_mem_lt s hb.mem_lt a
+      | exact Keccak256_exec_mem_lt s hb.mem_lt a
+      | exact Blake3_exec_mem_lt s hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt _
       | exact writeByWidth_lt _ _ _ .word hb.mem_lt a

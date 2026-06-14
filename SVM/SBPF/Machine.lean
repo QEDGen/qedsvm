@@ -476,6 +476,54 @@ theorem State.guardSlices_proj_eq_of_k {α} (f : State → α) (s : State)
   · exact hfault
   · exact hk
 
+/-- `guardWrite` analog of `guardRead_proj_eq_of_k` (the output-write guard the
+    hash family checks first). -/
+theorem State.guardWrite_proj_eq_of_k {α} (f : State → α) (s : State)
+    (addr len : Nat) (k : State → State)
+    (hfault : f s.accessFault = f s) (hk : f (k s) = f s) :
+    f (s.guardWrite addr len k) = f s := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · exact hfault
+
+/-- `guardWrite` analog of `guardRead_regs_of_k`. -/
+theorem State.guardWrite_regs_of_k {motive : RegFile → Prop} (s : State)
+    (addr len : Nat) (k : State → State)
+    (h0 : motive s.regs) (hk : motive (k s).regs) :
+    motive (s.guardWrite addr len k).regs := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · exact h0
+
+/-- Memory-bound propagation through a guard: a per-byte bound surviving both
+    the fault state (`accessFault` keeps `s.mem`) and the continuation survives
+    the whole guard. The bound counterpart of `guardRead_mem_eq_of_k`, used by
+    the `Bounded` `mem_lt` sweep for guarded mem-writing syscalls (the hash
+    family writes a digest, so its `mem` is NOT preserved — only bounded). -/
+theorem State.guardRead_mem_lt_of_k (s : State) (addr len : Nat) (k : State → State)
+    (a : Nat) (h0 : s.mem a < 256) (hk : (k s).mem a < 256) :
+    (s.guardRead addr len k).mem a < 256 := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · exact h0
+
+/-- `guardWrite` analog of `guardRead_mem_lt_of_k`. -/
+theorem State.guardWrite_mem_lt_of_k (s : State) (addr len : Nat) (k : State → State)
+    (a : Nat) (h0 : s.mem a < 256) (hk : (k s).mem a < 256) :
+    (s.guardWrite addr len k).mem a < 256 := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · exact h0
+
+/-- The descriptor-walk analog: a per-byte mem bound surviving a miss and the
+    continuation survives the whole walk. -/
+theorem State.guardSlices_mem_lt_of_k (s : State) (descsAddr count : Nat)
+    (k : State → State) (a : Nat) (h0 : s.mem a < 256) (hk : (k s).mem a < 256) :
+    (s.guardSlices descsAddr count k).mem a < 256 := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · exact h0
+  · exact hk
+
 /-! ## Wrapping 64-bit arithmetic -/
 
 @[simp] def wrapAdd (a b : Nat) : Nat := (a + b) % U64_MODULUS
@@ -686,6 +734,100 @@ theorem writeBytes_read_inside (mem : Memory.Mem) (out len i : Nat) (bs : ByteAr
     · rw [Memory.Mem.read_put_other _ _ _ _ (by omega)]
       apply ih
       omega
+
+/-- The agave hash-syscall write envelope (sha256 / sha512 / keccak256 /
+    blake3): check the fixed-size OUTPUT region FIRST (`translate_slice_mut`,
+    agave's order), then the input descriptor array, then each input slice; on
+    success write `digest` to `[outPtr, outPtr+outLen)` and set `r0 := 0`. A
+    guard miss at any layer traps with a typed access violation.
+
+    Deliberately *not* `@[simp]`: the recursive `guardSlices` walk inside must
+    stay folded so the blanket `Bounded`/`Execute` syscall sweeps don't choke
+    on it (the `sol_log_data` lesson). The `@[simp]` field-preservation lemmas
+    below close those sweeps with `hashWrite` folded; `regs_lt`/`mem_lt` use the
+    dedicated `hashWrite_regs_of_k` / `hashWrite_mem_lt` closers.
+
+    `@[irreducible]`: the `Bounded` `regs_lt`/`mem_lt` sweeps close the hash arms
+    by an `exact hashWrite_{regs_of_k,mem_lt} …` inside a `first` block that is
+    also tried (and must fail) on every other syscall's fall-through leaf.
+    Without irreducibility, `exact` whnf-unfolds this `def` (5 metavars) against
+    big non-hash goals to discover the head mismatch — ~160s across the sweep.
+    Irreducible ⇒ the head stays `hashWrite`, so the match succeeds on hash arms
+    and fails instantly elsewhere. simp still unfolds it via its equation lemma
+    (the field lemmas below), and the compiler still runs it (diff tests). -/
+@[irreducible] def State.hashWrite (s : State) (outPtr outLen inPtr inN : Nat)
+    (digest : ByteArray) : State :=
+  s.guardWrite outPtr outLen fun s =>
+    s.guardRead inPtr (inN * 16) fun s =>
+      s.guardSlices inPtr inN fun s =>
+        { s with regs := s.regs.set .r0 0
+                 mem  := writeBytes s.mem outPtr outLen digest }
+
+/-- `hashWrite` only rewrites `regs` (to set `r0`) and `mem` (the digest write);
+    every other `State` field is preserved on the fault branch (`accessFault`)
+    and the success branch. `@[simp]` so the blanket sweeps close every hash arm
+    with `hashWrite` left folded (one set of lemmas covers all four hashes). -/
+@[simp] theorem State.hashWrite_callStack (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).callStack = s.callStack := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.callStack) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_regions (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).regions = s.regions := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.regions) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_cuBudget (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).cuBudget = s.cuBudget := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_heapNext (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).heapNext = s.heapNext := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.heapNext) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_returnData (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).returnData = s.returnData := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.returnData) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_r10 (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).regs.r10 = s.regs.r10 := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  exact RegFile.set_preserves_r10 s.regs .r0 0
+
+/-- `hashWrite`'s `regs` is either `s.regs` (a guard faulted) or `s.regs.set .r0 0`
+    (success) — a register predicate surviving both survives `hashWrite`. The
+    `Bounded` `regs_lt` closer for the hash arms. -/
+theorem State.hashWrite_regs_of_k {motive : RegFile → Prop} (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray)
+    (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
+    motive (s.hashWrite outPtr outLen inPtr inN digest).regs := by
+  simp only [State.hashWrite]
+  apply State.guardWrite_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardRead_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardSlices_regs_of_k (motive := motive) (h0 := h0)
+  exact hk
 
 /-- Commit an `Option ByteArray` result to state: success writes the
     bytes to `*out` (sized `outSize`) and sets `r0 := 0`; failure sets
