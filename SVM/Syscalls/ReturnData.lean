@@ -71,13 +71,37 @@ theorem execSet_faults_oob (s : State)
   if copyLen = 0 then
     { s with regs := s.regs.set .r0 dataLen }
   else
-    let mem' : Memory.Mem := fun a =>
-      if a ≥ outA ∧ a - outA < copyLen then
-        (s.returnData.get! (a - outA)).toNat
-      else if a ≥ pkA ∧ a - pkA < 32 then
-        (s.returnDataProgId.get! (a - pkA)).toNat
-      else s.mem a
-    { s with regs := s.regs.set .r0 dataLen, mem := mem' }
+    -- H6: when copyLen>0 agave translates BOTH the return-data output
+    -- `[r1, r1+copyLen)` and the 32-byte program-id output `[r3, r3+32)`
+    -- (Store), so an out-of-region (or non-writable) output traps.
+    s.guardWrite outA copyLen fun s =>
+    s.guardWrite pkA 32 fun s =>
+      let mem' : Memory.Mem := fun a =>
+        if a ≥ outA ∧ a - outA < copyLen then
+          (s.returnData.get! (a - outA)).toNat
+        else if a ≥ pkA ∧ a - pkA < 32 then
+          (s.returnDataProgId.get! (a - pkA)).toNat
+        else s.mem a
+      { s with regs := s.regs.set .r0 dataLen, mem := mem' }
+
+/-- Fault direction for `sol_get_return_data` (replaces the now-false success
+    triple): a non-empty copy whose return-data output buffer `[r1, r1+copyLen)`
+    is not covered by a WRITABLE region traps with a typed access violation.
+    `copyLen = min(dataLen, maxLen)` is the agave copy length; the first
+    `guardWrite` (the data buffer) fires before the 32-byte program-id write,
+    so an out-of-region data output is enough to trap. -/
+theorem execGet_faults_oob (s : State)
+    (hne : (if s.returnData.size ≤ s.regs.r2 then s.returnData.size else s.regs.r2) ≠ 0)
+    (hoob : s.regions.containsWritable s.regs.r1
+              (if s.returnData.size ≤ s.regs.r2 then s.returnData.size else s.regs.r2)
+            = false) :
+    (execGet s).vmError = some .accessViolation := by
+  simp only [execGet, State.guardWrite]
+  rw [if_neg hne, if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 end ReturnData
 end SVM.SBPF

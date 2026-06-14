@@ -210,6 +210,12 @@ const OOB_SET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_set_return_da
 /// `Sysvar.execRent` (de-simp'd) routes the write through `guardWrite` and
 /// faults. Source in `oob_rent_sysvar_src/`.
 const OOB_RENT_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_rent_sysvar.so");
+/// Seeds 8 bytes of return data, then calls `sol_get_return_data` with a
+/// return-data output buffer 256 MiB out of region. agave's
+/// `translate_slice_mut::<u8>` traps; post-fix (stage 4d) `ReturnData.execGet`
+/// routes both output writes through `guardWrite` and faults. Source in
+/// `oob_get_return_data_src/`.
+const OOB_GET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_get_return_data.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2842,6 +2848,40 @@ fn oob_rent_sysvar_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_get_rent_sysvar, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_rent_sysvar");
+}
+
+/// Audit H6 (syscall memory translation, return-data family / output write
+/// guard, stage 4d). The program seeds 8 bytes of return data, then calls
+/// `sol_get_return_data` with a return-data output buffer 256 MiB out of
+/// region. agave computes `length = min(max_len, data_len) = 8 != 0`, then
+/// `translate_slice_mut::<u8>(out, 8)` traps with `AccessViolation`; post-fix
+/// `ReturnData.execGet`'s `guardWrite` on `[r1, r1 + copyLen)` VM-faults. Both
+/// engines fail alike.
+#[test]
+fn oob_get_return_data_fails_on_both() {
+    let program_id = pid(248);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_GET_RETURN_DATA_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_get_return_data");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_GET_RETURN_DATA_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_get_return_data, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_get_return_data");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does
