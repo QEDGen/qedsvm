@@ -973,6 +973,87 @@ theorem cuTripleAbortsWithin_mono_nSteps {nSteps nSteps' nCu : Nat}
   obtain ⟨k, hk, hex', hcu⟩ := h R hR fetch hcr s hPR hpc hex (by omega)
   exact ⟨k, Nat.le_trans hk hle, hex', by omega⟩
 
+/-! ## Typed-fault triples (`cuTripleFaultsWithin`)
+
+`cuTripleAbortsWithin` records only the `exitCode` sentinel of the halt.
+After L1 every fault site ALSO sets `State.vmError := some e` (the typed
+channel that distinguishes a real VM fault from a program-returned sentinel
+of the same numeric value). `cuTripleFaultsWithin` strengthens the abort
+triple to carry that typed fault: the post pins `exitCode = some e.toSentinel`
+AND `vmError = some e`. It forgets back to `cuTripleAbortsWithin` via
+`cuTripleFaultsWithin_toAborts`, so every existing abort-consumer still
+composes. -/
+def cuTripleFaultsWithin (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
+    (P : Assertion) (e : VmError) : Prop :=
+  ∀ (R : Assertion), R.pcFree →
+  ∀ (fetch : Nat → Option Insn), cr.SatisfiedBy fetch →
+  ∀ (s : State), (P ** R).holdsFor s → s.pc = entry → s.exitCode = none →
+    s.cuConsumed + nSteps + nCu ≤ s.cuBudget →
+    ∃ k, k ≤ nSteps ∧
+      (executeFn fetch s k).exitCode = some e.toSentinel ∧
+      (executeFn fetch s k).vmError = some e ∧
+      (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu
+
+/-- A typed-fault triple forgets to an aborting triple at the fault's
+    sentinel (`e.toSentinel`): drop the `vmError` conjunct. Lets the
+    stronger faulting specs back-fill the existing `cuTripleAbortsWithin`
+    consumers without re-proving them. -/
+theorem cuTripleFaultsWithin_toAborts {nSteps nCu : Nat} {entry : Nat}
+    {cr : CodeReq} {P : Assertion} {e : VmError}
+    (h : cuTripleFaultsWithin nSteps nCu entry cr P e) :
+    cuTripleAbortsWithin nSteps nCu entry cr P e.toSentinel := by
+  intro R hR fetch hcr s hPR hpc hex hbud
+  obtain ⟨k, hk, hexit, _, hcu⟩ := h R hR fetch hcr s hPR hpc hex hbud
+  exact ⟨k, hk, hexit, hcu⟩
+
+/-- Rule of consequence (pre-weakening) for faulting triples. -/
+theorem cuTripleFaultsWithin_weaken {nSteps nCu : Nat} {entry : Nat}
+    {cr : CodeReq} {P P' : Assertion} {e : VmError}
+    (hpre : ∀ h, P' h → P h)
+    (h : cuTripleFaultsWithin nSteps nCu entry cr P e) :
+    cuTripleFaultsWithin nSteps nCu entry cr P' e := by
+  intro R hR fetch hcr s hP'R hpc hex hbud
+  have hPR : (P ** R).holdsFor s := by
+    obtain ⟨hp, hcompat, h1, h2, hd, hu, hP'1, hR2⟩ := hP'R
+    exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
+  exact h R hR fetch hcr s hPR hpc hex hbud
+
+/-- Monotonicity in the step bound for faulting triples. -/
+theorem cuTripleFaultsWithin_mono_nSteps {nSteps nSteps' nCu : Nat}
+    {entry : Nat} {cr : CodeReq} {P : Assertion} {e : VmError}
+    (hle : nSteps ≤ nSteps')
+    (h : cuTripleFaultsWithin nSteps nCu entry cr P e) :
+    cuTripleFaultsWithin nSteps' nCu entry cr P e := by
+  intro R hR fetch hcr s hPR hpc hex hbud
+  obtain ⟨k, hk, hexit, hvm, hcu⟩ := h R hR fetch hcr s hPR hpc hex (by omega)
+  exact ⟨k, Nat.le_trans hk hle, hexit, hvm, by omega⟩
+
+/-- Sequencing into a typed fault: a non-terminating triple `P { c₁ } Q`
+    chained with a faulting triple `Q { c₂ } faults e` yields a faulting
+    triple `P { c₁; c₂ } faults e`. The `vmError`-carrying analog of
+    `cuTripleAbortsWithin_seq_abort`. -/
+theorem cuTripleFaultsWithin_seq_fault {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
+    {cr1 cr2 : CodeReq}
+    (hd : cr1.Disjoint cr2)
+    {P Q : Assertion} {e : VmError}
+    (h1 : cuTripleWithin N1 M1 pc1 pc2 cr1 P Q)
+    (h2 : cuTripleFaultsWithin N2 M2 pc2 cr2 Q e) :
+    cuTripleFaultsWithin (N1 + N2) (M1 + M2) pc1 (cr1.union cr2) P e := by
+  intro F hF fetch hcr s hPF hpc hex hbud
+  have hcr1 := CodeReq.SatisfiedBy_of_union_left hcr
+  have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
+  obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
+    h1 F hF fetch hcr1 s hPF hpc hex (by omega)
+  have hbud_mid : (executeFn fetch s k1).cuConsumed + N2 + M2
+      ≤ (executeFn fetch s k1).cuBudget := by
+    rw [executeFn_preserves_cuBudget]; omega
+  obtain ⟨k2, hk2, hex_end, hvm_end, hcu2⟩ :=
+    h2 F hF fetch hcr2 (executeFn fetch s k1) hQF hpc_mid hex_mid hbud_mid
+  refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_, ?_, ?_⟩
+  · rw [executeFn_compose]; exact hex_end
+  · rw [executeFn_compose]; exact hvm_end
+  · rw [executeFn_compose]; omega
+
 /-- Sequencing into abort: a non-terminating triple `P { c₁ } Q` chained
     with an aborting triple `Q { c₂ } aborts` yields an aborting triple
     `P { c₁; c₂ } aborts`. Both bounds sum, code requirements

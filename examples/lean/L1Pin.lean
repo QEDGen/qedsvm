@@ -70,5 +70,6 @@ theorem toSentinel_invalidLength : VmError.invalidLength.toSentinel = ERR_INVALI
 theorem toSentinel_invalidAttribute : VmError.invalidAttribute.toSentinel = ERR_INVALID_ATTRIBUTE := rfl
 theorem toSentinel_badSeeds : VmError.badSeeds.toSentinel = ERR_BAD_SEEDS := rfl
 theorem toSentinel_readonlyModified : VmError.readonlyModified.toSentinel = ERR_READONLY_MODIFIED := rfl
+theorem toSentinel_invalidRealloc : VmError.invalidRealloc.toSentinel = ERR_INVALID_REALLOC := rfl
 
 end Examples.L1Pin

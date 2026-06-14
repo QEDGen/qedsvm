@@ -28,12 +28,12 @@ theorem therefore takes `s.callStack = []` as an extra hypothesis. -/
     `emp`: the spec owns no resources; the universally-quantified frame
     carries everything else through unobserved up to the point of
     abort. -/
-theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
+theorem call_abort_faults_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleAbortsWithin 1 nCu pc
+    cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .abort))
-      emp ERR_ABORT := by
+      emp .abort := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   -- emp pre: h1 = empty.
@@ -54,14 +54,29 @@ theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
         executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
   · rw [hexec]
-    -- post: exitCode = some ERR_ABORT
-    show (Abort.execAbort s).exitCode = some ERR_ABORT
+    -- post: exitCode = some (VmError.abort).toSentinel = some ERR_ABORT
+    show (Abort.execAbort s).exitCode = some VmError.abort.toSentinel
+    rfl
+  · rw [hexec]
+    -- post: the TYPED fault is `.abort` (L1)
+    show (Abort.execAbort s).vmError = some .abort
     rfl
   · rw [hstep_eq]
     show (step (.call .abort) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := hCu s; omega
+
+/-- The original abort triple, derived from the typed-fault spec by
+    forgetting the `vmError` conjunct (`VmError.abort.toSentinel = ERR_ABORT`).
+    Kept for the existing `cuTripleAbortsWithin` consumers. -/
+theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleAbortsWithin 1 nCu pc
+      (CodeReq.singleton pc (.call .abort))
+      emp ERR_ABORT :=
+  cuTripleFaultsWithin_toAborts (call_abort_faults_spec pc nCu hCu)
 
 /-- `.call .sol_panic_`: unconditional abort with logging of the message
     pointed to by r1/r2 (file/line in r3/r4/r5 are diagnostic and silent
@@ -71,12 +86,12 @@ theorem call_abort_aborts_spec (pc : Nat) (nCu : Nat)
     registers are not constrained by this triple — they're already loaded
     by the caller and the resulting `log` entry is silent in
     `PartialState`. -/
-theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
+theorem call_sol_panic_faults_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleAbortsWithin 1 nCu pc
+    cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_panic_))
-      emp ERR_ABORT := by
+      emp .abort := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
   rw [hP1, PartialState.union_empty_left] at hu
@@ -96,13 +111,26 @@ theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
         executeFn_step fetch s 0 _ hex (by omega) hfetch,
         executeFn_zero]
     simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
   · rw [hexec]
-    show (Abort.execPanic s).exitCode = some ERR_ABORT
+    show (Abort.execPanic s).exitCode = some VmError.abort.toSentinel
+    rfl
+  · rw [hexec]
+    show (Abort.execPanic s).vmError = some .abort
     rfl
   · rw [hstep_eq]
     show (step (.call .sol_panic_) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := hCu s; omega
+
+/-- The original `sol_panic_` abort triple, derived from the typed-fault
+    spec. -/
+theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleAbortsWithin 1 nCu pc
+      (CodeReq.singleton pc (.call .sol_panic_))
+      emp ERR_ABORT :=
+  cuTripleFaultsWithin_toAborts (call_sol_panic_faults_spec pc nCu hCu)
 
 /-- `Insn.exit` with empty callStack: the success-exit instruction sets
     `exitCode := some (r0)`, picking up the program's return value from
