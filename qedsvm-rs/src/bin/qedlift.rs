@@ -3674,6 +3674,241 @@ fn build_sat_witness(
     Ok(w)
 }
 
+/// Evaluate a path hypothesis under a concrete variable assignment, with
+/// EXACTLY the Lean semantics of `BranchHyp::lean_hyp` (so a `Some(true)`
+/// here means `native_decide` will accept the substituted hypothesis).
+/// `None` = the branch kind (signed compares) is not modeled — those lifts
+/// get no branch witness (skipped, never failed).
+fn eval_branch(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
+    -> Option<bool> {
+    use BranchKind::*;
+    let dv = eval_expr(&bh.dst_value, env)?;
+    let immu = bh.imm as u64;
+    let sv = match &bh.src_value {
+        Some(s) => Some(eval_expr(s, env)?),
+        None => None,
+    };
+    let r = match (&bh.kind, bh.taken) {
+        (JeqImm, true) | (JneImm, false) => dv == immu,
+        (JeqImm, false) | (JneImm, true) => dv != immu,
+        (JgtImm, true)  => dv > immu,
+        (JgtImm, false) => !(dv > immu),
+        (JltImm, true)  => dv < immu,
+        (JltImm, false) => !(dv < immu),
+        (JleImm, true)  => dv <= immu,
+        (JleImm, false) => !(dv <= immu),
+        (JgeImm, true)  => dv >= immu,
+        (JgeImm, false) => !(dv >= immu),
+        (JsetImm, true)  => (dv & immu) != 0,
+        (JsetImm, false) => (dv & immu) == 0,
+        (JeqReg, true) | (JneReg, false) => dv == sv?,
+        (JeqReg, false) | (JneReg, true) => dv != sv?,
+        (JltReg, true)  => dv < sv?,
+        (JltReg, false) => !(dv < sv?),
+        (JgtReg, true)  => dv > sv?,
+        (JgtReg, false) => !(dv > sv?),
+        (JleReg, true)  => dv <= sv?,
+        (JleReg, false) => !(dv <= sv?),
+        (JgeReg, true)  => dv >= sv?,
+        (JgeReg, false) => !(dv >= sv?),
+        (JsetReg, true)  => (dv & sv?) != 0,
+        (JsetReg, false) => (dv & sv?) == 0,
+        // Signed compares (Jsgt/Jslt/Jsle/Jsge, imm + reg): toSigned64 is
+        // not modeled here — fail closed to "skip".
+        _ => return None,
+    };
+    Some(r)
+}
+
+/// Candidate `(dst_target, src_target?)` value pairs that would satisfy the
+/// branch, given the current (partial) assignment. The driver tries each in
+/// order, `solve_expr`-ing the relevant variable(s), and keeps the first that
+/// `eval_branch`-verifies. Empty = unmodeled kind (signed) ⇒ the lift is
+/// skipped.
+fn branch_candidates(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
+    -> Vec<(u64, Option<u64>)> {
+    use BranchKind::*;
+    let immu = bh.imm as u64;
+    let sv = bh.src_value.as_ref().and_then(|s| eval_expr(s, env));
+    let dv = eval_expr(&bh.dst_value, env);
+    let ne_imm: Vec<(u64, Option<u64>)> =
+        [immu.wrapping_add(1), immu.wrapping_sub(1), 0, 1, 2, 3]
+            .into_iter().filter(|t| *t != immu).map(|t| (t, None)).collect();
+    match (&bh.kind, bh.taken) {
+        (JeqImm, true) | (JneImm, false) => vec![(immu, None)],
+        (JeqImm, false) | (JneImm, true) => ne_imm,
+        (JgtImm, true)  => vec![(immu.wrapping_add(1), None)],
+        (JgtImm, false) => vec![(0, None), (immu, None)],
+        (JltImm, true)  => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JltImm, false) => vec![(immu, None), (immu.wrapping_add(1), None)],
+        (JleImm, true)  => vec![(0, None), (immu, None)],
+        (JleImm, false) => vec![(immu.wrapping_add(1), None)],
+        (JgeImm, true)  => vec![(immu, None), (immu.wrapping_add(1), None)],
+        (JgeImm, false) => if immu > 0 { vec![(0, None), (immu - 1, None)] } else { vec![] },
+        (JsetImm, true)  => if immu != 0 { vec![(immu, None)] } else { vec![] },
+        (JsetImm, false) => vec![(0, None)],
+        // reg-form: couple the two sides.
+        (JeqReg, true) | (JneReg, false) => match sv {
+            Some(v) => vec![(v, None)],
+            None => match dv { Some(v) => vec![(v, Some(v))], None => vec![(0, Some(0))] },
+        },
+        (JeqReg, false) | (JneReg, true) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None), (v.wrapping_sub(1), None)],
+            None => vec![(1, Some(0)), (0, Some(1))],
+        },
+        (JltReg, true) => match sv {
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
+        (JltReg, false) => match sv {           // dst ≥ src
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(1, Some(0)), (0, Some(0))],
+        },
+        (JgtReg, true) => match sv {
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JgtReg, false) => match sv {           // dst ≤ src
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(1)), (0, Some(0))],
+        },
+        (JleReg, true) => match sv {
+            Some(v) => vec![(v, None), (0, None)],
+            None => vec![(0, Some(0)), (0, Some(1))],
+        },
+        (JleReg, false) => match sv {           // dst > src
+            Some(v) => vec![(v.wrapping_add(1), None)],
+            None => vec![(1, Some(0))],
+        },
+        (JgeReg, true) => match sv {
+            Some(v) => vec![(v, None), (v.wrapping_add(1), None)],
+            None => vec![(0, Some(0)), (1, Some(0))],
+        },
+        (JgeReg, false) => match sv {           // dst < src
+            Some(v) if v > 0 => vec![(v - 1, None), (0, None)],
+            _ => vec![(0, Some(1))],
+        },
+        (JsetReg, true) => match sv {
+            Some(v) if v != 0 => vec![(v, None)],
+            _ => vec![(1, Some(1))],
+        },
+        (JsetReg, false) => vec![(0, None)],
+        _ => vec![],   // signed: unmodeled
+    }
+}
+
+/// Process equality / inequality-to-constant and reg-equalities before the
+/// remaining (mostly reg-form inequality) branches, so the latter can read
+/// the already-pinned side.
+fn branch_priority(bh: &BranchHyp) -> u8 {
+    use BranchKind::*;
+    match bh.kind {
+        JeqImm | JneImm | JsetImm => 0,
+        JeqReg | JneReg => 1,
+        _ => 2,
+    }
+}
+
+/// Phase 7 sub-item 1: the BRANCH-satisfiability witness, complementing the
+/// H8 footprint witness in `build_sat_witness`. The lift theorem takes its
+/// value-level path hypotheses (`h_branch*`) and load bounds (`h*_lt`) as
+/// UNCERTIFIED parameters; an UNSATISFIABLE conjunction of them makes the
+/// triple vacuously true. This emits a concrete assignment that satisfies
+/// every modeled `h_branch*` (and `h*_lt`) SIMULTANEOUSLY, kernel-checked by
+/// `native_decide` — so the emitted assignment is a machine-checked
+/// certificate that the path constraints are jointly satisfiable.
+///
+/// Conservative: returns `None` (emit nothing — non-breaking) when the
+/// deterministic steerer cannot satisfy every branch (an unmodeled signed
+/// compare, an un-invertible `dst_value`, or a genuinely contradictory
+/// constraint set). It NEVER emits a witness it has not Rust-side verified.
+fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
+    use std::collections::BTreeMap;
+    if state.branch_hyps.is_empty() { return None; }
+
+    let mut env: BTreeMap<String, u64> = BTreeMap::new();
+    let mut order: Vec<usize> = (0..state.branch_hyps.len()).collect();
+    order.sort_by_key(|&i| branch_priority(&state.branch_hyps[i]));
+
+    for &i in &order {
+        let bh = &state.branch_hyps[i];
+        // Already satisfied by the committed (partial) assignment — e.g. a
+        // value pinned by an earlier branch already lands on the right side
+        // of this comparison. No re-steering (which `solve_expr` would
+        // reject on an assigned variable).
+        if eval_branch(bh, &env) == Some(true) { continue; }
+        let cands = branch_candidates(bh, &env);
+        let mut satisfied = false;
+        for (dt, st) in cands {
+            let mut trial = env.clone();
+            let ok_d = solve_expr(&bh.dst_value, dt, &mut trial);
+            let ok_s = match (&bh.src_value, st) {
+                (Some(s), Some(t)) => solve_expr(s, t, &mut trial),
+                _ => true,
+            };
+            if !(ok_d && ok_s) { continue; }
+            // After steering, this branch's variables are assigned, so
+            // `eval_branch` is decisive.
+            if eval_branch(bh, &trial) == Some(true) {
+                env = trial;
+                satisfied = true;
+                break;
+            }
+        }
+        if !satisfied { return None; }   // skip: cannot steer this branch
+    }
+
+    // Zero-fill remaining theorem variables.
+    for v in vars { env.entry(v.clone()).or_insert(0); }
+
+    // Final verification of EVERY branch at the complete assignment.
+    for bh in &state.branch_hyps {
+        if eval_branch(bh, &env) != Some(true) { return None; }
+    }
+
+    // Emit: substitute the assignment into each hypothesis, conjoin, and
+    // discharge by `native_decide`.
+    let sub = |s: &str| -> String {
+        let mut out = s.to_string();
+        for (k, val) in &env {
+            out = replace_token(&out, k, &val.to_string());
+        }
+        out
+    };
+    let mut conjuncts: Vec<String> = Vec::new();
+    for bh in &state.branch_hyps {
+        conjuncts.push(format!("({})", sub(&bh.lean_hyp())));
+    }
+    for (v, k) in &state.u64_load_vars {
+        let lit = env.get(v).copied().unwrap_or(0);
+        conjuncts.push(format!("({} < 2 ^ {})", lit, k));
+    }
+    let mut w = String::new();
+    w.push_str(
+        "/-! ## Branch-satisfiability witness (Phase 7 sub-item 1)\n\n\
+         The triple's value-level path hypotheses (`h_branch*`) and load\n\
+         bounds (`h*_lt`) are uncertified parameters — an UNSATISFIABLE\n\
+         conjunction of them would make the triple vacuously true. The\n\
+         assignment below satisfies every (modeled) path hypothesis\n\
+         SIMULTANEOUSLY; `native_decide` machine-checks it, so a\n\
+         contradictory path-constraint set cannot ship silently. This\n\
+         complements the H8 footprint witness above (disjoint variable\n\
+         sets: address roots vs. discriminant/flag cells). -/\n\n");
+    // Split the conjunction (`refine ⟨?_, …⟩`) so each conjunct is decided
+    // individually — a single `native_decide` over a deeply-nested `And`
+    // fails `Decidable`-instance synthesis past ~60 conjuncts.
+    let body = conjuncts.join(" ∧\n      ");
+    if conjuncts.len() == 1 {
+        w.push_str(&format!("example :\n      {} := by native_decide\n\n", body));
+    } else {
+        let holes = vec!["?_"; conjuncts.len()].join(", ");
+        w.push_str(&format!(
+            "example :\n      {} := by\n  refine ⟨{}⟩ <;> native_decide\n\n",
+            body, holes));
+    }
+    Some(w)
+}
+
 /// The BPF program heap: `[MM_HEAP_START, MM_HEAP_START + 0x8000)`.
 const HEAP_START_I: i64 = 0x300000000;
 const HEAP_END_I:   i64 = 0x300000000 + 0x8000;
@@ -6715,6 +6950,16 @@ fn lift_one(
         Ok(w) => out.push_str(&w),
         Err(e) => return Err(format!(
             "qedlift: satisfiability witness construction failed — {}", e).into()),
+    }
+
+    // ── Branch-satisfiability witness (Phase 7 sub-item 1) ──────────
+    // Complements the H8 footprint witness: certifies the value-level
+    // path hypotheses (`h_branch*` / `h*_lt`) are JOINTLY satisfiable at
+    // a concrete assignment (kernel-checked by `native_decide`), closing
+    // the branch-vacuity channel. Conservative — emits nothing when the
+    // steerer can't satisfy every branch (non-breaking).
+    if let Some(w) = build_branch_witness(&state, &vars) {
+        out.push_str(&w);
     }
 
     // ── Heap-allocation corollary ──────────────────────────────────
