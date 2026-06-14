@@ -20,6 +20,8 @@
 
 use solana_sbpf::ebpf;
 
+pub mod layout;
+
 /// Converts between the two PC numberings the pipeline uses:
 ///
 ///   * **slot** PC: the raw 8-byte instruction-slot index. `lddw`
