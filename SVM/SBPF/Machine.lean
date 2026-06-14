@@ -109,6 +109,7 @@ inductive VmError
   | invalidAttribute
   | badSeeds
   | readonlyModified
+  | invalidRealloc
   deriving Repr, DecidableEq, Inhabited
 
 /-- sBPF machine state -/
@@ -275,6 +276,13 @@ def ERR_BAD_SEEDS : Nat := 0xFFFFFFFFFFFFFFF5
     callee's write-back (caller mem unchanged) and sets r0 to this code. -/
 def ERR_READONLY_MODIFIED : Nat := 0xFFFFFFFFFFFFFFF4
 
+/-- Exit code for a CPI whose BPF callee resized an account beyond
+    `original_data_len + MAX_PERMITTED_DATA_INCREASE` (10240). agave's account
+    re-serialization after a sub-instruction rejects the over-grow
+    (`InstructionError::InvalidRealloc`) and rolls back the whole call; we model
+    that rollback exactly (caller mem unchanged, this code in r0). M6r. -/
+def ERR_INVALID_REALLOC : Nat := 0xFFFFFFFFFFFFFFF3
+
 /-- The `exitCode` sentinel each fault writes (the wire keeps reporting
     this value, so the diff-suite observables are unchanged). -/
 def VmError.toSentinel : VmError → Nat
@@ -289,6 +297,7 @@ def VmError.toSentinel : VmError → Nat
   | .invalidAttribute       => ERR_INVALID_ATTRIBUTE
   | .badSeeds               => ERR_BAD_SEEDS
   | .readonlyModified       => ERR_READONLY_MODIFIED
+  | .invalidRealloc         => ERR_INVALID_REALLOC
 
 /-- `MAX_RETURN_DATA` (agave): a program may set at most 1024 bytes of
     return data; a larger `sol_set_return_data` aborts. -/

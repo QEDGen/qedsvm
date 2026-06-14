@@ -110,6 +110,17 @@ const CPI_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_caller.so");
 /// through the CPI write-back path. Source in
 /// `cpi_increment_caller_src/`.
 const CPI_INCREMENT_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_increment_caller.so");
+/// CPI callee that GROWS its writable account by 8 bytes (within the
+/// `MAX_PERMITTED_DATA_INCREASE` reserve) and writes a sentinel into the grown
+/// tail. Paired with `cpi_increment_caller.so` to exercise the M6r CPI realloc
+/// write-back. Source in `cpi_realloc_callee_src/`.
+const CPI_REALLOC_CALLEE_SO: &[u8] = include_bytes!("fixtures/cpi_realloc_callee.so");
+/// CPI callee that attempts to grow its account BEYOND
+/// `MAX_PERMITTED_DATA_INCREASE` (`realloc(old + 10241)`). Both engines reject
+/// the over-grow and leave the account unchanged. Source in
+/// `cpi_realloc_overflow_callee_src/`.
+const CPI_REALLOC_OVERFLOW_CALLEE_SO: &[u8] =
+    include_bytes!("fixtures/cpi_realloc_overflow_callee.so");
 /// Forwards TWO writable accounts via `invoke(&ix, &[a, b])` to a
 /// target program. Exercises Phase 3-N marshaling: both AccountInfo
 /// blocks must serialize into the callee's input region with the
@@ -1908,6 +1919,178 @@ fn cpi_caller_forwards_account_to_incrementer() {
 
     let (_, m_acct) = &m_r.resulting_accounts[0];
     assert_eq!(m_acct.data.as_slice(), expected.as_slice());
+}
+
+/// Audit M6r — CPI realloc write-back (BPF callee grows its account). The SAME
+/// caller -> callee CPI shape as `cpi_caller_forwards_account_to_incrementer`,
+/// but the callee `realloc`s the forwarded 16-byte account up to 24 bytes
+/// (within the 10240 reserve) and writes a sentinel into the grown tail. agave
+/// re-serializes the grown account into the caller's view; post-fix qedsvm's
+/// `cpiCallNextState` harvests the callee's post-CPI `data_len` (block offset
+/// 80), writes that many bytes, and dual-writes the new length to the caller's
+/// length slots. Pre-fix the grow was lost (model reported the old length).
+/// `assert_no_poststate_backstop` proves the VM harvested the realloc rather
+/// than the M13 Rust backstop papering over it.
+#[test]
+fn cpi_callee_reallocs_account_grow() {
+    let caller_id = pid(53);
+    let callee_id = pid(54);
+    let acct_key  = pid(55);
+
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    };
+    let callee_program_shared = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_mollusk = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
+    fs.add_program(&callee_id, CPI_REALLOC_CALLEE_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct_key, pre_shared),
+        (callee_id, callee_program_shared),
+    ]).expect("qedsvm runs CPI→realloc");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_INCREMENT_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), CPI_REALLOC_CALLEE_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, pre_mollusk),
+        (callee_id, callee_program_mollusk),
+    ]);
+
+    let our_logs: Vec<String> = fs_r.logs.iter()
+        .map(|b| String::from_utf8_lossy(b).into_owned()).collect();
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on CPI→realloc, got {:?}; logs: {our_logs:?}",
+        fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on CPI→realloc, got {:?}", m_r.program_result);
+
+    // 24 bytes: [0..16) the original zeros, [16..24) the callee's sentinel.
+    let mut expected = vec![0u8; 24];
+    expected[16..24].copy_from_slice(&0xA1A2A3A4A5A6A7A8u64.to_le_bytes());
+
+    assert_no_poststate_backstop(&fs_r);
+    let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
+    assert_eq!(fs_acct.data(), expected.as_slice(),
+        "qedsvm: realloc grow not visible after CPI; got {:?}", fs_acct.data());
+
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(m_acct.data.as_slice(), expected.as_slice(),
+        "mollusk: realloc grow mismatch");
+    assert_eq!(fs_acct.data(), m_acct.data.as_slice(),
+        "cross-engine realloc data mismatch");
+}
+
+/// Audit M6r — realloc bound (negative). The callee tries to grow its account
+/// beyond `MAX_PERMITTED_DATA_INCREASE` (`realloc(old + 10241)`). Both engines
+/// reject the over-grow; the account data MUST be unchanged (16 zero bytes) on
+/// both. The exact error code is engine-specific (agave's runtime
+/// `InvalidRealloc` / SDK bound check vs the model's `reallocViolated` rollback
+/// to `ERR_INVALID_REALLOC`), so this asserts the account STATE, not the code —
+/// the read-only-violation test pattern.
+#[test]
+fn cpi_callee_realloc_overflow_rejected_on_both() {
+    let caller_id = pid(56);
+    let callee_id = pid(57);
+    let acct_key  = pid(58);
+
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: callee_id,
+        executable: false, rent_epoch: 0,
+    };
+    let callee_program_shared = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_mollusk = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new_readonly(callee_id, false),
+        ],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
+    fs.add_program(&callee_id, CPI_REALLOC_OVERFLOW_CALLEE_SO);
+    let fs_r = fs.process_instruction(&ix, &[
+        (acct_key, pre_shared),
+        (callee_id, callee_program_shared),
+    ]).expect("qedsvm runs CPI→realloc-overflow");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_INCREMENT_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_REALLOC_OVERFLOW_CALLEE_SO);
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, pre_mollusk),
+        (callee_id, callee_program_mollusk),
+    ]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    // Both engines must FAIL the over-grow (not Success).
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: over-grow realloc should fail, got {:?}", fs_r.program_result);
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: over-grow realloc should fail, got {:?}", m_r.program_result);
+
+    // The account data is unchanged (16 zero bytes) on both engines — the
+    // over-grow rolled back.
+    let unchanged = vec![0u8; 16];
+    let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
+    assert_eq!(fs_acct.data(), unchanged.as_slice(),
+        "qedsvm: over-grow account should be unchanged; got len {}", fs_acct.data().len());
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(m_acct.data.as_slice(), unchanged.as_slice(),
+        "mollusk: over-grow account should be unchanged; got len {}", m_acct.data.len());
 }
 
 /// M6 read-only write-back protection. The SAME caller -> incrementer CPI

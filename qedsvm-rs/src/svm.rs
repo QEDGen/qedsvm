@@ -81,6 +81,7 @@ pub const fn vm_fault_name(sentinel: u64) -> &'static str {
         0xFFFFFFFFFFFFFFF6 => "invalidAttribute",
         0xFFFFFFFFFFFFFFF5 => "badSeeds",
         0xFFFFFFFFFFFFFFF4 => "readonlyModified",
+        0xFFFFFFFFFFFFFFF3 => "invalidRealloc",
         _ => "unknownFault",
     }
 }

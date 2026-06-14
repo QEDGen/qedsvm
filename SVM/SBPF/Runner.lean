@@ -491,7 +491,8 @@ def buildCpiSubInputN (slots : List AcctSlot)
     three modifiable fields inside a non-dup block. -/
 def CPI_BLOCK_OWNER_OFFSET    : Nat := 40   -- dup_marker(1)+flags(3)+pad(4)+key(32) = 40
 def CPI_BLOCK_LAMPORTS_OFFSET : Nat := 72   -- ...+owner(32) = 72
-def CPI_BLOCK_DATA_OFFSET     : Nat := 88   -- ...+lamports(8)+data_len(8) = 88
+def CPI_BLOCK_DATALEN_OFFSET  : Nat := 80   -- ...+lamports(8) = 80 (the data_len u64)
+def CPI_BLOCK_DATA_OFFSET     : Nat := 88   -- ...+data_len(8) = 88
 
 /-! ## Run configuration -/
 
@@ -896,18 +897,45 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 if p.isWritable then false
                 else
                   let blockBase := INPUT_START + slot.blockOff
+                  -- A read-only account must keep BOTH its data bytes and its
+                  -- length: agave forbids resizing a non-writable account.
+                  let postLen := Memory.readU64 subFinal.mem
+                    (blockBase + CPI_BLOCK_DATALEN_OFFSET)
                   let postData := readMemBytes subFinal.mem
                     (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
                   let postLam := Memory.readU64 subFinal.mem
                     (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
                   let postOwner := readMemBytes subFinal.mem
                     (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
-                  postData != p.data || postLam != p.lamports
-                    || postOwner != p.owner)
-            -- Commit only writable accounts back to the caller. Read-only
-            -- slots are unmodified on the honest path (checked above), so
-            -- the guard is a no-op there and a rollback-safety net under a
-            -- violation.
+                  postLen != p.dataLen || postData != p.data
+                    || postLam != p.lamports || postOwner != p.owner)
+            -- M6r: agave's account re-serialization rejects a callee that grew
+            -- a writable account beyond `original_data_len +
+            -- MAX_PERMITTED_DATA_INCREASE` (`InstructionError::InvalidRealloc`)
+            -- and rolls the whole call back. The model rebuilds a fresh
+            -- sub-input per CPI level, so the per-level `p.dataLen` is the
+            -- single-level analog of agave's top-level `original_data_len`.
+            let reallocViolated : Bool := slots.any (fun slot =>
+              match slot.dupOf? with
+              | some _ => false
+              | none =>
+                let p := slot.parsed
+                if !p.isWritable then false
+                else
+                  let blockBase := INPUT_START + slot.blockOff
+                  let postLen := Memory.readU64 subFinal.mem
+                    (blockBase + CPI_BLOCK_DATALEN_OFFSET)
+                  decide (postLen > p.dataLen + MAX_PERMITTED_DATA_INCREASE))
+            -- Commit only writable accounts back to the caller. M6r: harvest
+            -- the callee's POST-CPI `data_len` (block offset 80, the realloc
+            -- result) — not the stale pre-CPI `p.dataLen` — write that many
+            -- data bytes, and dual-write the new length to BOTH caller length
+            -- slots (`dataLenRefAddr` for the C/Rust CpiAccount struct,
+            -- `dataPtr - 8` for pinocchio's `AccountView`; the latter is the
+            -- serialized block's data_len slot the harness deserializes).
+            -- Read-only slots are unmodified on the honest path (checked
+            -- above), so the guard is a no-op there and a rollback-safety net
+            -- under a violation.
             let newCallerMem : Mem := slots.foldl (fun mem slot =>
               match slot.dupOf? with
               | some _ => mem
@@ -916,20 +944,27 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
                 if !p.isWritable then mem
                 else
                 let blockBase := INPUT_START + slot.blockOff
+                let postLen := Memory.readU64 subFinal.mem
+                  (blockBase + CPI_BLOCK_DATALEN_OFFSET)
                 let newData := readMemBytes subFinal.mem
-                  (blockBase + CPI_BLOCK_DATA_OFFSET) p.dataLen
+                  (blockBase + CPI_BLOCK_DATA_OFFSET) postLen
                 let m1 := loadBytesAt mem newData p.dataPtr
+                let m1' := Memory.writeU64 m1 p.dataLenRefAddr postLen
+                let m1'' := Memory.writeU64 m1' (p.dataPtr - 8) postLen
                 let newLamports := Memory.readU64 subFinal.mem
                   (blockBase + CPI_BLOCK_LAMPORTS_OFFSET)
-                let m2 := Memory.writeU64 m1 p.lamportsRefAddr newLamports
+                let m2 := Memory.writeU64 m1'' p.lamportsRefAddr newLamports
                 let newOwner := readMemBytes subFinal.mem
                   (blockBase + CPI_BLOCK_OWNER_OFFSET) 32
                 loadBytesAt m2 newOwner p.ownerPtr) s.mem
-            -- On a read-only violation agave fails the whole sub-instruction
-            -- and rolls every account back: return pre-CPI memory and surface
-            -- the error in r0 via the callee's exitCode (cpiCallNextState
-            -- reads `subFinal.exitCode.getD 1` into r0).
-            if roViolated then
+            -- A realloc bound or read-only violation fails the whole
+            -- sub-instruction and rolls every account back: return pre-CPI
+            -- memory and surface the error in r0 via the callee's exitCode
+            -- (cpiCallNextState reads `subFinal.exitCode.getD 1` into r0).
+            if reallocViolated then
+              some ({ subFinal with exitCode := some ERR_INVALID_REALLOC, vmError := some .invalidRealloc },
+                    s.mem, subFuelRemaining)
+            else if roViolated then
               some ({ subFinal with exitCode := some ERR_READONLY_MODIFIED, vmError := some .readonlyModified },
                     s.mem, subFuelRemaining)
             else
