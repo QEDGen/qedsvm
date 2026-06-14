@@ -188,6 +188,12 @@ const OOB_SHA256_SO: &[u8] = include_bytes!("fixtures/oob_sha256.so");
 /// (stage 3b) `Sha256.exec` routes the input through `guardRead`/`guardSlices`
 /// and faults. Source in `oob_sha256_input_src/`.
 const OOB_SHA256_INPUT_SO: &[u8] = include_bytes!("fixtures/oob_sha256_input.so");
+/// Calls `sol_poseidon` with a VALID 32-byte output but a 1-descriptor input
+/// array 256 MiB out of region. agave translates the output first (passes),
+/// then the descriptor array (out of region → traps); post-fix (stage 3c)
+/// `Poseidon.exec`'s `guardedCommit` routes the input through
+/// `guardRead`/`guardSlices` and faults. Source in `oob_poseidon_input_src/`.
+const OOB_POSEIDON_INPUT_SO: &[u8] = include_bytes!("fixtures/oob_poseidon_input.so");
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2690,6 +2696,39 @@ fn oob_sha256_input_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_sha256 input, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256_input");
+}
+
+/// Audit H6 (syscall memory translation, hashing family, stage 3c / poseidon
+/// input-slice guard). The program calls `sol_poseidon` with a valid writable
+/// output but a 1-descriptor input array 256 MiB out of region. agave
+/// translates the output first (passes), then the descriptor array (out of
+/// region → `AccessViolation`); post-fix `Poseidon.exec`'s `guardedCommit`
+/// `guardRead` on `[r3, r3 + r4*16)` VM-faults. Both engines fail alike.
+#[test]
+fn oob_poseidon_input_fails_on_both() {
+    let program_id = pid(244);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, OOB_POSEIDON_INPUT_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs oob_poseidon_input");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        OOB_POSEIDON_INPUT_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on OOB sol_poseidon input, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_poseidon_input");
 }
 
 /// Tier-1 #2 native programs (System, foremost). A BPF caller does

@@ -288,6 +288,31 @@ theorem Blake3_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (Blake3.exec s).mem a < 256 := by
   simp only [Blake3.exec]; exact hashWrite_mem_lt s _ _ _ _ _ h a
 
+/-- `guardedCommit`'s `mem` is `s.mem` (guard miss or commitOptional's `none`)
+    or `writeBytes …` (commitOptional's `some`), both byte-bounded. The poseidon
+    `mem_lt` closer (its `commitOptional` body, not `hashWrite`'s `writeBytes`). -/
+theorem guardedCommit_mem_lt (s : State) (outPtr outLen inPtr inN : Nat)
+    (result : Option ByteArray) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (s.guardedCommit outPtr outLen inPtr inN result).mem a < 256 := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_mem_lt_of_k s _ _ _ a (h a) ?_
+  refine State.guardRead_mem_lt_of_k s _ _ _ a (h a) ?_
+  refine State.guardSlices_mem_lt_of_k s _ _ _ a (h a) ?_
+  cases result
+  · exact h a
+  · exact writeBytes_lt _ _ _ _ h a
+
+theorem Poseidon_exec_regs_of_k {motive : RegFile → Prop} (s : State)
+    (h0 : motive s.regs) (hk0 : motive (s.regs.set .r0 0))
+    (hk1 : motive (s.regs.set .r0 1)) :
+    motive (Poseidon.exec s).regs := by
+  simp only [Poseidon.exec]
+  exact State.guardedCommit_regs_of_k s _ _ _ _ _ h0 hk0 hk1
+
+theorem Poseidon_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
+    (Poseidon.exec s).mem a < 256 := by
+  simp only [Poseidon.exec]; exact guardedCommit_mem_lt s _ _ _ _ _ h a
+
 /-- Width-dispatched stores preserve byte-boundedness: every width is a
     chain of `Mem.put`s. -/
 theorem writeByWidth_lt (m : Mem) (addr val : Nat) (w : Width)
@@ -470,7 +495,7 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
           Logging.execLogComputeUnits,
-          Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
+          MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
           AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
@@ -504,7 +529,11 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact Keccak256_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
       | exact Blake3_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
-          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r))
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+      -- poseidon: `commitOptional` body sets r0 to 0 (some) or 1 (none).
+      | exact Poseidon_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
+          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
+          (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r))
 
 set_option maxHeartbeats 8000000 in
 set_option maxRecDepth 65536 in
@@ -522,7 +551,7 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           State.guardRead, State.guardWrite, State.accessFault,
           Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
           Logging.execLogComputeUnits,
-          Poseidon.exec, MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
+          MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
           Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
           AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
@@ -548,6 +577,7 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact Sha512_exec_mem_lt s hb.mem_lt a
       | exact Keccak256_exec_mem_lt s hb.mem_lt a
       | exact Blake3_exec_mem_lt s hb.mem_lt a
+      | exact Poseidon_exec_mem_lt s hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt _
       | exact writeByWidth_lt _ _ _ .word hb.mem_lt a

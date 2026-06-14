@@ -880,4 +880,92 @@ def commitOptional (s : State) (out outSize : Nat)
     (commitOptional s out outSize result).callStack = s.callStack := by
   cases result <;> simp [commitOptional]
 
+/-- The poseidon-syscall write envelope: like `hashWrite`, but the body is
+    `commitOptional` (poseidon returns an `Option` — `some` writes the 32-byte
+    result and sets r0:=0, `none` sets r0:=1). Checks the output region FIRST
+    (`translate_slice_mut`), then the input descriptor array, then each slice.
+
+    `@[irreducible]` for the same `Bounded`-sweep reason as `hashWrite`: the
+    closers must fail fast by head-symbol in the `first` block, not by
+    whnf-unfolding the def. -/
+@[irreducible] def State.guardedCommit (s : State) (outPtr outLen inPtr inN : Nat)
+    (result : Option ByteArray) : State :=
+  s.guardWrite outPtr outLen fun s =>
+    s.guardRead inPtr (inN * 16) fun s =>
+      s.guardSlices inPtr inN fun s =>
+        commitOptional s outPtr outLen result
+
+/-- `guardedCommit` only rewrites `regs` (set r0) and `mem` (the `some` write);
+    every other field is preserved on the fault branch and the `commitOptional`
+    body. `@[simp]` so the blanket sweeps close the `sol_poseidon` arm folded. -/
+@[simp] theorem State.guardedCommit_callStack (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).callStack = s.callStack := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.callStack) s _ _ _ rfl ?_
+  exact commitOptional_preserves_callStack s _ _ _
+
+@[simp] theorem State.guardedCommit_regions (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).regions = s.regions := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
+  exact commitOptional_preserves_regions s _ _ _
+
+@[simp] theorem State.guardedCommit_returnData (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).returnData = s.returnData := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
+  exact commitOptional_preserves_returnData s _ _ _
+
+@[simp] theorem State.guardedCommit_r10 (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).regs.r10 = s.regs.r10 := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.regs.r10) s _ _ _ rfl ?_
+  exact commitOptional_preserves_r10 s _ _ _
+
+@[simp] theorem State.guardedCommit_cuBudget (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).cuBudget = s.cuBudget := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  cases result <;> rfl
+
+@[simp] theorem State.guardedCommit_heapNext (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).heapNext = s.heapNext := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
+  cases result <;> rfl
+
+/-- `guardedCommit`'s `regs` is `s.regs` (a guard faulted) or `s.regs.set .r0 v`
+    with `v ∈ {0,1}` (commitOptional's success / failure). A predicate holding
+    on all three survives. The `Bounded` `regs_lt` closer for the poseidon arm. -/
+theorem State.guardedCommit_regs_of_k {motive : RegFile → Prop} (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray)
+    (h0 : motive s.regs) (hk0 : motive (s.regs.set .r0 0))
+    (hk1 : motive (s.regs.set .r0 1)) :
+    motive (s.guardedCommit outPtr outLen inPtr inN result).regs := by
+  simp only [State.guardedCommit]
+  apply State.guardWrite_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardRead_regs_of_k (motive := motive) (h0 := h0)
+  apply State.guardSlices_regs_of_k (motive := motive) (h0 := h0)
+  cases result
+  · exact hk1
+  · exact hk0
+
 end SVM.SBPF
