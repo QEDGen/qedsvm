@@ -198,4 +198,25 @@ theorem cpiCallNextState_bounded
               hcallee _ _ _ _ ‹runCallee _ = some _›
             exact h.with_cpi_commit hexit hmem hrd _ _ _ _))
 
+/-- `Memory.writeU64` (8-byte little-endian store, a chain of 8 `Mem.put`s)
+    preserves byte-boundedness — defeq to `writeByWidth … .dword`. The CPI
+    write-back's length/lamport dual-writes go through this. -/
+theorem writeU64_lt (m : Mem) (addr v : Nat) (h : ∀ a, m a < 256) :
+    ∀ a, (Memory.writeU64 m addr v) a < 256 :=
+  writeByWidth_lt m addr v .dword h
+
+/-- The CPI commit never touches `exitCode`: all four `cpiCallNextState`
+    outcomes keep `s.exitCode` (arms 1/2/3/4a/4b write only regs/mem/pc/cu;
+    arm 4c also log/returnData but not exitCode). Holds for ANY `sc` (every
+    arm preserves it regardless of the ABI `match sc`), so the wrapper's
+    exit-code co-invariant carries across a CPI call for free. -/
+theorem cpiCallNextState_exitCode (registry : Nat → Option ByteArray)
+    (s : State) (sc : Syscall) (fuel' : Nat)
+    (runCallee : ByteArray → Option (State × Mem × Nat)) :
+    (Runner.cpiCallNextState registry s sc fuel' runCallee).exitCode = s.exitCode := by
+  unfold Runner.cpiCallNextState
+  extract_lets
+  repeat' split
+  all_goals rfl
+
 end SVM.SBPF
