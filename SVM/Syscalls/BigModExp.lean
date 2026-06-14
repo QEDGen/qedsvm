@@ -58,6 +58,12 @@ def cu (s : State) : Nat :=
 
 @[simp] def exec (s : State) : State :=
   let paramsA := s.regs.r1
+  -- H6: agave first translates the 48-byte `BigModExpParams` struct
+  -- (`[r1,48)`, Load) to read the operand ptrs/lens, then (after the
+  -- length check) translates each operand slice (base/exp/mod, Load) and
+  -- the `modLen`-byte output (`[r2, r2+modLen)`, Store). Any out-of-region
+  -- (or non-writable output) slice traps.
+  s.guardRead paramsA 48 fun s =>
   let basePtr := Memory.readU64 s.mem  paramsA
   let baseLen := Memory.readU64 s.mem (paramsA + 8)
   let expPtr  := Memory.readU64 s.mem (paramsA + 16)
@@ -68,12 +74,29 @@ def cu (s : State) : Nat :=
   -- `SyscallError::InvalidLength` (an instruction abort), NOT an in-band
   -- error return. Fail closed. See docs/SOUNDNESS_AUDIT_* (M9).
   if baseLen ≤ MAX_INPUT_LEN ∧ expLen ≤ MAX_INPUT_LEN ∧ modLen ≤ MAX_INPUT_LEN then
-    let result := modpow (readBytes s.mem basePtr baseLen)
-                         (readBytes s.mem expPtr  expLen)
-                         (readBytes s.mem modPtr  modLen)
-    commitOptional s s.regs.r2 modLen (some result)
+    s.guardRead basePtr baseLen fun s =>
+    s.guardRead expPtr  expLen  fun s =>
+    s.guardRead modPtr  modLen  fun s =>
+    s.guardWrite s.regs.r2 modLen fun s =>
+      let result := modpow (readBytes s.mem basePtr baseLen)
+                           (readBytes s.mem expPtr  expLen)
+                           (readBytes s.mem modPtr  modLen)
+      commitOptional s s.regs.r2 modLen (some result)
   else
     { s with exitCode := some ERR_INVALID_LENGTH, vmError := some .invalidLength }
+
+/-- H6 fault direction: an out-of-region 48-byte `BigModExpParams` struct
+    `[r1,48)` traps with a typed access violation (the first guarded slice,
+    translated before the operand slices and the `modLen`-byte output). -/
+theorem exec_faults_oob (s : State)
+    (hoob : s.regions.containsRange s.regs.r1 48 = false) :
+    (exec s).vmError = some .accessViolation := by
+  simp only [exec, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 end BigModExp
 end SVM.SBPF

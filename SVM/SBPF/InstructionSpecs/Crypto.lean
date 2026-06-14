@@ -248,235 +248,27 @@ removed: it was provable over a behaviour the chain rejects (M7). A
 `cuTripleAbortsWithin` spec for this arm can be added on demand by
 mirroring `call_abort_aborts_spec`. -/
 
-/-! ## Tier-1 triple: `sol_secp256k1_recover` (invalid recovery_id)
+/-! ## H6 — crypto short-circuit bookkeeping triples retired
 
-Pinning `r2 = recId` with `recId > 3` forces
-`result = .invalidRecoveryId`, hence `errCode = 2`, and the writeBytes
-arm is bypassed (`mem' = s.mem`). The opaque
-`Secp256k1.recover` is *not called* on this path, so no axiom is
-consumed.
-
-Trust statement: none required for this branch. -/
-
-theorem call_sol_secp256k1_recover_invalid_recid_spec
-    (r0Old r2V : Nat) (pc : Nat) (nCu : Nat) (h_bad : r2V > 3)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_secp256k1_recover) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_secp256k1_recover))
-      ((.r0 ↦ᵣ r0Old) ** (.r2 ↦ᵣ r2V))
-      ((.r0 ↦ᵣ 2) ** (.r2 ↦ᵣ r2V)) := by
-  apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_secp256k1_recover .r2 r2V 2 pc nCu (by decide : (.r2 : Reg) ≠ .r0)
-  · -- regs
-    intro s hr2
-    have hr2' : s.regs.r2 = r2V := by show s.regs.get .r2 = r2V; exact hr2
-    simp only [step, execSyscall, Secp256k1.exec]
-    rw [hr2', if_pos h_bad]
-  · -- mem
-    intro s hr2
-    have hr2' : s.regs.r2 = r2V := by show s.regs.get .r2 = r2V; exact hr2
-    simp only [step, execSyscall, Secp256k1.exec]
-    rw [hr2', if_pos h_bad]
-  · -- pc
-    intro s
-    simp [step, execSyscall, Secp256k1.exec]
-  · -- exitCode preservation
-    intro s _ hex
-    simp only [step, execSyscall, Secp256k1.exec]
-    show s.exitCode = none
-    exact hex
-  · -- returnData unchanged
-    intro s
-    simp [step, execSyscall, Secp256k1.exec]
-  · -- callStack unchanged
-    intro s
-    simp [step, execSyscall, Secp256k1.exec]
-  · -- cuConsumed bound
-    exact h_step_cu
-
-/-! ## `sol_curve_group_op` (unsupported curve_id) - fails closed
-
-An unsupported curve_id now aborts (`ERR_INVALID_ATTRIBUTE`) in
-`execGroupOp`, matching agave under `abort_on_invalid_curve`; the former
-"r0 := 1" triple was removed (it was provable-over). A valid curve with a
-failed/invalid op still returns r0 := 1 (commitOptional none). See M7. -/
-
-/-! ## Tier-1 triple: `sol_curve_multiscalar_mul` (zero-length input)
-
-Pinning `r4 = 0` (pointsLen = 0) forces `result = none`, hence
-commitOptional yields `r0 := 1, mem unchanged`. The opaque MSM
-function is *not called* on this path.
-
-Trust statement: none required for this branch. -/
-
-theorem call_sol_curve_multiscalar_mul_zero_n_spec
-    (r0Old : Nat) (pc : Nat) (nCu : Nat)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_curve_multiscalar_mul) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_curve_multiscalar_mul))
-      ((.r0 ↦ᵣ r0Old) ** (.r4 ↦ᵣ 0))
-      ((.r0 ↦ᵣ 1) ** (.r4 ↦ᵣ 0)) := by
-  apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_multiscalar_mul .r4 0 1 pc nCu (by decide : (.r4 : Reg) ≠ .r0)
-  · -- regs (pinned r4 = 0 ⇒ no n>512 abort; result none ⇒ r0 := 1)
-    intro s hr4
-    have hr4' : s.regs.r4 = 0 := by show s.regs.get .r4 = 0; exact hr4
-    simp [step, execSyscall, Curve25519.execMSM, commitOptional, hr4']
-  · -- mem
-    intro s hr4
-    have hr4' : s.regs.r4 = 0 := by show s.regs.get .r4 = 0; exact hr4
-    simp [step, execSyscall, Curve25519.execMSM, commitOptional, hr4']
-  · -- pc
-    intro s
-    show (step (Insn.call Syscall.sol_curve_multiscalar_mul) s).pc = s.pc + 1
-    rfl
-  · -- exitCode preservation (pinned r4 = 0 excludes the n>512 abort)
-    intro s hr4 hex
-    have hr4' : s.regs.r4 = 0 := by show s.regs.get .r4 = 0; exact hr4
-    simp [step, execSyscall, Curve25519.execMSM, commitOptional, hr4', hex]
-  · -- returnData unchanged. `commitOptional` never touches returnData
-    -- (either branch), and neither does the n>512 abort.
-    intro s
-    have hco : ∀ (a l : Nat) (r : Option ByteArray) (st : State),
-        (commitOptional st a l r).returnData = st.returnData := fun a l r st => by
-      cases r <;> simp [commitOptional]
-    simp only [step, execSyscall, Curve25519.execMSM]
-    split <;> simp [hco]
-  · -- callStack unchanged (commitOptional + abort both preserve it)
-    intro s
-    have hco : ∀ (a l : Nat) (r : Option ByteArray) (st : State),
-        (commitOptional st a l r).callStack = st.callStack := fun a l r st => by
-      cases r <;> simp [commitOptional]
-    simp only [step, execSyscall, Curve25519.execMSM]
-    split <;> simp [hco]
-  · -- cuConsumed bound
-    exact h_step_cu
-
-/-! ## Tier-1 triple: `sol_curve_decompress` (BLS12-381, unsupported curve_id)
-
-Pinning `r1 = curveId` with curveId ∉ {5, 6, 0x85, 0x86} forces
-`result = none`, hence commitOptional yields `r0 := 1, mem unchanged`.
-No FFI call to `g1Decompress` / `g2Decompress` happens. -/
-
-theorem call_sol_curve_decompress_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat)
-    (h_unsup : r1V ≠ 5 ∧ r1V ≠ 6 ∧ r1V ≠ 133 ∧ r1V ≠ 134)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_curve_decompress) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_curve_decompress))
-      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
-      ((.r0 ↦ᵣ 1) ** (.r1 ↦ᵣ r1V)) := by
-  apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_decompress .r1 r1V 1 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
-  · -- regs
-    intro s hr1
-    have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
-    have h1 : (5 : Nat) ||| 128 = 133 := by decide
-    have h2 : (6 : Nat) ||| 128 = 134 := by decide
-    simp only [step, execSyscall, Bls12_381.execDecompress, commitOptional,
-               Bls12_381.BLS12_381_G1_LE, Bls12_381.BLS12_381_G1_BE,
-               Bls12_381.BLS12_381_G2_LE, Bls12_381.BLS12_381_G2_BE, h1, h2]
-    rw [hr1', if_neg h_unsup.1, if_neg h_unsup.2.2.1,
-        if_neg h_unsup.2.1, if_neg h_unsup.2.2.2]
-  · -- mem
-    intro s hr1
-    have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
-    have h1 : (5 : Nat) ||| 128 = 133 := by decide
-    have h2 : (6 : Nat) ||| 128 = 134 := by decide
-    simp only [step, execSyscall, Bls12_381.execDecompress, commitOptional,
-               Bls12_381.BLS12_381_G1_LE, Bls12_381.BLS12_381_G1_BE,
-               Bls12_381.BLS12_381_G2_LE, Bls12_381.BLS12_381_G2_BE, h1, h2]
-    rw [hr1', if_neg h_unsup.1, if_neg h_unsup.2.2.1,
-        if_neg h_unsup.2.1, if_neg h_unsup.2.2.2]
-  · -- pc
-    intro s
-    show (step (Insn.call Syscall.sol_curve_decompress) s).pc = s.pc + 1
-    rfl
-  · -- exitCode preservation
-    intro s _ hex
-    show (step (Insn.call Syscall.sol_curve_decompress) s).exitCode = none
-    simp only [step, execSyscall, Bls12_381.execDecompress]
-    generalize h_res :
-        (if s.regs.r1 = Bls12_381.BLS12_381_G1_LE then
-            Bls12_381.g1Decompress (readBytes s.mem s.regs.r2 48) 1
-          else if s.regs.r1 = Bls12_381.BLS12_381_G1_BE then
-            Bls12_381.g1Decompress (readBytes s.mem s.regs.r2 48) 0
-          else if s.regs.r1 = Bls12_381.BLS12_381_G2_LE then
-            Bls12_381.g2Decompress (readBytes s.mem s.regs.r2 96) 1
-          else if s.regs.r1 = Bls12_381.BLS12_381_G2_BE then
-            Bls12_381.g2Decompress (readBytes s.mem s.regs.r2 96) 0
-          else none) = res
-    cases res <;> (simp only [commitOptional]; exact hex)
-  · -- returnData unchanged
-    intro s
-    simp [step, execSyscall, Bls12_381.execDecompress]
-  · -- callStack unchanged
-    intro s
-    simp [step, execSyscall, Bls12_381.execDecompress]
-  · -- cuConsumed bound
-    exact h_step_cu
-
-/-! ## Tier-1 triple: `sol_curve_pairing_map` (BLS12-381, unsupported curve_id)
-
-Pinning `r1 = curveId` with curveId ∉ {4, 0x84} forces
-`result = none`, hence commitOptional yields `r0 := 1, mem unchanged`.
-No FFI call to `pairingMap` happens. -/
-
-theorem call_sol_curve_pairing_map_unsupported_spec
-    (r0Old r1V : Nat) (pc : Nat) (nCu : Nat) (h_unsup : r1V ≠ 4 ∧ r1V ≠ 132)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_curve_pairing_map) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_curve_pairing_map))
-      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V))
-      ((.r0 ↦ᵣ 1) ** (.r1 ↦ᵣ r1V)) := by
-  apply cuTripleWithin_syscall_writes_r0_only_pinned
-    .sol_curve_pairing_map .r1 r1V 1 pc nCu (by decide : (.r1 : Reg) ≠ .r0)
-  · -- regs
-    intro s hr1
-    have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
-    have heq : (4 : Nat) ||| 128 = 132 := by decide
-    simp only [step, execSyscall, Bls12_381.execPairing, commitOptional,
-               Bls12_381.BLS12_381_LE, Bls12_381.BLS12_381_BE, heq]
-    rw [hr1', if_neg h_unsup.1, if_neg h_unsup.2]
-  · -- mem
-    intro s hr1
-    have hr1' : s.regs.r1 = r1V := by show s.regs.get .r1 = r1V; exact hr1
-    have heq : (4 : Nat) ||| 128 = 132 := by decide
-    simp only [step, execSyscall, Bls12_381.execPairing, commitOptional,
-               Bls12_381.BLS12_381_LE, Bls12_381.BLS12_381_BE, heq]
-    rw [hr1', if_neg h_unsup.1, if_neg h_unsup.2]
-  · -- pc
-    intro s
-    show (step (Insn.call Syscall.sol_curve_pairing_map) s).pc = s.pc + 1
-    rfl
-  · -- exitCode preservation
-    intro s _ hex
-    show (step (Insn.call Syscall.sol_curve_pairing_map) s).exitCode = none
-    simp only [step, execSyscall, Bls12_381.execPairing]
-    generalize h_res :
-        (if s.regs.r1 = Bls12_381.BLS12_381_LE then
-            Bls12_381.pairingMap (readBytes s.mem s.regs.r3 (96 * s.regs.r2))
-                                  (readBytes s.mem s.regs.r4 (192 * s.regs.r2))
-                                  s.regs.r2.toUInt64 1
-          else if s.regs.r1 = Bls12_381.BLS12_381_BE then
-            Bls12_381.pairingMap (readBytes s.mem s.regs.r3 (96 * s.regs.r2))
-                                  (readBytes s.mem s.regs.r4 (192 * s.regs.r2))
-                                  s.regs.r2.toUInt64 0
-          else none) = res
-    cases res <;> (simp only [commitOptional]; exact hex)
-  · -- returnData unchanged
-    intro s
-    simp [step, execSyscall, Bls12_381.execPairing]
-  · -- callStack unchanged
-    intro s
-    simp [step, execSyscall, Bls12_381.execPairing]
-  · -- cuConsumed bound
-    exact h_step_cu
-
-
+The four short-circuit bookkeeping triples that used to live here
+(`call_sol_secp256k1_recover_invalid_recid_spec`,
+`call_sol_curve_multiscalar_mul_zero_n_spec`,
+`call_sol_curve_decompress_unsupported_spec`,
+`call_sol_curve_pairing_map_unsupported_spec`) pinned the no-FFI error
+paths (recovery_id > 3, n = 0, unsupported BLS curve_id) to
+`r0 := errCode, mem unchanged`. Under H6 those paths now sit behind the
+syscall's input/output region guards (`State.guardRead` / `guardWrite`),
+so the unconditional "mem unchanged" claim no longer holds for an
+out-of-region buffer — agave traps there too. The triples were
+UNCONSUMED (cited only by name in `CryptoTrust.lean`'s prose, never
+composed in a proof), so rather than thread region requirements through
+the old PartialState proofs they are retired in favour of the
+model-side fault-direction lemmas `*_faults_oob` in
+`SVM/Syscalls/{Curve25519,Bls12_381,AltBn128,BigModExp,Secp256k1}.lean`,
+which characterize the honest H6 behaviour (out-of-region access =>
+typed `accessViolation`). The generic `writes_r0_only_pinned` helper
+above is kept (a valid r0-only template for any future unguarded
+syscall). See docs/SOUNDNESS_AUDIT_* (H6).
+-/
 
 end SVM.SBPF
