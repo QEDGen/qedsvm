@@ -32,9 +32,27 @@ namespace ReturnData
   if len > MAX_RETURN_DATA then
     { s with exitCode := some ERR_RETURN_DATA_TOO_LARGE, vmError := some .returnDataTooLarge }
   else
-    { s with regs := s.regs.set .r0 0
-             returnData := readBytes s.mem ptr len
-             returnDataProgId := s.progIdBytes }
+    -- H6: agave checks `len > MAX_RETURN_DATA` first, then translates the input
+    -- slice `[ptr, ptr+len)` (Load) — an out-of-region input traps. A single
+    -- slice, so `guardRead` is a plain `if` (MemOps pattern); no mem write.
+    s.guardRead ptr len fun s =>
+      { s with regs := s.regs.set .r0 0
+               returnData := readBytes s.mem ptr len
+               returnDataProgId := s.progIdBytes }
+
+/-- Fault direction for `sol_set_return_data` (replaces the now-false success
+    triple): a non-empty input slice `[r1, r1+r2)` within the length limit but
+    out of region traps with a typed access violation. -/
+theorem execSet_faults_oob (s : State)
+    (hle : s.regs.r2 ≤ MAX_RETURN_DATA) (hne : s.regs.r2 ≠ 0)
+    (hoob : s.regions.containsRange s.regs.r1 s.regs.r2 = false) :
+    (execSet s).vmError = some .accessViolation := by
+  simp only [execSet, State.guardRead]
+  rw [if_neg (Nat.not_lt.mpr hle), if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
 
 /-- `sol_get_return_data(out, maxLen, pubkeyOut)`. Returns the ACTUAL
     returnData length (not the truncated length) in r0. When
