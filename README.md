@@ -54,7 +54,7 @@ Worked examples: [`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncremen
 
 ### Lift a compiled program to a proof (`qedlift`)
 
-`qedlift` (and its sibling `qedrecover`) are the lifting front-end: they turn a binary into a proof obligation against the spec layer. This is the surface [qedgen](https://github.com/QEDGen) consumes, and long-term it lives there; it ships here for now, feature-gated behind `qedrecover`, as the most direct demonstration of the binary → proof path.
+`qedlift` and its sibling `qedrecover` are the lifting front-end: they turn a binary into a proof obligation against the spec layer. This is the surface [qedgen](https://github.com/QEDGen) consumes, and long-term it lives there; it ships here for now as the most direct demonstration of the binary → proof path. `qedrecover` (scoping) is an analysis-only standalone crate at `qedsvm-rs/qedrecover/`, so it builds without the Lean bridge; `qedlift` is a `qedsvm-rs` bin behind the `qedrecover` feature.
 
 Point it at a `.so` and it emits a Lean module that embeds the `.text` bytes, proves they decode to the expected `List Insn`, states a `cuTripleWithinMem` Hoare triple synthesized by symbolic execution, and discharges it with `sl_block_auto`. The spec statement is mechanical from the binary, not hand-typed, and the proof closes with no `sorry`.
 
@@ -106,8 +106,9 @@ examples/lean/        Hoare-proof examples (ByteIncrement, PToken/, CompilerRt*,
 examples/lean/Generated/  qedlift output: .so → sorry-free Lean triples
 examples/rust/        → qedsvm-rs/examples (symlink)
 qedsvm-rs/            Cargo workspace
-├── (root)            Mollusk-shaped Rust API
-├── src/bin/qedlift.rs    Bytecode → Lean-proof lifter (--features qedrecover)
+├── (root)            Mollusk-shaped Rust API + qedlift bin (--features qedrecover)
+├── qedrecover/       Scoping tool: .so + IDL → qedmeta sidecar (analysis-only crate)
+├── qed-analysis/     Shared sBPF analysis substrate (PC map, IDL account layout)
 └── lean-bridge/      Agave-pinned crypto staticlib called by Lean
 docs/                 Reference docs (API, PIPELINE, COVERAGE)
 ```

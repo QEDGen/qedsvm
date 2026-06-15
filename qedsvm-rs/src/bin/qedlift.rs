@@ -14,7 +14,7 @@ use solana_sbpf::{
     vm::ContextObject,
 };
 
-use qedsvm::analysis::PcMap;
+use qed_analysis::PcMap;
 
 struct NoopCtx;
 impl ContextObject for NoopCtx {
@@ -192,8 +192,8 @@ fn load_idl_value(path: &Path) -> Option<serde_json::Value> {
     serde_json::from_str(&text).ok()
 }
 
-// Account layout types live in the shared substrate (#41 Phase 2) so qedrecover shares field names/offsets.
-use qedsvm::analysis::layout::{FieldKind, parse_account_layout};
+// Account layout types live in the shared `qed-analysis` crate (#41 Phase 2) so qedrecover shares field names/offsets.
+use qed_analysis::layout::{FieldKind, parse_account_layout};
 
 #[cfg(test)]
 mod layout_tests {
@@ -4024,7 +4024,7 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
         insns.push(insn);
         pc += span;
     }
-    // Shared slot<->logical converter (see `qedsvm::analysis::PcMap`).
+    // Shared slot<->logical converter (see `qed_analysis::PcMap`).
     let pc_map = PcMap::from_insns(&insns);
     Ok(BinaryCtx { executable, text_offset, text_bytes, insns, pc_map })
 }

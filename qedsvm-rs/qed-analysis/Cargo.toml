@@ -1,0 +1,12 @@
+[package]
+name = "qed-analysis"
+description = "Shared sBPF program-analysis substrate (slot<->logical PC map, IDL account layout) for the qedsvm lifting tools. Pure analysis; no Lean runtime."
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+# ELF/bytecode model + static analysis (CFG). JIT disabled; analysis only.
+solana-sbpf = { version = "0.14.4", default-features = false }
+# Codama IDL account-layout parsing operates over `serde_json::Value`.
+serde_json = "1.0"

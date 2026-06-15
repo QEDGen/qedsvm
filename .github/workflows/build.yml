@@ -70,3 +70,9 @@ jobs:
         # the p_token arms had no emitter pins — these must stay in CI.
         working-directory: qedsvm-rs
         run: cargo test --features qedrecover --bin qedlift
+
+      - name: qedrecover + qed-analysis crate tests
+        # Standalone, Lean-free lifting-frontend crates: dispatcher
+        # recognition, slot<->logical PC map, IDL account layout.
+        working-directory: qedsvm-rs
+        run: cargo test -p qedrecover -p qed-analysis

@@ -15,7 +15,7 @@ use solana_sbpf::{
     vm::ContextObject,
 };
 
-use qedsvm::analysis::PcMap;
+use qed_analysis::PcMap;
 use sha2::Digest;
 
 #[derive(Debug, Deserialize)]
@@ -987,7 +987,7 @@ mod tests {
     /// slot 336 / logical 304. Ground truth: `p_token_transfer.pcs` trace jumps 199 -> 304.
     #[test]
     fn transfer_arm_entry_spaces() {
-        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let bytes = std::fs::read("../tests/fixtures/p_token.so").expect("read p_token.so");
         let loader = Arc::new(BuiltinProgram::new_mock());
         let executable: Executable<NoopCtx> =
             Executable::load(&bytes, loader).expect("load p_token.so");
@@ -1005,7 +1005,7 @@ mod tests {
 
         let func_set = function_block_set(&analysis, arm_entry_slot);
         let arm_blocks = slice_cfg(&analysis, arm_entry_slot, Some(&func_set));
-        let trace = load_trace(Path::new("tests/fixtures/p_token_transfer.pcs"))
+        let trace = load_trace(Path::new("../tests/fixtures/p_token_transfer.pcs"))
             .expect("load transfer trace");
         let happy = arm_blocks.iter()
             .filter(|b| trace.range(b.instructions.start..b.instructions.end)
@@ -1028,7 +1028,7 @@ mod tests {
     /// the shared converter instead of its former `binary_search`-over-`.ptr`. Full round-trip.
     #[test]
     fn pc_map_matches_analysis_ptrs() {
-        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let bytes = std::fs::read("../tests/fixtures/p_token.so").expect("read p_token.so");
         let loader = Arc::new(BuiltinProgram::new_mock());
         let executable: Executable<NoopCtx> =
             Executable::load(&bytes, loader).expect("load p_token.so");
@@ -1049,7 +1049,7 @@ mod tests {
     /// (dispatch-mismatch at logical 196) and shape 2 `lddw r0,10<<32; ja <bare exit>` (logical 124).
     #[test]
     fn entrypoint_error_landings_classify() {
-        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let bytes = std::fs::read("../tests/fixtures/p_token.so").expect("read p_token.so");
         let loader = Arc::new(BuiltinProgram::new_mock());
         let executable: Executable<NoopCtx> =
             Executable::load(&bytes, loader).expect("load p_token.so");
@@ -1069,7 +1069,7 @@ mod tests {
     /// Idiom recogniser: pins debit/credit pair, dispatch load, and error-propagation seam on p_token.
     #[test]
     fn idioms_recognise_transfer_shapes() {
-        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let bytes = std::fs::read("../tests/fixtures/p_token.so").expect("read p_token.so");
         let loader = Arc::new(BuiltinProgram::new_mock());
         let executable: Executable<NoopCtx> =
             Executable::load(&bytes, loader).expect("load p_token.so");
@@ -1112,7 +1112,7 @@ mod tests {
     /// recover->lift handoff mechanically. Matches `transfer_arm_entry_spaces` + qedlift consumer.
     #[test]
     fn qedmeta_sidecar_emits_recovered_facts() {
-        let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
+        let bytes = std::fs::read("../tests/fixtures/p_token.so").expect("read p_token.so");
         let loader = Arc::new(BuiltinProgram::new_mock());
         let executable: Executable<NoopCtx> =
             Executable::load(&bytes, loader).expect("load p_token.so");
@@ -1127,12 +1127,12 @@ mod tests {
         let enclosing_func_logical = pc_map.slot_to_logical(func_start).unwrap_or(func_start);
         let arm_blocks = slice_cfg(&analysis, arm_entry_slot, Some(&func_set));
         let idiom_tags = idioms::scan_arm(&analysis, &arm_blocks, Some((load_pc, 1)));
-        let trace = load_trace(Path::new("tests/fixtures/p_token_transfer.pcs")).expect("trace");
+        let trace = load_trace(Path::new("../tests/fixtures/p_token_transfer.pcs")).expect("trace");
 
         let overlay: Overlay = toml::from_str(
-            &std::fs::read_to_string("tests/fixtures/p_token.qedoverlay.toml").unwrap()).unwrap();
+            &std::fs::read_to_string("../tests/fixtures/p_token.qedoverlay.toml").unwrap()).unwrap();
         let ovix = overlay.instructions.iter().find(|o| o.name == "transfer").unwrap();
-        let idl_text = std::fs::read_to_string("tests/fixtures/spl_token.codama.json").unwrap();
+        let idl_text = std::fs::read_to_string("../tests/fixtures/spl_token.codama.json").unwrap();
         let idl: Idl = serde_json::from_str(&idl_text).unwrap();
         let idl_ix = idl.program.instructions.iter().find(|i| i.name == "transfer").unwrap();
 
@@ -1146,7 +1146,7 @@ mod tests {
             &arm_blocks, &idiom_tags, Some(&trace)).expect("emit qedmeta");
         let emitted = String::from_utf8(buf).expect("utf8");
 
-        let fixture = "tests/fixtures/p_token.transfer.recovered.qedmeta.toml";
+        let fixture = "../tests/fixtures/p_token.transfer.recovered.qedmeta.toml";
         if std::env::var("QEDRECOVER_BLESS").is_ok() {
             std::fs::write(fixture, &emitted).expect("write fixture");
         }

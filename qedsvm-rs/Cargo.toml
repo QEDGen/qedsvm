@@ -1,5 +1,5 @@
 [workspace]
-members = ["lean-bridge", "qedsvm-buildscript"]
+members = ["lean-bridge", "qedsvm-buildscript", "qed-analysis", "qedrecover"]
 # Test fixtures contain many `*_src/Cargo.toml` sub-crates built by
 # cargo-build-sbf; they are not part of this workspace.
 exclude = ["tests/fixtures"]
@@ -37,20 +37,12 @@ path = "src/bin/cli.rs"
 name = "disasm-to-lean"
 path = "src/bin/disasm_to_lean.rs"
 
-# qedrecover — load a Solana .so + an intent manifest, emit Lean
-# metadata (PC ranges, CFG, branch annotations, layout offsets) that
-# downstream Lean proofs consume. Feature-gated so the default build
-# doesn't pull in solana-sbpf.
-[[bin]]
-name = "qedrecover"
-path = "src/bin/qedrecover/main.rs"
-required-features = ["qedrecover"]
-
 # qedlift — end-to-end lift demo: load a Solana .so, extract .text,
 # decode to insns, emit a Lean module with the bytes + decoded insns
 # + decode-equality proof + Hoare-triple skeleton ready for
-# `sl_block_auto` to close. Same feature gate as qedrecover (shares
-# the solana-sbpf dep).
+# `sl_block_auto` to close. Gated behind `qedrecover` (kept as the
+# feature name the README documents); qedrecover itself is now a
+# standalone crate (qedsvm-rs/qedrecover).
 [[bin]]
 name = "qedlift"
 path = "src/bin/qedlift.rs"
@@ -86,18 +78,21 @@ mollusk-pubkey = { package = "solana-pubkey", version = "3.0", optional = true, 
 # in svm.rs (top-level dispatch) and by diff_mollusk.rs.
 solana-sdk-ids = "3.1.0"
 
-# qedrecover dep: ELF loader + static analysis (CFG, basic blocks).
-# Same version pulled in transitively by mollusk-svm at agave 4.0.
-# JIT disabled — analysis only.
+# qedlift deps (gated by the `qedrecover` feature). qedrecover is now a
+# standalone crate with its own copies; these serve qedlift, the only
+# remaining in-crate consumer of the feature.
+# Shared analysis substrate: slot<->logical PC map + IDL account layout.
+qed-analysis = { path = "qed-analysis", optional = true }
+# ELF loader + static analysis (CFG). Same version mollusk-svm pulls at
+# agave 4.0. JIT disabled — analysis only.
 solana-sbpf = { version = "0.14.4", default-features = false, optional = true }
-# qedrecover deps: IDL parsing (serde) and overlay parsing (toml).
-# Codama IDLs are flat-enough JSON that hand-rolled serde structs
-# beat pulling in the full codama-nodes crate + its transitive set.
+# IDL parsing (serde) and overlay parsing (toml). Codama IDLs are
+# flat-enough JSON that hand-rolled serde structs beat the codama-nodes
+# crate + its transitive set.
 serde       = { version = "1.0", features = ["derive"], optional = true }
 serde_json  = { version = "1.0", optional = true }
 toml        = { version = "0.8", optional = true }
-# qedrecover dep: SHA-256 hash-pinning the emitted qedmeta sidecar's
-# .so/IDL (issue #37). Unifies with the dev-dep + the transitive
+# SHA-256 hash-pinning. Unifies with the dev-dep + the transitive
 # solana-sha256-hasher copy already in the tree.
 sha2        = { version = "0.10.8", default-features = false, optional = true }
 
@@ -139,9 +134,9 @@ bincode = "1.3.3"
 [features]
 diff-mollusk = ["dep:mollusk-svm", "dep:mollusk-account", "dep:mollusk-pubkey"]
 
-# qedrecover binary deps. JIT disabled on solana-sbpf — we only
-# analyse, never execute.
-qedrecover = ["dep:solana-sbpf", "dep:serde", "dep:serde_json", "dep:toml", "dep:sha2"]
+# qedlift deps (feature name kept as `qedrecover` for README continuity).
+# JIT disabled on solana-sbpf — we only analyse, never execute.
+qedrecover = ["dep:qed-analysis", "dep:solana-sbpf", "dep:serde", "dep:serde_json", "dep:toml", "dep:sha2"]
 
 # Side-by-side demo: runs incrementer + p-token Transfer through both
 # `qedsvm::Svm` and `mollusk_svm::Mollusk`, prints a comparison table.

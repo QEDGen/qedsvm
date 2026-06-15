@@ -44,7 +44,7 @@ Bounded execution to an exit code. This is the engine qedgen's guard DSL (`qedgu
 - `SVM.Syscalls.*` and `SVM.SBPF.InstructionSpecs.Syscalls.*`: syscall semantics and their specs
 - `SVM.Native.*`: native program models (System, ComputeBudget, precompiles, loader)
 - Solana primitives: `SVM.Solana.{AccountInfo, Cpi, Pda}` and `SVM.Pubkey`
-- The `qedsvm-rs` Rust library crate (`lib.rs`, `svm.rs`, `diff.rs`, `ffi.rs`, `serialize` / `deserialize` / `wire`): the conformant executor and diff-testing surface. The Rust *bins* (`qedlift`, `qedrecover`, `disasm_to_lean`, `cli`) are tools, not library API.
+- The `qedsvm-rs` Rust library crate (`lib.rs`, `svm.rs`, `diff.rs`, `ffi.rs`, `serialize` / `deserialize` / `wire`): the conformant executor and diff-testing surface. The Rust *bins* (`qedlift`, `disasm_to_lean`, `cli`) and the standalone `qedrecover` / `qed-analysis` crates are tools, not library API.
 
 ## The one evolving piece: the bridging predicates
 

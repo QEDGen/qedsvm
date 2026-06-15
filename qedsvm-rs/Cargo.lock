@@ -1992,6 +1992,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "qed-analysis"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "solana-sbpf",
+]
+
+[[package]]
+name = "qedrecover"
+version = "0.1.0"
+dependencies = [
+ "qed-analysis",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "solana-sbpf",
+ "toml",
+]
+
+[[package]]
 name = "qedsvm"
 version = "0.1.0"
 dependencies = [
@@ -2002,6 +2022,7 @@ dependencies = [
  "libsecp256k1 0.7.2",
  "mollusk-svm",
  "openssl",
+ "qed-analysis",
  "qedsvm-buildscript",
  "rand 0.8.6",
  "serde",

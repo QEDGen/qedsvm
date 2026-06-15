@@ -128,7 +128,7 @@ mod tests {
     use super::*;
 
     fn idl() -> serde_json::Value {
-        let text = std::fs::read_to_string("tests/fixtures/spl_token.codama.json")
+        let text = std::fs::read_to_string("../tests/fixtures/spl_token.codama.json")
             .expect("read spl_token.codama.json");
         serde_json::from_str(&text).expect("parse IDL")
     }

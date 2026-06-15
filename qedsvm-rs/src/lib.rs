@@ -12,10 +12,6 @@ mod wire;
 #[cfg(feature = "diff-mollusk")]
 pub mod diff;
 
-/// Shared slot↔logical PC converter + account layout (issue #41). Feature-gated: `qedrecover`.
-#[cfg(feature = "qedrecover")]
-pub mod analysis;
-
 pub use deserialize::{deserialize_account_writes, DeserializeError};
 pub use serialize::{serialize_parameters, SerializeError};
 pub use svm::{vm_fault_name, InstructionResult, PostStateError, ProgramResult, Svm,
