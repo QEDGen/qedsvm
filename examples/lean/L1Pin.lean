@@ -1,32 +1,20 @@
 /-
 Regression pins for the L1 fault-vs-exit distinction (audit L1).
 
-The `ERR_*` sentinels live in `exitCode : Option Nat`, so an `exit` of
-exactly a sentinel VALUE is numerically indistinguishable from the fault.
-`State.vmError : Option VmError` is the typed channel that disambiguates:
-every abort site sets it alongside the `exitCode` sentinel, and a clean
-`exit` never does. These pins lock both directions:
-
-  - a clean `exit` whose r0 equals a fault sentinel sets `exitCode` to
-    that sentinel but leaves `vmError = none`;
-  - each fault site sets `vmError = some <the typed fault>` AND the
-    matching `exitCode` sentinel, with `VmError.toSentinel` agreeing.
-
-So a spec can now assert "the program FAULTED" as `vmError = some e`,
-which no clean exit can satisfy — closing the collision.
+exitCode alone is ambiguous: a clean exit with r0 = ERR_ABORT is numerically
+identical to a fault. vmError is the disambiguating channel: abort sites set
+it; clean exits leave it none. Pins lock both directions and all toSentinel
+equalities, ensuring specs can assert faults via `vmError = some e`.
 -/
 import SVM.SBPF.Execute
 
 namespace Examples.L1Pin
 open SVM.SBPF
 
-/-- A state whose r0 is the `ERR_ABORT` sentinel and whose call stack is
-    empty (so `exit` terminates the program). -/
+/-- State with r0 = ERR_ABORT and empty call stack, so `exit` terminates. -/
 def cleanExitState : State := { (default : State) with regs := { r0 := ERR_ABORT } }
 
-/-- A CLEAN `exit` carrying r0 = `ERR_ABORT` reports that sentinel in
-    `exitCode` — yet `vmError` stays `none`. This is exactly the
-    `sentinel_exit.so` program in the model: not a fault. -/
+/-- Clean `exit` with r0 = ERR_ABORT: exitCode = some ERR_ABORT but vmError = none. -/
 theorem clean_exit_sentinel_no_fault :
     (step .exit cleanExitState).exitCode = some ERR_ABORT ∧
     (step .exit cleanExitState).vmError = none := by
@@ -38,18 +26,13 @@ theorem callx_sets_vmError :
     (step (.callx .r0) (default : State)).exitCode = some ERR_UNSUPPORTED_INSTRUCTION := by
   refine ⟨rfl, rfl⟩
 
-/-- `abort` sets `vmError = some .abort` and the same `ERR_ABORT`
-    sentinel a clean exit can carry — but now they are distinguishable
-    via `vmError`. -/
+/-- `abort` sets vmError = some .abort AND the ERR_ABORT sentinel. -/
 theorem abort_sets_vmError :
     (SVM.SBPF.Abort.execAbort (default : State)).vmError = some .abort ∧
     (SVM.SBPF.Abort.execAbort (default : State)).exitCode = some ERR_ABORT := by
   refine ⟨rfl, rfl⟩
 
-/-- THE collision, now resolved: an `abort` and a clean `exit` of the
-    `ERR_ABORT` value report the SAME `exitCode`, but only the abort sets
-    `vmError`. A spec phrased over `vmError` cannot be satisfied by the
-    clean exit. -/
+/-- abort and clean exit share the same exitCode; only abort sets vmError — collision resolved. -/
 theorem sentinel_collision_distinguished :
     (SVM.SBPF.Abort.execAbort (default : State)).exitCode
       = (step .exit cleanExitState).exitCode ∧

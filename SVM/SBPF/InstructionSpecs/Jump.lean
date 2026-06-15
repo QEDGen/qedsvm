@@ -6,17 +6,13 @@ open Memory
 
 /-! ## Conditional-jump helpers
 
-Conditional jumps read one or two registers and modify only the PC.
-The precondition and postcondition are identical (the read registers
-keep their values); the exit PC depends on the runtime condition,
-which the caller supplies as a `Decidable Prop`. The condition is
-already evaluated in the spec's exit-PC term, so callers
-case-split externally (`by_cases hc : cond`) and propagate the right
-exit through the macro composition. -/
+Conditional jumps read 1-2 registers and modify only the PC (pre = post). The
+exit PC depends on the runtime `cond` (a `Decidable Prop`); callers case-split
+externally (`by_cases hc : cond`) and propagate the right exit. -/
 
-/-- Generic 1-register-read conditional jump: instruction reads `dst`
-    (value `vDst`), tests `cond`, jumps to `target` if true and falls
-    through to `pc + 1` otherwise. Registers and memory unchanged. -/
+/-- Generic 1-register-read conditional jump: reads `dst` (value `vDst`),
+    tests `cond`, jumps to `target` if true else falls through to `pc + 1`.
+    Registers and memory unchanged. -/
 theorem cuTripleWithin_1reg_cjump
     (dst : Reg) (vDst : Nat) (pc target : Nat) (insn : Insn)
     (cond : Prop) [Decidable cond]
@@ -101,9 +97,9 @@ theorem cuTripleWithin_1reg_cjump
       | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
          exact hcompat.callStack cs (by rw [← hu]; exact hva))
 
-/-- Generic 2-register-read conditional jump: instruction reads `dst`
-    (value `vDst`) and `src` (value `vSrc`), tests `cond`, jumps. Same
-    "regs/mem unchanged" shape. `dst ≠ src` falls out of disjointness. -/
+/-- Generic 2-register-read conditional jump: reads `dst` (`vDst`) and
+    `src` (`vSrc`), tests `cond`, jumps. Same "regs/mem unchanged" shape;
+    `dst ≠ src` falls out of disjointness. -/
 theorem cuTripleWithin_2reg_cjump
     (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) (insn : Insn)
     (cond : Prop) [Decidable cond]
@@ -168,7 +164,7 @@ theorem cuTripleWithin_2reg_cjump
     · refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · intro r vr hvr; exact hcr_regs r vr hvr
       · intro a vm hvm; exact hcm_mem a vm hvm
-      · -- Show hp.pc = none, which is true since both inner singletons + hR are pc-free
+      · -- hp.pc = none (inner singletons + hR all pc-free)
         intro vp hvp
         have : hp.pc = none := by
           rw [← hp_eq]
@@ -215,22 +211,16 @@ theorem cuTripleWithin_2reg_cjump
                  exact hva))
         | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
            exact hcompat.callStack cs (by rw [← hu_PQR]; exact hva))
-    · -- Outer disjointness: (singletonReg dst vDst ⊎ singletonReg src vSrc) ⫫ hR
-      -- Same as hd_PQR after the hu_PQ rewrite
+    · -- outer disjointness = hd_PQR after the hu_PQ rewrite
       have : ((PartialState.singletonReg dst vDst).union
               (PartialState.singletonReg src vSrc)).Disjoint hR := hu_PQ ▸ hd_PQR
       exact this
-    · -- Inner disjointness: singletonReg dst vDst ⫫ singletonReg src vSrc
-      exact hd_dst_src
+    · exact hd_dst_src
 
 /-! ## Conditional-jump specs
 
-Each spec captures both branches in one statement: the exit PC is
-`if cond then target else pc + 1`, where `cond` is a `Decidable Prop`
-expressed in terms of the operand values. Callers `by_cases hc : cond`
-externally and propagate the right exit through macro composition.
-Signed variants use `toSigned64` to interpret the 64-bit register
-contents as two's complement. -/
+Both branches in one statement (exit PC = `if cond then target else pc + 1`).
+Signed variants read registers as two's complement via `toSigned64`. -/
 
 -- imm-source --
 
@@ -254,14 +244,12 @@ theorem jne_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-! ## Linear (fall-through / taken) variants of conditional jumps
 
-These are the shapes `sl_block_auto` needs to chain conditional jumps
-into a straight-line block. Each takes the path hypothesis as a
-precondition and collapses the conditional in the corresponding
-`*_imm_spec`. The path hypothesis becomes a side goal in `mkSpec`'s
-dispatch, discharged by the user via `<;> assumption`. -/
+Shapes `sl_block_auto` needs to chain conditional jumps into a straight-line
+block. Each takes the path hypothesis and collapses the `*_imm_spec`
+conditional; the hypothesis becomes a `mkSpec` side goal, discharged via
+`<;> assumption`. -/
 
-/-- `jeq dst, imm`: NOT taken case. Given `vDst ≠ toU64 imm` the
-    conditional collapses to the fall-through (`pc + 1`). -/
+/-- `jeq dst, imm`: NOT taken (fall-through to `pc + 1`). -/
 theorem jeq_imm_not_taken_spec
     (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
     (h : vDst ≠ toU64 imm) :
@@ -271,8 +259,7 @@ theorem jeq_imm_not_taken_spec
   have base := jeq_imm_spec dst imm vDst pc target
   rwa [if_neg h] at base
 
-/-- `jeq dst, imm`: TAKEN case. Given `vDst = toU64 imm` the
-    conditional collapses to the jump target. -/
+/-- `jeq dst, imm`: TAKEN (jump to target). -/
 theorem jeq_imm_taken_spec
     (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
     (h : vDst = toU64 imm) :
@@ -282,8 +269,7 @@ theorem jeq_imm_taken_spec
   have base := jeq_imm_spec dst imm vDst pc target
   rwa [if_pos h] at base
 
-/-- `jne dst, imm`: NOT taken case. Given `vDst = toU64 imm` the
-    conditional collapses to the fall-through (`pc + 1`). -/
+/-- `jne dst, imm`: NOT taken (fall-through to `pc + 1`). -/
 theorem jne_imm_not_taken_spec
     (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
     (h : vDst = toU64 imm) :
@@ -293,8 +279,7 @@ theorem jne_imm_not_taken_spec
   have base := jne_imm_spec dst imm vDst pc target
   rwa [if_neg (by simp [h] : ¬ (vDst ≠ toU64 imm))] at base
 
-/-- `jne dst, imm`: TAKEN case. Given `vDst ≠ toU64 imm` the
-    conditional collapses to the jump target. -/
+/-- `jne dst, imm`: TAKEN (jump to target). -/
 theorem jne_imm_taken_spec
     (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
     (h : vDst ≠ toU64 imm) :
@@ -313,8 +298,7 @@ theorem jgt_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     (vDst > toU64 imm)
     (fun _ hdst => by simp only [step, resolveSrc, hdst])
 
-/-- `jgt dst, imm`: NOT taken case (fall-through). The exit PC
-    collapses to `pc + 1` under `¬ (vDst > toU64 imm)`. -/
+/-- `jgt dst, imm`: NOT taken (fall-through to `pc + 1`). -/
 theorem jgt_imm_not_taken_spec
     (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
     (h : ¬ vDst > toU64 imm) :
@@ -324,8 +308,7 @@ theorem jgt_imm_not_taken_spec
   have base := jgt_imm_spec dst imm vDst pc target
   rwa [if_neg h] at base
 
-/-- `jgt dst, imm`: TAKEN case. The exit PC collapses to `target`
-    under `vDst > toU64 imm`. -/
+/-- `jgt dst, imm`: TAKEN (jump to target). -/
 theorem jgt_imm_taken_spec
     (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)
     (h : vDst > toU64 imm) :
@@ -494,15 +477,11 @@ theorem jset_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
 
 /-! ## Conditional-jump branch-shape specs
 
-The base `jXX_imm_spec` / `jXX_reg_spec` theorems above use the form
-`cuTripleWithin 1 0 pc (if cond then target else pc + 1) ...`. The
-`_branch` flavours below lift that into `cuTripleWithinBranch`, which
-exposes the two exit PCs separately (suitable for plugging into
-`cuTripleWithinBranch_join`). Each is a one-line wrapper applying
-`cuTripleWithin.toBranch`. -/
+`_branch` flavours lift the base specs into `cuTripleWithinBranch`, exposing the
+two exit PCs separately (for `cuTripleWithinBranch_join`). Thin
+`cuTripleWithin.toBranch` wrappers. -/
 
-/-- Branch shape of `jeq dst, imm`: exitT = target (taken when
-    `vDst = toU64 imm`), exitF = pc + 1 (otherwise). -/
+/-- Branch shape of `jeq dst, imm`: exitT = target, exitF = pc + 1. -/
 theorem jeq_imm_branch_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     cuTripleWithinBranch 1 0 pc target (pc + 1)
       (vDst = toU64 imm)
@@ -510,8 +489,7 @@ theorem jeq_imm_branch_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Na
       (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
   (jeq_imm_spec dst imm vDst pc target).toBranch
 
-/-- Branch shape of `jne dst, imm`: exitT = target (taken when
-    `vDst ≠ toU64 imm`), exitF = pc + 1 (otherwise). -/
+/-- Branch shape of `jne dst, imm`: exitT = target, exitF = pc + 1. -/
 theorem jne_imm_branch_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :
     cuTripleWithinBranch 1 0 pc target (pc + 1)
       (vDst ≠ toU64 imm)
@@ -713,9 +691,9 @@ theorem jsle_reg_taken_spec
   have base := jsle_reg_spec dst src vDst vSrc pc target
   rwa [if_pos h] at base
 
-/-- `jset dst, src, target`: jump if any bit-mask bit is set.
-    `simp only [..., hdst, hsrc]` instead of `rw`: the `Decidable (_ ≠ 0)`
-    instance under `&&&` doesn't synthesize through a `rw` motive. -/
+/-- `jset dst, src, target`: jump if any bit-mask bit is set. `simp only` not
+    `rw`: the `Decidable (_ ≠ 0)` instance under `&&&` won't synthesize through
+    a `rw` motive. -/
 theorem jset_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
     cuTripleWithin 1 0 pc
       (if vDst &&& vSrc ≠ 0 then target else pc + 1)
@@ -728,12 +706,9 @@ theorem jset_reg_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat) :
 
 /-! ## Direction-specialised variants for the trace-guided lifter
 
-`sl_block_iter` needs each conditional jump's post-PC to be a concrete
-value (`target` or `pc + 1`), not the `if cond then … else …` the
-combined specs carry. These split the combined spec by branch direction
-via `if_pos` / `if_neg`, mirroring the `jeq`/`jlt`/`jsle` variants above.
-Added for the opcodes the p-token init arms walk (`jgt`/`jle`/`jsge`
-reg-form, `jslt` imm-form). -/
+`sl_block_iter` needs each conditional jump's post-PC concrete (`target` or
+`pc + 1`), not `if cond then … else …`. These split by direction via
+`if_pos`/`if_neg` for the opcodes the p-token init arms walk. -/
 
 theorem jgt_reg_not_taken_spec (dst src : Reg) (vDst vSrc : Nat) (pc target : Nat)
     (h : ¬ vDst > vSrc) :

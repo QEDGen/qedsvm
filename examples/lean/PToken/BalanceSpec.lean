@@ -1,76 +1,23 @@
 /-
-  High-level Transfer refinement target — two theorems.
+  High-level Transfer balance-shift theorems.
 
-  ## `p_token_transfer_balance_spec` — `tokenAcctBalance` lifting lemma (PROVEN)
+  `p_token_transfer_balance_spec`: wraps a flat byte-level triple in
+  tokenAcctBalance by definitional unfold. h_asm is supplied by Layer 3b artifacts.
 
-  Lifts an asm-level Hoare triple in the **flat byte-level form**
-  (each TokenAccount field spelled out as a separate `↦Pubkey` /
-  `↦U64` / `↦Bytes` atom) to the `tokenAcctBalance`-wrapped form
-  downstream consumers use. The lift is a definitional unfolding
-  — `tokenAcctBalance` is defined as that 4-atom right-fold, so
-  the wrapped post follows from the unfolded post by `unfold`.
-
-  Practical instantiations supply `h_asm` via Layer 3b artifacts:
-  - `MinimalTransferAsm` (synthetic 6-insn anchor, proven via
-    `Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal_flat`).
-    See `p_token_transfer_balance_spec_minimal` below for the
-    discharge.
-  - `Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec`
-    (real pinocchio 75-CU happy path, proven). The flat atoms produced
-    by that theorem live at offsets `[r1+0xa0]` (source amount) and
-    `[r1+0x29a8]` (destination amount) — choose `ataA := initR1 + 0x60`
-    and `ataB := initR1 + 0x2968` to align `ataA+AMOUNT_OFF` /
-    `ataB+AMOUNT_OFF` with those concrete offsets. Bridging the
-    `↦Pubkey` mint/owner atoms to the 4-`↦U64` form the chain
-    uses needs a `Pubkey ↔ (U64×4)` reshape lemma — deferred until
-    a downstream consumer demands it.
-
-  ## `p_token_transfer_balance_spec_minimal` — synthetic anchor (PROVEN)
-
-  Same theorem shape, but for the synthetic `MinimalTransferAsm`
-  fixture (the refinement-pilot's asm anchor). Cites
-  `Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal_flat`.
-  Stated in the **flat** byte-level form (4 atoms per account
-  spelled out) — consistent with the Layer-3b artifact style and
-  avoids the SL bracketing mismatch that a `tokenAcctBalance`-wrapped
-  form would introduce. The wrapped form is the eventual user-facing
-  shape; it's deferred until a downstream theorem actually consumes
-  it (at which point the wrapper lift is worth writing).
-
-  This theorem is the canonical lowering target for a token transfer —
-  the `tokenAcctBalance` predicate shift the bytecode realises. The
-  synthetic-anchor version is the first proven instance of that lowering.
-  (The retired Direction-A MIR layer is documented in `docs/MIR.md`.)
+  `p_token_transfer_balance_spec_minimal`: same shape anchored to the synthetic
+  MinimalTransferAsm; stated in flat form to avoid the SL bracketing mismatch.
 
   ## SCOPE — what these theorems do NOT claim (H10)
 
-  These are partial-correctness separation-logic triples over the
-  HAPPY PATH of a TWO-account transfer. Read the names ("balance_spec",
-  "preserves_supply") narrowly:
-
-  * HAPPY PATH ONLY. They say nothing about failure paths — insufficient
-    funds, non-signer, frozen account, wrong/mismatched mint, delegate
-    rules. Those arms are out of scope, NOT proven to error-and-preserve.
-    (`_h_sameMint : True` is a no-op placeholder: unchecked Transfer
-    doesn't enforce same-mint, so the theorem cannot and does not claim
-    it.)
-  * TWO ACCOUNTS, not a global invariant. `preserves_supply` is the
-    arithmetic `(preA-x)+(preB+x)=preA+preB` for the source/destination
-    pair — it characterises the post-state of the triples below (those
-    accounts' balance atoms are literally `preA-amount`/`preB+amount`),
-    NOT a total-supply conservation over ALL token accounts.
-  * NO-OVERFLOW REGION EXCLUDED. `h_noOverflow : preB + x < 2^64` carves
-    out exactly the range where SPL returns `Overflow` and the model
-    wraps; behaviour at/over the boundary is not covered.
-  * PARTIAL CORRECTNESS WITHIN A CU WINDOW. The triple's post includes
-    `exitCode = none` (still running) inside the proven window; it is not
-    a whole-transaction total-correctness statement.
-  * TOKEN-TAIL OPAQUE. The 93-byte account tail is carried as one `rest`
-    blob (see L11) — delegate/state/is_native fields are not decoded, so
-    frozen/delegate behaviour is structurally out of scope.
-
-  What IS proven is exactly true; this block exists so the theorem NAMES
-  aren't over-read as functional correctness.
+  Partial-correctness triples over the HAPPY PATH of a TWO-account transfer:
+  * HAPPY PATH ONLY — failure paths (insufficient funds, frozen, wrong mint,
+    delegate) are out of scope. `_h_sameMint : True` is a no-op placeholder.
+  * TWO ACCOUNTS — preserves_supply is (preA-x)+(preB+x)=preA+preB for the
+    pair only, NOT total-supply conservation over all token accounts.
+  * NO-OVERFLOW EXCLUDED — h_noOverflow carves out the SPL Overflow range.
+  * PARTIAL CORRECTNESS — post has exitCode = none (still running), not
+    whole-transaction total correctness.
+  * TOKEN-TAIL OPAQUE — 93-byte rest blob (L11): frozen/delegate out of scope.
 -/
 
 import SVM.Solana.TokenAccount
@@ -134,9 +81,7 @@ theorem p_token_transfer_balance_spec
     (_h_sameMint   : True)  -- Transfer (unchecked) doesn't enforce; see docstring
     (_h_restA      : restA.size = REST_SIZE)
     (_h_restB      : restB.size = REST_SIZE)
-    -- Asm-level triple in tokenAcctBalance-unfolded form. Practical
-    -- consumers discharge via Layer 3b artifacts; see file docstring
-    -- for `MinimalTransferAsm` and `FullHappyPath` discharge routes.
+    -- Flat byte-level triple; consumers discharge via Layer 3b artifacts.
     (h_asm : cuTripleWithinMem nSteps nCu entryPc exitPc transferCr
               ( ( ((ataA + MINT_OFF)   ↦Pubkey mint)  **
                   ((ataA + OWNER_OFF)  ↦Pubkey authA) **
@@ -168,16 +113,7 @@ theorem p_token_transfer_balance_spec
   unfold tokenAcctBalance
   exact h_asm
 
-/-! ## Sanity check — high-level effect is balance-preserving.
-
-    Pure arithmetic property, proven directly. This is the TWO-ACCOUNT
-    conservation for the source/destination pair: it is exactly the
-    relationship between the post-state balance atoms the triples below
-    expose (`preA - amount` and `preB + amount`), so it characterises
-    those theorems' post-states rather than standing apart from them.
-    It is NOT a global total-supply invariant over all token accounts,
-    and it is happy-path only — see the SCOPE block at the top of this
-    file (H10). -/
+/-! ## Arithmetic sanity: two-account supply conservation (H10, happy-path only) -/
 
 theorem p_token_transfer_preserves_supply
     (x preA preB : Nat) (_h_funds : x ≤ preA)
@@ -185,27 +121,12 @@ theorem p_token_transfer_preserves_supply
     (preA - x) + (preB + x) = preA + preB := by
   omega
 
-/-! ## Synthetic-anchor version — proven via the refinement bridge.
-
-This is the first proven instance of the `tokenAcctBalance`-shifting
-shape that `p_token_transfer_balance_spec` aspires to. Anchored to
-the synthetic `MinimalTransferAsm` codegen pattern (Tasks 8-10 of the
-refinement pilot) rather than real pinocchio bytecode.
-
-Stated in the flat byte-level form (one big `**` chain per account,
-not wrapped in `tokenAcctBalance`) to match the shape
-`Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal_flat`
-ships in — see that file's docstring for the bracketing-mismatch
-rationale. The `tokenAcctBalance`-wrapped variant is the eventual
-user-facing form; it follows by a sepConj-assoc reshape on top of
-this theorem when downstream demand justifies the wrapper. -/
+/-! ## Synthetic anchor (flat form, MinimalTransferAsm) -/
 
 theorem p_token_transfer_balance_spec_minimal
-    -- Token / account parameters:
     (srcAddr dstAddr amount preA preB vR3Old : Nat)
     (mintSrc mintDst ownerSrc ownerDst : Pubkey)
     (restSrc restDst : ByteArray)
-    -- Preconditions matching the abstract `tokenTransfer_spec`:
     (h_funds      : amount ≤ preA)
     (h_noOverflow : preB + amount < 2 ^ 64)
     (h_srcBal     : preA < 2 ^ 64)
@@ -242,18 +163,7 @@ theorem p_token_transfer_balance_spec_minimal
     { mint := mintDst, owner := ownerDst, amount := preB, rest := restDst }
     h_funds h_noOverflow h_srcBal h_dstBal
 
-/-! ## Wrapped synthetic anchor — the user-facing shape
-
-Companion to `p_token_transfer_balance_spec_minimal` that states pre/
-post via `tokenAcctBalance` (the wrapper SL atom) instead of the flat
-4-atoms-per-account form. Discharges through
-`Examples.RefinesTokenTransfer.refines_TokenTransfer_minimal`, which
-in turn lifts the flat triple via three `sepConj_assoc` applications
-inside the wrap iff.
-
-This is the synthetic counterpart to the deferred pinocchio-side
-wrap. Demonstrates that the lift mechanism works end-to-end on an
-asm anchor, ahead of the more involved pinocchio reshape work. -/
+/-! ## Wrapped synthetic anchor (tokenAcctBalance form) -/
 
 theorem p_token_transfer_balance_spec_minimal_wrapped
     (srcAddr dstAddr amount preA preB vR3Old : Nat)
@@ -283,58 +193,29 @@ theorem p_token_transfer_balance_spec_minimal_wrapped
     { mint := mintDst, owner := ownerDst, amount := preB, rest := restDst }
     h_funds h_noOverflow h_srcBal h_dstBal
 
-/-! ## Real-pinocchio version — proven via the FullHappyPath chain.
+/-! ## Real pinocchio version — FullHappyPath with unsigned-clean balance atoms.
 
-This is the second proven instance of the balance-shifting shape, this time
-anchored to the **real pinocchio p-token Transfer happy path** (75 CU, 10
-sub-arm chain) rather than the synthetic `MinimalTransferAsm`. Cites
-`Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec`.
-
-The statement is in the **same flat byte-level form** as the FullHappyPath
-artifact: 38 atoms (8 registers + 30 memory cells) in the right-folded
-chain. The only change from FullHappyPath's post is that the two balance
-atoms
-
-    [r1 + 0xa0]   ↦U64 wrapSub srcBalance txAmount
-    [r1 + 0x29a8] ↦U64 wrapAdd dstBalance txAmount
-
-are exposed in their unsigned-clean form
-
-    [r1 + 0xa0]   ↦U64 (srcBalance - txAmount)
-    [r1 + 0x29a8] ↦U64 (dstBalance + txAmount)
-
-under the additional preconditions `h_funds : txAmount ≤ srcBalance` (so
-`wrapSub` doesn't underflow) and `h_noOverflow : dstBalance + txAmount <
-2^64` (so `wrapAdd` doesn't wrap). The unsigned form is what downstream
-consumers (e.g. the MIR `TokenTransfer` lowering, Direction A) want; the
-wrap form is what the bytecode literally produces.
-
-The `tokenAcctBalance`-wrapped form (mirroring `p_token_transfer_balance_spec`'s
-signature with `ataA := initR1 + 0x60`, `ataB := initR1 + 0x2968`) is **not**
-established here. Getting there requires framing in two missing atoms
-(`ataB + OWNER_OFF = initR1 + 0x2988` and `ataB + REST_OFF = initR1 +
-0x29b0`) plus reshaping the 1-byte `signerByte` (currently at
-`initR1 + 0xa8`) into a 93-byte `↦Bytes` claim. Both gaps need
-non-trivial frame and SL reshape work; deferred until a downstream
-consumer demands the wrap. -/
+Same flat form as FullHappyPath but with h_funds/h_noOverflow collapsing
+wrapSub/wrapAdd to (srcBalance - txAmount)/(dstBalance + txAmount).
+tokenAcctBalance-wrapped form deferred (needs framing of ataB OWNER/REST +
+signerByte reshape). -/
 
 set_option maxHeartbeats 4000000 in
 set_option linter.unusedVariables false in
 theorem p_token_transfer_balance_spec_pinocchio
     (initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7 : Nat)
     (disc : Nat)
-    -- m1 and m3 are fixed constants 0xa5, lifted to `let`s in the type.
+    -- m1, m3 are constants 0xa5, lifted as `let`s.
     (m2 m4 : Nat)
     (amount : Nat)
     (layoutBound layoutTag : Nat)
     (srcState dstState : Nat)
     (txAmount srcBalance dstBalance : Nat)
-    -- src1..src4 and dst1..dst4 are pinned by hypothesis to other
-    -- params (canonMint*, authWord, dstMint*), lifted as `let`s.
+    -- src*/dst* pinned to canonMint*/authWord/dstMint*, lifted as `let`s.
     (canonMint1 canonMint2 canonMint3 canonMint4 : Nat)
     (dstMint2 dstMint3 dstMint4 : Nat)
     (authWord signerByte authByte closeFlag : Nat)
-    -- Size hypotheses (same as FullHappyPath)
+    -- Size bounds (same as FullHappyPath)
     (h_amt_in : amount < 2 ^ 64)
     (h_bound_lt : layoutBound < 2 ^ 64)
     (h_tx_lt : txAmount < 2 ^ 64)
@@ -345,7 +226,7 @@ theorem p_token_transfer_balance_spec_pinocchio
     (h_dm2_lt : dstMint2 < 2 ^ 64) (h_dm3_lt : dstMint3 < 2 ^ 64)
     (h_dm4_lt : dstMint4 < 2 ^ 64)
     (h_auth_lt : authWord < 2 ^ 64)
-    -- Sub-arm structural hypotheses (same as FullHappyPath)
+    -- Sub-arm hypotheses (same as FullHappyPath)
     (h_disc : disc % 256 = toU64 3)
     (hm2 : m2 % 256 = toU64 0xff)
     (hm4 : m4 % 256 = toU64 0xff)
@@ -361,13 +242,10 @@ theorem p_token_transfer_balance_spec_pinocchio
     (h_amt_ne_0 : txAmount ≠ toU64 0)
     (h_auth_ne_0 : authByte % 256 ≠ toU64 0)
     (h_close_ne_1 : closeFlag % 256 ≠ toU64 1)
-    -- High-level Transfer preconditions enabling the unsigned-clean rewrite:
-    -- `h_funds` is picked up by `omega` inside `h_wsub` to prove the wrap
-    -- collapse; the Lean linter doesn't see omega's auto-pickup, hence the
-    -- linter-disable below.
+    -- h_funds enables the wrapSub collapse; linter-disable because omega picks it up implicitly.
     (h_funds      : txAmount ≤ srcBalance)
     (h_noOverflow : dstBalance + txAmount < 2 ^ 64) :
-    -- Witnesses lifted as `let`s, mirroring FullHappyPath.
+    -- Witnesses as `let`s (mirrors FullHappyPath).
     let m1 : Nat := toU64 0xa5
     let m3 : Nat := toU64 0xa5
     let src1 : Nat := canonMint1
@@ -380,7 +258,7 @@ theorem p_token_transfer_balance_spec_pinocchio
     let dst4 : Nat := dstMint4
     cuTripleWithinMem 75 0 0 75
       Examples.PTokenTransferFullHappyPath.fullHappyPathCr
-      -- PRECONDITION — identical to FullHappyPath
+      -- PRECONDITION (identical to FullHappyPath)
       ((.r0 ↦ᵣ initR0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
         (.r3 ↦ᵣ initR3) ** (.r4 ↦ᵣ initR4) ** (.r5 ↦ᵣ initR5) **
         (.r6 ↦ᵣ initR6) ** (.r7 ↦ᵣ initR7) **
@@ -416,8 +294,7 @@ theorem p_token_transfer_balance_spec_pinocchio
         (effectiveAddr initR1 0x5219 ↦ₘ authByte) **
         (effectiveAddr initR1 0x29a8 ↦U64 dstBalance) **
         (effectiveAddr initR1 0xcd   ↦ₘ closeFlag))
-      -- POSTCONDITION — identical to FullHappyPath EXCEPT the two
-      -- balance atoms are stated in unsigned-clean form.
+      -- POSTCONDITION (FullHappyPath except balance atoms in unsigned-clean form)
       ((.r0 ↦ᵣ toU64 0) ** (.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ txAmount) **
         (.r3 ↦ᵣ closeFlag % 256) ** (.r4 ↦ᵣ authByte % 256) **
         (.r5 ↦ᵣ dstMint4) ** (.r6 ↦ᵣ toU64 0) ** (.r7 ↦ᵣ toU64 4) **
@@ -489,10 +366,7 @@ theorem p_token_transfer_balance_spec_pinocchio
           rt.containsRange (effectiveAddr initR1 10664) 8 = true) ∧
         rt.containsWritable (effectiveAddr initR1 10664) 8 = true) ∧
       rt.containsRange (effectiveAddr initR1 205) 1 = true) := by
-  -- Introduce the type-level `let`s before citing FullHappyPath
-  -- (which has the same lets in its own conclusion).
   intro m1 m3 src1 src2 src3 src4 dst1 dst2 dst3 dst4
-  -- Cite the proven FullHappyPath triple.
   have h_full :=
     Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec
       initR0 initR1 initR2 initR3 initR4 initR5 initR6 initR7
@@ -508,8 +382,7 @@ theorem p_token_transfer_balance_spec_pinocchio
       h_src_le h_src_ne h_dst_le h_dst_ne h_src_ne2 h_dst_ne2 h_bal_ge
       h_signer_ne h_r0_eq_r5_at_h4a h_r4_ne
       h_amt_ne_0 h_auth_ne_0 h_close_ne_1
-  -- Wrap-arithmetic collapse to unsigned form. Mirrors the
-  -- `h_wsub`/`h_wadd` pattern from RefinesTransfer.lean L86-100.
+  -- Collapse wrapSub/wrapAdd to unsigned form (mirrors RefinesTransfer.lean h_wsub/h_wadd).
   have h_tx_lt' : txAmount < U64_MODULUS := by unfold U64_MODULUS; exact h_tx_lt
   have h_bal_lt' : srcBalance < U64_MODULUS := by unfold U64_MODULUS; exact h_bal_lt
   have h_noOverflow' : dstBalance + txAmount < U64_MODULUS := by

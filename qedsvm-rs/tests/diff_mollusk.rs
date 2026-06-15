@@ -1,43 +1,10 @@
-//! Cross-engine differential test: same instruction through
-//! `qedsvm::Svm` and `mollusk_svm::Mollusk`, with byte-level
-//! assertions on every observable output.
+//! Cross-engine differential test: qedsvm::Svm vs mollusk_svm::Mollusk, byte-level assertions on all outputs.
 //!
-//! The fixture `tests/fixtures/noop.so` is a real
-//! `cargo-build-sbf`-produced SBF ELF whose `.text` is exactly:
+//! Run: cargo test --features diff-mollusk
 //!
-//!     mov64 r0, 0    ; b7 00 00 00 00 00 00 00
-//!     exit           ; 95 00 00 00 00 00 00 00
-//!
-//! That's the minimum cargo-build-sbf will emit — a hand-written
-//! `extern "C" fn entrypoint(_input: *mut u8) -> u64 { 0 }` — and
-//! it's still wrapped in a real Solana ELF (program headers,
-//! `.dynsym`, `.shstrtab`, etc.) that agave's loader accepts.
-//!
-//! Build / rebuild:
-//!     cd tests/fixtures/noop_src && cargo-build-sbf
-//!     cp target/deploy/qedsvm_noop.so ../noop.so
-//!
-//! Run:  cargo test --features diff-mollusk
-//!
-//! Diff target & known limits (M14):
-//!   * Reference engine: `mollusk-svm` over agave with
-//!     `FeatureSet::all_enabled()` (a future/pre-release feature set,
-//!     not the mainnet-active gate set). Fixtures here therefore assert
-//!     the model matches all-features-on agave, not today's cluster.
-//!   * The Lean semantics are linked from `.lake/build`; this harness
-//!     does NOT run `lake build`. Run `lake build` before `cargo test`
-//!     (CI does, before this suite) or the linked dylib is stale. The
-//!     buildscript now emits `rerun-if-changed` on the linked Lean
-//!     dylibs so a fresh `lake build` always forces a relink.
-//!   * Precompiles can't be diff-tested against agave (dependency
-//!     conflict) and use sibling crates asserted-equivalent in comments;
-//!     crypto syscalls are same-crate-vs-same-crate (no independent
-//!     signal). Cross-engine error-CODE comparison is not yet wired
-//!     (our r0 sentinels have no agave `InstructionError` mapping, and
-//!     the malicious-path codes diverge by design — see M6/L1); most
-//!     fixtures compare Success/Failure axis + account state + (where
-//!     deterministic) logs. `assert_no_poststate_backstop` guards the
-//!     one masking hazard that matters (M13).
+//! Known limits (M14): reference is mollusk with `FeatureSet::all_enabled()` (not mainnet-active).
+//! Lean dylibs are linked from .lake/build — run `lake build` before `cargo test` (CI does this).
+//! Precompiles can't be diff-tested (dependency conflict). `assert_no_poststate_backstop` guards M13.
 
 #![cfg(feature = "diff-mollusk")]
 
@@ -316,15 +283,8 @@ fn pid(seed: u64) -> Pubkey {
     Pubkey::from(b)
 }
 
-/// M13: the Rust post-state backstop must never fire on a diff fixture.
-/// A `Some(_)` means the Lean VM returned `Success` over a post-state
-/// agave's invariants forbid (lamport conservation, read-only
-/// modification, data-growth, rent) and `validate_post_state` silently
-/// downgraded it to `ERR_INVALID_POSTSTATE`. That downgrade can make a
-/// Lean-VM soundness bug masquerade as a benign cross-engine
-/// `Failure`/`Failure` match, hiding exactly the bug class the diff
-/// exists to catch. Asserting `None` proves the VM reproduced agave's
-/// invariant itself rather than leaning on the shell to rescue it.
+/// M13: assert the post-state backstop never fired. A `Some(_)` means the Lean VM relied on
+/// `validate_post_state` to downgrade a bad Success — masking a soundness bug as a Failure match.
 fn assert_no_poststate_backstop(fs_r: &qedsvm::InstructionResult) {
     assert!(
         fs_r.poststate_violation.is_none(),
@@ -334,29 +294,13 @@ fn assert_no_poststate_backstop(fs_r: &qedsvm::InstructionResult) {
     );
 }
 
-/// Cross-engine OUTCOME agreement at the granularity agave observably
-/// distinguishes (soundness-audit M14). Before this, the diff tests only
-/// asserted "both non-Success" on the fault paths, so the model could
-/// report the WRONG outcome class (e.g. a clean exit where agave faults,
-/// or the wrong program-error code) undetected.
-///
-/// agave collapses essentially every VM-level fault to
-/// `InstructionError::ProgramFailedToComplete` (mollusk
-/// `UnknownError(ProgramFailedToComplete)`) — see the source map in
-/// docs/SOUNDNESS_AUDIT_* (M14) — including budget exhaustion
-/// (`ExceededMaxInstructions`). So a model `VmFault` / `OutOfBudget`
-/// matches that catch-all regardless of WHICH fault it was (the model's
-/// finer `sentinel` is diagnostics only). A program-RETURNED error
-/// (`ProgramError`, r0 high bits set) compares against mollusk's
-/// `Failure(ProgramError)` by the exact code. The by-design divergences
-/// (M6/C5 read-only-modified, where the model produces
-/// `ERR_READONLY_MODIFIED` and agave a specific account-verification
-/// `InstructionError`) are NOT routed here — those tests assert their own
-/// expected pair.
+/// M14: cross-engine outcome comparison. agave collapses all VM faults + meter exhaustion to
+/// `InstructionError::ProgramFailedToComplete` (mollusk `UnknownError(ProgramFailedToComplete)`),
+/// so VmFault/OutOfBudget match that catch-all. Program-returned errors compare by exact code.
+/// By-design divergences (M6/C5 readonly) are asserted separately and NOT routed here.
 fn outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult) -> Result<(), String> {
     use FsProgramResult as F;
     use MlProgramResult as M;
-    // agave's catch-all for VM faults + meter exhaustion.
     let is_failed_to_complete =
         |ie: &InstructionError| matches!(ie, InstructionError::ProgramFailedToComplete);
     match (fs, ml) {
@@ -386,19 +330,14 @@ fn outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult) -> Result<(), Str
     }
 }
 
-/// Assert cross-engine outcome agreement (M14); panics with the precise
-/// mismatch. The replacement for the old "both non-Success" assertions on
-/// fault fixtures.
+/// Assert M14 outcome agreement; panics with the mismatch on divergence.
 fn assert_outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult, ctx: &str) {
     if let Err(why) = outcome_matches(fs, ml) {
         panic!("{ctx}: cross-engine outcome mismatch (M14): {why}");
     }
 }
 
-/// L10: resolve a resulting account by key instead of indexing
-/// positionally (`resulting_accounts[0]`), which silently reads the
-/// wrong slot if the engine ever reorders the list. Panics (not a wrong
-/// silent read) if the key is absent.
+/// L10: look up a resulting account by key, not position — panics if absent rather than silently misreading.
 fn fs_acct_by_key<'a>(
     fs_r: &'a qedsvm::InstructionResult,
     key: &Pubkey,
@@ -409,19 +348,16 @@ fn fs_acct_by_key<'a>(
         .unwrap_or_else(|| panic!("account {key} absent from qedsvm resulting_accounts"))
 }
 
-/// Both engines accept the real cargo-build-sbf-produced ELF and
-/// produce identical observable output for a trivial noop call.
+/// Both engines produce identical output for a trivial noop.
 #[test]
 fn noop_program_matches_mollusk() {
     let program_id = pid(1);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    // ─ qedsvm side ────────────────────────────────────────────
     let mut fs = Svm::default();
     fs.add_program(&program_id, NOOP_SO);
     let fs_r = fs.process_instruction(&ix, &[]).expect("qedsvm runs noop");
 
-    // ─ Mollusk side ───────────────────────────────────────────────
     let mut m = Mollusk::default();
     m.add_program_with_loader_and_elf(
         &program_id,
@@ -430,7 +366,6 @@ fn noop_program_matches_mollusk() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    // ─ Diff ───────────────────────────────────────────────────────
     assert!(
         matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success, got {:?}", fs_r.program_result,
@@ -446,8 +381,6 @@ fn noop_program_matches_mollusk() {
         m_r.resulting_accounts.len(),
         "resulting_accounts count diverged",
     );
-    // For accounts that are present in both lists, verify they
-    // match field-by-field.
     for ((k_a, a_a), (k_b, a_b)) in
         fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
     {
@@ -456,11 +389,7 @@ fn noop_program_matches_mollusk() {
         assert_eq!(a_a.data(), a_b.data.as_slice(), "data diverged for {k_a}");
         assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
     }
-    // CU equality: agave's program-runtime emits the same
-    // "consumed 2 of 1.4M compute units" we report. (This is a
-    // stricter check than the others — if the spec layer ever
-    // diverges from agave's CU accounting for any instruction,
-    // this catches it.)
+    // Strict CU equality — catches any drift in per-instruction CU accounting.
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "compute_units_consumed diverged: ours={} mollusk={}",
@@ -468,13 +397,7 @@ fn noop_program_matches_mollusk() {
     );
 }
 
-/// The real `solana_program::entrypoint!`-using noop. This is the
-/// program shape every published Solana program ships in: an
-/// `entrypoint!` macro that deserializes the input buffer into
-/// `(program_id, &[AccountInfo], &[u8])`, calls the user's
-/// `process_instruction`, and converts the result back. ~1923 sBPF
-/// instructions in `.text`. Cross-engine equality on this shape is
-/// the actual "we conform to agave" claim.
+/// Cross-engine equality on the real `entrypoint!` noop shape (~1923 sBPF instructions) — the actual "we conform to agave" claim.
 #[test]
 fn real_solana_program_entrypoint_noop_matches_mollusk() {
     let program_id = pid(3);
@@ -492,22 +415,16 @@ fn real_solana_program_entrypoint_noop_matches_mollusk() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    // Equal program result.
     match (&fs_r.program_result, &m_r.program_result) {
         (FsProgramResult::Success, MlProgramResult::Success) => {}
         (a, b) => panic!(
             "program_result diverged on real solana_program noop:\n  qedsvm: {a:?}\n  mollusk:    {b:?}",
         ),
     }
-    // Equal return data.
     assert_eq!(fs_r.return_data, m_r.return_data,
         "return_data diverged");
 
-    // With proper call/return semantics (Phase D — push retPc on
-    // `.call_local`, pop on `.exit`), qedsvm runs the same
-    // top-level instruction count as agave for this noop. We assert
-    // exact CU equality, which catches any future regression that
-    // off-by-one's the call frame logic.
+    // Exact CU equality catches call-frame off-by-ones.
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "compute_units_consumed diverged on real solana_program noop: ours={} mollusk={}",
@@ -515,11 +432,7 @@ fn real_solana_program_entrypoint_noop_matches_mollusk() {
     );
 }
 
-/// A program that actually calls a syscall (`sol_log_`). Validates
-/// our per-syscall CU table by asserting both engines report the
-/// exact same `compute_units_consumed` — equivalent to one
-/// `syscall_base_cost = 100` charge on top of the framework
-/// instructions both engines have to execute.
+/// Validates per-syscall CU table: both engines must report identical CU for `sol_log_`.
 #[test]
 fn logger_program_matches_mollusk() {
     let program_id = pid(4);
@@ -542,8 +455,6 @@ fn logger_program_matches_mollusk() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
     assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    // Hard CU equality — passing this proves the syscall CU table
-    // is at least correct for sol_log_ on a small message.
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for msg!(\"hi\"): ours={} mollusk={}",
@@ -551,14 +462,8 @@ fn logger_program_matches_mollusk() {
     );
 }
 
-/// H5 surcharge-overrun boundary: run the logger with a budget too
-/// small for `sol_log_`'s ~100-CU surcharge. The Lean VM's mid-run
-/// meter crosses the budget DURING the syscall (not at a per-step
-/// fuel boundary), so this exercises exactly the new fail-closed
-/// budget halt + the wire-level `min(cuConsumed, budget)` clamp that
-/// mirrors agave draining the meter to the full budget on
-/// `ComputeBudgetExceeded`. Both engines must (a) NOT succeed and
-/// (b) report the SAME consumed CU (= the full budget).
+/// H5: budget too small for `sol_log_`'s surcharge. Both engines must (a) not succeed
+/// and (b) report consumed = full budget (agave's meter-drain-to-budget behavior).
 #[test]
 fn logger_surcharge_overrun_matches_mollusk() {
     let program_id = pid(60);
@@ -581,9 +486,7 @@ fn logger_surcharge_overrun_matches_mollusk() {
     assert!(matches!(fs_r.program_result, FsProgramResult::OutOfBudget),
         "qedsvm: expected OutOfBudget on surcharge overrun, got {:?}",
         fs_r.program_result);
-    // M14: agave's meter exhaustion (ExceededMaxInstructions) also
-    // collapses to UnknownError(ProgramFailedToComplete) — same outcome.
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result,
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, // M14: ExceededMaxInstructions → same catch-all
         "logger_surcharge_overrun");
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
@@ -594,20 +497,12 @@ fn logger_surcharge_overrun_matches_mollusk() {
         "expected the meter drained to the full budget");
 }
 
-/// First fixture that actually *mutates* account data. Reads a u64
-/// from `accounts[0].data[0..8]`, adds 1, writes it back. Validates
-/// that qedsvm's `deserialize_account_writes` picks up the
-/// program's write, that it reports the new data identically to
-/// mollusk, and that all other fields (lamports, owner, return data,
-/// CU consumption) still match byte-for-byte.
+/// First fixture that mutates account data (u64+1). Validates `deserialize_account_writes` and full field equality.
 #[test]
 fn incrementer_program_matches_mollusk() {
     let program_id = pid(5);
     let acct_key = pid(6);
-    // Account owned by the program so both engines permit the write
-    // through the loader's ownership invariant check. The two engines
-    // pull `solana-account` from different majors (4.x for us, 3.x for
-    // mollusk), so we build the same shape twice from a shared spec.
+    // Account owned by the program (required for write permission). Two `solana-account` majors (4.x/3.x) — built twice.
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
@@ -626,10 +521,7 @@ fn incrementer_program_matches_mollusk() {
         data: vec![],
     };
 
-    // Real on-chain CU budget. The default (200k) is plenty for this
-    // program (mollusk consumes 321), but keep the budgets identical
-    // across engines so any future budget-dependent path can't drift.
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    let mut fs = Svm::default().with_cu_budget(1_400_000); // keep budgets identical across engines
     fs.add_program(&program_id, INCREMENTER_SO);
     let fs_r = fs
         .process_instruction(&ix, &[(acct_key, pre_shared)])
@@ -656,8 +548,7 @@ fn incrementer_program_matches_mollusk() {
     assert_eq!(fs_key, &acct_key);
     assert_eq!(m_key, &acct_key);
 
-    // The actual write-back claim: data[0..8] = 1u64.
-    let mut want = vec![0u8; 16];
+    let mut want = vec![0u8; 16]; // expected post-state: data[0..8] = 1u64
     want[..8].copy_from_slice(&1u64.to_le_bytes());
     assert_eq!(fs_acct.data(), want.as_slice(),
         "qedsvm did not record the increment: got {:?}", fs_acct.data());
@@ -675,12 +566,7 @@ fn incrementer_program_matches_mollusk() {
     );
 }
 
-/// Halfword-width memory ops: ldxh reads the u16 at account 0's
-/// data[0..2], stxh writes back value+1, and sth (ST_H_IMM, opcode
-/// 0x6a) stores the constant 0x1234 at data[2..4]. The only fixture
-/// covering 16-bit stores; pre-populated with 0x00ff so the ldxh/stxh
-/// increment carries across the byte boundary (0x00ff -> 0x0100),
-/// catching any byte/halfword width confusion in either engine.
+/// 16-bit store coverage: ldxh/stxh increment (0x00ff→0x0100) + sth constant (0x1234). Only fixture exercising 16-bit stores.
 #[test]
 fn halfword_store_program_matches_mollusk() {
     let program_id = pid(70);
@@ -729,9 +615,7 @@ fn halfword_store_program_matches_mollusk() {
     assert_eq!(fs_key, &acct_key);
     assert_eq!(m_key, &acct_key);
 
-    // The write-back claim: data[0..2] = 0x0100 (carried increment),
-    // data[2..4] = 0x1234 (the ST_H_IMM constant).
-    let mut want = vec![0u8; 16];
+    let mut want = vec![0u8; 16]; // data[0..2]=0x0100 (carried increment), data[2..4]=0x1234 (ST_H_IMM)
     want[..2].copy_from_slice(&0x0100u16.to_le_bytes());
     want[2..4].copy_from_slice(&0x1234u16.to_le_bytes());
     assert_eq!(fs_acct.data(), want.as_slice(),
@@ -749,12 +633,7 @@ fn halfword_store_program_matches_mollusk() {
     );
 }
 
-/// Heap-allocating program: exercises the embedded bump allocator over
-/// the program heap (reads/commits the bump slot at 0x300000000, writes
-/// and reads an allocated block). It touches no accounts, so this is a
-/// pure byte-level conformance check — both engines must run the heap
-/// load/store sequence to Success with identical CU and return data,
-/// confirming qedsvm models the heap region exactly as agave/mollusk do.
+/// Heap bump-allocator: reads/commits 0x300000000, writes+reads a block. Pure byte-level conformance on the heap region.
 #[test]
 fn heap_alloc_program_matches_mollusk() {
     let program_id = pid(7);
@@ -803,13 +682,7 @@ fn heap_alloc_program_matches_mollusk() {
     );
 }
 
-/// Empirical anchor for H7 (`sol_remaining_compute_units`): the program
-/// calls the syscall and writes the returned u64 LE into
-/// accounts[0].data[0..8]. Both engines run with the SAME explicit CU
-/// budget; the byte-identical data assertion pins qedsvm's
-/// remaining-budget formula (`cuBudget − (cuConsumed + 1 + 100)`)
-/// against rbpf's real meter (which syncs through the call insn, then
-/// consumes `syscall_base_cost` = 100 before `get_remaining()`).
+/// H7 anchor: pins `sol_remaining_compute_units` formula (`cuBudget − (cuConsumed + 1 + 100)`) against rbpf's meter.
 #[test]
 fn remaining_cu_program_matches_mollusk() {
     let program_id = pid(80);
@@ -859,9 +732,6 @@ fn remaining_cu_program_matches_mollusk() {
     assert_eq!(fs_key, &acct_key);
     assert_eq!(m_key, &acct_key);
 
-    // THE assertion: the 8-byte remaining-CU value must be
-    // byte-identical across engines. Surface both values on failure so
-    // a divergence shows exactly what each meter reported.
     let fs_remaining = u64::from_le_bytes(fs_acct.data()[..8].try_into().unwrap());
     let m_remaining = u64::from_le_bytes(m_acct.data[..8].try_into().unwrap());
     eprintln!(
@@ -884,13 +754,8 @@ fn remaining_cu_program_matches_mollusk() {
     );
 }
 
-/// Invoke token.so with empty instruction data. Both engines should
-/// fail — token's dispatch tree hits "Error: Invalid instruction" on
-/// unknown discriminator, exiting with `TokenError::InvalidInstruction`
-/// (= ProgramError::Custom(12)). We assert both engines log the
-/// "Error: Invalid instruction" string (so the dispatch path matches)
-/// and both surface a non-Success outcome. CU equality is checked
-/// loosely (within the same ~200-CU window as the success path).
+/// Both engines fail on empty token instruction data (unknown discriminator → `TokenError::InvalidInstruction`).
+/// Asserts same log string proves the same dispatch path was taken.
 #[test]
 fn token_empty_data_invalid_instruction_matches_mollusk() {
     let program_id = pid(10);
@@ -910,15 +775,11 @@ fn token_empty_data_invalid_instruction_matches_mollusk() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    // Both engines must fail (some Failure flavor — exact error
-    // encoding diverges: we return raw r0, mollusk maps to typed
-    // ProgramError).
+    // Exact error encoding diverges by design (raw r0 vs typed ProgramError) — just assert non-Success.
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Failure, got Success");
     assert!(!matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Failure, got Success");
-    // Same log content — proves both engines took the same dispatch
-    // path through token's match arm tree.
     let our_log = fs_r.logs.first()
         .map(|b| String::from_utf8_lossy(b).into_owned())
         .unwrap_or_default();
@@ -926,33 +787,14 @@ fn token_empty_data_invalid_instruction_matches_mollusk() {
         "qedsvm: expected 'Error: Invalid instruction', got {our_log:?}");
 }
 
-/// SPL Token `InitializeMint2` (discriminant 20). Exercises the
-/// real spl-token entrypoint dispatch, the `sol_get_rent_sysvar`
-/// syscall, the spl-token Mint deserialize/serialize path, and a
-/// full Mint struct write to `accounts[0].data` (82 bytes).
-///
-/// Why this is a useful diff:
-/// - First program in the harness that reads a sysvar via syscall.
-/// - First program with non-trivial control flow (option decoding,
-///   error returns based on input state).
-/// - 82-byte structured write to account data — a real write-back
-///   surface, not a single u64.
-///
-/// Setup needs:
-/// - The mint account must be owned by the token program (the
-///   program checks `mint.owner == program_id` in InitializeMint2).
-/// - The mint account must be rent-exempt under agave's *real* Rent
-///   values; we use 2_000_000 lamports, which clears the
-///   ~1.46M-lamport threshold for an 82-byte account.
-/// - Account data must be zeroed (Mint not already initialized).
+/// SPL Token `InitializeMint2` (discriminant 20): exercises rent sysvar, Mint serialize/deserialize, 82-byte write.
 #[test]
 fn token_initialize_mint2_matches_mollusk() {
     let program_id = pid(7);
     let mint_key = pid(8);
 
-    // 82 = spl_token::state::Mint::LEN.
-    const MINT_LEN: usize = 82;
-    let lamports = 2_000_000u64; // > rent-exemption for 82 bytes
+    const MINT_LEN: usize = 82; // spl_token::state::Mint::LEN
+    let lamports = 2_000_000u64; // > rent-exemption threshold for 82 bytes
     let data = vec![0u8; MINT_LEN];
 
     let pre_shared = AccountSharedData::from(Account {
@@ -964,11 +806,7 @@ fn token_initialize_mint2_matches_mollusk() {
         executable: false, rent_epoch: 0,
     };
 
-    // InitializeMint2 instruction data:
-    //   [0] = 20 (discriminant)
-    //   [1] = decimals (u8) = 9
-    //   [2..34] = mint_authority (Pubkey)
-    //   [34] = freeze_authority_option = 0 (no freeze authority)
+    // [20, decimals, mint_authority(32), freeze_authority_option=0]
     let mint_authority = pid(9);
     let mut ix_data = Vec::with_capacity(35);
     ix_data.push(20);
@@ -996,9 +834,6 @@ fn token_initialize_mint2_matches_mollusk() {
     );
     let m_r = m.process_instruction(&ix, &[(mint_key, pre_mollusk)]);
 
-    // Both engines must reach the same outcome (Success or Failure).
-    // Surface the actual results in the assertion message so a
-    // divergence is debuggable.
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on InitializeMint2, got {:?}", fs_r.program_result);
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
@@ -1014,12 +849,7 @@ fn token_initialize_mint2_matches_mollusk() {
         "Mint data diverged after InitializeMint2");
     assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
     assert_eq!(fs_acct.owner(), &m_acct.owner, "owner diverged");
-    // CU exact equality: the 176-CU drift documented prior to
-    // 2026-05-14 traced back to our `.call_local` bumping r10 by
-    // 0x2000 (V0 + stack-frame-gaps) whereas modern agave 4.x with
-    // `FeatureSet::all_enabled()` runs V0 with
-    // `enable_stack_frame_gaps = false`, so r10 bumps by 0x1000.
-    // Once fixed, byte-for-byte CU equality returns on this fixture.
+    // Exact CU equality (prior 176-CU drift from r10 stack-frame-gap was fixed 2026-05-14).
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for InitializeMint2: ours={} mollusk={}",
@@ -1027,22 +857,8 @@ fn token_initialize_mint2_matches_mollusk() {
     );
 }
 
-/// Build a 165-byte `spl_token::state::Account` (TokenAccount) blob
-/// with the given mint, owner, and amount. All COption fields are
-/// `None`, state is `Initialized`. Layout taken from
-/// `spl_token::state::Account::pack_into_slice`:
-///
-///   0..32   mint
-///   32..64  owner
-///   64..72  amount             (u64 LE)
-///   72..76  delegate tag       (0 = None)
-///   76..108 delegate pubkey
-///   108     state              (1 = Initialized)
-///   109..113 is_native tag     (0 = None)
-///   113..121 is_native value
-///   121..129 delegated_amount  (u64 LE, 0)
-///   129..133 close_authority tag (0 = None)
-///   133..165 close_authority pubkey
+/// Build a 165-byte SPL TokenAccount (all COption fields None, state=Initialized).
+/// Layout: 0..32 mint, 32..64 owner, 64..72 amount, 108 state=1. See `Account::pack_into_slice`.
 const TOKEN_ACCOUNT_LEN: usize = 165;
 fn build_token_account(mint: &Pubkey, owner: &Pubkey, amount: u64) -> Vec<u8> {
     let mut d = vec![0u8; TOKEN_ACCOUNT_LEN];
@@ -1057,16 +873,8 @@ fn build_token_account(mint: &Pubkey, owner: &Pubkey, amount: u64) -> Vec<u8> {
     d
 }
 
-/// Build an 82-byte `spl_token::state::Mint` blob, initialized with a
-/// `Some(mint_authority)`, the given supply + decimals, and no freeze
-/// authority. Layout (`Mint::pack_into_slice`):
-///   0..4    mint_authority COption tag (1 = Some)
-///   4..36   mint_authority pubkey
-///   36..44  supply              (u64 LE)
-///   44      decimals            (u8)
-///   45      is_initialized      (1 = true)
-///   46..50  freeze_authority tag (0 = None)
-///   50..82  freeze_authority pubkey
+/// Build an 82-byte SPL Mint (Some(mint_authority), no freeze authority).
+/// Layout: 0..4 tag=Some, 4..36 authority, 36..44 supply, 44 decimals, 45 initialized=1.
 const MINT_LEN: usize = 82;
 fn build_mint_account(mint_authority: &Pubkey, supply: u64, decimals: u8) -> Vec<u8> {
     let mut d = vec![0u8; MINT_LEN];
@@ -1074,20 +882,12 @@ fn build_mint_account(mint_authority: &Pubkey, supply: u64, decimals: u8) -> Vec
     d[4..36].copy_from_slice(mint_authority.as_ref());
     d[36..44].copy_from_slice(&supply.to_le_bytes());
     d[44] = decimals;
-    d[45] = 1; // is_initialized
-    // freeze_authority tag (46..50) stays 0 (None).
+    d[45] = 1; // is_initialized; freeze_authority tag (46..50) stays 0
     d
 }
 
-/// p-token `MintTo` (discriminant 7) — mints 250 tokens to a
-/// destination account. Accounts: [mint(w), destination(w),
-/// mint authority(signer)]. Exercises the shared account-array
-/// parsing loop (pc≈3368-3452, the back-branch that caps the static
-/// walker on ~18 arms) plus the supply/balance increment. Domain
-/// payoff: `mint.supply += amount` and `dest.amount += amount`.
-///
-/// Primary purpose here: produce a happy-path TRACE_STEPS trace that
-/// crosses the parsing loop, so `qedlift --trace` can unroll it.
+/// p-token `MintTo` (discriminant 7): mint.supply += amount, dest.amount += amount.
+/// Also a TRACE_STEPS trace target for qedlift (crosses the account-parsing loop at pc≈3368-3452).
 #[test]
 fn p_token_mint_to_matches_mollusk() {
     let program_id = pid(50);
@@ -1120,8 +920,7 @@ fn p_token_mint_to_matches_mollusk() {
         executable: false, rent_epoch: 0,
     };
 
-    // MintTo instruction data: [7, amount_le_u64] = 9 bytes.
-    let mut ix_data = Vec::with_capacity(9);
+    let mut ix_data = Vec::with_capacity(9); // [7, amount_le_u64]
     ix_data.push(7);
     ix_data.extend_from_slice(&MINT_AMOUNT.to_le_bytes());
 
@@ -1176,11 +975,7 @@ fn p_token_mint_to_matches_mollusk() {
     }
 }
 
-/// p-token `Burn` (discriminant 8) — burns 250 tokens from an account.
-/// Accounts: [account(w), mint(w), owner(signer)]. The debit complement
-/// to MintTo: `account.amount -= amount` and `mint.supply -= amount`.
-/// Also routes through the shared account-parsing region that caps the
-/// static walker — another phantom-loop arm trace guidance handles.
+/// p-token `Burn` (discriminant 8): account.amount -= amount, mint.supply -= amount.
 #[test]
 fn p_token_burn_matches_mollusk() {
     let program_id = pid(60);
@@ -1213,8 +1008,7 @@ fn p_token_burn_matches_mollusk() {
         executable: false, rent_epoch: 0,
     };
 
-    // Burn instruction data: [8, amount_le_u64] = 9 bytes.
-    let mut ix_data = Vec::with_capacity(9);
+    let mut ix_data = Vec::with_capacity(9); // [8, amount_le_u64]
     ix_data.push(8);
     ix_data.extend_from_slice(&BURN_AMOUNT.to_le_bytes());
 
@@ -1269,11 +1063,7 @@ fn p_token_burn_matches_mollusk() {
     }
 }
 
-/// p-token `TransferChecked` (discriminant 12) — like Transfer but with
-/// a mint account and a decimals check. Accounts: [source(w), mint,
-/// destination(w), authority(signer)]. Same balance shift as Transfer
-/// (`src -= amount`, `dst += amount`) plus the decimals == mint.decimals
-/// guard. Completes the transfer family under trace guidance.
+/// p-token `TransferChecked` (discriminant 12): src -= amount, dst += amount + decimals guard.
 #[test]
 fn p_token_transfer_checked_matches_mollusk() {
     let program_id = pid(70);
@@ -1309,8 +1099,7 @@ fn p_token_transfer_checked_matches_mollusk() {
         executable: false, rent_epoch: 0,
     };
 
-    // TransferChecked data: [12, amount_le_u64, decimals] = 10 bytes.
-    let mut ix_data = Vec::with_capacity(10);
+    let mut ix_data = Vec::with_capacity(10); // [12, amount_le_u64, decimals]
     ix_data.push(12);
     ix_data.extend_from_slice(&AMOUNT.to_le_bytes());
     ix_data.push(DECIMALS);
@@ -1367,11 +1156,7 @@ fn p_token_transfer_checked_matches_mollusk() {
     }
 }
 
-/// p-token `CloseAccount` (discriminant 9) — closes a zero-balance
-/// token account. Accounts: [account(w), destination(w), owner(signer)].
-/// Moves the account's lamports to destination and wipes the account.
-/// Different effect shape from the arithmetic arms (lamport move + data
-/// clear), exercising the immediate-store/zeroing path.
+/// p-token `CloseAccount` (discriminant 9): moves lamports to destination, wipes account. Exercises lamport-move + zero path.
 #[test]
 fn p_token_close_account_matches_mollusk() {
     let program_id = pid(80);
@@ -1383,8 +1168,7 @@ fn p_token_close_account_matches_mollusk() {
     const ACCT_LAMPORTS: u64 = 2_039_280;
     const DEST_LAMPORTS: u64 = 500_000;
 
-    // Account must have zero token balance to be closeable.
-    let acct_data = build_token_account(&mint_key, &owner, 0);
+    let acct_data = build_token_account(&mint_key, &owner, 0); // zero balance required
 
     let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
         lamports, data, owner: program_id, executable: false, rent_epoch: 0,
@@ -1450,22 +1234,14 @@ fn p_token_close_account_matches_mollusk() {
         "mollusk: expected Success on p-token CloseAccount, got {:?}", m_r.program_result);
 }
 
-/// p-token `InitializeMint2` (discriminant 20) — initializes a mint,
-/// taking decimals + mint authority + optional freeze authority from
-/// instruction data (no rent sysvar, unlike InitializeMint). Single
-/// account: [mint(w)]. The handler `sol_memcpy_`'s the 32-byte mint
-/// authority from the input region into the mint's authority field —
-/// the first p-token happy path that crosses `sol_memcpy_` (the
-/// syscall-verification target for qedlift's copy-spec wiring).
+/// p-token `InitializeMint2` (discriminant 20): no rent sysvar; first p-token path crossing `sol_memcpy_`.
 #[test]
 fn p_token_initialize_mint2_matches_mollusk() {
     let program_id = pid(90);
     let mint_key = pid(91);
     let mint_authority = pid(94);
 
-    // The mint being initialized starts uninitialized (all-zero data,
-    // 82 bytes, owned by the token program, rent-exempt).
-    const MINT_LAMPORTS: u64 = 1_461_600;
+    const MINT_LAMPORTS: u64 = 1_461_600; // rent-exempt for 82 bytes, uninitialized
     let mint_data = vec![0u8; MINT_LEN];
 
     let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
@@ -1475,8 +1251,7 @@ fn p_token_initialize_mint2_matches_mollusk() {
         lamports, data, owner: program_id, executable: false, rent_epoch: 0,
     };
 
-    // Instruction data: [20, decimals(u8), mintAuthority(32),
-    // freezeAuthority option tag(0 = None)].
+    // [20, decimals, mintAuthority(32), freezeAuthority tag=0(None)]
     let mut data = vec![20u8, 6u8];
     data.extend_from_slice(mint_authority.as_ref());
     data.push(0); // freeze authority: None
@@ -1512,10 +1287,7 @@ fn p_token_initialize_mint2_matches_mollusk() {
         "qedsvm: expected Success on p-token InitializeMint2, got {:?}", fs_r.program_result);
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success on p-token InitializeMint2, got {:?}", m_r.program_result);
-    // Full-equality referee (enabled by the H7 `sol_get_sysvar` fix:
-    // pinocchio's Rent::get crosses the generic accessor on this path,
-    // so pre-fix the engines diverged in CU and were only compared on
-    // Success/Success).
+    // Full equality enabled by H7 sol_get_sysvar fix (pinocchio Rent::get crosses generic accessor).
     assert_no_poststate_backstop(&fs_r);
     let (_, fs_mint) = &fs_r.resulting_accounts[0];
     let (_, ml_mint) = &m_r.resulting_accounts[0];
@@ -1530,17 +1302,7 @@ fn p_token_initialize_mint2_matches_mollusk() {
     );
 }
 
-/// SPL Token `Transfer` (discriminant 3). Moves 250 lamports of a
-/// token from `source` to `destination`, both owned by the same
-/// authority. Real on-chain Token path — exercises the same .text
-/// region as InitializeMint2 plus a memcpy/memmove-style data
-/// rearrangement, two TokenAccount unpack/pack round-trips, and the
-/// 64-bit checked-add/sub arithmetic.
-///
-/// This is the "should just work" claim from production-parity.md:
-/// Transfer has no CPI, no PDA derivation, no sysvar read beyond
-/// what's already wired. If it diverges, the divergence is a real
-/// new bug.
+/// SPL Token `Transfer` (discriminant 3): no CPI, no PDA, no new syscalls. Divergence = real bug.
 #[test]
 fn token_transfer_matches_mollusk() {
     let program_id = pid(7);
@@ -1724,8 +1486,7 @@ fn p_token_transfer_matches_mollusk() {
         executable: false, rent_epoch: 0,
     };
 
-    // Transfer instruction data: [3, amount_le_u64...] = 9 bytes.
-    let mut ix_data = Vec::with_capacity(9);
+    let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
     ix_data.push(3);
     ix_data.extend_from_slice(&TRANSFER_AMOUNT.to_le_bytes());
 
@@ -1799,13 +1560,7 @@ fn p_token_transfer_matches_mollusk() {
     );
 }
 
-/// Invoke `associated_token.so` with empty instruction data. Both
-/// engines should fail before any CPI is attempted. This is a
-/// "the ELF loads + the entry path runs to a fail point" probe — it
-/// validates ELF loading, relocation handling, and dispatch
-/// resolution for the larger ATA binary, without depending on CPI
-/// (which our engine still stubs). We assert both engines reach
-/// Failure and we don't crash.
+/// ELF-load probe for ATA binary: both engines fail before CPI. Validates loading + entry dispatch without CPI dependency.
 #[test]
 fn associated_token_empty_data_fails_on_both() {
     let program_id = pid(20);
@@ -1831,14 +1586,7 @@ fn associated_token_empty_data_fails_on_both() {
         "mollusk: expected Failure, got Success");
 }
 
-/// Phase-3-full CPI write-back: caller forwards a writable account
-/// to `incrementer.so` via CPI. The callee mutates the first 8 bytes
-/// of the account's data (treats as little-endian u64 and adds 1).
-/// We assert the post-state reflects the increment on both engines —
-/// the strongest claim about CPI plumbing yet: AccountInfo decoding
-/// through the `Rc<RefCell<…>>` chain, fresh sub-input construction,
-/// per-byte write-back, and harness-side deserialization all have to
-/// agree with mollusk byte-for-byte.
+/// CPI write-back: caller forwards writable account → incrementer adds 1. Validates full CPI plumbing byte-for-byte.
 #[test]
 fn cpi_caller_forwards_account_to_incrementer() {
     let caller_id = pid(50);
@@ -1855,9 +1603,7 @@ fn cpi_caller_forwards_account_to_incrementer() {
         lamports, data: data.clone(), owner: callee_id,
         executable: false, rent_epoch: 0,
     };
-    // The callee program account must be passed through too — agave
-    // needs it visible in the caller's AccountInfos so the CPI can
-    // resolve `instruction.program_id` to a loaded executable.
+    // Callee program account must be in caller's AccountInfos for CPI program_id resolution.
     let callee_program_shared = AccountSharedData::from(Account {
         lamports: 1, data: vec![],
         owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
@@ -1908,11 +1654,7 @@ fn cpi_caller_forwards_account_to_incrementer() {
     let mut expected = vec![0u8; 16];
     expected[..8].copy_from_slice(&1u64.to_le_bytes());
 
-    // resulting_accounts is in the same order as `ix.accounts`: the
-    // writable account first, then the callee program account. Look it up
-    // by key (L10) and confirm the write-back came from the VM, not the
-    // post-state backstop (M13).
-    assert_no_poststate_backstop(&fs_r);
+    assert_no_poststate_backstop(&fs_r); // M13: write-back must come from VM, not Rust backstop
     let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
     assert_eq!(fs_acct.data(), expected.as_slice(),
         "qedsvm: increment not visible after CPI; got {:?}", fs_acct.data());
@@ -1921,16 +1663,8 @@ fn cpi_caller_forwards_account_to_incrementer() {
     assert_eq!(m_acct.data.as_slice(), expected.as_slice());
 }
 
-/// Audit M6r — CPI realloc write-back (BPF callee grows its account). The SAME
-/// caller -> callee CPI shape as `cpi_caller_forwards_account_to_incrementer`,
-/// but the callee `realloc`s the forwarded 16-byte account up to 24 bytes
-/// (within the 10240 reserve) and writes a sentinel into the grown tail. agave
-/// re-serializes the grown account into the caller's view; post-fix qedsvm's
-/// `cpiCallNextState` harvests the callee's post-CPI `data_len` (block offset
-/// 80), writes that many bytes, and dual-writes the new length to the caller's
-/// length slots. Pre-fix the grow was lost (model reported the old length).
-/// `assert_no_poststate_backstop` proves the VM harvested the realloc rather
-/// than the M13 Rust backstop papering over it.
+/// M6r: CPI realloc write-back. Callee grows 16→24 bytes, writes sentinel into tail.
+/// `assert_no_poststate_backstop` proves the VM harvested the grow, not the M13 Rust backstop.
 #[test]
 fn cpi_callee_reallocs_account_grow() {
     let caller_id = pid(53);
@@ -1994,8 +1728,7 @@ fn cpi_callee_reallocs_account_grow() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success on CPI→realloc, got {:?}", m_r.program_result);
 
-    // 24 bytes: [0..16) the original zeros, [16..24) the callee's sentinel.
-    let mut expected = vec![0u8; 24];
+    let mut expected = vec![0u8; 24]; // [0..16) original zeros, [16..24) callee sentinel
     expected[16..24].copy_from_slice(&0xA1A2A3A4A5A6A7A8u64.to_le_bytes());
 
     assert_no_poststate_backstop(&fs_r);
@@ -2010,13 +1743,8 @@ fn cpi_callee_reallocs_account_grow() {
         "cross-engine realloc data mismatch");
 }
 
-/// Audit M6r — realloc bound (negative). The callee tries to grow its account
-/// beyond `MAX_PERMITTED_DATA_INCREASE` (`realloc(old + 10241)`). Both engines
-/// reject the over-grow; the account data MUST be unchanged (16 zero bytes) on
-/// both. The exact error code is engine-specific (agave's runtime
-/// `InvalidRealloc` / SDK bound check vs the model's `reallocViolated` rollback
-/// to `ERR_INVALID_REALLOC`), so this asserts the account STATE, not the code —
-/// the read-only-violation test pattern.
+/// M6r negative: callee tries to grow +10241 bytes (over MAX_PERMITTED_DATA_INCREASE). Both engines reject;
+/// asserts account state unchanged — error codes diverge by design so we don't assert them.
 #[test]
 fn cpi_callee_realloc_overflow_rejected_on_both() {
     let caller_id = pid(56);
@@ -2076,15 +1804,12 @@ fn cpi_callee_realloc_overflow_rejected_on_both() {
     eprintln!("fs.program_result  = {:?}", fs_r.program_result);
     eprintln!("mol.program_result = {:?}", m_r.program_result);
 
-    // Both engines must FAIL the over-grow (not Success).
-    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success), // both must reject over-grow
         "qedsvm: over-grow realloc should fail, got {:?}", fs_r.program_result);
     assert!(!matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: over-grow realloc should fail, got {:?}", m_r.program_result);
 
-    // The account data is unchanged (16 zero bytes) on both engines — the
-    // over-grow rolled back.
-    let unchanged = vec![0u8; 16];
+    let unchanged = vec![0u8; 16]; // rolled back on both engines
     let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
     assert_eq!(fs_acct.data(), unchanged.as_slice(),
         "qedsvm: over-grow account should be unchanged; got len {}", fs_acct.data().len());
@@ -2135,9 +1860,7 @@ fn cpi_readonly_account_not_committed_by_callee() {
         executable: true, rent_epoch: 0,
     };
 
-    // acct_key forwarded READ-ONLY at the top level (vs `new` -- writable
-    // -- in the sibling test).
-    let ix = Instruction {
+    let ix = Instruction { // acct_key READ-ONLY at top level — escalation to writable in CPI must fail
         program_id: caller_id,
         accounts: vec![
             AccountMeta::new_readonly(acct_key, false),
@@ -2165,10 +1888,7 @@ fn cpi_readonly_account_not_committed_by_callee() {
         (callee_id, callee_program_mollusk),
     ]);
 
-    // The read-only account's data MUST remain its original zeros on BOTH
-    // engines: agave blocks the escalation, we clamp + roll back. And the
-    // VM must reach that state itself, not via the post-state backstop.
-    assert_no_poststate_backstop(&fs_r);
+    assert_no_poststate_backstop(&fs_r); // read-only account must stay unchanged on both engines
     let fs_acct = fs_acct_by_key(&fs_r, &acct_key);
     assert_eq!(fs_acct.data(), data.as_slice(),
         "qedsvm: read-only account was modified across CPI (M6 leak); got {:?}",
@@ -2180,13 +1900,7 @@ fn cpi_readonly_account_not_committed_by_callee() {
         "read-only account data diverged across engines");
 }
 
-/// CPI caller invokes the `logger.so` callee. Stronger claim than
-/// the noop variant: the callee actually does work (calls `sol_log_`
-/// with "hi"), so this test only passes if (a) our Phase 3 sub-input
-/// construction places a deserializable buffer at the callee's
-/// `INPUT_START`, and (b) logs from the sub-VM propagate back into
-/// the caller's `State.log`. Mollusk reports two `Program log`
-/// messages (one per program); ours should at least contain "hi".
+/// CPI caller → logger.so: callee logs "hi"; asserts sub-VM logs propagate back to caller State.
 #[test]
 fn cpi_caller_invokes_logger_propagates_log() {
     let caller_id = pid(40);
@@ -2226,33 +1940,21 @@ fn cpi_caller_invokes_logger_propagates_log() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success on CPI→logger, got {:?}", m_r.program_result);
 
-    // The callee logs "hi" — it must show up in our captured log stream.
     let our_logs: Vec<String> = fs_r.logs.iter()
         .map(|b| String::from_utf8_lossy(b).into_owned()).collect();
     assert!(our_logs.iter().any(|l| l == "hi"),
         "expected 'hi' in qedsvm logs, got: {our_logs:?}");
 }
 
-/// First end-to-end CPI test: a real `cargo-build-sbf` caller that
-/// uses `solana_program::invoke` to CPI into a target whose pubkey is
-/// embedded in its instruction data. We register two programs — the
-/// caller and `noop.so` as the callee — and ask the caller to invoke
-/// the callee. Asserts both engines succeed; this is the simplest
-/// possible "CPI is plumbed end-to-end" claim. Account write-back is
-/// not yet tested (Phase 3 of CPI is TODO).
+/// Simplest CPI end-to-end: caller invokes noop.so (target pubkey in ix.data); asserts both engines succeed.
 #[test]
 fn cpi_caller_invokes_registered_noop() {
     let caller_id = pid(30);
     let callee_id = pid(31);
     let ix = Instruction {
         program_id: caller_id,
-        // The CPI caller passes the callee account through `accounts`
-        // (solana_program::invoke requires the callee's program
-        // account info to be present); we register `noop.so` so the
-        // callee account is also a program account.
         accounts: vec![AccountMeta::new_readonly(callee_id, false)],
-        // First 32 bytes = the target pubkey (callee_id).
-        data: callee_id.to_bytes().to_vec(),
+        data: callee_id.to_bytes().to_vec(), // first 32 bytes = target pubkey
     };
 
     let callee_account_shared = AccountSharedData::from(Account {
@@ -2286,9 +1988,6 @@ fn cpi_caller_invokes_registered_noop() {
     );
     let m_r = m.process_instruction(&ix, &[(callee_id, callee_account_mollusk)]);
 
-    // Both engines must successfully complete the CPI. (We don't yet
-    // assert CU equality — without Phase 3 write-back our CPI elides
-    // a chunk of agave's per-call serialization work.)
     let our_logs: Vec<String> = fs_r.logs.iter()
         .map(|b| String::from_utf8_lossy(b).into_owned()).collect();
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -2298,11 +1997,7 @@ fn cpi_caller_invokes_registered_noop() {
         "mollusk: expected Success on CPI, got {:?}", m_r.program_result);
 }
 
-/// Invoke the Pinocchio escrow with empty instruction data. Probes
-/// ELF loading + first-instruction dispatch for the smallest of the
-/// three vendored real programs. Pinocchio programs typically check
-/// `account_infos.len()` first and fail with NotEnoughAccountKeys
-/// before doing real work, so empty input is a usable error probe.
+/// Pinocchio escrow with empty ix: probes ELF load + first-dispatch; fails before real work on both engines.
 #[test]
 fn pinocchio_escrow_empty_data_fails_on_both() {
     let program_id = pid(21);
@@ -2328,8 +2023,7 @@ fn pinocchio_escrow_empty_data_fails_on_both() {
         "mollusk: expected Failure, got Success");
 }
 
-/// Inputs reach the program: pass non-empty `instruction.data` and
-/// confirm both engines accept it without divergence.
+/// Non-empty ix.data passes through to noop without divergence.
 #[test]
 fn noop_with_instruction_data_matches_mollusk() {
     let program_id = pid(2);
@@ -2353,13 +2047,7 @@ fn noop_with_instruction_data_matches_mollusk() {
     assert_eq!(fs_r.return_data, m_r.return_data);
 }
 
-/// Phase 3-N CPI: caller forwards TWO writable accounts to
-/// `incrementer.so`. The callee operates on `accounts[0]` only,
-/// incrementing its `data[0..8]` u64. `accounts[1]` is passed through
-/// unmodified. Asserts both engines agree on the full post-state —
-/// proving N=2 marshaling (cumulative per-block offsets, per-slot
-/// write-back pointers) is byte-for-byte correct, *and* that an
-/// account that the callee reads but doesn't mutate still round-trips.
+/// N=2 CPI: caller forwards two accounts to incrementer; accounts[0] incremented, accounts[1] unchanged; byte-identical.
 #[test]
 fn cpi_two_account_caller_forwards_to_incrementer() {
     let caller_id = pid(60);
@@ -2427,9 +2115,7 @@ fn cpi_two_account_caller_forwards_to_incrementer() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success on N=2 CPI, got {:?}", m_r.program_result);
 
-    // accounts[0] must be incremented to 1 (incrementer's effect),
-    // accounts[1] must be unchanged (still 0). Both engines must
-    // agree on both account contents.
+    // accounts[0] += 1, accounts[1] unchanged; both engines agree.
     let mut expected_a = vec![0u8; 16];
     expected_a[..8].copy_from_slice(&1u64.to_le_bytes());
     let expected_b = vec![0u8; 16];
@@ -2446,33 +2132,13 @@ fn cpi_two_account_caller_forwards_to_incrementer() {
     assert_eq!(m_a.data.as_slice(), expected_a.as_slice());
     assert_eq!(m_b.data.as_slice(), expected_b.as_slice());
 
-    // Cross-engine byte-for-byte agreement on every account.
     assert_eq!(fs_a.data(), m_a.data.as_slice(), "accounts[0] diverged");
     assert_eq!(fs_b.data(), m_b.data.as_slice(), "accounts[1] diverged");
     assert_eq!(fs_a.lamports(), m_a.lamports, "accounts[0] lamports diverged");
     assert_eq!(fs_b.lamports(), m_b.lamports, "accounts[1] lamports diverged");
 }
 
-/// Surfaces the `R_BPF_64_Relative`-in-`.text` loader bug. The
-/// program (built from `rodata_addr_returner_src/`) takes the address
-/// of a `#[used] static RODATA_CONST: u64` (which lives in
-/// `.rodata`), forces a volatile read so the compiler can't fold the
-/// address, and returns the upper 32 bits as the entrypoint exit
-/// code.
-///
-/// On agave: the loader patches the `lddw` imm `+= MM_REGION_SIZE`
-/// so the address sits in the program region; upper 32 bits = `0x1`
-/// → entrypoint returns `1` → `ProgramResult::Failure(Custom(1))`.
-///
-/// Pre-fix qedsvm: `applyRelocations` left `R_BPF_64_Relative`
-/// in `.text` unpatched; the loaded address was the raw section VA
-/// (typically `< 0x1_0000_0000`); upper 32 bits = `0` → entrypoint
-/// returns `0` → `ProgramResult::Success`. Asymmetric outcome
-/// (Failure vs Success) — divergence is immediate and unmissable.
-///
-/// Post-fix (this test): both engines return exit code 1 → both
-/// `Failure(Custom(1))`. Asserts on `program_result` matching, plus
-/// CU equality.
+/// R_BPF_64_Relative-in-.text relocation pin: pre-fix exit=0 (Success), post-fix exit=1 (Failure); both engines agree.
 #[test]
 fn rodata_addr_returner_matches_mollusk() {
     let program_id = pid(40);
@@ -2497,11 +2163,6 @@ fn rodata_addr_returner_matches_mollusk() {
     eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
     eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
 
-    // Both engines must reach the *same* outcome (post-fix: Failure
-    // because the relocated address has upper bits = 1 → exit code 1
-    // → Failure(Custom(1))). Pre-fix, ours would land at Success
-    // (exit 0) and mollusk at Failure — that's the divergence the
-    // fix closes.
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected non-Success (exit code = upper 32 bits = 1), \
          got {:?} — this means R_BPF_64_Relative-in-.text isn't being applied",
@@ -2515,29 +2176,13 @@ fn rodata_addr_returner_matches_mollusk() {
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 
-    // Soundness-audit M5 pin (lddw CU weight): this `.text` is 5 byte-slots
-    // = 4 LOGICAL instructions — `lddw` (slots 0-1, the rodata address
-    // materialization), `ldx`, `rsh`, `exit` — and the entrypoint is
-    // branchless, so all 4 execute exactly once. Both engines report CU=4,
-    // NOT 5. That refutes the audit's "lddw is metered by slot-delta so it
-    // costs 2" hypothesis: agave meters `lddw` as ONE logical instruction
-    // (the interpreter's meter ticks once per step even though `lddw`
-    // advances pc by 2), exactly as the Lean model's `chargeCu` does. A
-    // regression that double-charged `lddw` would make ours=4, mollusk=4
-    // still agree, so pin the concrete agave value too.
+    // M5: lddw is ONE logical insn (meter ticks once per step); 4-insn program = CU=4, NOT 5.
     assert_eq!(m_r.compute_units_consumed, 4,
         "M5: agave must meter the 4-logical-insn (1 lddw) program at 4 CU, \
          got {} — lddw CU weight changed in agave", m_r.compute_units_consumed);
 }
 
-/// `sol_curve_multiscalar_mul` CU referee (soundness-audit M9). The
-/// fixture calls Edwards MSM with n=1 (boundary: agave charges the bare
-/// `msm_base_cost` 2273 — the incremental cost is `758*(n-1)`,
-/// agave-syscalls lib.rs:1711-1716) and n=2 (2273 + 758), returning
-/// `r0_1 + r0_2` (0 iff both succeed). Under the pre-M9 model formula
-/// (`base + incr*n`) the model would over-charge by 758 per call (1516
-/// total), so CU equality here discriminates the `(n-1)` form, n=1
-/// boundary included.
+/// M9: MSM CU = base + 758*(n-1); n=1+n=2 boundary confirms (n-1) form, not (n).
 #[test]
 fn curve_msm_cu_matches_mollusk() {
     let program_id = pid(73);
@@ -2575,14 +2220,7 @@ fn curve_msm_cu_matches_mollusk() {
     );
 }
 
-/// L1 sentinel-collision experiment (soundness-audit L1, closure-plan
-/// phase 3 step 0): a healthy program CLEANLY exits with
-/// r0 = 0xFFFFFFFFFFFFFFFD — numerically identical to the model's
-/// ERR_ABORT fault sentinel. This prints what each engine observably
-/// reports, pinning the wire mapping BEFORE the vmError exit-shape
-/// refactor. Both engines must at least agree (the clean exit and the
-/// fault land in the same observable class today — that sameness is
-/// exactly the L1 incompleteness being closed).
+/// L1: clean exit with r0 = ERR_ABORT sentinel value; both engines must agree on the observable class.
 #[test]
 fn sentinel_clean_exit_observability() {
     let program_id = pid(74);
@@ -2608,7 +2246,6 @@ fn sentinel_clean_exit_observability() {
     eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
     eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
 
-    // Cross-engine agreement on the observable class: both non-Success.
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: nonzero r0 must not be Success, got {:?}", fs_r.program_result);
     assert!(!matches!(m_r.program_result, MlProgramResult::Success),
@@ -2620,18 +2257,7 @@ fn sentinel_clean_exit_observability() {
     );
 }
 
-/// Exercises `sol_try_find_program_address` end-to-end with one seed
-/// (`b"vault"`) and a hard-coded program_id. Asserts:
-/// - Both engines reach `Success`.
-/// - The 33-byte `return_data` (PDA + bump) is byte-identical — so
-///   the PDA derivation itself matches agave.
-/// - CU consumed is equal — load-bearing for the
-///   `Pda.cuTryFind`-via-`syscallCu` per-iteration charge.
-///
-/// This fixture also exercises `lean_curve_validate_edwards` through
-/// the compiled-native runtime FFI; it was blocked by a missing
-/// dynamic-symbol-table export (build.rs FFI symbol pull-in) until
-/// that fix landed alongside this test.
+/// sol_try_find_program_address end-to-end: 33-byte return_data (PDA+bump) and CU equal on both engines.
 #[test]
 fn pda_finder_matches_mollusk() {
     let program_id = pid(50);
@@ -2679,10 +2305,7 @@ fn pda_finder_matches_mollusk() {
     );
 }
 
-/// Tier-1 #1 region bounds enforcement. The program dereferences
-/// `input.add(0x10000000)` — well outside any mapped region. Both
-/// engines must fail; pre-fix qedsvm let the read slide and
-/// returned Success.
+/// Tier-1 OOB read: input+0x10000000 is unmapped; pre-fix returned Success, now both VM-fault.
 #[test]
 fn oob_read_fails_on_both() {
     let program_id = pid(51);
@@ -2705,20 +2328,13 @@ fn oob_read_fails_on_both() {
     eprintln!("fs.program_result  = {:?}", fs_r.program_result);
     eprintln!("mol.program_result = {:?}", m_r.program_result);
 
-    // M14: the model VM-faults (access violation) and agave surfaces it
-    // as UnknownError(ProgramFailedToComplete) — same observable outcome,
-    // not merely "both non-Success".
+    // M14: VM-fault (accessViolation) → agave UnknownError(ProgramFailedToComplete); assert_outcome_matches checks equivalence.
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB read, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_read");
 }
 
-/// Audit H6 (syscall memory translation). The program calls
-/// `sol_memset_` with a destination 256 MiB past the input pointer.
-/// agave's `translate_slice_mut` traps with `AccessViolation`; pre-fix
-/// qedsvm wrote through a region-free `Mem` and returned Success. Post-fix
-/// `MemOps.execSet`'s `guardWrite` consults the runtime region table and
-/// VM-faults. Both engines must fail with the same observable outcome.
+/// H6: sol_memset_ with dst 256 MiB OOB; pre-fix wrote through, post-fix guardWrite VM-faults on both.
 #[test]
 fn oob_memset_fails_on_both() {
     let program_id = pid(52);
@@ -2741,19 +2357,12 @@ fn oob_memset_fails_on_both() {
     eprintln!("fs.program_result  = {:?}", fs_r.program_result);
     eprintln!("mol.program_result = {:?}", m_r.program_result);
 
-    // The syscall's region check fails closed: the model VM-faults
-    // (access violation), agave surfaces it as
-    // UnknownError(ProgramFailedToComplete) — same observable outcome.
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_memset_, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_memset");
 }
 
-/// Audit H6 (syscall memory translation, logging family). The program
-/// calls `sol_log_pubkey` with a pointer 256 MiB past the input pointer.
-/// agave's `translate_type::<Pubkey>` traps the 32-byte read with
-/// `AccessViolation`; post-fix `Logging.execLogPubkey`'s `guardRead`
-/// VM-faults. Both engines must fail with the same observable outcome.
+/// H6: sol_log_pubkey with ptr 256 MiB OOB; translate_type::<Pubkey> → guardRead VM-faults on both.
 #[test]
 fn oob_log_pubkey_fails_on_both() {
     let program_id = pid(53);
@@ -2781,11 +2390,7 @@ fn oob_log_pubkey_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_pubkey");
 }
 
-/// Audit H6 (syscall memory translation, logging family). The program
-/// calls `sol_log_` with a 16-byte message 256 MiB past the input
-/// pointer. agave's `translate_slice` traps the read with
-/// `AccessViolation`; post-fix `Logging.execLog`'s `guardRead` VM-faults.
-/// Both engines must fail with the same observable outcome.
+/// H6: sol_log_ with msg 256 MiB OOB; translate_slice → guardRead VM-faults on both.
 #[test]
 fn oob_log_fails_on_both() {
     let program_id = pid(54);
@@ -2813,13 +2418,7 @@ fn oob_log_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log");
 }
 
-/// Audit H6 (syscall memory translation, descriptor-array / logging tail).
-/// The program calls `sol_log_data` with a 1-descriptor array 256 MiB past
-/// the input pointer. agave translates the 16-byte descriptor array via
-/// `translate_slice::<VmSlice<u8>>` BEFORE dereferencing any slice, so the
-/// array read itself traps with `AccessViolation`; post-fix
-/// `Logging.execLogData`'s `guardRead` on `[r1, r1 + count*16)` VM-faults.
-/// Both engines must fail with the same observable outcome.
+/// H6: sol_log_data with descriptor array 256 MiB OOB; array read traps before slice deref on both.
 #[test]
 fn oob_log_data_fails_on_both() {
     let program_id = pid(56);
@@ -2847,13 +2446,7 @@ fn oob_log_data_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_data");
 }
 
-/// Audit H6 (syscall memory translation, hashing family, stage 3a /
-/// output-write guard). The program calls `sol_sha256` with a 0-slice input
-/// and a 32-byte output buffer 256 MiB past the input pointer. agave
-/// translates the output via `translate_slice_mut::<u8>(out, 32)` BEFORE the
-/// (empty) input, so the out-of-region store traps with `AccessViolation`;
-/// post-fix `Sha256.exec`'s `guardWrite` on `[r3, r3 + 32)` VM-faults.
-/// Both engines must fail with the same observable outcome.
+/// H6: sol_sha256 output buffer 256 MiB OOB; translate_slice_mut on output traps first; guardWrite VM-faults on both.
 #[test]
 fn oob_sha256_output_fails_on_both() {
     let program_id = pid(242);
@@ -2881,12 +2474,7 @@ fn oob_sha256_output_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256");
 }
 
-/// Audit H6 (syscall memory translation, hashing family, stage 3b /
-/// input-slice guard). The program calls `sol_sha256` with a valid writable
-/// output but a 1-descriptor input array 256 MiB out of region. agave
-/// translates the output first (passes), then the descriptor array (out of
-/// region → `AccessViolation`); post-fix `Sha256.exec`'s `guardRead` on
-/// `[r1, r1 + r2*16)` VM-faults. Both engines fail with the same outcome.
+/// H6: sol_sha256 valid output, input descriptor array 256 MiB OOB; guardRead traps after output pass.
 #[test]
 fn oob_sha256_input_fails_on_both() {
     let program_id = pid(243);
@@ -2914,12 +2502,7 @@ fn oob_sha256_input_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256_input");
 }
 
-/// Audit H6 (syscall memory translation, hashing family, stage 3c / poseidon
-/// input-slice guard). The program calls `sol_poseidon` with a valid writable
-/// output but a 1-descriptor input array 256 MiB out of region. agave
-/// translates the output first (passes), then the descriptor array (out of
-/// region → `AccessViolation`); post-fix `Poseidon.exec`'s `guardedCommit`
-/// `guardRead` on `[r3, r3 + r4*16)` VM-faults. Both engines fail alike.
+/// H6: sol_poseidon valid output, input array 256 MiB OOB; guardedCommit guardRead VM-faults on both.
 #[test]
 fn oob_poseidon_input_fails_on_both() {
     let program_id = pid(244);
@@ -2947,11 +2530,7 @@ fn oob_poseidon_input_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_poseidon_input");
 }
 
-/// Audit H6 (syscall memory translation, sysvar family / fixed-size getters,
-/// stage 4a). The program calls `sol_get_clock_sysvar` with a 40-byte output
-/// buffer 256 MiB out of region. agave's `translate_type_mut::<Clock>` traps
-/// with `AccessViolation`; post-fix `Sysvar.execClock` (via `zeroFillR1`)
-/// `guardWrite` on `[r1, r1 + 40)` VM-faults. Both engines fail alike.
+/// H6: sol_get_clock_sysvar output 256 MiB OOB; translate_type_mut::<Clock> → zeroFillR1 guardWrite VM-faults on both.
 #[test]
 fn oob_clock_sysvar_fails_on_both() {
     let program_id = pid(245);
@@ -2979,12 +2558,7 @@ fn oob_clock_sysvar_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_clock_sysvar");
 }
 
-/// Audit H6 (syscall memory translation, return-data family, stage 4b /
-/// input read guard). The program calls `sol_set_return_data` with an 8-byte
-/// input slice (within MAX_RETURN_DATA) 256 MiB out of region. agave checks
-/// the length first (passes), then `translate_slice` traps with
-/// `AccessViolation`; post-fix `ReturnData.execSet`'s `guardRead` on
-/// `[r1, r1 + r2)` VM-faults. Both engines fail alike.
+/// H6: sol_set_return_data input 256 MiB OOB (within MAX_RETURN_DATA); length passes then translate_slice traps.
 #[test]
 fn oob_set_return_data_fails_on_both() {
     let program_id = pid(246);
@@ -3012,11 +2586,7 @@ fn oob_set_return_data_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_set_return_data");
 }
 
-/// Audit H6 (syscall memory translation, sysvar family / de-simp'd hand-coded
-/// getters, stage 4c). The program calls `sol_get_rent_sysvar` with a 17-byte
-/// output buffer 256 MiB out of region. agave's `translate_type_mut::<Rent>`
-/// traps with `AccessViolation`; post-fix `Sysvar.execRent`'s `guardWrite` on
-/// `[r1, r1 + 17)` VM-faults. Both engines fail alike.
+/// H6: sol_get_rent_sysvar output 256 MiB OOB; translate_type_mut::<Rent> → guardWrite VM-faults on both.
 #[test]
 fn oob_rent_sysvar_fails_on_both() {
     let program_id = pid(247);
@@ -3044,13 +2614,7 @@ fn oob_rent_sysvar_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_rent_sysvar");
 }
 
-/// Audit H6 (syscall memory translation, return-data family / output write
-/// guard, stage 4d). The program seeds 8 bytes of return data, then calls
-/// `sol_get_return_data` with a return-data output buffer 256 MiB out of
-/// region. agave computes `length = min(max_len, data_len) = 8 != 0`, then
-/// `translate_slice_mut::<u8>(out, 8)` traps with `AccessViolation`; post-fix
-/// `ReturnData.execGet`'s `guardWrite` on `[r1, r1 + copyLen)` VM-faults. Both
-/// engines fail alike.
+/// H6: sol_get_return_data output 256 MiB OOB (copyLen=8); translate_slice_mut → guardWrite VM-faults on both.
 #[test]
 fn oob_get_return_data_fails_on_both() {
     let program_id = pid(248);
@@ -3078,14 +2642,7 @@ fn oob_get_return_data_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_get_return_data");
 }
 
-/// Audit H6 (syscall memory translation, curve / crypto family, stage 5a).
-/// The program calls `sol_secp256k1_recover` with a 32-byte message hash
-/// 256 MiB out of region. agave's `translate_slice::<u8>(hash, 32)` traps with
-/// `AccessViolation` before the `libsecp256k1` recovery; post-fix
-/// `Secp256k1.exec`'s `guardRead` on `[r1,32)` VM-faults. Both engines fail
-/// alike. Representative of the whole curve family (`sol_curve_*`,
-/// `sol_alt_bn128_*`, `sol_big_mod_exp`), which now all region-check their
-/// input/output slices (`*_faults_oob` lemmas).
+/// H6: sol_secp256k1_recover hash 256 MiB OOB; representative of whole curve/crypto family's guardRead coverage.
 #[test]
 fn oob_secp256k1_fails_on_both() {
     let program_id = pid(249);
@@ -3113,12 +2670,7 @@ fn oob_secp256k1_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_secp256k1");
 }
 
-/// Audit H6 (syscall memory translation, PDA family, stage 5b). The program
-/// calls `sol_create_program_address` with zero seeds and an out-of-region
-/// program_id / output. agave's `translate_slice` traps with `AccessViolation`;
-/// post-fix `Pda.execCreate`'s `guardRead` (program_id) / `guardedCommit`
-/// (output + seeds) VM-faults. Both engines fail alike. Also covers
-/// `sol_try_find_program_address` (`Pda.execTryFind`, same guard envelope).
+/// H6: sol_create_program_address with OOB program_id/output; guardRead/guardedCommit VM-faults on both.
 #[test]
 fn oob_create_pda_fails_on_both() {
     let program_id = pid(250);
@@ -3146,12 +2698,7 @@ fn oob_create_pda_fails_on_both() {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_create_pda");
 }
 
-/// Tier-1 #2 native programs (System, foremost). A BPF caller does
-/// `invoke(&system_instruction::transfer(...), &[from, to])`. Mollusk
-/// has System registered by default; qedsvm's `Native.dispatch`
-/// recognises the all-zero program-id and routes to
-/// `System::execTransfer`. Both engines must end with
-/// `from -= n`, `to += n`.
+/// Tier-1 native System::Transfer CPI: from -= n, to += n; lamport conservation without Rust backstop.
 #[test]
 fn system_transfer_cpi_matches_mollusk() {
     let caller_id = pid(60);
@@ -3162,10 +2709,7 @@ fn system_transfer_cpi_matches_mollusk() {
     let initial_from: u64 = 5_000_000;
     let initial_to: u64   =   100_000;
 
-    // The System program's pubkey (all-zero). Passing it as a
-    // read-only AccountMeta on the outer ix registers it in the
-    // transaction's account-key set so agave can dispatch the CPI.
-    let system_program_id = Pubkey::new_from_array([0u8; 32]);
+    let system_program_id = Pubkey::new_from_array([0u8; 32]); // all-zero pubkey = System program
 
     let ix = Instruction {
         program_id: caller_id,
@@ -3180,9 +2724,7 @@ fn system_transfer_cpi_matches_mollusk() {
         data: lamports_to_send.to_le_bytes().to_vec(),
     };
 
-    // Lamport-bearing accounts are owned by the System program
-    // (all-zero pubkey).
-    let system_owner = Pubkey::new_from_array([0u8; 32]);
+    let system_owner = Pubkey::new_from_array([0u8; 32]); // lamport-bearing accounts are system-owned
 
     let from_pre = AccountSharedData::from(Account {
         lamports: initial_from, data: vec![],
@@ -3201,13 +2743,7 @@ fn system_transfer_cpi_matches_mollusk() {
         owner: system_owner, executable: false, rent_epoch: 0,
     };
 
-    // Stub account for the System program. Both engines need this
-    // entry in the per-call accounts to satisfy the serializer's
-    // AccountMeta → AccountSharedData lookup; the program impl
-    // itself is registered separately (built-in in mollusk,
-    // `Native.dispatch` keyed on pubkey in qedsvm). Mirror
-    // mollusk's stub byte-for-byte so the resulting_accounts
-    // comparison stays clean.
+    // System program stub: mirrors mollusk's keyed_account_for_system_program so resulting_accounts compares cleanly.
     let (mollusk_system_id, mollusk_system_acct) =
         mollusk_svm::program::keyed_account_for_system_program();
     let system_stub_fs = AccountSharedData::from(Account {
@@ -3240,11 +2776,8 @@ fn system_transfer_cpi_matches_mollusk() {
         "qedsvm: expected Success, got {:?}", fs_r.program_result);
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
-    // Lamport conservation here must hold in the VM itself, not via the
-    // Rust backstop downgrading a mint to ERR_INVALID_POSTSTATE (M13).
-    assert_no_poststate_backstop(&fs_r);
+    assert_no_poststate_backstop(&fs_r); // M13: lamport conservation in VM, not via Rust backstop
 
-    // Lamport equality between the two engines on each account.
     assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len(),
         "resulting_accounts count diverged");
     for ((k_a, a_a), (k_b, a_b)) in
@@ -3256,7 +2789,6 @@ fn system_transfer_cpi_matches_mollusk() {
             a_a.lamports(), a_b.lamports);
     }
 
-    // Concrete post-state values both engines must agree on.
     let fs_from = fs_r.resulting_accounts.iter().find(|(k, _)| *k == from_pk)
         .expect("from account present").1.lamports();
     let fs_to   = fs_r.resulting_accounts.iter().find(|(k, _)| *k == to_pk)
@@ -3266,9 +2798,7 @@ fn system_transfer_cpi_matches_mollusk() {
     assert_eq!(fs_to,   initial_to   + lamports_to_send,
         "to balance: expected {}, got {}", initial_to + lamports_to_send, fs_to);
 
-    // CU equality: caller's BPF insns + Cpi.cu (946 invoke_signed) +
-    // 150 (System::Transfer's per-instruction cost). Mollusk reports
-    // the same breakdown.
+    // M6r: BPF insns + 946 (Cpi.cu invoke_signed) + 150 (System::Transfer) = total.
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for system_transfer CPI: ours={} mollusk={}",
@@ -3276,12 +2806,7 @@ fn system_transfer_cpi_matches_mollusk() {
     );
 }
 
-/// Tier-1 #2 native, variant 2: System::CreateAccount. A BPF caller
-/// CPIs `system_instruction::create_account(payer, newAcct,
-/// lamports, space, owner)`. Both engines must mutate `newAcct` from
-/// "uninitialized" (0 lamports, empty data, system-owned) to
-/// (lamports, `space` zero bytes, target owner). Payer's balance
-/// decrements by `lamports`.
+/// System::CreateAccount CPI: newAcct initialized to (lamports, space zeros, target owner); payer decremented.
 #[test]
 fn system_create_account_cpi_matches_mollusk() {
     let caller_id  = pid(70);
@@ -3290,9 +2815,7 @@ fn system_create_account_cpi_matches_mollusk() {
     let target_owner = pid(73);  // arbitrary "program owner" for the new acct
 
     let lamports_to_send: u64 = 2_000_000;
-    let space: u64 = 165;        // SPL Token's mint account size — common
-                                  // real-world value, exercises a non-zero
-                                  // space allocation through the syscall.
+    let space: u64 = 165; // SPL Token's mint account size — exercises non-zero space allocation
     let initial_payer: u64 = 5_000_000;
 
     let system_program_id = Pubkey::new_from_array([0u8; 32]);
@@ -3313,8 +2836,6 @@ fn system_create_account_cpi_matches_mollusk() {
         data: ix_data,
     };
 
-    // pre-states: payer is funded + system-owned; newAcct is
-    // uninitialized (0 lamports, empty data, system-owned).
     let payer_pre = AccountSharedData::from(Account {
         lamports: initial_payer, data: vec![],
         owner: system_program_id, executable: false, rent_epoch: 0,
@@ -3381,7 +2902,6 @@ fn system_create_account_cpi_matches_mollusk() {
             "owner diverged for {k_a}");
     }
 
-    // Concrete post-state checks for the new account.
     let new_acct = fs_r.resulting_accounts.iter().find(|(k, _)| *k == new_pk)
         .expect("newAcct present").1.clone();
     assert_eq!(new_acct.lamports(), lamports_to_send,
@@ -3406,12 +2926,7 @@ fn system_create_account_cpi_matches_mollusk() {
     );
 }
 
-/// Tier-1 #2 native, variants 3 + 4: `System::Allocate` and
-/// `System::Assign`. A BPF caller chains both on the same signer
-/// account: Allocate(space) then Assign(owner). After: data.len() =
-/// space (zeros), owner = target. Each CPI charges
-/// `Cpi.cu + 150`, so the chain is 2 * (946 + 150) = 2192 atop the
-/// caller's BPF insns.
+/// System::Allocate+Assign chained CPI: data.len()=space, owner=target; 2*(946+150)=2192 CU overhead.
 #[test]
 fn system_allocate_assign_cpi_matches_mollusk() {
     let caller_id    = pid(80);
@@ -3419,7 +2934,7 @@ fn system_allocate_assign_cpi_matches_mollusk() {
     let target_owner = pid(82);
 
     let space: u64 = 165;
-    let initial_lamports: u64 = 7_000_000;  // not touched by either op
+    let initial_lamports: u64 = 7_000_000; // neither Allocate nor Assign touches lamports
 
     let system_program_id = Pubkey::new_from_array([0u8; 32]);
 
@@ -3436,9 +2951,6 @@ fn system_allocate_assign_cpi_matches_mollusk() {
         data: ix_data,
     };
 
-    // Pre-state: uninitialized (data_len=0, system-owned). Lamports
-    // are non-zero — Allocate doesn't require a zero balance, only
-    // the data + owner predicates.
     let acct_pre = AccountSharedData::from(Account {
         lamports: initial_lamports, data: vec![],
         owner: system_program_id, executable: false, rent_epoch: 0,
@@ -3507,12 +3019,7 @@ fn system_allocate_assign_cpi_matches_mollusk() {
     );
 }
 
-/// Tier-1 #2 native, variant 5: `System::CreateAccountWithSeed`.
-/// The derived account address must equal `SHA256(base || seed ||
-/// owner)` — this is the deterministic-PDA-like pattern most vault
-/// programs use to spawn per-user accounts without an extra signer
-/// keypair. Verifies the seed-derivation arithmetic agrees with
-/// agave's `Pubkey::create_with_seed`.
+/// System::CreateAccountWithSeed CPI: derived = SHA256(base||seed||owner); verifies seed arithmetic vs agave.
 #[test]
 fn system_create_account_with_seed_cpi_matches_mollusk() {
     let caller_id    = pid(90);
@@ -3525,8 +3032,6 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
     let space: u64 = 64;
     let initial_payer: u64 = 5_000_000;
 
-    // Derive the seed account address the same way agave / our
-    // execCreateAccountWithSeed will:
     let derived_pk = Pubkey::create_with_seed(&base_pk, seed, &target_owner)
         .expect("create_with_seed");
 
@@ -3541,11 +3046,6 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
 
     let ix = Instruction {
         program_id: caller_id,
-        // Outer ix.accounts:
-        //   [0] payer        (signer, writable)
-        //   [1] derived      (writable; matches SHA256(base||seed||owner))
-        //   [2] base         (signer)
-        //   [3] system_program (read-only, dispatch registration)
         accounts: vec![
             AccountMeta::new(payer_pk, true),
             AccountMeta::new(derived_pk, false),
@@ -3615,7 +3115,6 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
 
-    // Lamport + data + owner equality across all accounts.
     assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len());
     for ((k_a, a_a), (k_b, a_b)) in
         fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
@@ -3629,7 +3128,6 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
         assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
     }
 
-    // Post-state of the derived account specifically.
     let derived = fs_r.resulting_accounts.iter().find(|(k, _)| *k == derived_pk)
         .expect("derived present").1.clone();
     assert_eq!(derived.lamports(), lamports_to_send);
@@ -3644,10 +3142,7 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
     );
 }
 
-/// Tier-1 #2: ComputeBudget native program. The CPI body is a
-/// no-op on agave's side (the runtime handles ComputeBudget at
-/// transaction-prepare time, not in-program); CPI through it just
-/// charges 150 CU and returns success. Both engines must agree.
+/// ComputeBudget CPI: runtime handles at prepare-time; in-CPI no-op (150 CU), both engines agree.
 #[test]
 fn compute_budget_cpi_matches_mollusk() {
     let caller_id = pid(100);
@@ -3666,17 +3161,11 @@ fn compute_budget_cpi_matches_mollusk() {
     let ix = Instruction {
         program_id: caller_id,
         accounts: vec![
-            // ComputeBudget needs to be in the transaction's
-            // account-key set for the CPI's program-id lookup, even
-            // though the BPF caller doesn't pass it through `invoke`.
-            AccountMeta::new_readonly(compute_budget_id, false),
+            AccountMeta::new_readonly(compute_budget_id, false), // must be in account-key set for CPI dispatch
         ],
         data: ix_data,
     };
 
-    // Mollusk's `keyed_account_for_builtin_program` only handles
-    // System / loader stubs. ComputeBudget is a built-in too; we
-    // construct an equivalent stub manually.
     let cb_stub_fs = AccountSharedData::from(Account {
         lamports: 1, data: b"compute_budget_program".to_vec(),
         owner: solana_sdk_ids::native_loader::id(),
@@ -3714,14 +3203,7 @@ fn compute_budget_cpi_matches_mollusk() {
     );
 }
 
-/// Gap-prober for the PDA signer-seeds path of CPI. Caller derives
-/// a PDA from `b"vault" + caller_id`, passes it as accounts[1] in an
-/// `invoke_signed(...)` call with seeds `[&[b"vault", &[bump]]]`. The
-/// callee writes `0xAA` to `accounts[0].data[0]` if accounts[1]
-/// is_signer, else `0x55`. Mollusk promotes the PDA via the seeds;
-/// qedsvm currently ignores r4/r5 so the byte diverges. After
-/// implementing seed-derived signer promotion in the Lean executor,
-/// both engines should write `0xAA`.
+/// PDA signer promotion via invoke_signed seeds: callee writes 0xAA iff PDA is_signer; both engines must agree.
 #[test]
 fn cpi_signed_pda_promotes_signer() {
     let caller_id = pid(200);
@@ -3741,8 +3223,6 @@ fn cpi_signed_pda_promotes_signer() {
         owner: callee_id, executable: false, rent_epoch: 0,
     };
 
-    // PDA account has no data; just exists so the AccountInfo can be
-    // located by the CPI handler.
     let pda_pre_fs = AccountSharedData::from(Account {
         lamports: 0, data: vec![],
         owner: solana_sdk_ids::system_program::id(),
@@ -3812,10 +3292,7 @@ fn cpi_signed_pda_promotes_signer() {
     assert_eq!(ml_data.data[0], 0xAA, "mollusk PDA promotion sanity");
 }
 
-/// Caller invokes a callee that sol_set_return_data's [0xAB, 0xCD,
-/// 0xEF, 0x12], then sol_get_return_data and writes the bytes into
-/// accounts[0].data. Verifies returnData propagation across a CPI
-/// boundary.
+/// CPI returnData round-trip: callee sets [0xAB,0xCD,0xEF,0x12], caller gets+writes to accounts[0].data.
 #[test]
 fn cpi_returns_data_propagates() {
     let caller_id = pid(210);
@@ -3823,11 +3300,9 @@ fn cpi_returns_data_propagates() {
     let data_key  = pid(212);
 
     let data: Vec<u8> = vec![0u8; 4];
-    // Caller writes to data_key after reading return_data, so caller
-    // must own it (agave enforces "only owner can mutate data").
     let data_pre_fs = AccountSharedData::from(Account {
         lamports: 1_000_000, data: data.clone(),
-        owner: caller_id, executable: false, rent_epoch: 0,
+        owner: caller_id, executable: false, rent_epoch: 0, // caller must own data_key to write it
     });
     let data_pre_ml = mollusk_account::Account {
         lamports: 1_000_000, data: data.clone(),
@@ -3888,12 +3363,7 @@ fn cpi_returns_data_propagates() {
         "mollusk: return_data not propagated (got {:?})", ml_data.data);
 }
 
-/// H7 pin: `sol_get_return_data` writes the SETTER's program id (the
-/// CPI callee that called sol_set_return_data) into *pubkey_out — not
-/// the caller's id and not a zero placeholder. The caller copies the
-/// returned (pubkey, data) pair into accounts[0].data[0..36]; both
-/// engines must produce the callee's id followed by the payload,
-/// byte-identically.
+/// H7: sol_get_return_data writes the SETTER's program id into *pubkey_out; accounts[0] = callee_id || payload, byte-identical.
 #[test]
 fn cpi_get_return_data_setter_pubkey_matches_mollusk() {
     let caller_id = pid(230);
@@ -3967,13 +3437,7 @@ fn cpi_get_return_data_setter_pubkey_matches_mollusk() {
         "mollusk: setter pubkey/data mismatch (got {:?})", ml_data.data);
 }
 
-/// H7 pin: the SIMD-0127 generic `sol_get_sysvar` accessor. The probe
-/// program reads rent (full + an offset slice + a length overrun),
-/// clock, epoch_schedule, the slot_hashes length prefix, and an
-/// unknown id, dumping every r0 and buffer into accounts[0].data.
-/// Both engines must agree byte-for-byte (in-band error codes 1/2
-/// included) and on CU (the length-dependent
-/// `sysvar_base + max(len/250, mem_op_base)` formula).
+/// H7: sol_get_sysvar probe (rent+offset+overrun, clock, epoch_schedule, slot_hashes, unknown); byte-identical + CU.
 #[test]
 fn sysvar_probe_matches_mollusk() {
     let program_id = pid(240);
@@ -4021,9 +3485,7 @@ fn sysvar_probe_matches_mollusk() {
         "sysvar probe data diverged:\n ours    = {:?}\n mollusk = {:?}",
         fs_data.data(), ml_data.data);
 
-    // Spot-pin the layout so a silently-zero probe can't pass: rent
-    // bytes, the in-band error codes, and the slot_hashes 512-entry
-    // length prefix.
+    // Spot-pin the layout: rent bytes, in-band error codes, slot_hashes 512-entry length prefix.
     let d = ml_data.data.as_slice();
     assert_eq!(d[0], 0, "rent r0");
     assert_eq!(&d[1..18],
@@ -4045,10 +3507,7 @@ fn sysvar_probe_matches_mollusk() {
     );
 }
 
-/// 3-program CPI chain: outer → cpi_increment_caller → incrementer.
-/// Exercises depth-2 recursion in executeFnCpiWithFuel. The leaf
-/// bumps accounts[0].data[0..8] from 0 to 1; the test asserts that
-/// the increment is visible after the chain returns, on both engines.
+/// Depth-2 CPI chain (outer→middle→leaf): leaf increments accounts[0]; visible on both engines after chain returns.
 #[test]
 fn cpi_depth_2_chain_matches_mollusk() {
     let outer_id  = pid(220);
@@ -4087,8 +3546,7 @@ fn cpi_depth_2_chain_matches_mollusk() {
         executable: true, rent_epoch: 0,
     };
 
-    // ix.data = middle_id || leaf_id (64 bytes)
-    let mut ix_data = Vec::with_capacity(64);
+    let mut ix_data = Vec::with_capacity(64); // ix.data = middle_id || leaf_id
     ix_data.extend_from_slice(&middle_id.to_bytes());
     ix_data.extend_from_slice(&leaf_id.to_bytes());
 
@@ -4151,21 +3609,7 @@ fn cpi_depth_2_chain_matches_mollusk() {
         "mollusk: leaf increment not visible (sanity); got {:?}", ml_acct.data);
 }
 
-/// Reproduces issue #10 against the deployed Janus slot-height-resolver
-/// binary. The `Initialize` handler issues a System Program
-/// `CreateAccount` CPI via `invoke_signed` with the state PDA's seeds —
-/// the new account is a PDA (not a regular signer), so the dispatcher
-/// must promote it to `isSigner = true` based on seed derivation
-/// before `execCreateAccount`'s signer check runs.
-///
-/// The synthetic `system_create_account_cpi_matches_mollusk` test
-/// passes because it uses a non-PDA `new_pk` that signs the outer
-/// instruction (`AccountMeta::new(*, true)`). PDA-target CreateAccount
-/// is structurally different and is what the reporter hits.
-///
-/// Expected outcome: mollusk Success (allocates 48-byte state
-/// account), qedsvm should match. Asserts on `program_result`,
-/// CU, and `account[1].data.len() == 48`.
+/// Janus issue #10: PDA-target CreateAccount via invoke_signed; dispatcher must promote PDA to isSigner before signer check.
 #[test]
 fn janus_slot_height_resolver_initialize_matches_mollusk() {
     use solana_account::WritableAccount;
@@ -4181,9 +3625,8 @@ fn janus_slot_height_resolver_initialize_matches_mollusk() {
         &program_id,
     );
 
-    // Initialize tag = 1, then outcome | bump | 6B padding | u64 target_slot | 32B seed_key.
-    let mut data = Vec::with_capacity(49);
-    data.push(1u8); // Initialize
+    let mut data = Vec::with_capacity(49); // Initialize tag=1 | outcome | bump | 6B pad | u64 target_slot | 32B seed_key
+    data.push(1u8);
     data.push(1u8); // outcome
     data.push(bump);
     data.extend_from_slice(&[0u8; 6]);
@@ -4194,15 +3637,13 @@ fn janus_slot_height_resolver_initialize_matches_mollusk() {
         program_id,
         accounts: vec![
             AccountMeta::new(payer, true),
-            AccountMeta::new(state, false),         // PDA target — not a hard signer
+            AccountMeta::new(state, false), // PDA target — not a hard signer; must be promoted via seeds
             AccountMeta::new_readonly(authority, true),
             AccountMeta::new_readonly(system_program, false),
         ],
         data,
     };
 
-    // Pre-states: payer is funded + system-owned, state empty (the
-    // PDA hasn't been initialized yet), authority empty + system-owned.
     let payer_pre_fs = {
         let mut a = AccountSharedData::default();
         a.set_lamports(1_000_000_000_000);

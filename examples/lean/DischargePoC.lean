@@ -1,27 +1,7 @@
 /-
-  Discharge PoC: qedgen's parametric `ensures_axiom` shape drops out of a
-  lift's layout-general field-list obligation.
-
-  qedgen states a state-mutation contract parametrically, over an opaque
-  `State` and an accessor `State → Nat`
-  (QEDGen/solana-skills: crates/qedgen/data/proofs/spl/Token.lean):
-
-      axiom ensures_axiom_0 {State} [Inhabited State]
-        (pre post : State) (amount : Nat) (from_balance : State → Nat) :
-        (from_balance post) = (from_balance pre) - amount
-
-  The `qedsvm_discharge` direction (QEDGen/qedsvm#24) is to PROVE that
-  obligation against pinned bytecode instead of axiomatising it. This file
-  validates the keystone of that direction: the accessor projection.
-
-  Instantiate `State` as the decoded field list the lift emits (the
-  `List (Nat × FieldVal)` that `AsmRefinesFieldUpdate` carries, after the
-  `account_agg` byte<->field reshape — keystone #2, already proven), and
-  `from_balance` as a `u64` field lookup. Then qedgen's
-  `accessor post = accessor pre ± amount` is a pure projection on the
-  pre/post field lists. The byte realization is the lift's reshape; this is
-  the accessor read on top — and it needs NO raw `readU64`/`Mem` bridge,
-  because the field-list route sidesteps it.
+  Discharge PoC (#24): proves qedgen's parametric ensures_axiom against pinned
+  bytecode instead of axiomatising it. State = the FieldVal list from the lift
+  (after account_agg reshape); from_balance = u64FieldAt. No Mem bridge needed.
 -/
 
 import SVM.Solana.Abstract.Refinement
@@ -33,17 +13,9 @@ namespace Examples.DischargePoC
 
 open SVM SVM.SBPF SVM.SBPF.Memory SVM.Pubkey SVM.Solana SVM.Solana.Abstract
 
--- `u64FieldAt` (qedgen's accessor, instantiated), `u64FieldAt_found` (the
--- generic projection lemma), and the `qedsvm_discharge` tactic now live in
--- the library: `SVM.SBPF.Tactic.Discharge`.
+-- u64FieldAt, u64FieldAt_found, and qedsvm_discharge live in SVM.SBPF.Tactic.Discharge.
 
-/-! ## Vault: `total post = total pre + 1`, discharged from the real lift
-
-The field lists are exactly `Generated.VaultRefinement`'s
-(`{owner:Pubkey@0, total:u64@32, bump:u8@40}`). Given the lift's
-`AsmRefinesFieldUpdate` obligation, qedgen's ensures-shape follows by the
-accessor projection: the obligation half says the bytecode realises the
-field-list transition; the accessor half reads it as the ensures clause. -/
+/-! ## Vault: `total post = total pre + 1`, discharged from the real lift -/
 theorem vault_total_discharged
     (cr : CodeReq) (rr : Memory.RegionTable → Prop)
     (baseAddr oldMemD_0 o0 o1 o2 o3 fb4 : Nat) (setupPre setupPost : Assertion)
@@ -59,9 +31,7 @@ theorem vault_total_discharged
           = u64FieldAt 32 [(0, .pubkey ⟨o0, o1, o2, o3⟩), (32, .u64 oldMemD_0), (40, .byte fb4)] + 1 :=
   ⟨h, by qedsvm_discharge⟩
 
-/-- End-to-end: the real vault lift (`Generated.VaultRefinement.refines_asm`)
-    flows through the discharge to qedgen's `total post = total pre + 1`. The
-    `lift` type is `VaultRefinement.refines_asm`'s raw byte-level triple. -/
+/-- End-to-end: real vault lift flows through discharge to qedgen's `total post = total pre + 1`. -/
 example
     (cr : CodeReq) (rr : Memory.RegionTable → Prop)
     (baseAddr oldMemD_0 vR2Old vR0Old o0 o1 o2 o3 fb4 : Nat)
@@ -79,19 +49,12 @@ example
   (vault_total_discharged cr rr baseAddr oldMemD_0 o0 o1 o2 o3 fb4 _ _
     (Examples.VaultRefinement.refines_asm cr rr baseAddr oldMemD_0 vR2Old vR0Old o0 o1 o2 o3 fb4 lift)).2
 
-/-! ## Token transfer: convergence to the field-list route
+/-! ## Token transfer: obligation reshape to field-list form
 
-The SPL token account as a `FieldVal` field list, the convergence keystone
-(`tokenAcctBalance_codec`), and the discharged amount-field `ensures`
-(`token_ensures_debit` / `token_ensures_credit`) now live in the library:
-`SVM.Solana.TokenFieldCodec`. The SPL layout is fixed, so those `ensures`
-are single library facts rather than per-lift emissions. What remains here
-is the obligation-level reshape demonstrated on a real `AsmRefinesToken-
-Transfer`. -/
+token_ensures_debit/credit and tokenAcctBalance_codec live in SVM.Solana.TokenFieldCodec.
+What remains here is the obligation-level reshape on a real AsmRefinesTokenTransfer. -/
 
-/-- Convert a real `AsmRefinesTokenTransfer` obligation into field-list
-    (`codecCoarse`) form via the convergence keystone — the token-side
-    analogue of the vault's `AsmRefinesFieldUpdate`. -/
+/-- Reshape AsmRefinesTokenTransfer to codecCoarse/tokenFields form via tokenAcctBalance_codec. -/
 theorem transfer_field_obligation
     (cr : CodeReq) (nSteps nCu entry exit : Nat) (rr : Memory.RegionTable → Prop)
     (srcAddr dstAddr : Nat) (tSrc tDst : TokenAccount) (amount : Nat)

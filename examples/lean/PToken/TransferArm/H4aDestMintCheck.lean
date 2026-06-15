@@ -1,45 +1,7 @@
 /-
-  Layer 3b artifact (happy-path chain, H4a): Hoare triple over the
-  13 instructions of the destination-account mint-key validation at
-  bytes 0x96A0-0x9700 of `qedsvm-rs/tests/fixtures/p_token.so`.
-
-  Entered via H3f's `jne r0, 0x1` (taken). Validates that the
-  destination account's mint pubkey matches the canonical mint key
-  word-for-word (mirror of H3e for the destination side), then a
-  final `jne r4, 0x163` whose-taken-branch hops to H4b at byte 0xA300.
-
-  The 13 instructions:
-
-  ```
-  96a0: mov64 r7, 0x4
-  96a8: ldxdw r0, [r1 + 0x80]    ← dst mint word 1
-  96b0: jne   r0, r5, ...         ← NOT taken: dst1 = mint1 (r5 inherited from H3f)
-  96b8: ldxdw r5, [r1 + 0x5228]   ← mint canonical word 2
-  96c0: ldxdw r0, [r1 + 0x88]     ← dst mint word 2
-  96c8: jne   r0, r5, ...         ← NOT taken
-  96d0: ldxdw r5, [r1 + 0x5230]   ← canonical word 3
-  96d8: ldxdw r0, [r1 + 0x90]     ← dst word 3
-  96e0: jne   r0, r5, ...         ← NOT taken
-  96e8: ldxdw r5, [r1 + 0x5238]   ← canonical word 4
-  96f0: ldxdw r0, [r1 + 0x98]     ← dst word 4
-  96f8: jne   r0, r5, ...         ← NOT taken
-  9700: jne   r4, 0x163, ...      ← TAKEN: r4 ≠ 0x163 (trace: r4 = 0)
-  ```
-
-  Notice: the first jne reuses `r5` from H3f's exit (which holds
-  the value loaded from `[r1+0x5220]`). The chain composition pulls
-  `r5 = mint1` from H3f's post and requires mem at `r1+0x80` to
-  equal that same `mint1`.
-
-  Spec: 13 CU advancing PC 0 → h4aTarget (synthetic local PC for
-  the final-jne taken branch). Post:
-  - r0 := dst4  (= mint4 under the equality hypotheses)
-  - r5 := mint4
-  - r7 := 4
-  - r4 unchanged
-  - 8 mem cells preserved.
-
-  5 if-collapses (4 jne-reg-NT + 1 jne-imm-TAKEN).
+  Layer 3b H4a: 13 CU triple (bytes 0x96A0-0x9700, p_token.so).
+  Validates dst account mint = canonical, word-by-word (4 jne-reg-NT); final jne r4,0x163 TAKEN.
+  r5 at entry inherited from H3f (holds mint word 1). Post: r0=dst4, r5=mint4, r7=4.
 -/
 
 import PToken.TransferArm.H3fSignerExit
@@ -52,8 +14,7 @@ namespace Examples.PTokenTransferArmH4aDestMintCheck
 open SVM.SBPF
 open Memory
 
-/-- Synthetic local PC for the final-jne-taken target. Mirrors
-    H1/H3f convention; downstream glue picks the actual absolute PC. -/
+/-- Synthetic local PC for the final-jne-taken target; downstream glue sets the absolute PC. -/
 def h4aTarget : Nat := 0x80
 def h4aErrPc : Nat := 0x500
 
@@ -122,7 +83,6 @@ theorem p_token_transfer_arm_h4a_spec
   have h10 := ldxdw_spec .r0 .r1 0x98 dst3 initR1 dst4 (base + 10) (by decide) h_d4_lt
   have h11 := jne_reg_spec .r0 .r5 dst4 mint4 (base + 11) h4aErrPc
   have h12 := jne_imm_spec .r4 0x163 initR4 (base + 12) target
-  -- Collapse the 4 NT jne's.
   rw [show (if dst1 ≠ mint1 then h4aErrPc else (base + 2) + 1) = base + 3 from by
         rw [h_eq1]; simp] at h2
   rw [show (if dst2 ≠ mint2 then h4aErrPc else (base + 5) + 1) = base + 6 from by
@@ -131,7 +91,6 @@ theorem p_token_transfer_arm_h4a_spec
         rw [h_eq3]; simp] at h8
   rw [show (if dst4 ≠ mint4 then h4aErrPc else (base + 11) + 1) = base + 12 from by
         rw [h_eq4]; simp] at h11
-  -- Collapse the final TAKEN jne.
   rw [show (if initR4 ≠ toU64 0x163 then target else (base + 12) + 1) = target from by
         rw [if_pos h_r4_ne]] at h12
   unfold h4aCr

@@ -1,12 +1,5 @@
-//! Validate that concurrent callers correctly serialize through the
-//! global Lean runtime lock.
-//!
-//! Lean's runtime is single-threaded. `cargo test` runs tests in
-//! parallel by default; without our `LEAN_LOCK` Mutex we'd see heap
-//! corruption manifesting as random panics, segfaults, or wrong
-//! outputs. This test spawns N threads each running M iterations of
-//! `run_buffer` and asserts every call produces the canonical
-//! `Halted(42)` result.
+//! Concurrent-caller safety: validates `LEAN_LOCK` Mutex serializes access to the single-threaded Lean runtime.
+//! Without the lock, cargo test's parallel execution causes heap corruption (panics/segfaults/wrong outputs).
 
 use std::sync::Arc;
 use std::thread;
@@ -47,11 +40,7 @@ fn concurrent_run_buffer_calls_serialize_correctly() {
 
 #[test]
 fn varied_input_buffer_lengths_under_concurrency() {
-    // Same shape, but with non-empty inputs of varying sizes so the
-    // Lean allocator sees actual heap pressure. Hello ELF doesn't
-    // read the buffer, so the input contents don't matter — what we
-    // care about is that the alloc/dec_ref dance under contention
-    // doesn't corrupt anything.
+    // Non-empty varying inputs create heap pressure; asserts alloc/dec_ref under contention doesn't corrupt.
     let mut handles = Vec::with_capacity(THREADS);
     for t in 0..THREADS {
         handles.push(thread::spawn(move || {

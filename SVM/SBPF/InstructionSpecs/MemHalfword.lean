@@ -4,11 +4,9 @@ namespace SVM.SBPF
 
 open Memory
 
-/-! ## Memory loads/stores — halfword width
+/-! ## Memory loads/stores — halfword width (`u16`)
 
-Narrower-width analog of dword specs. Two bytes (`u16`) instead of
-eight, so mem compat case-analysis is 3-way (2 in-range + outside)
-vs dword's 9-way. -/
+Two bytes; mem compat case-analysis is 3-way (2 in-range + outside). -/
 
 /-- `ldx .half dst src off`: load 16-bit value at `[src + off]` into `dst`. -/
 theorem ldxh_spec
@@ -642,16 +640,12 @@ theorem stxh_spec
 
 /-! ## Memory stores from immediates — halfword helper + `st .half`
 
-Two-resource pattern: owns one base register and one `↦U16` cell.
-Mirror of `cuTripleWithinMem_store_imm_word_via_reg_addr` at halfword
-width — the `↦U16` atom decomposes into 2 byte cells, so the mem
-frame is 3-way (2 in-range + outside) like `stxh_spec`. No value
-register (the value is the instruction's immediate field). -/
+Owns one base register and one `↦U16` cell; immediate value, no value register.
+Mirror of `cuTripleWithinMem_store_imm_word_via_reg_addr` at halfword width. -/
 
-/-- Generic halfword-store triple from an immediate value. The new
-    value's low 2 bytes overwrite `[baseReg + off .. +1]`; everything
-    else is framed. No `< 2^16` hypothesis is needed: `writeU16` and
-    `singletonMemU16` both truncate to the same 2 little-endian bytes. -/
+/-- Generic halfword-store triple from an immediate value. Low 2 bytes overwrite
+    `[baseReg + off .. +1]`; rest framed. No `< 2^16` hyp: `writeU16` and
+    `singletonMemU16` truncate to the same 2 LE bytes. -/
 theorem cuTripleWithinMem_store_imm_half_via_reg_addr
     (baseReg : Reg) (off : Int)
     (baseAddr oldHalfVal newHalfVal : Nat) (pc : Nat) (insn : Insn)
@@ -727,7 +721,6 @@ theorem cuTripleWithinMem_store_imm_half_via_reg_addr
              PartialState.singletonMemU16 (effectiveAddr baseAddr off) newHalfVal,
              ?_, rfl, rfl, rfl⟩,
             h_R_sat⟩
-    -- (a) Compat of the new witness with the post state.
     · refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         show s.regs.get r = vr
@@ -831,7 +824,6 @@ theorem cuTripleWithinMem_store_imm_half_via_reg_addr
                  exact hva))
         | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
            exact hcompat.callStack cs (by rw [← hu_PR]; exact hva))
-    -- (b) Outer disjointness: new witness ⊥ h_R.
     · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrbase : r = baseReg
@@ -851,16 +843,13 @@ theorem cuTripleWithinMem_store_imm_half_via_reg_addr
       · left
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU16_pc
-    -- (c) Inner disjointness: singletonReg ⊥ singletonMemU16.
     · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right; exact PartialState.singletonMemU16_regs r
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
 
-/-- `st .half baseReg off imm`: store halfword `(imm & 0xffff)` at
-    `[baseReg + off]`. The stored value is `toU64 imm` truncated to
-    16 bits (`% 2^(2*8)`), matching the machine's `writeByWidth`.
-    Derived from the immediate-store helper. -/
+/-- `st .half baseReg off imm`: store `toU64 imm % 2^(2*8)` (16-bit truncation,
+    matching `writeByWidth`) at `[baseReg + off]`. From the immediate-store helper. -/
 theorem sth_spec
     (baseReg : Reg) (off : Int) (imm : Int)
     (baseAddr oldHalfVal : Nat) (pc : Nat) :

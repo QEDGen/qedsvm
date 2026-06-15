@@ -1,32 +1,20 @@
 /-
-  Boundedness invariant of reachable machine states (audit L5 + L3).
+  Boundedness invariant of reachable machine states (audit L5 + L3):
+  `StateBounded` + base cases; `step`/`executeFn` preservation alongside.
 
-  `State` stores registers and memory bytes as unbounded `Nat`. Every
-  `step` arm truncates what it writes (`wrapAdd`/`% U64_MODULUS`/
-  `signExtend32`/width-bounded loads; `Mem.put` reduces mod 256), so the
-  u64-register / u8-byte invariants hold for every REACHABLE state — but
-  until now that was discipline, not a theorem. This file states the
-  invariant (`StateBounded`) and proves the base cases; preservation
-  through `step`/`executeFn` lives alongside.
+  Why it matters:
+  - L5: unsigned compares (`jgt`/`jge`/`jlt`/`jle`) compare RAW `Nat`
+    register values; faithful u64 compares only on values `< 2^64`.
+  - L3: a byte atom `a ↦ₘ v` stores `v` raw, faithful only for `v < 256`;
+    `mem_lt` makes a `v ≥ 256` atom UNSATISFIABLE against reachable
+    memory, fencing L3 without touching `singletonMem` (canonicalising
+    the atom was reverted — it ripples `< 256` hyps through the byte-cell
+    specs into the H8 byte-demotion base).
 
-  Why it matters (not cosmetics):
-  - The unsigned compares (`jgt`/`jge`/`jlt`/`jle`) compare RAW `Nat`
-    register values; they are faithful u64 compares only on register
-    values `< 2^64` (L5).
-  - A byte atom `a ↦ₘ v` stores `v` raw; it is faithful to an 8-bit cell
-    only for `v < 256`. `mem_lt` makes a `v ≥ 256` atom UNSATISFIABLE
-    against any reachable state's memory, fencing the L3 footgun without
-    touching `singletonMem` or any byte-cell spec (canonicalising the
-    atom definition was attempted and reverted — it ripples `< 256`
-    hypotheses through the generic byte-cell specs into the H8
-    byte-demotion base).
-
-  The r10 component is NOT a flat bound: `call_local` bumps r10 by
-  0x1000, which `r10 < 2^64` alone cannot re-establish. The invariant
-  carries the exact V0 frame discipline (`StackR10WF`): r10 sits exactly
-  one frame above the top saved frame pointer, grounding out at
-  `STACK_START + 0x1000`, so `r10 = STACK_START + 0x1000·(depth+1)` and
-  the `MAX_CALL_DEPTH` guard bounds it absolutely.
+  r10 is NOT a flat bound: `call_local` bumps it by 0x1000, which
+  `r10 < 2^64` cannot re-establish. `StackR10WF` carries the exact V0
+  frame discipline (r10 = `STACK_START + 0x1000·(depth+1)`), so the
+  `MAX_CALL_DEPTH` guard bounds it absolutely.
 -/
 
 import SVM.SBPF.Runner
@@ -36,17 +24,14 @@ open Memory
 
 /-! ## The r10 / call-stack discipline -/
 
-/-- The V0 frame discipline relating the call stack to the live frame
-    pointer: `r10` is exactly one 0x1000 frame above the top frame's
-    saved r10, recursively down to the initial `STACK_START + 0x1000`.
-    `call_local` (push + bump) and `exit` (pop + restore) both preserve
-    it; `RegFile.set` cannot write r10 at all (`RegFile.set_r10`). -/
+/-- V0 frame discipline: `r10` is one 0x1000 frame above the top frame's
+    saved r10, recursively down to `STACK_START + 0x1000`. Preserved by
+    `call_local`/`exit`; `RegFile.set` cannot write r10 (`RegFile.set_r10`). -/
 def StackR10WF : List CallFrame → Nat → Prop
   | [], r10 => r10 = STACK_START + 0x1000
   | f :: rest, r10 => r10 = f.savedR10 + 0x1000 ∧ StackR10WF rest f.savedR10
 
-/-- The frame discipline pins r10 exactly: one frame per stack entry
-    above the base. -/
+/-- The frame discipline pins r10 exactly: one frame per stack entry. -/
 theorem StackR10WF.r10_eq :
     ∀ {st : List CallFrame} {r10 : Nat}, StackR10WF st r10 →
       r10 = STACK_START + 0x1000 * (st.length + 1)
@@ -60,23 +45,16 @@ theorem StackR10WF.r10_eq :
 
 /-! ## The invariant -/
 
-/-- Boundedness of a machine state — what every state reachable from
-    `initState`/`Runner.initialState` satisfies (audit L5 + L3).
+/-- Boundedness of a machine state reachable from
+    `initState`/`Runner.initialState` (audit L5 + L3).
 
-    `regs_lt` covers r10 too (derivable from `stack_r10` + `stack_depth`,
-    but carried directly so consumers don't re-derive it).
-
-    `heapNext_le`: `allocFreeStep` only advances the bump pointer when
-    the result stays within the 32 KiB heap (`0x300000000 + 0x8000`).
-
-    `returnData_le`: `ReturnData.execSet` rejects `len > 1024`
-    (`ERR_RETURN_DATA_TOO_LARGE`), so the buffer never exceeds the agave
-    cap — which bounds the `r0 := returnData.size` write in `execGet`.
-
-    `mem_lt`: every byte readable from `Mem` is a real byte. Writes go
-    through `Mem.put` (`% 256`); syscall bulk writes construct a new
-    default function whose branches read `ByteArray`s (`UInt8.toNat`,
-    `< 256`) or fall through to the previous memory. -/
+    `regs_lt` covers r10 (derivable from `stack_r10`+`stack_depth`, but
+    carried directly so consumers don't re-derive it). `heapNext_le`:
+    `allocFreeStep` advances the bump ptr only within the 32 KiB heap.
+    `returnData_le`: `ReturnData.execSet` rejects `len > 1024` (agave cap),
+    bounding the `r0 := returnData.size` write in `execGet`. `mem_lt`:
+    every readable byte is real (`Mem.put` reduces `% 256`; syscall bulk
+    writes read `ByteArray`s `< 256` or fall through to old memory). -/
 structure StateBounded (s : State) : Prop where
   regs_lt : ∀ r, s.regs.get r < U64_MODULUS
   stack_r10 : StackR10WF s.callStack s.regs.r10
@@ -94,8 +72,7 @@ theorem StateBounded.r10_eq {s : State} (h : StateBounded s) :
     s.regs.r10 = STACK_START + 0x1000 * (s.callStack.length + 1) :=
   h.stack_r10.r10_eq
 
-/-- Absolute frame-pointer bound: at most `MAX_CALL_DEPTH` frames deep,
-    r10 stays below `STACK_START + 0x1000·65` (`< 2^64` with room). -/
+/-- Absolute frame-pointer bound at `MAX_CALL_DEPTH` (`< 2^64` with room). -/
 theorem StateBounded.r10_le {s : State} (h : StateBounded s) :
     s.regs.r10 ≤ STACK_START + 0x1000 * (MAX_CALL_DEPTH + 1) := by
   rw [h.r10_eq]
@@ -123,8 +100,8 @@ theorem emptyMem_lt : ∀ a, (Runner.emptyMem : Mem) a < 256 := by
   unfold Mem.read
   simp
 
-/-- `loadBytesAt` (the input/section loader) preserves byte-boundedness:
-    each write goes through `Memory.writeU8` = `Mem.put`. -/
+/-- `loadBytesAt` (input/section loader) preserves byte-boundedness: each
+    write goes through `Memory.writeU8` = `Mem.put`. -/
 theorem loadBytesAt_lt (bytes : ByteArray) (base : Nat) :
     ∀ (mem : Mem), (∀ a, mem a < 256) →
       ∀ a, (Runner.loadBytesAt mem bytes base) a < 256 := by
@@ -145,10 +122,8 @@ theorem loadInput_lt (input : ByteArray) :
   unfold Runner.loadInput
   exact loadBytesAt_lt _ _ _ emptyMem_lt
 
-/-! ## Arithmetic bound lemmas
-
-Every value a `step` arm writes into a register is `< 2^64` by one of
-these. -/
+/-! ## Arithmetic bound lemmas — every value a `step` arm writes to a
+register is `< 2^64` by one of these. -/
 
 theorem wrapAdd_lt (a b : Nat) : wrapAdd a b < U64_MODULUS :=
   Nat.mod_lt _ (by decide)
@@ -196,8 +171,8 @@ theorem readByWidth_lt (m : Mem) (addr : Nat) (w : Width) :
 
 /-! ## Register-file bound plumbing -/
 
-/-- Writing a bounded value preserves all-registers-bounded. Pure defeq
-    case bash (`get`/`set` are `@[simp]` defs). -/
+/-- Writing a bounded value preserves all-registers-bounded. Defeq case
+    bash (`get`/`set` are `@[simp]` defs). -/
 theorem RegFile.set_get_lt {rf : RegFile} {B : Nat}
     (h : ∀ r, rf.get r < B) {v : Nat} (hv : v < B) (dst : Reg) :
     ∀ r, (rf.set dst v).get r < B := by
@@ -233,10 +208,9 @@ theorem writeBytes_lt (out len : Nat) (bs : ByteArray) (m : Mem)
   unfold writeBytes
   exact foldl_writeU8_lt _ _ _ m h
 
-/-- `hashWrite`'s `mem` is either `s.mem` (a guard faulted) or
-    `writeBytes s.mem outPtr outLen digest` (success); both are byte-bounded
-    when `s.mem` is. The `mem_lt` sweep closes every hash arm with this (the
-    recursive `guardSlices` stays folded). -/
+/-- `hashWrite`'s `mem` is `s.mem` (guard faulted) or `writeBytes …`
+    (success), both byte-bounded; closes every hash arm with `guardSlices`
+    folded. -/
 theorem hashWrite_mem_lt (s : State) (outPtr outLen inPtr inN : Nat)
     (digest : ByteArray) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (s.hashWrite outPtr outLen inPtr inN digest).mem a < 256 := by
@@ -246,12 +220,10 @@ theorem hashWrite_mem_lt (s : State) (outPtr outLen inPtr inN : Nat)
   refine State.guardSlices_mem_lt_of_k s _ _ _ a (h a) ?_
   exact writeBytes_lt _ _ _ _ h a
 
-/-! Per-hash `regs_lt` / `mem_lt` closers. Each unfolds its `exec` to the
-folded `hashWrite` and applies the generic bound in a SMALL context. The
-sweeps then close the hash arm by a cheap head-match (`exec` and its digest
-stay folded — no metavars): applying the 5-metavar generic `hashWrite_*`
-directly inside the 8M-heartbeat `mem_lt` sweep cost ~160s (the sha256
-pure-Lean digest worst); these wrappers move that cost out, once each. -/
+/-! Per-hash `regs_lt`/`mem_lt` closers, each applying the generic bound in
+a SMALL context. WHY: applying the 5-metavar generic `hashWrite_*` directly
+inside the 8M-heartbeat `mem_lt` sweep cost ~160s (sha256 worst); these move
+that cost out, once each, so the sweep closes by cheap head-match. -/
 theorem Sha256_exec_regs_of_k {motive : RegFile → Prop} (s : State)
     (h0 : motive s.regs) (hk : motive (s.regs.set .r0 0)) :
     motive (Sha256.exec s).regs := by
@@ -288,9 +260,8 @@ theorem Blake3_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (Blake3.exec s).mem a < 256 := by
   simp only [Blake3.exec]; exact hashWrite_mem_lt s _ _ _ _ _ h a
 
-/-- `guardedCommit`'s `mem` is `s.mem` (guard miss or commitOptional's `none`)
-    or `writeBytes …` (commitOptional's `some`), both byte-bounded. The poseidon
-    `mem_lt` closer (its `commitOptional` body, not `hashWrite`'s `writeBytes`). -/
+/-- `guardedCommit`'s `mem` is `s.mem` (guard miss / `none`) or `writeBytes …`
+    (`some`), both byte-bounded. Poseidon's `mem_lt` closer. -/
 theorem guardedCommit_mem_lt (s : State) (outPtr outLen inPtr inN : Nat)
     (result : Option ByteArray) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (s.guardedCommit outPtr outLen inPtr inN result).mem a < 256 := by
@@ -313,17 +284,16 @@ theorem Poseidon_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (Poseidon.exec s).mem a < 256 := by
   simp only [Poseidon.exec]; exact guardedCommit_mem_lt s _ _ _ _ _ h a
 
-/-- A real byte. (`UInt8.toNat` is the shape every `ByteArray` read in
-    a syscall bulk-write lambda produces.) -/
+/-- A real byte (`UInt8.toNat`, the shape every `ByteArray` read in a
+    syscall bulk-write lambda produces). -/
 theorem byte_toNat_lt (u : UInt8) : u.toNat < 256 := by
   first
     | exact u.toNat_lt_size
     | exact u.toNat_lt
     | exact Nat.lt_of_lt_of_le u.toBitVec.isLt (by decide)
 
-/-- `execCreate` = `guardRead` (program_id) wrapping `guardedCommit` (output +
-    descriptors + slices + `commitOptional`); its `regs` is `s.regs` (a guard
-    miss) or `set .r0 {0,1}` (commitOptional). The PDA `regs_lt` closer. -/
+/-- `execCreate` = `guardRead` wrapping `guardedCommit`; `regs` is `s.regs`
+    (guard miss) or `set .r0 {0,1}`. PDA `regs_lt` closer. -/
 theorem Pda_execCreate_regs_of_k {motive : RegFile → Prop} (s : State)
     (h0 : motive s.regs) (hk0 : motive (s.regs.set .r0 0))
     (hk1 : motive (s.regs.set .r0 1)) :
@@ -338,10 +308,9 @@ theorem Pda_execCreate_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
   refine State.guardRead_mem_lt_of_k s _ _ _ a (h a) ?_
   exact guardedCommit_mem_lt s _ _ _ _ _ h a
 
-/-- `execTryFind` = three input guards (program_id / descriptors / slices)
-    wrapping a `some` arm (two output guards → PDA + bump write) or a `none`
-    arm (`set .r0 1`). Its `regs` is `s.regs` (a guard miss) or `set .r0 {0,1}`.
-    The PDA-try-find `regs_lt` closer. -/
+/-- `execTryFind` = three input guards wrapping a `some` arm (two output
+    guards) or `none` arm; `regs` is `s.regs` (guard miss) or `set .r0 {0,1}`.
+    PDA-try-find `regs_lt` closer. -/
 theorem Pda_execTryFind_regs_of_k {motive : RegFile → Prop} (s : State)
     (h0 : motive s.regs) (hk0 : motive (s.regs.set .r0 0))
     (hk1 : motive (s.regs.set .r0 1)) :
@@ -368,21 +337,19 @@ theorem writeByWidth_lt (m : Mem) (addr val : Nat) (w : Width)
       | exact h
       | apply Mem.read_put_lt
 
-/-- Reading a function-coerced `Mem` (the syscall bulk-write idiom
-    `let mem' : Memory.Mem := fun a => …`) is the function itself: the
-    coercion installs it as `default` with an empty overlay. -/
+/-- Reading a function-coerced `Mem` (`let mem' : Mem := fun a => …`) is the
+    function itself: the coercion installs it as `default`, empty overlay. -/
 theorem Mem.read_coe (f : Nat → Nat) (a : Nat) : ((f : Mem) : Nat → Nat) a = f a := by
   show Mem.read { default := f } a = f a
   unfold Mem.read
   simp
 
 
-/-- Bound for reading ANY constructor-literal `Mem` (the shape a
-    syscall's `let mem' : Memory.Mem := fun a => …` coercion produces),
-    overlay-agnostic: an overlay hit is a real `UInt8`; a miss lands in
-    the default function. `apply`-unifies regardless of how the empty
-    overlay's `{}` elaborated (a rewrite keyed on a specific `{}` term
-    does NOT reliably match — learned the hard way). -/
+/-- Bound for reading ANY constructor-literal `Mem` (the syscall
+    `let mem' : Mem := fun a => …` coercion shape), overlay-agnostic: hit =
+    real `UInt8`, miss = default function. `apply`-unifies regardless of how
+    `{}` elaborated (a rewrite keyed on a specific `{}` does NOT reliably
+    match — learned the hard way). -/
 theorem Mem.read_mk_lt (f : Nat → Nat) (o : Std.HashMap Nat UInt8)
     (a : Nat) (hf : ∀ x, f x < 256) : Mem.read ⟨f, o⟩ a < 256 := by
   unfold Mem.read
@@ -390,23 +357,20 @@ theorem Mem.read_mk_lt (f : Nat → Nat) (o : Std.HashMap Nat UInt8)
   · exact byte_toNat_lt _
   · exact hf a
 
-/-- Peel one `ite` off a bound goal. Closing if-chains by `repeat`ed
-    `apply ite_lt` instead of `split` matters: after `apply
-    Mem.read_mk_lt; intro x` the chain goal is a BETA-REDEX
-    (`(fun a => if …) x < 256`), which `split` cannot see through
-    (syntactic ite search) and which the `simp`/`dsimp` beta route
-    cannot normalize without max-stepping on `Mem.read`'s `HashMap`
-    internals — but `apply` unifies up to defeq, so it reads straight
-    through the redex. -/
+/-- Peel one `ite` off a bound goal. WHY `repeat apply ite_lt` not `split`:
+    after `apply Mem.read_mk_lt; intro x` the goal is a BETA-REDEX
+    (`(fun a => if …) x < 256`) that `split` can't see through (syntactic
+    ite search) and `simp`/`dsimp` can't beta-normalize without max-stepping
+    on `Mem.read`'s `HashMap`; `apply` unifies up to defeq through it. -/
 theorem ite_lt {c : Prop} [Decidable c] {t e B : Nat}
     (ht : t < B) (he : e < B) : (if c then t else e) < B := by
   split
   · exact ht
   · exact he
 
-/-- `mem_lt` closers for the de-simp'd rent / epoch_schedule sysvars: peel the
-    `guardWrite` (fault keeps `s.mem`), then the lambda-coerced multi-`if` write
-    is bounded by `Mem.read_mk_lt` + repeated `ite_lt` (byte literals / old mem). -/
+/-- `mem_lt` closers for the de-simp'd rent/epoch_schedule sysvars: peel
+    `guardWrite` (fault keeps `s.mem`), then `Mem.read_mk_lt` + repeated
+    `ite_lt` bounds the lambda-coerced multi-`if` write. -/
 theorem execRent_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (Sysvar.execRent s).mem a < 256 := by
   simp only [Sysvar.execRent]
@@ -429,10 +393,9 @@ theorem execEpochSchedule_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat
     | exact h _
     | apply ite_lt
 
-/-- `execTryFind` `mem_lt` closer (placed after `Mem.read_mk_lt` / `ite_lt`):
-    peel the three input guards (mem-preserving) → `some` arm's two output
-    guards → the coerced `mem'` lambda (bump byte / 32-byte PDA `writeBytes`);
-    the `none` arm keeps `s.mem`. -/
+/-- `execTryFind` `mem_lt` closer: peel three input guards → `some` arm's
+    two output guards → coerced `mem'` lambda (bump byte / PDA `writeBytes`);
+    `none` arm keeps `s.mem`. -/
 theorem Pda_execTryFind_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (Pda.execTryFind s).mem a < 256 := by
   simp only [Pda.execTryFind]
@@ -449,14 +412,12 @@ theorem Pda_execTryFind_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) 
     · exact writeBytes_lt _ _ _ _ h _
   · exact h a
 
-/-! ## State-shape preservation lemmas
+/-! ## State-shape preservation lemmas — one per record-update shape, so
+`step_bounded` is a clean case bash. -/
 
-`step`'s arms are record updates of a handful of shapes; one lemma per
-shape keeps `step_bounded` a clean case bash. -/
-
-/-- Arms `{ s with regs := s.regs.set dst v, pc := pc' }` — the bulk of
-    the ALU/load ISA. The frame discipline survives because `RegFile.set`
-    cannot write r10 (`RegFile.set_preserves_r10`). -/
+/-- Arms `{ s with regs := s.regs.set dst v, pc := pc' }` (bulk of ALU/load).
+    Frame discipline survives: `RegFile.set` can't write r10
+    (`RegFile.set_preserves_r10`). -/
 theorem StateBounded.with_set_reg {s : State} (h : StateBounded s)
     {dst : Reg} {v : Nat} (hv : v < U64_MODULUS) (pc' : Nat) :
     StateBounded { s with regs := s.regs.set dst v, pc := pc' } :=
@@ -488,9 +449,8 @@ theorem StateBounded.with_exitCode {s : State} (h : StateBounded s)
     cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
     returnData_le := h.returnData_le, mem_lt := h.mem_lt }
 
-/-- Arms `{ s with exitCode := …, vmError := … }` (every fail-closed
-    abort — audit L1: abort sites set the typed fault channel alongside
-    the sentinel). -/
+/-- Arms `{ s with exitCode := …, vmError := … }` (fail-closed aborts;
+    L1: abort sites set the typed fault channel alongside the sentinel). -/
 theorem StateBounded.with_abort {s : State} (h : StateBounded s)
     (e : Option Nat) (v : Option VmError) :
     StateBounded { s with exitCode := e, vmError := v } :=
@@ -509,12 +469,10 @@ theorem StateBounded.with_mem {s : State} (h : StateBounded s)
     cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
     returnData_le := h.returnData_le, mem_lt := hm }
 
-/-! ## Structural syscall sweeps
-
-No syscall touches the call stack or the CU budget; these two equalities
-let the stack/budget invariant components carry through the `.call` arm
-for every syscall at once (the r10 analog, `execSyscall_preserves_r10`,
-already exists in `Execute.lean`). -/
+/-! ## Structural syscall sweeps — no syscall touches the call stack or CU
+budget, so these two equalities carry the stack/budget invariant through the
+`.call` arm for all syscalls (r10 analog `execSyscall_preserves_r10` is in
+`Execute.lean`). -/
 
 theorem execSyscall_callStack (sc : Syscall) (s : State) :
     (execSyscall sc s).callStack = s.callStack := by
@@ -526,16 +484,12 @@ theorem execSyscall_cuBudget (sc : Syscall) (s : State) :
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
 
-/-! ## Value syscall sweeps
+/-! ## Value syscall sweeps — the four invariant components a syscall can
+move: heap bump ptr (`sol_alloc_free_`, capped by `allocFreeStep`), return
+data (`sol_set_return_data`, capped at 1024), r0 (every syscall, bounded),
+memory (bulk writes, byte-reduced). -/
 
-The four invariant components a syscall can actually move: the heap bump
-pointer (`sol_alloc_free_` only, capped by `allocFreeStep`), the return
-data (`sol_set_return_data` only, capped at 1024), r0 (every syscall, to
-a status code / length / address — all bounded), and memory (bulk writes
-— all byte-reduced). -/
-
-/-- `execTryFind` helper in the `execTryFind_preserves_r10` style: it
-    never touches the heap pointer (in either match arm). -/
+/-- `execTryFind` never touches the heap pointer (either match arm). -/
 @[simp] theorem _root_.SVM.SBPF.Pda.execTryFind_heapNext (s : State) :
     (Pda.execTryFind s).heapNext = s.heapNext := by
   simp only [Pda.execTryFind]
@@ -581,11 +535,10 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
   have h2 := hb.cuBudget_lt
   have h3 := hb.heapNext_le
   intro r
-  -- `simp only` over the explicit exec-def roster: keeps `RegFile.get`/
-  -- `set` FOLDED (a full `simp` unfolds them and `repeat' split` then
-  -- cases on `r` itself), and keeps the `sysvarBuffer` eval lemmas and
-  -- 20 KiB buffer literals OUT of the proof term (the kernel
-  -- deep-recursion hazard — see the H7 notes in `SysvarData.lean`).
+  -- Explicit `simp only` roster keeps `RegFile.get`/`set` FOLDED (full `simp`
+  -- unfolds them, then `repeat' split` cases on `r`) and the 20 KiB
+  -- `sysvarBuffer` literals OUT of the term (kernel deep-recursion hazard;
+  -- H7 notes in `SysvarData.lean`).
   cases sc <;>
     simp only [execSyscall, commitOptional,
           State.guardRead, State.guardWrite, State.accessFault,
@@ -610,14 +563,12 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact RegFile.set_get_lt hb.regs_lt (by decide) _ r
       | exact RegFile.set_get_lt hb.regs_lt
           (by simp only [U64_MODULUS] at h1 h2 h3 ⊢; omega) _ r
-      -- `sol_log_data` is kept folded (its recursive `guardSlices` walk does
-      -- not unfold under `simp only`): close it via the descriptor-walk
-      -- register lemma — the result is `s.regs` (fault) or `set .r0 0`.
+      -- `sol_log_data` stays folded (recursive `guardSlices` won't unfold):
+      -- result is `s.regs` (fault) or `set .r0 0`.
       | exact Logging.execLogData_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
-      -- hash family (sha256/512/keccak/blake3): kept OUT of the roster (digest
-      -- term stays folded); close each via its per-hash regs lemma — a cheap
-      -- head-match on the folded `exec`, no metavars in this 1M-heartbeat sweep.
+      -- hash family: kept OUT of roster (digest folded); per-hash lemma is a
+      -- cheap head-match, no metavars in this 1M-heartbeat sweep.
       | exact Sha256_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
       | exact Sha512_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
@@ -626,17 +577,14 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
       | exact Blake3_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
-      -- poseidon: `commitOptional` body sets r0 to 0 (some) or 1 (none).
+      -- poseidon: `commitOptional` sets r0 to 0 (some) or 1 (none).
       | exact Poseidon_exec_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
           (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
-      -- PDA create: `guardRead` (program_id) wrapping `guardedCommit`; folded
-      -- exec, regs = s.regs / set .r0 {0,1}.
+      -- PDA create/try-find: folded exec, regs = s.regs / set .r0 {0,1}.
       | exact Pda_execCreate_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
           (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
-      -- PDA try-find: input guards wrapping a some/none body; regs = s.regs /
-      -- set .r0 {0,1}.
       | exact Pda_execTryFind_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
           (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
@@ -651,12 +599,10 @@ set_option maxRecDepth 65536 in
 theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
     ∀ a, (execSyscall sc s).mem a < 256 := by
   intro a
-  -- Same `simp only` roster discipline as `execSyscall_regs_lt`.
-  -- Leaf families: unchanged memory (IH); `writeBytes` bulk outputs
-  -- (folded — closed by `writeBytes_lt`); `writeU32` (memcmp's out
-  -- write — defeq `writeByWidth .word`); and the function-coerced
-  -- lambda writes, opened by `Mem.read_coe` + split, whose branches
-  -- are literals, `% 256` reads, `ByteArray` bytes, or the old memory.
+  -- Same roster discipline as `execSyscall_regs_lt`. Leaf families:
+  -- unchanged mem (IH); folded `writeBytes` bulk outputs (`writeBytes_lt`);
+  -- memcmp's `writeU32` (defeq `writeByWidth .word`); function-coerced lambda
+  -- writes opened by `Mem.read_mk_lt` + `ite_lt`.
   cases sc <;>
     simp only [execSyscall, commitOptional,
           State.guardRead, State.guardWrite, State.accessFault,
@@ -679,11 +625,9 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
     (first
       | exact hb.mem_lt a
       | exact hb.mem_lt _
-      -- `sol_log_data` stays folded (recursive `guardSlices`): it never
-      -- writes memory, so rewrite `(execLogData s).mem` to `s.mem`.
+      -- `sol_log_data` stays folded; never writes mem, rewrite to `s.mem`.
       | (rw [Logging.execLogData_mem]; exact hb.mem_lt a)
-      -- hash family (kept out of the roster, see regs_lt): per-hash closer,
-      -- a cheap head-match on the folded `exec` (no metavars in this sweep).
+      -- hash family: per-hash closer, cheap head-match on folded `exec`.
       | exact Sha256_exec_mem_lt s hb.mem_lt a
       | exact Sha512_exec_mem_lt s hb.mem_lt a
       | exact Keccak256_exec_mem_lt s hb.mem_lt a
@@ -691,8 +635,7 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact Poseidon_exec_mem_lt s hb.mem_lt a
       | exact Pda_execCreate_mem_lt s hb.mem_lt a
       | exact Pda_execTryFind_mem_lt s hb.mem_lt a
-      -- rent / epoch_schedule (de-simp'd, out of roster): head-match on the
-      -- folded exec; its lambda write is byte-bounded.
+      -- rent / epoch_schedule (de-simp'd): head-match on folded exec.
       | exact execRent_mem_lt s hb.mem_lt a
       | exact execEpochSchedule_mem_lt s hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt a
@@ -701,11 +644,9 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | omega
       | exact Nat.mod_lt _ (by decide)
       | exact byte_toNat_lt _
-      -- Function-coerced lambda writes: `apply` the overlay-agnostic
-      -- constructor-literal bound, then peel the if-chain by repeated
-      -- `apply ite_lt` (defeq-through-the-redex — see its docstring),
-      -- closing branches as literals / `% 256` reads / `ByteArray`
-      -- bytes / fallthrough to the old memory or a `writeBytes`.
+      -- Function-coerced lambda writes: `Mem.read_mk_lt` then peel the
+      -- if-chain by repeated `apply ite_lt` (defeq-through-the-redex, see
+      -- its docstring); branches are literals / `% 256` / bytes / old mem.
       | (apply Mem.read_mk_lt
          intro x
          repeat
@@ -726,15 +667,13 @@ theorem shiftRight_le' (n k : Nat) : n >>> k ≤ n := by
 
 set_option maxHeartbeats 1000000 in
 /-- THE preservation theorem (audit L5 + L3): one `step` keeps the state
-    bounded. The three stack-touching arms (`call`/`call_local`/`exit`)
-    are bespoke; every other arm is a record update matching one of the
-    `with_*` shapes plus an arithmetic bound. -/
+    bounded. The three stack-touching arms (`call`/`call_local`/`exit`) are
+    bespoke; every other arm is a `with_*` shape + an arithmetic bound. -/
 theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
     StateBounded (step insn s) := by
   cases insn
   case call sc =>
-    -- `{ execSyscall sc s with pc := _, cuConsumed := _ }`: every
-    -- component comes from one of the syscall sweeps.
+    -- `{ execSyscall sc s with … }`: every component from a syscall sweep.
     simp only [step]
     exact
       { regs_lt := execSyscall_regs_lt sc s h
@@ -761,8 +700,8 @@ theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
     · -- depth-64 guard tripped: fail-closed abort.
       exact h.with_abort _ _
     · next hdepth =>
-      -- Push: frame saves the (bounded) registers; r10 climbs one frame,
-      -- re-establishing the discipline at depth+1.
+      -- Push: frame saves bounded regs; r10 climbs one frame, re-establishing
+      -- the discipline at depth+1.
       have hr10 := h.r10_eq
       have hd := h.stack_depth
       refine
@@ -795,9 +734,8 @@ theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
     simp only [step]
     split
     · next frame rest heq =>
-      -- Pop: r10 restores to the top frame's saved pointer, which the
-      -- discipline pins one frame down; r6-r9 restore to saved values
-      -- bounded by `frames_lt`.
+      -- Pop: r10 restores to the top frame's saved ptr (discipline pins it
+      -- one frame down); r6-r9 restore to `frames_lt`-bounded saved values.
       have hfr := h.frames_lt frame (by rw [heq]; exact List.mem_cons_self ..)
       have hwf : StackR10WF (frame :: rest) s.regs.r10 := heq ▸ h.stack_r10
       obtain ⟨-, hrest⟩ := hwf
@@ -890,23 +828,19 @@ theorem executeFn_bounded (fetch : Nat → Option Insn) {s : State}
 
 /-! ## The L5 / L3 closes -/
 
-/-- L5 (audit): every register of every state the executor can reach is
-    a real u64. In particular the unsigned compares
-    (`jgt`/`jge`/`jlt`/`jle`), which compare RAW `Nat` register values,
-    are faithful u64 compares on every reachable state. -/
+/-- L5 (audit): every register of every reachable state is a real u64, so
+    the unsigned compares (`jgt`/`jge`/`jlt`/`jle`, which compare RAW `Nat`
+    values) are faithful. -/
 theorem executeFn_regs_lt (fetch : Nat → Option Insn) {s : State}
     (h : StateBounded s) (fuel : Nat) :
     ∀ r, (executeFn fetch s fuel).regs.get r < 2 ^ 64 :=
   (executeFn_bounded fetch h fuel).regs_lt
 
-/-- L3 (audit): a byte-cell claim `s.mem a = v` with `v ≥ 256` is FALSE
-    of every bounded state — real cells hold real bytes. So a
-    `memByteIs a v` atom with a non-canonical `v` is unsatisfiable
-    against any reachable state's memory: the raw-valued `singletonMem`
-    definition cannot be exploited on the reachable fragment. (This is
-    the invariant-side fence; canonicalising `singletonMem` itself was
-    attempted and reverted — it ripples `< 256` hypotheses through the
-    byte-cell specs into the H8 byte-demotion base.) -/
+/-- L3 (audit): a byte-cell claim `s.mem a = v` with `v ≥ 256` is FALSE of
+    every bounded state, so a non-canonical `memByteIs a v` atom is
+    unsatisfiable against reachable memory — the raw-valued `singletonMem`
+    can't be exploited there. (Invariant-side fence; canonicalising
+    `singletonMem` was reverted, see file header.) -/
 theorem mem_byte_canonical {s : State} (h : StateBounded s) {a v : Nat}
     (hv : 256 ≤ v) : s.mem a ≠ v := by
   intro he
@@ -915,9 +849,8 @@ theorem mem_byte_canonical {s : State} (h : StateBounded s) {a v : Nat}
 
 /-! ## Base cases -/
 
-/-- `Execute.initState` is bounded, given bounded inputs (the input
-    address and CU budget are caller-supplied; real callers pass region
-    addresses and budgets far below 2^64). -/
+/-- `Execute.initState` is bounded given bounded inputs (caller-supplied
+    input address + CU budget; real callers pass values far below 2^64). -/
 theorem initState_bounded (inputAddr : Nat) (mem : Mem)
     (regions : RegionTable) (cuBudget : Nat := 200000)
     (haddr : inputAddr < U64_MODULUS)
@@ -937,9 +870,8 @@ theorem initState_bounded (inputAddr : Nat) (mem : Mem)
     returnData_le := by simp [initState]
     mem_lt := hmem }
 
-/-- The runner's initial state (diff path and `run`/`runElf`) is bounded
-    for any budget `< 2^64` (the FFI passes a u64, so this is every real
-    run). -/
+/-- The runner's initial state (diff path, `run`/`runElf`) is bounded for
+    any budget `< 2^64` — the FFI passes a u64, so every real run. -/
 theorem initialState_bounded (cfg : Runner.RunConfig)
     (hcu : cfg.cuBudget < U64_MODULUS) :
     StateBounded (Runner.initialState cfg) :=

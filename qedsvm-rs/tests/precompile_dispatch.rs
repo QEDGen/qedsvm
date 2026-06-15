@@ -1,49 +1,12 @@
-//! Top-level precompile dispatch tests (Tier-1 #2b).
-//!
-//! agave routes the three sig-verify precompiles (`Ed25519SigVerify…`,
-//! `KeccakSecp256k1…`, `Secp256r1SigVerify…`) without entering the BPF
-//! VM. qedsvm's `Svm::process_instruction` mirrors by detecting
-//! the precompile pubkeys and calling `SVM.Native.Precompiles.dispatch`
-//! through the `qedsvm_precompile_dispatch` FFI entry point.
-//!
-//! ## Why these aren't diff-mollusk tests
-//!
-//! mollusk-svm gates precompile execution behind a `precompiles`
-//! feature that pulls in `agave-precompiles = "=4.0.0-beta.6"`,
-//! whose `agave-feature-set` pin conflicts with the rest of the
-//! `agave-4.0` graph we lock against (the latter resolved to
-//! `agave-feature-set = 4.0.0-rc.0`, `solana-pubkey = 4.2.0`). So a
-//! cross-engine comparison via Mollusk's path isn't feasible right
-//! now. These tests instead prove the qedsvm side end-to-end:
-//!
-//! - The instruction is built with the canonical interface crates
-//!   (`solana-{ed25519,secp256k1,secp256r1}-program`), so the wire
-//!   format is exactly what agave's verifier consumes.
-//! - The signing crates (`ed25519-dalek`, `libsecp256k1`, `openssl`)
-//!   are the same ones agave + the runtime use to *produce* such
-//!   signatures, so a valid pair here means a valid pair anywhere.
-//! - We exercise the full path: Rust pubkey-detect →
-//!   `qedsvm_precompile_dispatch` FFI → Lean
-//!   `SVM.Native.Precompiles.dispatch` → the lean-bridge crypto
-//!   exports (`lean_ed25519_verify_strict`, `lean_secp256r1_verify`,
-//!   existing `lean_secp256k1_recover` + `lean_keccak256`).
-//!
-//! ## CU equality
-//!
-//! Our charge mirrors agave's cost-model per-signature values
-//! (`ED25519_VERIFY_STRICT_COST = 2400`, `SECP256K1_VERIFY_COST = 6690`,
-//! `SECP256R1_VERIFY_COST = 4800`). Each test asserts the absolute
-//! CU figure so a future regression that drifts the charge is
-//! caught.
+//! Tier-1 #2b precompile dispatch: Ed25519/secp256k1/secp256r1 sig-verify end-to-end via Lean Precompiles.dispatch.
+//! Not diff-mollusk: mollusk's precompiles feature pin conflicts with the agave-4.0 graph.
+//! CU pins: ED25519=2400, SECP256K1=6690, SECP256R1=4800.
 
 use qedsvm::{ProgramResult, Svm};
 use solana_account::{Account, AccountSharedData};
 use solana_pubkey::Pubkey;
 
-/// Counter-derived unique-ish pubkey for placeholder accounts.
-/// `solana_address::Address::new_unique` lives behind the `atomic`
-/// feature, which our default-features-off `solana-pubkey` dep
-/// doesn't pull in — so we roll our own deterministic counter here.
+/// Counter-derived placeholder pubkey (Pubkey::new_unique is behind an `atomic` feature we don't enable).
 fn dummy_pubkey() -> Pubkey {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(1);
@@ -107,9 +70,7 @@ fn ed25519_precompile_rejects_corrupted_signature() {
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
     let msg = b"qedsvm ed25519 precompile";
     let mut signature = signing_key.sign(msg).to_bytes();
-    // Flip a high-order bit in the signature scalar — `verify_strict`
-    // must reject.
-    signature[34] ^= 0x01;
+    signature[34] ^= 0x01; // flip a bit in the scalar — verify_strict must reject
     let pubkey_bytes = signing_key.verifying_key().to_bytes();
     let ix = solana_ed25519_program::new_ed25519_instruction_with_signature(
         msg,
@@ -207,10 +168,7 @@ fn secp256r1_precompile_accepts_valid_signature() {
 
 #[test]
 fn unknown_pid_does_not_match_precompile_path() {
-    // A non-precompile pid must NOT route through the precompile path —
-    // it should hit the existing UnknownProgram error from the BPF
-    // registry lookup.
-    let pid = dummy_pubkey();
+    let pid = dummy_pubkey(); // unknown pid must not route through precompile path — expect UnknownProgram
     let ix = solana_instruction::Instruction {
         program_id: pid, accounts: vec![], data: vec![1, 2, 3],
     };

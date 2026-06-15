@@ -1,14 +1,4 @@
-//! qedrecover — recover Lean metadata for a compiled Solana program
-//! from a `.so` + Codama IDL + qedsvm overlay.
-//!
-//! M3a (this milestone): IDL + overlay parsing + sanity dump.
-//! M3b (next): dispatcher recognition → reachable CFG slice.
-//! M3c (after): Lean metadata emission + ground-truth cross-check.
-//!
-//! Usage:
-//!   cargo run --features qedrecover --bin qedrecover -- \
-//!     --so       tests/fixtures/p_token.so \
-//!     --overlay  tests/fixtures/p_token.qedoverlay.toml
+//! qedrecover — recover Lean metadata for a compiled Solana program from a `.so` + Codama IDL + qedsvm overlay.
 
 mod idioms;
 
@@ -28,10 +18,6 @@ use solana_sbpf::{
 use qedsvm::analysis::PcMap;
 use sha2::Digest;
 
-// -----------------------------------------------------------------------------
-// Overlay (qedsvm-specific layer over the IDL)
-// -----------------------------------------------------------------------------
-
 #[derive(Debug, Deserialize)]
 struct Overlay {
     idl: String,
@@ -42,16 +28,10 @@ struct Overlay {
 #[derive(Debug, Deserialize)]
 struct OverlayIx {
     name: String,
-    // Optional: a project may name an instruction in the overlay
-    // without yet making a verification claim. Recovery still runs;
-    // the resulting qedmeta entry just has no claim fields.
+    // No claim fields are required; an unclaimed instruction is still recovered.
     refines: Option<String>,
     cu_budget: Option<u64>,
 }
-
-// -----------------------------------------------------------------------------
-// Codama IDL (minimal — only the fields qedrecover reads)
-// -----------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 struct Idl {
@@ -85,46 +65,29 @@ struct IdlAccount {
 #[derive(Debug, Deserialize)]
 struct IdlArgument {
     name: String,
-    // Opaque: Codama supports many type-node kinds (number, struct,
-    // fixed-size array, …). We only special-case `numberTypeNode`
-    // at use time; everything else stays as raw JSON until needed.
+    // Opaque: many Codama type-node kinds; only `numberTypeNode` is special-cased at use time.
     #[serde(rename = "type")]
     ty: serde_json::Value,
-    // Opaque for the same reason — Codama has many default-value
-    // node kinds (numberValueNode, pubkeyValueNode, enumValueNode, …).
+    // Opaque: many Codama default-value node kinds; only `numberValueNode` is consumed.
     #[serde(rename = "defaultValue", default)]
     default_value: Option<serde_json::Value>,
 }
 
-// -----------------------------------------------------------------------------
-// Static-analysis context object — analysis doesn't execute.
-// -----------------------------------------------------------------------------
-
+// Static-analysis context — analysis doesn't execute.
 struct NoopCtx;
 impl ContextObject for NoopCtx {
     fn consume(&mut self, _amount: u64) {}
     fn get_remaining(&self) -> u64 { 0 }
 }
 
-// -----------------------------------------------------------------------------
-// CLI
-// -----------------------------------------------------------------------------
-
 struct Args {
     so:      PathBuf,
     overlay: PathBuf,
     output:  Option<PathBuf>,
-    /// Happy-path execution trace (`.pcs`, one decimal logical PC per
-    /// line, `#` comments ignored — the format `scripts/capture_trace.sh`
-    /// produces). When given, blocks containing a traced PC are tagged
-    /// happy-path in the emitted metadata. Applies to the single
-    /// overlay-claimed instruction; ambiguous (rejected) when the
-    /// overlay claims more than one.
+    /// `.pcs` trace (one decimal logical PC per line, `#` comments ignored). Tags
+    /// happy-path blocks in emitted metadata; rejected if overlay claims > 1 instruction.
     trace:   Option<PathBuf>,
-    /// Emit the qedmeta `.toml` sidecar (issue #37). The recovered facts
-    /// qedlift consumes (`[instruction.recovered]` + idiom/tag/const-exit
-    /// tables) are written here. Independent of `--output` (the
-    /// `.recovered.lean`); both can be requested.
+    /// Emit the qedmeta `.toml` sidecar (issue #37) consumed by qedlift. Independent of `--output`.
     qedmeta_out: Option<PathBuf>,
 }
 
@@ -154,24 +117,12 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-/// Classify a constant error-exit block. Three tail shapes, all
-/// "set r0 to a constant, then reach `exit` with nothing in between":
-///
-///   1. `…; mov64/lddw r0, imm; exit`        (exit carried in-block)
-///   2. `…; mov64/lddw r0, imm; ja tgt`      where `tgt` is a bare-exit
-///      block (pinocchio routes every error landing in an arm through
-///      one shared `exit`)
-///   3. `…; mov64/lddw r0, imm` falling through into a bare-exit block
-///
-/// Returns the exit code as the u64 the machine puts in r0
-/// (`toU64 imm` — sign-extension wraps, matching the Lean side).
-/// Each shape is collapsed in one `apply` by the matching lemma in
-/// `SVM/SBPF/InstructionSpecs/Terminating.lean`:
-/// `errorExit{,_lddw}_spec` (shapes 1/3) / `errorExitJa{,_lddw}_spec`
-/// (shape 2).
+/// Classify a constant error-exit block. Three tail shapes: (1) `mov64/lddw r0, imm; exit`
+/// in-block; (2) `mov64/lddw r0, imm; ja tgt` where tgt is a bare-exit block; (3) fall-through
+/// into a bare-exit block. Returns `toU64 imm` (sign-extends, matching Lean). Each shape is
+/// discharged by `errorExit{,_lddw}_spec` / `errorExitJa{,_lddw}_spec` (Terminating.lean).
 fn error_exit_code(analysis: &Analysis, b: &CfgNode) -> Option<u64> {
     let r = &b.instructions;
-    // Does the block's single destination start with a bare `exit`?
     let dest_is_exit = || -> bool {
         if b.destinations.len() != 1 { return false; }
         analysis.cfg_nodes.get(&b.destinations[0])
@@ -180,23 +131,16 @@ fn error_exit_code(analysis: &Analysis, b: &CfgNode) -> Option<u64> {
     };
     if r.end == r.start { return None; }
     let last = &analysis.instructions[r.end - 1];
-    // Where does the backward scan for the r0 setter begin?
     let scan_end = if last.opc == ebpf::EXIT || last.opc == ebpf::JA {
-        // Exit carried in-block, or jump to a shared bare-exit block.
         if last.opc == ebpf::JA && !dest_is_exit() { return None; }
         r.end - 1
     } else {
-        // Fall-through into a bare-exit block.
         if !dest_is_exit() { return None; }
         r.end
     };
-    // Last write to r0 inside the block. Real error landings interleave
-    // spills/cleanup between the setter and the terminator
-    // (`lddw r0, c; stxdw …; ja exit`), so "the insn right before the
-    // jump" is too shallow. Register-writing instruction classes are
-    // LD/LDX/ALU64/ALU32 (a store's `dst` is the base register of a
-    // memory write, and a compare-jump's `dst` is read-only); `call`
-    // clobbers r0 with a computed value, so it ends the scan.
+    // Scan backward for the last r0 write. Error landings can interleave spills between
+    // the setter and terminator, so "insn right before jump" is too shallow. LD/LDX/ALU64/ALU32
+    // write dst; a store's dst is the memory base (not written); call clobbers r0 non-constant.
     for idx in (r.start..scan_end).rev() {
         let insn = &analysis.instructions[idx];
         if insn.opc == ebpf::CALL_IMM || insn.opc == ebpf::CALL_REG {
@@ -206,19 +150,16 @@ fn error_exit_code(analysis: &Analysis, b: &CfgNode) -> Option<u64> {
         let writes_reg = matches!(class, 0x00 | 0x01 | 0x04 | 0x07);
         if writes_reg && insn.dst == 0 {
             return match insn.opc {
-                // Analysis merges the lddw high half
-                // (`augment_lddw_unchecked`), so `imm` is the full
-                // 64-bit value for LD_DW_IMM.
+                // `augment_lddw_unchecked` merges the high half, so `imm` is the full 64-bit value.
                 ebpf::MOV64_IMM | ebpf::LD_DW_IMM => Some(insn.imm as u64),
-                _ => None, // r0 written, but not from a constant
+                _ => None, // r0 written but not from a constant
             };
         }
     }
-    None // r0 inherited from a predecessor block
+    None // r0 set by a predecessor
 }
 
-/// Parse a `.pcs` trace file: one decimal logical PC per line, `#`
-/// comments and blank lines ignored. Returns the PC set.
+/// Parse a `.pcs` trace file (one decimal logical PC per line, `#` comments ignored).
 fn load_trace(path: &Path) -> Result<BTreeSet<usize>, String> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| format!("--trace {}: {}", path.display(), e))?;
@@ -237,10 +178,6 @@ fn load_trace(path: &Path) -> Result<BTreeSet<usize>, String> {
     Ok(pcs)
 }
 
-// -----------------------------------------------------------------------------
-// Argument byte offsets — Codama lays out args sequentially in ix_data.
-// -----------------------------------------------------------------------------
-
 /// Size in bytes of a numeric type by Codama `format` string.
 fn number_size(format: &str) -> Option<usize> {
     match format {
@@ -252,8 +189,7 @@ fn number_size(format: &str) -> Option<usize> {
     }
 }
 
-/// Map a Codama discriminator `format` to the sBPF load opcode it
-/// would compile to. Only the unsigned width matters for matching.
+/// Map a Codama discriminator `format` to the sBPF load opcode (unsigned width only).
 fn discriminator_load_opc(format: &str) -> Option<u8> {
     match format {
         "u8"  => Some(ebpf::LD_B_REG),
@@ -264,26 +200,13 @@ fn discriminator_load_opc(format: &str) -> Option<u8> {
     }
 }
 
-/// Search the instruction stream for the dispatcher arm matching a
-/// specific discriminator value. Handles two pinocchio-style shapes:
+/// Find the dispatcher arm for a discriminator value. Two shapes: `ldxX rD,[rS+0]; jeq rD,disc`
+/// (taken branch = arm entry) and `jne rD,disc` (fall-through = arm entry). Load and jump may be
+/// separated by other compares on the same register (subsequent arms in a cluster reuse the load).
 ///
-///   * `ldxX rD, [rS+0]; jeq rD, imm=disc, +off`
-///     - branch taken (match): arm entry = target
-///   * `ldxX rD, [rS+0]; jne rD, imm=disc, +off`
-///     - branch NOT taken (match): arm entry = pc+1 (fall-through)
-///
-/// In both shapes the discriminator load and the compare-jump may be
-/// adjacent (the first arm in a cluster) OR separated by other
-/// compare-jumps over the SAME loaded register (subsequent arms in
-/// the same dispatcher cluster, which reuse the load).
-///
-/// Returns `(load_pc, jump_pc, arm_entry_pc)`. PC spaces differ by
-/// element: `load_pc`/`jump_pc` are indices into `instructions`
-/// (logical space — lddw is one element, the numbering Lean decode,
-/// qedlift, and `.pcs` traces use), while `arm_entry_pc` is a raw
-/// insn-slot PC (lddw is two slots — the space `cfg_nodes` keys and
-/// jump offsets live in), ready to feed `slice_cfg`. Convert with
-/// `slot_to_logical` for reporting.
+/// Returns `(load_pc, jump_pc, arm_entry_pc)`. `load_pc`/`jump_pc` are logical (decoded-array
+/// indices); `arm_entry_pc` is a raw slot PC (the space `cfg_nodes` keys use) — convert with
+/// `slot_to_logical` before reporting or comparing with `.pcs` traces.
 fn find_dispatch_arm(
     instructions: &[ebpf::Insn],
     start_pc: usize,
@@ -291,16 +214,8 @@ fn find_dispatch_arm(
     disc_value: i64,
 ) -> Option<(usize, usize, usize)> {
     let n = instructions.len();
-    // Walk the stream looking for any `ldxX rD, [rS+0]` (a candidate
-    // discriminator load). For each candidate, scan a short window of
-    // following instructions for a compare-jump on the SAME dest reg
-    // with our disc value. Stop the inner scan when we hit something
-    // that breaks the "dispatcher cluster" invariant (anything writing
-    // the loaded register, or a non-compare-jump instruction).
-    // Solana ABI puts the program input pointer in r1, so the
-    // discriminator load is `ldxX r?, [r1+0]`. Restricting the source
-    // register avoids matching unrelated byte/word reads at offset 0
-    // of other pointers (which are common in account-parsing code).
+    // Solana ABI: program input is always r1. Restricting source to r1 avoids false matches
+    // on account-parsing loads that also read offset 0 of other pointers.
     const INPUT_PTR_REG: u8 = 1;
     let mut pc = start_pc;
     while pc < n {
@@ -313,33 +228,23 @@ fn find_dispatch_arm(
             continue;
         }
         let loaded_reg = load.dst;
-        // Inner scan: look up to `window` instructions ahead for the
-        // matching compare-jump. The pinocchio dispatcher has all
-        // arms within ~30 instructions of the load.
         let window = 64.min(n - pc - 1);
         for k in 1..=window {
             let cur = &instructions[pc + k];
-            // If something writes the loaded register, the cluster ended.
-            if writes_dst(cur, loaded_reg) { break; }
-            // Match against our disc value.
+            if writes_dst(cur, loaded_reg) { break; } // cluster ended
             if cur.dst == loaded_reg && cur.imm == disc_value {
                 let is_jeq = cur.opc == ebpf::JEQ32_IMM
                           || cur.opc == ebpf::JEQ64_IMM;
                 let is_jne = cur.opc == ebpf::JNE32_IMM
                           || cur.opc == ebpf::JNE64_IMM;
                 if is_jeq {
-                    // Taken-branch arm entry = target. `off` is
-                    // slot-relative, so the base must be the insn's
-                    // slot (`cur.ptr`), NOT its vec index — mixing the
-                    // spaces shifts the target by the number of lddw's
-                    // before it (this was a real bug: p_token transfer's
-                    // arm came back as 309 instead of slot 336).
+                    // Base must be `cur.ptr` (slot), NOT the vec index — mixing spaces
+                    // was a real bug: p_token transfer returned 309 instead of slot 336.
                     let target = (cur.ptr as i64) + 1 + (cur.off as i64);
                     return Some((pc, pc + k, target as usize));
                 }
                 if is_jne {
-                    // Not-taken-branch arm entry = the next slot.
-                    return Some((pc, pc + k, cur.ptr + 1));
+                    return Some((pc, pc + k, cur.ptr + 1)); // not-taken = next slot
                 }
             }
         }
@@ -348,14 +253,10 @@ fn find_dispatch_arm(
     None
 }
 
-/// True if `insn` writes the given destination register.
-/// Used to detect the end of a dispatcher cluster.
+/// True if `insn` writes `reg` (i.e. is not a compare-jump, which only reads dst).
 fn writes_dst(insn: &ebpf::Insn, reg: u8) -> bool {
     if insn.dst != reg { return false; }
-    // Anything that isn't a compare-jump on imm reads `dst` but
-    // doesn't write it. ALU ops, loads, and moves write `dst`.
     let opc = insn.opc;
-    // Compare-jumps: don't write dst, just read it.
     let is_cmp_jump = matches!(opc,
         ebpf::JEQ32_IMM | ebpf::JEQ64_IMM |
         ebpf::JNE32_IMM | ebpf::JNE64_IMM |
@@ -371,11 +272,8 @@ fn writes_dst(insn: &ebpf::Insn, reg: u8) -> bool {
     !is_cmp_jump
 }
 
-/// BFS over the CFG starting at `entry`, following `destinations`
-/// edges. If `bound` is `Some(set)`, only blocks whose start-PC is
-/// in `set` are followed — used to constrain the walk to the entry's
-/// enclosing function, so shared library helpers don't leak into the
-/// arm slice.
+/// BFS over the CFG from `entry`. `bound` restricts the walk to a set of block-start PCs
+/// (typically the enclosing function) so shared helpers don't leak into the arm slice.
 fn slice_cfg<'a>(
     analysis: &'a Analysis<'a>,
     entry: usize,
@@ -398,7 +296,7 @@ fn slice_cfg<'a>(
     blocks
 }
 
-/// Capitalise the first letter (cheap PascalCase for namespace names).
+/// Cheap PascalCase conversion for Lean namespace names.
 fn pascal(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut up = true;
@@ -410,7 +308,7 @@ fn pascal(s: &str) -> String {
     out
 }
 
-/// Emit recovered metadata as a Lean module.
+/// Emit the recovered arm metadata as a Lean module.
 fn emit_lean<W: std::io::Write>(
     out:        &mut W,
     args:       &Args,
@@ -432,7 +330,6 @@ fn emit_lean<W: std::io::Write>(
     let total_insns: usize = arm_blocks.iter()
         .map(|b| b.instructions.end - b.instructions.start)
         .sum();
-    // A block is on the happy path iff the trace executed any PC in it.
     let on_trace = |b: &CfgNode| -> bool {
         trace.is_some_and(|t|
             t.range(b.instructions.start..b.instructions.end).next().is_some())
@@ -468,9 +365,7 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "namespace {}", module)?;
     writeln!(out)?;
 
-    // Claim layer (overlay). `refines` / `cu_budget` are now optional;
-    // emit empty / 0 sentinels when the overlay didn't claim them so
-    // the generated Lean stays well-formed.
+    // `refines`/`cu_budget` are optional; emit empty/0 sentinels so the generated Lean is well-formed.
     writeln!(out, "/-- The MIR intrinsic this instruction claims to refine. -/")?;
     writeln!(out, "def refinesIntrinsic : String := \"{}\"",
              ovix.refines.as_deref().unwrap_or(""))?;
@@ -479,7 +374,6 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "def cuBudget : Nat := {}", ovix.cu_budget.unwrap_or(0))?;
     writeln!(out)?;
 
-    // IDL-derived layout.
     writeln!(out, "/-- Account roles, in instruction-account order (from IDL). -/")?;
     writeln!(out, "def accountRoles : List String :=")?;
     writeln!(out, "  [")?;
@@ -496,9 +390,6 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "def discriminatorWidth : Nat := {}", disc_size)?;
     writeln!(out)?;
 
-    // Recovered PCs (logical space: index into the decoded instruction
-    // array, `lddw` = one element — the numbering Lean's
-    // `Decode.decodeProgram`, qedlift, and `.pcs` traces all use).
     writeln!(out, "/-- Recovered dispatcher site, in logical PC space (decoded-array")?;
     writeln!(out, "    index, `lddw` = one element — matches Lean decode, qedlift,")?;
     writeln!(out, "    and `.pcs` trace numbering). -/")?;
@@ -507,10 +398,7 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "def armEntryPc     : Nat := {}", arm_entry_logical)?;
     writeln!(out)?;
 
-    // Reachable blocks. `CfgNode.instructions` ranges are already
-    // logical; destinations are slot-space cfg keys, so convert them
-    // (a key that doesn't resolve to an instruction start is emitted
-    // as-is — it cannot match any block start, failing loudly).
+    // Destinations are slot-space cfg keys; convert to logical. Unresolvable keys emitted as-is.
     writeln!(out, "/-- Reachable basic blocks from the arm entry, bounded to the")?;
     writeln!(out, "    enclosing function. Entries are `(startPc, endPc, destinations)`")?;
     writeln!(out, "    where `endPc` is exclusive and destinations are block-start PCs.")?;
@@ -529,7 +417,6 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "  ]")?;
     writeln!(out)?;
 
-    // Constant-exit blocks (no trace needed — static shape).
     let const_exits: Vec<(usize, u64)> = arm_blocks.iter()
         .filter_map(|b| error_exit_code(analysis, b)
             .map(|code| (b.instructions.start, code)))
@@ -546,7 +433,6 @@ fn emit_lean<W: std::io::Write>(
         .collect::<Vec<_>>().join(", "))?;
     writeln!(out)?;
 
-    // Recognised idioms (idioms.rs starter vocabulary).
     writeln!(out, "/-- Recognised instruction idioms, as `(pc, tag)` — the asm-side")?;
     writeln!(out, "    domain vocabulary. `u64_field_{{increment,decrement}}` is the")?;
     writeln!(out, "    balance-mutation triple; `error_propagation_check` marks a")?;
@@ -561,7 +447,6 @@ fn emit_lean<W: std::io::Write>(
     writeln!(out, "  ]")?;
     writeln!(out)?;
 
-    // Happy-path tagging (when a trace was supplied).
     if let Some(t) = trace {
         let happy: Vec<usize> = arm_blocks.iter()
             .filter(|b| on_trace(b))
@@ -590,19 +475,10 @@ fn emit_lean<W: std::io::Write>(
     Ok(())
 }
 
-/// Emit the qedmeta `.toml` sidecar from the recovered facts (issue #37 /
-/// #41 producer half). Previously qedrecover only rendered the Lean
-/// metadata; the `qedmeta.toml` was hand-shaped. Now the SAME facts are
-/// written into the sidecar qedlift consumes (`[instruction.recovered]
-/// .arm_entry_pc` etc.), so the recover→lift handoff is mechanical, not
-/// hand-authored. Schema v2 (qedmeta/0.2): the `recovered`/`idiom`/`tag`
-/// tables are populated. The `[instruction.proofs]` binding is NOT
-/// emitted — it links to a Lean theorem, a human/qedgen assertion the
-/// recogniser doesn't know.
-///
-/// All PCs written are LOGICAL (decoded-array indices), the space qedlift
-/// and `.pcs` traces use — `CfgNode.instructions` ranges are already
-/// logical; the dispatch/arm/func PCs are converted by the caller.
+/// Emit the qedmeta `.toml` sidecar (issue #37/#41 producer half). Schema v2: populates
+/// `[instruction.recovered]`, `[[instruction.idiom]]`, `[[instruction.const_exit]]`, and
+/// `[[instruction.tag]]`. Does NOT emit `[instruction.proofs]` — that links a Lean theorem
+/// that only the human/qedgen author can assert. All PCs are logical (decoded-array indices).
 #[allow(clippy::too_many_arguments)]
 fn emit_qedmeta<W: std::io::Write>(
     out:        &mut W,
@@ -672,7 +548,7 @@ fn emit_qedmeta<W: std::io::Write>(
     }
     writeln!(out)?;
 
-    // ----- recovered facts (the section qedlift Phase 4 consumes) -----
+    // recovered facts — the section qedlift consumes
     let total_insns: usize = arm_blocks.iter()
         .map(|b| b.instructions.end - b.instructions.start)
         .sum();
@@ -683,13 +559,11 @@ fn emit_qedmeta<W: std::io::Write>(
     writeln!(out, "enclosing_func_pc  = {}", enclosing_func_logical)?;
     writeln!(out, "block_count        = {}", arm_blocks.len())?;
     writeln!(out, "total_instructions = {}", total_insns)?;
-    // The full `blocks` CFG slice is elided here (1940 rows on p_token);
-    // qedlift consumes `arm_entry_pc`, not the slice. The `.recovered.lean`
-    // (--output) carries the full `reachableBlocks` for inspection.
+    // Full slice elided (1940 rows on p_token); qedlift consumes `arm_entry_pc` not the slice.
+    // The `.recovered.lean` (--output) carries `reachableBlocks` for inspection.
     writeln!(out, "blocks = []")?;
     writeln!(out)?;
 
-    // ----- idiom tags (v0.2) -----
     for idm in idiom_tags {
         writeln!(out, "[[instruction.idiom]]")?;
         writeln!(out, "pc      = {}", idm.pc)?;
@@ -698,7 +572,6 @@ fn emit_qedmeta<W: std::io::Write>(
     }
     if !idiom_tags.is_empty() { writeln!(out)?; }
 
-    // ----- constant-exit blocks (v0.2): static `r0 := const; exit` -----
     for b in arm_blocks {
         if let Some(code) = error_exit_code(analysis, b) {
             writeln!(out, "[[instruction.const_exit]]")?;
@@ -709,7 +582,6 @@ fn emit_qedmeta<W: std::io::Write>(
         }
     }
 
-    // ----- happy-path tags (v0.2): only with a --trace -----
     if let Some(t) = trace {
         for b in arm_blocks {
             if t.range(b.instructions.start..b.instructions.end).next().is_some() {
@@ -723,10 +595,7 @@ fn emit_qedmeta<W: std::io::Write>(
     Ok(())
 }
 
-/// Set of basic-block start PCs that lie within the function
-/// containing `entry`. Uses `analysis.functions` (BTreeMap keyed by
-/// function start) to find the enclosing function's PC range, then
-/// collects every `cfg_nodes` key that falls inside.
+/// Block-start PCs within the function enclosing `entry` (bounded by `analysis.functions`).
 fn function_block_set(analysis: &Analysis, entry: usize) -> BTreeSet<usize> {
     let func_start = analysis.functions.range(..=entry)
         .next_back()
@@ -742,14 +611,7 @@ fn function_block_set(analysis: &Analysis, entry: usize) -> BTreeSet<usize> {
         .collect()
 }
 
-// -----------------------------------------------------------------------------
-// Per-instruction recovery
-// -----------------------------------------------------------------------------
-
-/// Outcome of trying to recover one IDL instruction from the binary.
-/// `None` means recovery couldn't proceed (e.g., no numeric discriminator
-/// or an unsupported arg type); `Some` means dispatcher recognition and
-/// CFG slicing produced a result, even if the slice is empty.
+/// Recovery outcome for one IDL instruction; `arm_blocks` is empty if dispatcher was not found.
 struct Recovered<'a> {
     disc_value:    i64,
     load_pc:       usize,
@@ -759,45 +621,37 @@ struct Recovered<'a> {
     arm_insns:     usize,
 }
 
-/// Run dispatcher recognition + CFG slicing on one IDL instruction.
-/// Returns `Ok(None)` for instructions whose IDL shape qedrecover
-/// can't analyse (non-numeric args, unsupported widths) — the caller
-/// reports them as "skipped" rather than failures.
+/// Dispatcher recognition + CFG slicing for one IDL instruction.
+/// `Ok(None)` = IDL shape not analysable (non-numeric arg, unsupported width) — reported as "skipped".
 fn recover_one<'a>(
     analysis: &'a Analysis<'a>,
     idl_ix:   &'a IdlInstruction,
 ) -> Result<Option<Recovered<'a>>, String> {
-    // Find the discriminator arg (by name) and pull its width + value.
-    // Other args can have any shape (struct, fixed-size array, ...) —
-    // we don't need them for dispatcher recognition.
     let disc_arg = match idl_ix.arguments.iter().find(|a| a.name == "discriminator") {
         Some(a) => a,
-        None    => return Ok(None),   // no discriminator arg in IDL
+        None    => return Ok(None), // no discriminator arg in IDL
     };
     let disc_format = match disc_arg.ty.get("format").and_then(|v| v.as_str()) {
         Some(f) => f,
-        None    => return Ok(None),   // discriminator isn't a number-typed node
+        None    => return Ok(None), // discriminator isn't a number-typed node
     };
     let disc_value = match disc_arg.default_value.as_ref()
         .and_then(|d| d.get("number"))
         .and_then(|n| n.as_i64())
     {
         Some(v) => v,
-        None    => return Ok(None),   // no fixed discriminator value (variable arg)
+        None    => return Ok(None), // no fixed discriminator value
     };
     let load_opc = match discriminator_load_opc(disc_format) {
         Some(opc) => opc,
-        None      => return Ok(None), // unsupported width
+        None      => return Ok(None), // unsupported discriminator width
     };
 
-    // Search the bytecode for the dispatcher pair.
     let (load_pc, jeq_pc, arm_entry) = match find_dispatch_arm(
         &analysis.instructions, 0, load_opc, disc_value,
     ) {
         Some(t) => t,
         None    => {
-            // Dispatch not found in binary — return Recovered with empty
-            // arm_blocks so the caller can report it consistently.
             return Ok(Some(Recovered {
                 disc_value,
                 load_pc:    usize::MAX,
@@ -822,36 +676,27 @@ fn recover_one<'a>(
     }))
 }
 
-// -----------------------------------------------------------------------------
-// Main
-// -----------------------------------------------------------------------------
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-    // 1. Overlay.
     let overlay_text = std::fs::read_to_string(&args.overlay)?;
     let overlay: Overlay = toml::from_str(&overlay_text)?;
     let overlay_by_name: std::collections::BTreeMap<&str, &OverlayIx> =
         overlay.instructions.iter().map(|ix| (ix.name.as_str(), ix)).collect();
 
-    // 2. IDL — path is relative to the overlay file.
+    // IDL path is relative to the overlay file.
     let overlay_dir: &Path = args.overlay.parent().unwrap_or(Path::new("."));
     let idl_path = overlay_dir.join(&overlay.idl);
     let idl_text = std::fs::read_to_string(&idl_path)?;
     let idl: Idl = serde_json::from_str(&idl_text)?;
 
-    // 3. ELF + static analysis.
     let bytes = std::fs::read(&args.so)?;
     let loader = Arc::new(BuiltinProgram::new_mock());
     let executable: Executable<NoopCtx> = Executable::load(&bytes, loader)?;
     let analysis = Analysis::from_executable(&executable)?;
-    // One slot<->logical converter, shared with qedlift. Derived from
-    // the decoded insn list; `pc_map_matches_analysis_ptrs` pins that it
-    // agrees with `analysis.instructions[].ptr` (issue #41).
+    // Shared with qedlift; pinned to agree with `analysis.instructions[].ptr` by issue #41 test.
     let pc_map = PcMap::from_insns(&analysis.instructions);
 
-    // 4. Sanity dump.
     println!("=== inputs ===");
     println!("  .so:     {}", args.so.display());
     println!("  overlay: {}", args.overlay.display());
@@ -866,9 +711,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  functions:    {}", analysis.functions.len());
     println!();
 
-    // 5. Whole-program scan: iterate IDL, recover each instruction,
-    //    print a compact summary line. Overlay claims (where present)
-    //    decorate the line; their absence does NOT skip recovery.
+    // Overlay claims decorate the summary line but their absence does NOT skip recovery.
     println!("=== whole-program recovery ===");
     println!("  {:24}  {:>4}  {:>15}  {:>6}  {:>5}  {:>5}  {}",
              "instruction", "disc", "dispatch (pc)", "armPc", "blks", "insns", "claim");
@@ -929,11 +772,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     println!();
 
-    // 6. Optional detailed pass — kept compatible with the prior
-    //    behaviour: any instruction NAMED in the overlay with a
-    //    `refines` claim still gets the verbose printout + Lean
-    //    metadata emit. Multi-instruction Lean emission is gated on
-    //    --output being a directory; not implemented yet.
+    // Detailed pass for overlay-claimed instructions. Multi-instruction --output (directory) not yet implemented.
     let claimed: Vec<&OverlayIx> = overlay.instructions.iter()
         .filter(|o| o.refines.is_some())
         .collect();
@@ -945,9 +784,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                      instructions; narrow the overlay to one",
                     claimed.len()).into());
             }
-            // Trace PCs are logical indices — the same space as
-            // `CfgNode.instructions` ranges, so tagging compares
-            // directly (no slot conversion).
+            // Trace PCs are logical indices matching `CfgNode.instructions` ranges; no slot conversion.
             Some(load_trace(p)?)
         }
         None => None,
@@ -968,9 +805,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                           .map(|c| c.to_string())
                                           .unwrap_or_else(|| "—".to_string()));
 
-        // Argument byte offsets (Codama lays them out sequentially).
-        // Only numberTypeNode args have a fixed byte size we can use;
-        // anything else aborts (the spike doesn't claim to cover them).
+        // Only numberTypeNode args have a fixed byte size; others abort (unsupported).
         let mut off: usize = 0;
         let mut disc_value: Option<i64> = None;
         println!("    ix_data:");
@@ -981,8 +816,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                        arg.name, kind))?;
             let sz = number_size(format)
                 .ok_or_else(|| format!("unsupported number format: {}", format))?;
-            // numberValueNode carries the literal under "number";
-            // other default-value node kinds are skipped silently.
+            // `numberValueNode` carries the literal under "number"; other kinds are skipped.
             let default = arg.default_value.as_ref()
                 .and_then(|d| d.get("number"))
                 .and_then(|n| n.as_i64());
@@ -995,15 +829,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             off += sz;
         }
 
-        // Discriminator summary — qedrecover's downstream dispatcher
-        // recogniser needs (kind, value) to know what byte pattern
-        // to search for from the entry point.
         if let Some(v) = disc_value {
             println!("    discriminator: u8 = {} (looks for `ldxb`/`ldxw` + `jeq imm = {}`)",
                      v, v);
         }
 
-        // Account layout: index → role.
         println!("    accounts:");
         for (i, acc) in idl_ix.accounts.iter().enumerate() {
             let signer = match &acc.is_signer {
@@ -1015,7 +845,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("      [{}] {:14} {} {}", i, acc.name, writ, signer);
         }
 
-        // --- M3b: dispatcher recognition --------------------------------
         let Some(disc_value) = disc_value else {
             println!("    [skip recognition: no numeric discriminator value]");
             continue;
@@ -1026,13 +855,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let load_opc = discriminator_load_opc(disc_format)
             .ok_or_else(|| format!("unsupported disc width: {}", disc_format))?;
 
-        // Scan whole instruction stream. sbpf's analysis PC space
-        // doesn't follow control-flow order — the dispatcher can sit
-        // at a lower PC than `entrypoint` due to linker layout
-        // (verified empirically: pinocchio's transfer dispatcher
-        // lives at PC 198 while entrypoint reports PC 225). Whole-
-        // stream scan + uniqueness-by-discriminator-value is the
-        // simplest sound recovery for the spike.
+        // Whole-stream scan: the dispatcher can precede `entrypoint` due to linker layout
+        // (pinocchio transfer lives at PC 198 while entrypoint = 225).
         match find_dispatch_arm(
             &analysis.instructions,
             0,
@@ -1045,9 +869,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                          disc_format, disc_value);
             }
             Some((load_pc, jeq_pc, arm_entry)) => {
-                // `load_pc`/`jeq_pc` are logical (decoded-array index);
-                // `arm_entry` is a slot PC (the space cfg_nodes/slicing
-                // use). Report the logical arm entry alongside.
+                // `arm_entry` is a slot PC; convert to logical for reporting.
                 let arm_entry_logical = pc_map.slot_to_logical(arm_entry)
                     .unwrap_or(arm_entry);
                 println!("    dispatch:");
@@ -1056,9 +878,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      → arm entry:         pc {} (slot {})",
                          arm_entry_logical, arm_entry);
 
-                // Constrain the slice to the enclosing function so
-                // shared library helpers (account parsing, codec
-                // routines reachable via `call`) don't leak in.
                 let func_set = function_block_set(&analysis, arm_entry);
                 let func_start = func_set.iter().next().copied().unwrap_or(arm_entry);
                 println!("      enclosing function: pc {} ({} blocks)",
@@ -1074,12 +893,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                          arm_blocks.len(), unconstrained.len());
                 println!("      instructions: {}", total_insns);
 
-                // Sample exit edges. Two kinds matter for happy/sad
-                // tagging downstream (M3c): blocks that exit the
-                // function (return/exit/unreachable) and blocks that
-                // branch within the function. The first kind likely
-                // includes the error-handler landings — the landmark
-                // M3c needs.
                 let exiting: Vec<&CfgNode> = arm_blocks.iter()
                     .filter(|b| b.destinations.is_empty()
                              || b.destinations.iter().any(|d| !func_set.contains(d)))
@@ -1088,7 +901,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      blocks with exits outside the function: {}",
                          exiting.len());
 
-                // --- idiom recognition -----------------------------------
                 let idiom_tags = idioms::scan_arm(
                     &analysis, &arm_blocks,
                     Some((load_pc, number_size(disc_format).unwrap_or(1))));
@@ -1106,7 +918,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              else { rendered });
                 }
 
-                // --- constant-exit blocks (static shape) ----------------
                 let (n_zero, n_nonzero) = arm_blocks.iter()
                     .filter_map(|b| error_exit_code(&analysis, b))
                     .fold((0usize, 0usize), |(z, nz), code|
@@ -1114,7 +925,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("      constant-exit blocks: {} success (code 0), {} error",
                          n_zero, n_nonzero);
 
-                // --- happy-path tagging (when --trace given) ------------
                 if let Some(t) = trace_pcs.as_ref() {
                     let happy = arm_blocks.iter()
                         .filter(|b| t.range(b.instructions.start..b.instructions.end)
@@ -1124,7 +934,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                              happy, arm_blocks.len(), t.len());
                 }
 
-                // --- M3c-minimal: emit Lean metadata --------------------
                 let disc_size = number_size(disc_format).unwrap_or(1);
                 if let Some(path) = &args.output {
                     let mut f = std::fs::File::create(path)?;
@@ -1146,10 +955,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                               &idiom_tags, trace_pcs.as_ref())?;
                 }
 
-                // qedmeta sidecar (issue #37): write the recovered facts
-                // qedlift consumes, so the recover→lift handoff is
-                // mechanical (not a hand-shaped fixture). Independent of
-                // --output (the `.recovered.lean`); both may be requested.
                 if let Some(meta_path) = &args.qedmeta_out {
                     let enclosing_func_logical =
                         pc_map.slot_to_logical(func_start).unwrap_or(func_start);
@@ -1173,22 +978,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// -----------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Pins the PC-space discipline of dispatcher recovery on the real
-    /// p_token binary. `find_dispatch_arm` must compute the arm-entry
-    /// jump target in SLOT space (insn.ptr + 1 + off) — computing it
-    /// from the vec index was a real bug that put transfer's arm at
-    /// 309 (mid-dispatcher code) instead of slot 336 / logical 304,
-    /// rooting the CFG slice at the wrong block. Logical 304 is
-    /// ground truth: the captured execution trace
-    /// (tests/fixtures/p_token_transfer.pcs) jumps 199 -> 304.
+    /// Pins slot-vs-logical space correctness on p_token. Computing the jump target from the
+    /// vec index (not `insn.ptr`) was a real bug: transfer's arm returned as 309 instead of
+    /// slot 336 / logical 304. Ground truth: `p_token_transfer.pcs` trace jumps 199 -> 304.
     #[test]
     fn transfer_arm_entry_spaces() {
         let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
@@ -1207,8 +1003,6 @@ mod tests {
         assert_eq!(pc_map.slot_to_logical(arm_entry_slot), Some(304),
             "slot 336 must resolve to logical 304 (the PC the trace jumps to)");
 
-        // The slice rooted at the slot entry must contain the blocks the
-        // happy-path trace executes (in logical space).
         let func_set = function_block_set(&analysis, arm_entry_slot);
         let arm_blocks = slice_cfg(&analysis, arm_entry_slot, Some(&func_set));
         let trace = load_trace(Path::new("tests/fixtures/p_token_transfer.pcs"))
@@ -1220,11 +1014,8 @@ mod tests {
         assert_eq!(happy, 27,
             "happy-path tagging drifted: expected 27 on-trace blocks, got {}", happy);
 
-        // Constant-exit classification inside the arm slice: p_token's
-        // transfer errors return COMPUTED r0 through call boundaries, so
-        // the only constant-exit blocks are the nine r0=0 success
-        // funnels (`mov64 r0, 0; … ; ja <shared exit>`). A nonzero hit
-        // here would mean the detector started tagging computed codes.
+        // p_token transfer errors return computed r0 through calls; only the nine r0=0 success
+        // funnels are constant exits. A nonzero hit = detector tagging computed codes (bug).
         let codes: Vec<u64> = arm_blocks.iter()
             .filter_map(|b| error_exit_code(&analysis, b))
             .collect();
@@ -1233,13 +1024,8 @@ mod tests {
             "transfer arm has no constant nonzero exits; got {:?}", codes);
     }
 
-    /// Pins the issue-#41 invariant that the shared `PcMap` (built from
-    /// the decoded insn list) agrees with sbpf's own `analysis
-    /// .instructions[].ptr` numbering on the real p_token binary — the
-    /// equivalence that lets qedrecover swap its former
-    /// `binary_search`-over-`.ptr` `slot_to_logical` for the shared
-    /// converter byte-identically. Checks the full round trip in both
-    /// directions over every instruction.
+    /// Issue #41: `PcMap` must agree with `analysis.instructions[].ptr` so qedrecover can use
+    /// the shared converter instead of its former `binary_search`-over-`.ptr`. Full round-trip.
     #[test]
     fn pc_map_matches_analysis_ptrs() {
         let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
@@ -1252,20 +1038,15 @@ mod tests {
         assert_eq!(pc_map.logical_len(), analysis.instructions.len(),
             "shared PcMap covers a different instruction count than analysis");
         for (logical, insn) in analysis.instructions.iter().enumerate() {
-            // logical -> slot agrees with sbpf's recorded ptr.
             assert_eq!(pc_map.logical_to_slot(logical), Some(insn.ptr),
                 "logical {} maps to a different slot than analysis .ptr", logical);
-            // slot -> logical inverts it (matches the old binary_search result).
             assert_eq!(pc_map.slot_to_logical(insn.ptr), Some(logical),
                 "slot {} (logical {}) failed to round-trip", insn.ptr, logical);
         }
     }
 
-    /// The constant ERROR landings live in the entrypoint prelude:
-    /// shape 1 (`lddw r0, 19<<32; exit` — the dispatch-mismatch exit at
-    /// logical 196..198) and shape 2 (`lddw r0, 10<<32; ja <bare exit>`
-    /// at logical 124..126). Pins `error_exit_code` against both real
-    /// shapes, codes included.
+    /// Pins `error_exit_code` against two real p_token shapes: shape 1 `lddw r0,19<<32; exit`
+    /// (dispatch-mismatch at logical 196) and shape 2 `lddw r0,10<<32; ja <bare exit>` (logical 124).
     #[test]
     fn entrypoint_error_landings_classify() {
         let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
@@ -1279,15 +1060,13 @@ mod tests {
                 .find(|b| b.instructions.start <= logical && logical < b.instructions.end)
                 .expect("block containing pc")
         };
-        // Shape 1: dispatch-mismatch `lddw r0, 19<<32; exit`.
         assert_eq!(error_exit_code(&analysis, block_containing(196)),
             Some(19u64 << 32), "dispatch-mismatch landing misclassified");
-        // Shape 2: prelude landing `lddw r0, 10<<32; ja <bare exit>`.
         assert_eq!(error_exit_code(&analysis, block_containing(124)),
             Some(10u64 << 32), "prelude ja-landing misclassified");
     }
 
-    /// Idiom recogniser pins on real p_token bytecode.
+    /// Idiom recogniser: pins debit/credit pair, dispatch load, and error-propagation seam on p_token.
     #[test]
     fn idioms_recognise_transfer_shapes() {
         let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
@@ -1296,9 +1075,6 @@ mod tests {
             Executable::load(&bytes, loader).expect("load p_token.so");
         let analysis = Analysis::from_executable(&executable).expect("analyse p_token.so");
 
-        // Arm slice idioms: the transfer debit/credit pair must be
-        // recognised as a u64_field_decrement/increment on the same
-        // offset, and the dispatch load as read_discriminator.
         let (load_pc, _, arm_entry_slot) = find_dispatch_arm(
             &analysis.instructions, 0, ebpf::LD_B_REG, 3,
         ).expect("find transfer dispatch arm");
@@ -1315,16 +1091,12 @@ mod tests {
                 && i.name == "u64_field_increment"
                 && i.detail == "base=r3 off=72 amount=r8"),
             "transfer dest credit not recognised");
-        // In-arm propagation seams: helper calls whose r0 result is
-        // branch-tested in the fall-through block (a call always ends
-        // its block). e.g. pc 1286: `call 11385; mov64 r1, -1;
-        // jsgt r0, 0` — pin one concrete hit.
+        // Concrete hit: pc 1286 `call 11385; mov64 r1,-1; jsgt r0,0`.
         assert!(tags.iter().any(|i| i.name == "error_propagation_check"
                 && i.detail == "call_pc=1286 test_pc=1288"),
             "in-arm helper-result seam not recognised");
 
-        // The real propagation seam is the entrypoint's
-        // `call 12311; …; jne r0` at 59..63 — scan its block directly.
+        // Entrypoint seam: `call 12311; …; jne r0` at 59..63 — scan its block directly.
         let entry_block = analysis.cfg_nodes.values()
             .find(|b| b.instructions.start <= 59 && 59 < b.instructions.end)
             .expect("block containing the entrypoint call");
@@ -1335,14 +1107,9 @@ mod tests {
             entry_tags.iter().map(|i| (i.pc, i.name)).collect::<Vec<_>>());
     }
 
-    /// Issue #37 / #41 producer half: qedrecover EMITS the qedmeta sidecar
-    /// (it used to only render Lean metadata; the `.toml` was hand-shaped).
-    /// Pins the emitted transfer sidecar byte-identically (regenerate with
-    /// QEDRECOVER_BLESS=1) AND re-parses it through the SAME
-    /// `recovered.arm_entry_pc` shape qedlift consumes — closing the
-    /// recover→lift handoff loop mechanically rather than via the
-    /// hand-authored fixture. `arm_entry_pc` must be logical 304, matching
-    /// the `transfer_arm_entry_spaces` pin and qedlift's consumer pin.
+    /// Issue #37/#41: pins the emitted transfer sidecar byte-identically (bless with
+    /// QEDRECOVER_BLESS=1) and re-parses `recovered.arm_entry_pc` == 304 — closing the
+    /// recover->lift handoff mechanically. Matches `transfer_arm_entry_spaces` + qedlift consumer.
     #[test]
     fn qedmeta_sidecar_emits_recovered_facts() {
         let bytes = std::fs::read("tests/fixtures/p_token.so").expect("read p_token.so");
@@ -1352,7 +1119,6 @@ mod tests {
         let analysis = Analysis::from_executable(&executable).expect("analyse p_token.so");
         let pc_map = PcMap::from_insns(&analysis.instructions);
 
-        // Drive the same recovery `main` runs for transfer (disc=3, u8 load).
         let (load_pc, jeq_pc, arm_entry_slot) = find_dispatch_arm(
             &analysis.instructions, 0, ebpf::LD_B_REG, 3).expect("dispatch arm");
         let arm_entry_logical = pc_map.slot_to_logical(arm_entry_slot).expect("arm logical");
@@ -1363,7 +1129,6 @@ mod tests {
         let idiom_tags = idioms::scan_arm(&analysis, &arm_blocks, Some((load_pc, 1)));
         let trace = load_trace(Path::new("tests/fixtures/p_token_transfer.pcs")).expect("trace");
 
-        // Real overlay + IDL so [target]/[idl]/account rendering is exercised.
         let overlay: Overlay = toml::from_str(
             &std::fs::read_to_string("tests/fixtures/p_token.qedoverlay.toml").unwrap()).unwrap();
         let ovix = overlay.instructions.iter().find(|o| o.name == "transfer").unwrap();
@@ -1372,7 +1137,6 @@ mod tests {
         let idl_ix = idl.program.instructions.iter().find(|i| i.name == "transfer").unwrap();
 
         let mut buf: Vec<u8> = Vec::new();
-        // Real SHA-256 of the .so/IDL the sidecar hash-pins.
         let hex = |d: &[u8]| d.iter().map(|b| format!("{:02x}", b)).collect::<String>();
         let so_sha256  = hex(&sha2::Sha256::digest(&bytes));
         let idl_sha256 = hex(&sha2::Sha256::digest(idl_text.as_bytes()));
@@ -1382,7 +1146,6 @@ mod tests {
             &arm_blocks, &idiom_tags, Some(&trace)).expect("emit qedmeta");
         let emitted = String::from_utf8(buf).expect("utf8");
 
-        // Byte-identical pin against the committed emitted fixture.
         let fixture = "tests/fixtures/p_token.transfer.recovered.qedmeta.toml";
         if std::env::var("QEDRECOVER_BLESS").is_ok() {
             std::fs::write(fixture, &emitted).expect("write fixture");
@@ -1391,8 +1154,7 @@ mod tests {
             "emitted qedmeta drifted from the pinned fixture \
              (regenerate with QEDRECOVER_BLESS=1)");
 
-        // Consumer contract: the emitted sidecar parses through the same
-        // `recovered.arm_entry_pc` shape qedlift's QedMeta uses, == 304.
+        // Verify the consumer contract: parses through the same shape qedlift's QedMeta uses.
         #[derive(serde::Deserialize)]
         struct Rec { arm_entry_pc: usize, dispatch_load_pc: usize, dispatch_jeq_pc: usize }
         #[derive(serde::Deserialize)]

@@ -1,24 +1,8 @@
-//! Rust bridge for qedsvm's crypto syscalls.
+//! Rust bridge for qedsvm's crypto syscalls (`@[extern "name"]` targets in `Svm/SBPF/*.lean`).
 //!
-//! Every export here is the direct target of a Lean `@[extern "name"]`
-//! declaration in `Svm/SBPF/*.lean`. Functions take/return Lean's
-//! `lean_object` ABI directly (no intermediary C shim layer) — that's
-//! why `csrc/` no longer exists. The minimal Rust ↔ Lean ABI surface
-//! lives in `lean_ffi.rs`.
-//!
-//! Crate pins are kept in lockstep with agave's `master/Cargo.toml`
-//! (queried 2026-05-13):
-//!   - `libsecp256k1 = 0.7.2` (no-default-features, `+std`,
-//!     `+static-context`) — agave's `solana-syscalls` runtime dep
-//!   - `sha2 = 0.10.8` (no-default-features) — via
-//!     `solana-sha256-hasher`
-//!   - `sha3 = 0.10.8` — via `solana-keccak-hasher`
-//!   - `blake3 = 1.8.5` — agave master pin
-//!   - `curve25519-dalek = 4.1.3` (`+digest`, `+rand_core`) — via
-//!     `solana-curve25519`
-//!
-//! When agave bumps a version, bump here in lockstep — that is the
-//! whole point of this crate.
+//! Crate pins must stay in lockstep with agave's `master/Cargo.toml` (queried 2026-05-13):
+//! `libsecp256k1=0.7.2`, `sha2=0.10.8`, `sha3=0.10.8`, `blake3=1.8.5`, `curve25519-dalek=4.1.3`.
+//! When agave bumps a version, bump here — that is the whole point of this crate.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -29,12 +13,8 @@ use lean_ffi::{
 };
 use sha2::Digest as _;
 
-// ───────────────────────────────────────────────────────────────────
-// SHA-256 (`sha2 = 0.10.8`) — agave-conformance audit hook for the
-// pure-Lean Sha256.hash impl. The production path is the pure-Lean
-// version; this exists so `Sha256.hash x = Sha256.hashAgave x` can be
-// proved by native_decide across a sweep of inputs.
-// ───────────────────────────────────────────────────────────────────
+// SHA-256 (`sha2 = 0.10.8`) — agave-conformance hook; production path is pure-Lean;
+// this exists so `Sha256.hash x = Sha256.hashAgave x` can be proved by native_decide.
 
 #[no_mangle]
 pub extern "C" fn lean_sha256_agave(input: b_lean_obj_arg) -> lean_obj_res {
@@ -43,11 +23,7 @@ pub extern "C" fn lean_sha256_agave(input: b_lean_obj_arg) -> lean_obj_res {
     alloc_bytearray(&digest)
 }
 
-// ───────────────────────────────────────────────────────────────────
-// SHA-512 (`sha2 = 0.10.8`). Output is 64 bytes — same crate /
-// underlying impl agave's `solana-sha512-hasher` wraps with the
-// `sha2` feature. Production path for `SVM.SBPF.Sha512.hash`.
-// ───────────────────────────────────────────────────────────────────
+// SHA-512 (`sha2 = 0.10.8`) — same crate agave's `solana-sha512-hasher` wraps. Production path for `SVM.SBPF.Sha512.hash`.
 
 #[no_mangle]
 pub extern "C" fn lean_sha512(input: b_lean_obj_arg) -> lean_obj_res {
@@ -56,11 +32,7 @@ pub extern "C" fn lean_sha512(input: b_lean_obj_arg) -> lean_obj_res {
     alloc_bytearray(&digest)
 }
 
-// ───────────────────────────────────────────────────────────────────
-// Keccak-256 (`sha3::Keccak256`, original Keccak with 0x01 padding —
-// Solana's variant, NOT FIPS-202 SHA-3 which uses 0x06).
-// Production path for `Keccak256.hash`.
-// ───────────────────────────────────────────────────────────────────
+// Keccak-256 (`sha3::Keccak256`, 0x01 padding — Solana's variant, NOT FIPS-202 SHA-3). Production path for `Keccak256.hash`.
 
 #[no_mangle]
 pub extern "C" fn lean_keccak256(input: b_lean_obj_arg) -> lean_obj_res {
@@ -69,10 +41,7 @@ pub extern "C" fn lean_keccak256(input: b_lean_obj_arg) -> lean_obj_res {
     alloc_bytearray(&digest)
 }
 
-// ───────────────────────────────────────────────────────────────────
-// BLAKE3 (`blake3 = 1.8.5`, default hashing mode, 32-byte output).
-// Production path for `Blake3.hash`.
-// ───────────────────────────────────────────────────────────────────
+// BLAKE3 (`blake3 = 1.8.5`, default mode, 32-byte output). Production path for `Blake3.hash`.
 
 #[no_mangle]
 pub extern "C" fn lean_blake3(input: b_lean_obj_arg) -> lean_obj_res {
@@ -81,23 +50,9 @@ pub extern "C" fn lean_blake3(input: b_lean_obj_arg) -> lean_obj_res {
     alloc_bytearray(digest.as_bytes())
 }
 
-// ───────────────────────────────────────────────────────────────────
-// secp256k1 ECDSA recovery (`libsecp256k1 = 0.7.2`, paritytech).
-//
-// Matches agave's `SyscallSecp256k1Recover` body byte-for-byte:
-//   Message::parse_slice(hash) → InvalidHash
-//   RecoveryId::parse(rid)     → InvalidRecoveryId
-//   Signature::parse_standard_slice(sig) → InvalidSignature
-//   libsecp256k1::recover(...) → InvalidSignature on Err
-//   serialize() trims leading 0x04 → Solana's 64-byte format.
-//
-// Returns the Lean inductive `Secp256k1.RecoverResult` directly:
-//   tag 0 (`success`, 1 obj field = 64-byte ByteArray)
-//   tag 1 (`invalidHash`, nullary → lean_box(1))
-//   tag 2 (`invalidRecoveryId`, nullary → lean_box(2))
-//   tag 3 (`invalidSignature`, nullary → lean_box(3))
-// Inductive tags must stay in lockstep with Svm/SBPF/Secp256k1.lean.
-// ───────────────────────────────────────────────────────────────────
+// secp256k1 ECDSA recovery (`libsecp256k1 = 0.7.2`). Matches `SyscallSecp256k1Recover` byte-for-byte.
+// Returns `Secp256k1.RecoverResult`: tag 0=success(ByteArray), 1=invalidHash, 2=invalidRecoveryId, 3=invalidSignature.
+// Tags MUST stay in lockstep with Svm/SBPF/Secp256k1.lean.
 
 #[no_mangle]
 pub extern "C" fn lean_secp256k1_recover(
@@ -134,22 +89,13 @@ pub extern "C" fn lean_secp256k1_recover(
     let serialized = pubkey.serialize(); // 65 bytes, leading 0x04
     let bytes_obj = alloc_bytearray(&serialized[1..65]);
 
-    // .success bytes_obj  →  ctor tag 0, 1 obj field, 0 scalar bytes
-    let ctor = unsafe { lean_alloc_ctor(0, 1, 0) };
+    let ctor = unsafe { lean_alloc_ctor(0, 1, 0) }; // .success: tag 0, 1 obj field
     unsafe { lean_ctor_set(ctor as lean_obj_arg, 0, bytes_obj as lean_obj_arg) };
     ctor
 }
 
-// ───────────────────────────────────────────────────────────────────
-// curve25519 — point validation (`curve25519-dalek = 4.1.3`).
-//
-// Matches `solana_curve25519::{edwards,ristretto}::validate_*`
-// byte-for-byte: both reduce to
-// `CompressedX::from_slice(b).decompress().is_some()`.
-//
-// Lean's `Bool` ABI is a primitive `uint8_t` (0 = false, 1 = true),
-// NOT a heap object — these functions do not allocate.
-// ───────────────────────────────────────────────────────────────────
+// curve25519 point validation (`curve25519-dalek = 4.1.3`). Matches `validate_*` byte-for-byte.
+// Lean `Bool` = `uint8_t` (0/1) — no heap allocation.
 
 #[no_mangle]
 pub extern "C" fn lean_curve_validate_edwards(point: b_lean_obj_arg) -> u8 {
@@ -175,23 +121,8 @@ pub extern "C" fn lean_curve_validate_ristretto(point: b_lean_obj_arg) -> u8 {
     }
 }
 
-// ───────────────────────────────────────────────────────────────────
-// curve25519 group operations — ADD/SUB/MUL on Edwards + Ristretto.
-//
-// Each function takes two 32-byte ByteArrays and returns
-// `Option ByteArray` (Lean side: `some <32-byte compressed point>` on
-// success, `none` on any decode/decompression failure or non-canonical
-// scalar).
-//
-// For ADD / SUB: both inputs are compressed points on the relevant
-// curve. For MUL: `left` is a canonical 32-byte scalar (little-endian,
-// must be < ell where ell is the curve25519 subgroup order); `right`
-// is a compressed point.
-//
-// Exactly mirrors agave's `PodEdwardsPoint::{add,subtract,multiply}`
-// and `PodRistrettoPoint::{add,subtract,multiply}`, which delegate to
-// curve25519-dalek's `+`, `-`, scalar `*` operators.
-// ───────────────────────────────────────────────────────────────────
+// curve25519 ADD/SUB/MUL on Edwards + Ristretto. Mirrors agave's `Pod*Point::{add,subtract,multiply}`.
+// Returns `Option ByteArray` (some=32-byte compressed point, none on any decode/non-canonical-scalar failure).
 
 use curve25519_dalek::{
     edwards::{CompressedEdwardsY, EdwardsPoint},
@@ -199,8 +130,6 @@ use curve25519_dalek::{
     scalar::Scalar,
 };
 
-/// Returns `Some(point)` if the 32 bytes decode and decompress to a
-/// valid Edwards point; otherwise `None`.
 fn decompress_edwards(bytes: &[u8]) -> Option<EdwardsPoint> {
     if bytes.len() != 32 {
         return None;
@@ -215,10 +144,7 @@ fn decompress_ristretto(bytes: &[u8]) -> Option<RistrettoPoint> {
     CompressedRistretto::from_slice(bytes).ok()?.decompress()
 }
 
-/// Returns `Some(scalar)` if the 32 bytes are a canonical scalar
-/// (i.e. strictly less than the subgroup order `ell`); otherwise
-/// `None`. Matches `PodScalar -> Scalar` via
-/// `Scalar::from_canonical_bytes` in solana-curve25519.
+/// Returns `Some` if bytes are a canonical scalar (< curve order). Matches `PodScalar -> Scalar` via `Scalar::from_canonical_bytes`.
 fn parse_canonical_scalar(bytes: &[u8]) -> Option<Scalar> {
     if bytes.len() != 32 {
         return None;
@@ -227,7 +153,7 @@ fn parse_canonical_scalar(bytes: &[u8]) -> Option<Scalar> {
     Scalar::from_canonical_bytes(array).into()
 }
 
-/// Wrap a 32-byte point as Lean's `Option ByteArray = .some bytes`.
+/// Wrap a 32-byte point as Lean `Option ByteArray = .some bytes`.
 fn some_bytearray(bytes: &[u8; 32]) -> lean_obj_res {
     let arr = alloc_bytearray(bytes);
     let some = unsafe { lean_alloc_ctor(1, 1, 0) };
@@ -318,20 +244,8 @@ pub extern "C" fn lean_curve_ristretto_mul(
     some_bytearray(&result)
 }
 
-// ───────────────────────────────────────────────────────────────────
-// curve25519 multiscalar multiplication.
-//
-// Inputs: concatenated 32-byte scalars (32n bytes) and concatenated
-// 32-byte points (32n bytes). N is derived from the lengths. Mirrors
-// agave's `multiscalar_multiply_{edwards,ristretto}` via
-// `EdwardsPoint::vartime_multiscalar_mul` / its ristretto analogue.
-//
-// Returns `Some(32-byte result)` or `None` if any input is malformed
-// (non-canonical scalar, undecompressable point, mismatched lengths,
-// zero N, or non-multiple-of-32 lengths). Agave's syscall arm caps
-// `points_len` at 512; we do not enforce that here — it's the
-// syscall arm's job (matches Solana's per-callsite policy).
-// ───────────────────────────────────────────────────────────────────
+// curve25519 MSM: concatenated 32-byte scalars + points. Mirrors agave's `multiscalar_multiply_*`.
+// 512-point cap NOT enforced here — the syscall arm in Execute.lean handles it.
 
 use curve25519_dalek::traits::VartimeMultiscalarMul;
 
@@ -387,43 +301,12 @@ pub extern "C" fn lean_curve_ristretto_msm(
     some_bytearray(&result)
 }
 
-// ───────────────────────────────────────────────────────────────────
-// Poseidon (BN254 curve, x^5 S-box).
-//
-// Matches agave's `SyscallPoseidon` byte-for-byte: uses
-// `light-poseidon = 0.4.0` with `ark-bn254 = 0.5.0` (agave's master
-// pins). The `parameters` byte selects the curve config (only `0` =
-// `Bn254X5` is currently defined). `endianness`: `0` = BigEndian,
-// `1` = LittleEndian — controls both how input bytes are interpreted
-// as field elements and the byte order of the output hash.
-//
-// Inputs are passed as a single concatenated buffer; the syscall arm
-// is responsible for reading per-input slices via VmSlice descriptors
-// and joining them. n must satisfy `1 ≤ n ≤ 12` (agave's
-// `vals_len > 12 ⇒ InvalidLength`). For modern agave with
-// `poseidon_enforce_padding`, each input must be exactly 32 bytes;
-// we encode that constraint by treating the input buffer as `32n`
-// bytes split into `n` 32-byte chunks.
-// ───────────────────────────────────────────────────────────────────
+// Poseidon BN254 x^5 (`light-poseidon=0.4.0`, `ark-bn254=0.5.0`). Matches `SyscallPoseidon` byte-for-byte.
+// parameters=0 only (Bn254X5). endianness: 0=BE, 1=LE. Inputs = 32n-byte concat; n in [1,12].
 
-// ───────────────────────────────────────────────────────────────────
-// BLS12-381 decompress + pairing_map.
-//
-// Backed by `solana-bls12-381-syscall = 0.1.0` (agave's master pin) —
-// the same crate agave's `SyscallCurveDecompress` /
-// `SyscallCurvePairingMap` arms use.
-//
-// Sizes (from solana_bls12_381_syscall::encoding):
-//   G1_COMPRESSED   = 48 bytes (FQ_SIZE)
-//   G1_UNCOMPRESSED = 96 bytes (2 × FQ)
-//   G2_COMPRESSED   = 96 bytes (FQ2_SIZE)
-//   G2_UNCOMPRESSED = 192 bytes (2 × FQ2)
-//   GT              = 576 bytes (12 × FQ)
-//   MAX_PAIRING_LENGTH = 8
-//
-// Endianness: `0` = BE (canonical Zcash/IETF), `1` = LE (per-FQ-chunk
-// byte reversal). Bytes beyond 1 are rejected.
-// ───────────────────────────────────────────────────────────────────
+// BLS12-381 decompress + pairing (`solana-bls12-381-syscall=0.1.0`). Same crate as agave's SyscallCurveDecompress/PairingMap.
+// G1_COMPRESSED=48B, G1_UNCOMPRESSED=96B, G2_COMPRESSED=96B, G2_UNCOMPRESSED=192B, GT=576B, MAX_PAIRING=8.
+// endianness: 0=BE, 1=LE. >1 rejected.
 
 #[no_mangle]
 pub extern "C" fn lean_bls12_381_g1_decompress(
@@ -522,7 +405,7 @@ pub extern "C" fn lean_bls12_381_pairing_map(
     }
 }
 
-/// Variant of `some_bytearray` for arbitrary-length payloads.
+/// Like `some_bytearray` but for arbitrary-length payloads.
 fn some_bytearray_slice(bytes: &[u8]) -> lean_obj_res {
     let arr = alloc_bytearray(bytes);
     let some = unsafe { lean_alloc_ctor(1, 1, 0) };
@@ -530,24 +413,8 @@ fn some_bytearray_slice(bytes: &[u8]) -> lean_obj_res {
     some
 }
 
-// ───────────────────────────────────────────────────────────────────
-// alt_bn128 (BN254) — Ethereum precompile parity.
-//
-// Backed by `solana-bn254 = 3.2.1` (agave's master pin). The op_id
-// space carries both the operation and the endianness (high bit
-// 0x80 = LE). Op_ids match `solana_bn254::*` constants:
-//   group_op:
-//     G1_ADD_BE=0, G1_ADD_LE=0x80, G1_MUL_BE=2, G1_MUL_LE=0x82,
-//     PAIRING_BE=3, PAIRING_LE=0x83, G2_ADD_BE=4, G2_ADD_LE=0x84,
-//     G2_MUL_BE=6, G2_MUL_LE=0x86
-//   compression:
-//     G1_COMPRESS_BE=0, G1_COMPRESS_LE=0x80, G1_DECOMPRESS_BE=1,
-//     G1_DECOMPRESS_LE=0x81, G2_COMPRESS_BE=2, G2_COMPRESS_LE=0x82,
-//     G2_DECOMPRESS_BE=3, G2_DECOMPRESS_LE=0x83
-//
-// Per-version choices match agave's call sites (addition: V0,
-// multiplication: V1, pairing: V1).
-// ───────────────────────────────────────────────────────────────────
+// alt_bn128 BN254 (`solana-bn254=3.2.1`). op_id encodes op + endianness (bit 0x80 = LE).
+// Versions match agave: G1/G2 add=V0, mul=V0/V0, pairing=V1.
 
 #[no_mangle]
 pub extern "C" fn lean_alt_bn128_group_op(
@@ -594,14 +461,8 @@ pub extern "C" fn lean_alt_bn128_group_op(
     }
 }
 
-// ───────────────────────────────────────────────────────────────────
-// Big-integer modular exponentiation (`solana-big-mod-exp = 3.0.0`).
-//
-// Inputs: BE-encoded `base`, `exponent`, `modulus`. Returns the BE
-// result padded with leading zeros to `modulus.len()` bytes. Matches
-// agave's `SyscallBigModExp` minus the per-arg-length 512-byte cap
-// (the syscall arm in `Execute.lean` enforces that bound).
-// ───────────────────────────────────────────────────────────────────
+// Big-integer modular exponentiation (`solana-big-mod-exp=3.0.0`). BE inputs/output.
+// 512-byte per-arg cap NOT enforced here — Execute.lean handles it.
 
 #[no_mangle]
 pub extern "C" fn lean_big_mod_exp(
@@ -705,20 +566,8 @@ pub extern "C" fn lean_poseidon(
     some_bytearray(&hash)
 }
 
-// ───────────────────────────────────────────────────────────────────
-// ed25519 strict signature verification (`ed25519-dalek = 2.2.0`).
-//
-// Used by the ed25519 precompile (`Ed25519SigVerify1111…`). Agave's
-// workspace pins ed25519-dalek 1.0.1 and the precompile calls
-// `PublicKey::from_bytes(...).verify_strict(msg, &sig)`; the 2.x
-// `VerifyingKey::verify_strict` has equivalent semantics for any
-// signature/pubkey/message accepted by 1.0.1, so we use 2.x here.
-//
-// Returns 1 on success, 0 on any failure (invalid pubkey, invalid
-// signature length, mathematical verification failure). The Lean side
-// surfaces this as a single `r0 := 0 | 1` outcome — the precompile
-// doesn't distinguish between failure categories.
-// ───────────────────────────────────────────────────────────────────
+// ed25519 strict verification (`ed25519-dalek=2.2.0`). Agave pins 1.0.1 but 2.x `verify_strict` is equivalent.
+// Returns 1 on success, 0 on any failure (bad pubkey/sig/math).
 
 #[no_mangle]
 pub extern "C" fn lean_ed25519_verify_strict(
@@ -748,23 +597,8 @@ pub extern "C" fn lean_ed25519_verify_strict(
     }
 }
 
-// ───────────────────────────────────────────────────────────────────
-// secp256r1 (NIST P-256) ECDSA verification with low-S enforcement
-// (`p256 = 0.13`).
-//
-// Agave's secp256r1 precompile uses openssl directly + manual range
-// checks against the curve order's half (low-S non-malleability). We
-// use the pure-Rust `p256` crate and apply the same low-S rule.
-//
-// Inputs:
-//   pubkey: 33-byte compressed point (SEC1 format).
-//   sig:    64-byte r || s big-endian integers (P-256 field size = 32).
-//   msg:    arbitrary bytes; the verifier internally SHA-256s it.
-//
-// Returns 1 on success, 0 on any failure: bad input lengths,
-// uncompressible pubkey, r/s out of range, signature mismatch, or
-// `s > n/2` (rejected per agave).
-// ───────────────────────────────────────────────────────────────────
+// secp256r1 ECDSA (`p256=0.13`) with low-S enforcement (mirrors agave's openssl + manual range check).
+// pubkey=33B SEC1 compressed, sig=64B r||s BE, msg=arbitrary. Returns 1/0.
 
 #[no_mangle]
 pub extern "C" fn lean_secp256r1_verify(
@@ -782,20 +616,15 @@ pub extern "C" fn lean_secp256r1_verify(
         return 0;
     }
 
-    // Parse the signature: P-256 uses 32-byte big-endian r and s.
     let Ok(signature) = p256::ecdsa::Signature::try_from(sig_bytes) else {
         return 0;
     };
 
-    // Reject high-S to mirror agave's manual `s ≤ half_order` check.
-    // `normalize_s` returns `Some` when s is in the upper half and
-    // would have been rewritten to its low counterpart; we reject
-    // outright rather than normalising.
+    // Reject high-S (agave's low-S enforcement). `normalize_s` returns `Some` when s > n/2.
     if signature.normalize_s().is_some() {
         return 0;
     }
 
-    // Parse compressed pubkey + build a verifying key.
     let Ok(vk) = p256::ecdsa::VerifyingKey::from_sec1_bytes(pubkey_bytes) else {
         return 0;
     };
@@ -806,15 +635,9 @@ pub extern "C" fn lean_secp256r1_verify(
     }
 }
 
-// ───────────────────────────────────────────────────────────────────
-// PC trace hook — target of `SVM/SBPF/Runner.lean`'s `traceStep`
-// (`@[extern "lean_qedsvm_trace_step"]`). When `QEDSVM_TRACE_OUT` is
-// set, every interpreter step appends one decimal logical PC per line
-// to that file (truncated at first use, so each run yields a fresh
-// trace). Unset: a single cached-None check, effectively free. This
-// is the automated producer of the `.pcs` files `qedlift --trace` and
-// `qedrecover --trace` consume; see `scripts/capture_trace.sh`.
-// ───────────────────────────────────────────────────────────────────
+// PC trace hook (`@[extern "lean_qedsvm_trace_step"]`). When `QEDSVM_TRACE_OUT` is set, appends
+// one decimal PC per line to that file (truncated at first use). Unset = free cached-None check.
+// Produces the `.pcs` files `qedlift/qedrecover --trace` consume; see `scripts/capture_trace.sh`.
 
 fn trace_out() -> &'static Option<std::sync::Mutex<std::fs::File>> {
     static TRACE_OUT: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =

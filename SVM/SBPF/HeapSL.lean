@@ -1,14 +1,10 @@
 /-
   Separation-logic predicates for the SVM program heap (the embedded bump
-  allocator). A heap-allocating program's lift owns raw `↦U64` / `↦Bytes`
-  cells at fixed heap addresses (`MM_HEAP_START` and the allocated block);
-  these predicates name the allocator state so a lifted triple reads as
-  "the bump pointer moved, a block now holds X" rather than bare memory
-  cells. They are thin wrappers over `memU64Is` / `memBytesIs`, so a
-  lifted spec folds into them definitionally (no proof obligation).
-
-  See `examples/lean/HeapAllocSpec.lean` for the worked re-statement of
-  the `heap_alloc` lift via these predicates.
+  allocator). These name the allocator state so a lifted triple reads as "the
+  bump pointer moved, a block now holds X" rather than bare memory cells. Thin
+  wrappers over `memU64Is` / `memBytesIs`, so a lifted spec folds into them
+  definitionally (no proof obligation). Worked re-statement of the `heap_alloc`
+  lift: `examples/lean/HeapAllocSpec.lean`.
 -/
 
 import SVM.SBPF.SepLogic
@@ -18,9 +14,8 @@ namespace SVM.SBPF
 
 open Memory
 
-/-- The embedded bump allocator keeps its current position in the `u64`
-    slot at the start of the heap region (`MM_HEAP_START` = 0x300000000).
-    `heapBumpPtr p` asserts that slot holds pointer `p`. -/
+/-- The bump pointer lives in the `u64` slot at `HEAP_START` (= 0x300000000);
+    `heapBumpPtr p` asserts that slot holds `p`. -/
 def heapBumpPtr (p : Nat) : Assertion := memU64Is HEAP_START p
 
 /-- A `u64`-sized allocated heap block at `addr` holding value `v`. -/

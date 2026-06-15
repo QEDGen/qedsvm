@@ -30,16 +30,7 @@ fn program_id() -> Pubkey {
 
 #[test]
 fn invalid_account_data_decodes_to_typed_program_error() {
-    // The pyth resolver's `Resolve` handler validates the feed account
-    // before doing anything with it. We supply a feed account whose
-    // first bytes don't match the expected discriminator — the
-    // handler bails with `Err(ProgramError::InvalidAccountData)`.
-    //
-    // (Identical setup to `saicharanpogul/janus`
-    // `tests-qedsvm/tests/pyth_resolver_resolve.rs::diff_resolve_before_earliest_slot`,
-    // minus the mollusk side — we only assert qedsvm's decoded variant.)
-
-    let pid = program_id();
+    let pid = program_id(); // feed account has wrong discriminator → Resolve bails with InvalidAccountData
     let seed_key = Pubkey::new_unique();
     let price_feed = Pubkey::new_unique();
     let (state_key, bump) = Pubkey::find_program_address(
@@ -47,11 +38,7 @@ fn invalid_account_data_decodes_to_typed_program_error() {
         &pid,
     );
 
-    // Pyth-resolver state layout (136 bytes), matching Janus' on-chain
-    // shape just enough to get past the state-deserialize step and
-    // into the feed-account-validate step where InvalidAccountData
-    // fires.
-    let mut state_data = vec![0u8; 136];
+    let mut state_data = vec![0u8; 136]; // minimal valid state layout — enough to reach feed-validate step
     state_data[0] = bump;
     state_data[1] = 0; // comparison: gte
     state_data[8..40].copy_from_slice(price_feed.as_ref());
@@ -70,7 +57,7 @@ fn invalid_account_data_decodes_to_typed_program_error() {
     });
     let feed_account = AccountSharedData::from(Account {
         lamports: 1_000_000,
-        data: vec![0u8; 256], // wrong discriminator → InvalidAccountData
+        data: vec![0u8; 256], // wrong discriminator triggers InvalidAccountData
         owner: Pubkey::new_unique(),
         executable: false,
         rent_epoch: 0,

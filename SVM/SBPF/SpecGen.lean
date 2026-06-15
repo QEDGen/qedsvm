@@ -1,53 +1,23 @@
 /-
-  `sl_block_auto` — automatic per-instruction spec lookup + macro
-  composition.
+  `sl_block_auto` — automatic per-instruction spec lookup + composition.
 
-  Surface tactic:
+  Reads the goal's `CodeReq` literal (a `union`-of-`singleton`s tree),
+  dispatches each `(pc, insn)` to the matching spec from
+  `InstructionSpecs.lean`, composes via `SLBlockIter.slBlockIter`. Replaces
+  the per-step `have hi := xxx_spec …` + `sl_block_iter [...]` boilerplate.
 
-  - `sl_block_auto` — Read the goal's `CodeReq` literal (which must be
-    a `union`-of-`singleton`s tree), dispatch each `(pc, insn)` pair to
-    the appropriate per-instruction spec from `InstructionSpecs.lean`,
-    and compose via the existing `SLBlockIter.slBlockIter` machinery.
+  Auto-discharged: `dst ≠ .r10` (concrete `dst` → `mkDecideProof`),
+  `pcFree`/`Disjoint` (by `slBlockIter`). Stays user-visible: value bounds
+  like `v < 2^64` for `ldxh`/`ldxw`/`ldxdw` (the `v` mvar is unified to a
+  concrete term, so the bound matches what the user would pass manually).
 
-    Replaces the per-step `have hi := xxx_spec ...` boilerplate plus
-    `sl_block_iter [h0, h1, h2, ...]` pattern with a single tactic
-    call.
-
-    What gets auto-discharged:
-    - `dst ≠ .r10` side conditions: the `dst` register is syntactically
-      concrete from the `Insn` literal, so `mkDecideProof` evaluates
-      the proposition at registration time.
-    - `pcFree F` and `CodeReq.Disjoint cr1 cr2` subgoals — handled by
-      `slBlockIter` exactly as in the manual `sl_block_iter` path.
-
-    What stays visible to the user:
-    - Value-bound side conditions like `v < 2 ^ 64` for `ldxh` / `ldxw`
-      / `ldxdw`. The `v` mvar gets unified with a concrete `Nat` term
-      by `slBlockIter`'s `extractFrame` / `isDefEq` pass, so the bound
-      becomes (e.g.) `srcLam < 2 ^ 64` — the same hypothesis the user
-      would pass manually.
-
-  Dispatch is hand-coded per Insn ctor (`SVM/SBPF/SpecGen.lean::mkSpec`).
-  Covered families:
-  - 64-bit ALU imm + reg (mov / add / sub / mul / and / or / xor /
-    lsh / rsh / arsh), `neg64`
-  - 32-bit ALU imm + reg (same op set, result zero-extended), `neg32`
-  - `lddw`, `ldx` (4 widths), `stx` (4 widths)
-
-  Not covered:
-  - `div` / `mod` (64- and 32-bit): specs carry a `divisor ≠ 0` side
-    condition that the current `aluSpec` helper doesn't supply.
-    Use `sl_block_iter` with a manual `have h := div64_imm_spec ...`.
-  - Conditional jumps, `ja`, `exit`: non-linear; routed through
-    `sl_branch` (the conditional-jump tactic) instead.
-  - `call_local` / `callx`: call-stack triples pending a PartialState
-    extension to track the call stack.
-
-  Adding a new family is a single case in `mkSpec`.
-
-  Future: replace the hand-dispatch with a `@[spec_gen]` attribute that
-  parses each spec's type at registration time to derive the same
-  metadata. Hand-dispatch is the fast initial deliverable.
+  Dispatch is hand-coded per Insn ctor in `mkSpec`. Covered: 64/32-bit ALU
+  imm+reg (mov/add/sub/mul/and/or/xor/lsh/rsh/arsh), neg64/neg32, lddw,
+  ldx/stx (4 widths each). NOT covered (and why):
+  - div/mod: specs carry a `divisor ≠ 0` side cond `aluSpec` can't supply
+    — use `sl_block_iter` with a manual `have h := div64_imm_spec …`.
+  - cond jumps / ja / exit: non-linear, routed through `sl_branch`.
+  - call_local / callx: call-stack triples pending a PartialState extension.
 -/
 
 import Lean
@@ -59,10 +29,9 @@ namespace SpecGen
 
 open Lean Lean.Meta Lean.Elab.Tactic
 
-/-- Spec application result: the built Expr (with mvars in value /
-    side-condition positions) plus the list of side-condition mvars
-    that should be exposed as user-visible residual goals once
-    `slBlockIter` has resolved their parameter mvars via `isDefEq`. -/
+/-- Spec application result: built Expr (mvars in value/side-cond slots)
+    plus the side-cond mvars to expose as residual goals once `slBlockIter`
+    has resolved their parameter mvars via `isDefEq`. -/
 structure SpecApp where
   app : Expr
   sideGoals : List MVarId
@@ -73,17 +42,15 @@ structure SpecApp where
 private def mkNatMVar : MetaM Expr := do
   mkFreshExprMVar (Lean.Expr.const ``Nat [])
 
-/-- Build a `dst ≠ SVM.SBPF.Reg.r10` proof by `decide` for a concrete
-    `dst`. Requires `dst` to be syntactically a `Reg` constructor (it
-    is, when extracted from a literal Insn). -/
+/-- Prove `dst ≠ SVM.SBPF.Reg.r10` by `decide` for a concrete `dst`
+    (a `Reg` ctor, as extracted from a literal Insn). -/
 private def mkNeqR10 (dst : Expr) : MetaM Expr := do
   let r10 : Expr := Lean.Expr.const ``SVM.SBPF.Reg.r10 []
   let prop ← mkAppM ``Ne #[dst, r10]
   mkDecideProof prop
 
-/-- Build a fresh mvar of type `v < 2 ^ n` for a Nat-typed `v` and a
-    concrete bound exponent `n`. Returns the mvar Expr (suitable to
-    pass as the hyp arg) and its `MVarId` for later exposure. -/
+/-- Fresh mvar of type `v < 2 ^ n`. Returns the Expr (the hyp arg) and its
+    `MVarId` for later exposure. -/
 private def mkBoundMVar (v : Expr) (n : Nat) : MetaM (Expr × MVarId) := do
   let two := mkNatLit 2
   let nLit := mkNatLit n
@@ -94,10 +61,8 @@ private def mkBoundMVar (v : Expr) (n : Nat) : MetaM (Expr × MVarId) := do
 
 /-! ## Per-Insn-family builders -/
 
-/-- ALU op with `Src` operand (`.imm` or `.reg`). Pattern:
-    `.<op> dst src`. The two-arity Insn ctor's args are
-    `[dst, src]`; `src` is either `.imm imm` (use `immSpec`) or
-    `.reg srcReg` (use `regSpec`). -/
+/-- ALU op `.<op> dst src`: `src` is `.imm imm` (→ `immSpec`) or
+    `.reg srcReg` (→ `regSpec`). -/
 private def aluSpec
     (pcLit dst src : Expr) (immSpec regSpec : Name) :
     MetaM SpecApp := do
@@ -119,10 +84,8 @@ private def aluSpec
   | _ =>
     throwError m!"SpecGen: unknown Src ctor in {src}"
 
-/-- LDX. Pattern: `.ldx width dst src off`. Per-width side conds:
-    `byte` has none (a single byte already fits in any `Nat` bound we
-    care about); `half` requires `v < 2^16`; `word` `v < 2^32`;
-    `dword` `v < 2^64`. -/
+/-- LDX `.ldx width dst src off`. Per-width value bound: byte none, half
+    `v < 2^16`, word `v < 2^32`, dword `v < 2^64`. -/
 private def ldxSpec
     (pcLit w dst src off : Expr) :
     MetaM SpecApp := do
@@ -153,17 +116,16 @@ private def ldxSpec
   | _ =>
     throwError m!"SpecGen: unknown Width ctor in {w}"
 
-/-- 1-register negation (`.neg64 dst` / `.neg32 dst`). No Src arg —
-    just `dst` plus the standard `dst ≠ .r10` side condition. -/
+/-- 1-register negation (`.neg64`/`.neg32 dst`): just `dst` + the standard
+    `dst ≠ .r10` side cond. -/
 private def negSpec (pcLit dst : Expr) (specName : Name) : MetaM SpecApp := do
   let hne ← mkNeqR10 dst
   let vOld ← mkNatMVar
   let app ← mkAppM specName #[dst, vOld, pcLit, hne]
   return { app, sideGoals := [] }
 
-/-- LDDW (`.lddw dst imm`). Two ctor args (`dst : Reg`, `imm : Int`) —
-    not wrapped in a Src ctor. Spec signature mirrors `mov64_imm_spec`
-    minus the `.imm` unwrap. -/
+/-- LDDW `.lddw dst imm`: `imm : Int` not wrapped in a Src ctor. Spec
+    mirrors `mov64_imm_spec` minus the `.imm` unwrap. -/
 private def lddwSpec (pcLit dst imm : Expr) : MetaM SpecApp := do
   let hne ← mkNeqR10 dst
   let vOld ← mkNatMVar
@@ -186,10 +148,9 @@ private def stxSpec
   let app ← mkAppM specName #[baseReg, valReg, off, baseAddr, vSrc, oldV, pcLit]
   return { app, sideGoals := [] }
 
-/-- ST (store-immediate). Pattern: `.st width baseReg off imm`. The clean
-    `st{b,h,w,dw}_spec` wrappers discharge the step side condition
-    internally (h_step is proved for the concrete `.st` shape), so — like
-    STX — there are no residual side goals. -/
+/-- ST (store-immediate) `.st width baseReg off imm`. The `st{b,h,w,dw}_spec`
+    wrappers prove h_step internally for the concrete `.st` shape, so (like
+    STX) there are no residual side goals. -/
 private def stSpec
     (pcLit w baseReg off imm : Expr) :
     MetaM SpecApp := do
@@ -204,13 +165,11 @@ private def stSpec
   let app ← mkAppM specName #[baseReg, off, imm, baseAddr, oldV, pcLit]
   return { app, sideGoals := [] }
 
-/-- Conditional-jump dispatch (imm-src variant). Builds the
-    `<op>_imm_not_taken_spec` application — the linear form where the
-    path hypothesis collapses the conditional to the fall-through PC
-    (`pc + 1`). The hypothesis becomes a side mvar that `<;>
-    assumption` discharges. `mkCondProp` builds the type of the path
-    hypothesis from the (vDst, imm) pair — e.g. `vDst ≠ toU64 imm`
-    for jeq, `vDst = toU64 imm` for jne. -/
+/-- Conditional-jump dispatch (imm-src). Builds `<op>_imm_not_taken_spec`,
+    the linear form where the path hyp collapses the branch to the
+    fall-through PC (`pc+1`); the hyp becomes a side mvar `<;> assumption`
+    discharges. `mkCondProp` builds the path-hyp type from `(vDst, imm)` —
+    e.g. `vDst ≠ toU64 imm` for jeq, `=` for jne. -/
 private def condJumpImmSpec
     (pcLit dst src tgt : Expr)
     (notTakenSpec : Name)
@@ -237,11 +196,9 @@ private def jaSpec (pcLit tgt : Expr) : MetaM SpecApp := do
 
 /-! ## Top-level dispatcher -/
 
-/-- Build the spec application for one `(pc, insn)` pair. Returns the
-    application Expr with mvars in value / side-condition positions
-    plus the list of `MVarId`s for side-conditions that should appear
-    as user-visible residual goals. Throws if the Insn ctor has no
-    registered dispatch (a small extension to add). -/
+/-- Spec application for one `(pc, insn)` pair: the Expr (mvars in
+    value/side-cond slots) + side-cond `MVarId`s to surface as residual
+    goals. Throws on an Insn ctor with no registered dispatch. -/
 def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
   let insn := (← instantiateMVars insn).consumeMData
   let some ctor := insn.getAppFn.constName? |
@@ -282,11 +239,9 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
       ``SVM.SBPF.arsh64_imm_spec ``SVM.SBPF.arsh64_reg_spec
   | ``SVM.SBPF.Insn.neg64  =>
     negSpec pcLit args[0]! ``SVM.SBPF.neg64_spec
-  -- div/mod (64- and 32-bit, imm + reg) intentionally NOT dispatched
-  -- here: their specs carry an `hnz : divisor ≠ 0` side condition that
-  -- the current `aluSpec` helper doesn't supply. Use `sl_block_iter`
-  -- with a manual `have h := div64_imm_spec ... hnz` for now.
-  -- 32-bit ALU (result zero-extended; spec signatures identical to 64-bit).
+  -- div/mod NOT dispatched: their specs carry `hnz : divisor ≠ 0`, which
+  -- `aluSpec` can't supply. Use `sl_block_iter` + manual `div64_imm_spec … hnz`.
+  -- 32-bit ALU (result zero-extended; spec signatures match 64-bit).
   | ``SVM.SBPF.Insn.mov32  =>
     aluSpec pcLit args[0]! args[1]!
       ``SVM.SBPF.mov32_imm_spec ``SVM.SBPF.mov32_reg_spec
@@ -328,10 +283,9 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
     stxSpec pcLit args[0]! args[1]! args[2]! args[3]!
   | ``SVM.SBPF.Insn.st =>
     stSpec pcLit args[0]! args[1]! args[2]! args[3]!
-  -- Control flow. Conditional jumps dispatch to the linear "not
-  -- taken" variants in InstructionSpecs/Jump.lean — the path
-  -- hypothesis becomes a residual goal discharged by
-  -- `<;> assumption` once `vDst` is unified by the chain.
+  -- Control flow. Cond jumps → linear "not taken" variants; the path hyp
+  -- becomes a residual goal discharged by `<;> assumption` once the chain
+  -- unifies `vDst`.
   | ``SVM.SBPF.Insn.jeq =>
     condJumpImmSpec pcLit args[0]! args[1]! args[2]!
       ``SVM.SBPF.jeq_imm_not_taken_spec
@@ -346,10 +300,8 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
         mkAppM ``Eq #[v, u64])
   | ``SVM.SBPF.Insn.ja =>
     jaSpec pcLit args[0]!
-  -- call_local: take the target PC literal directly, then build
-  -- `call_local_spec`. The five r6..r10 values + call stack get
-  -- their own mvars; slBlockIter unifies them with whatever's in
-  -- the chain's state at this point.
+  -- call_local: target PC literal + `call_local_spec`. The r6..r10 values
+  -- and call stack get mvars; slBlockIter unifies them with the chain state.
   | ``SVM.SBPF.Insn.call_local =>
     let target := args[0]!
     let cs ← mkFreshExprMVar (← mkAppM ``List #[Lean.Expr.const ``SVM.SBPF.CallFrame []])
@@ -361,19 +313,13 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
     let app ← mkAppM ``SVM.SBPF.call_local_spec
       #[target, cs, r6V, r7V, r8V, r9V, r10V, pcLit]
     return { app, sideGoals := [] }
-  -- exit: dispatch to `exit_pops_spec` (the nested-return case).
-  -- The frame is constructed explicitly as `CallFrame.mk` with
-  -- field-level mvars (rather than a single opaque frame mvar). When
-  -- slBlockIter composes the chain, the frame this exit pops needs
-  -- to unify with the frame pushed by the matching `call_local`'s
-  -- post — which is itself constructed as `⟨pc+1, r6V, ...⟩`. With
-  -- both sides as constructor applications, the unifier reduces the
-  -- problem to field-wise Nat equalities (linear in the number of
-  -- fields). With one side opaque (`frame : CallFrame`), the
-  -- elaborator has to peel off `frame.retPc`, `frame.savedR6`, etc.
-  -- via projection — that path triggers pathological recursion.
-  -- Top-level exit (which terminates the program) is NOT in this
-  -- chain — the qedlift walker stops before reaching it.
+  -- exit → `exit_pops_spec` (nested return). The popped frame is built as
+  -- `CallFrame.mk` with field-level mvars, NOT an opaque `frame : CallFrame`:
+  -- it must unify with the `⟨pc+1, r6V, …⟩` frame the matching `call_local`
+  -- pushed, and ctor-vs-ctor reduces to field-wise Nat eqs (linear), whereas
+  -- an opaque frame forces projection-peeling that recurses pathologically.
+  -- Top-level (program-terminating) exit is NOT in this chain — the qedlift
+  -- walker stops before it.
   | ``SVM.SBPF.Insn.exit =>
     let retPc    ← mkNatMVar
     let savedR6  ← mkNatMVar
@@ -395,9 +341,8 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
   | _ =>
     throwError m!"SpecGen.mkSpec: unsupported Insn ctor {ctor}; add a dispatch case in SVM/SBPF/SpecGen.lean"
 
-/-- Walk a `CodeReq` Expr — a `union`-of-`singleton`s tree, in any
-    left/right grouping — and return `(pcExpr, insnExpr)` pairs in
-    pc-order (left-to-right flatten). -/
+/-- Flatten a `CodeReq` `union`-of-`singleton`s tree (any grouping) to
+    `(pcExpr, insnExpr)` pairs in pc-order. -/
 partial def walkCodeReq (cr : Expr) : MetaM (List (Expr × Expr)) := do
   let cr := (← instantiateMVars cr).consumeMData
   let args := cr.getAppArgs
@@ -436,10 +381,9 @@ elab_rules : tactic
         let specApp ← mkSpec pcLit insnLit
         hyps := hyps ++ [specApp.app]
         sideMvarIds := sideMvarIds ++ specApp.sideGoals
-      -- `slBlockIter` assigns the main goal + discharges pcFree /
-      -- Disjoint side conds + calls `setGoals []`. After it returns,
-      -- any side-cond mvars we collected that still aren't assigned
-      -- become the residual user-visible goals.
+      -- `slBlockIter` assigns the main goal, discharges pcFree/Disjoint,
+      -- and `setGoals []`. Our collected side-cond mvars still unassigned
+      -- afterward become the residual user-visible goals.
       slBlockIter hyps
       let unsolved ← sideMvarIds.filterM (fun m => return !(← m.isAssigned))
       setGoals unsolved

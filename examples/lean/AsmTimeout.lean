@@ -1,36 +1,11 @@
 /-
-  Worked example — Lean Hoare spec for the blueshift `asm-timeout` program.
+  Hoare spec for the blueshift `asm-timeout` program (56 bytes, 6 logical insns).
+  Source: https://github.com/blueshift-gg/asm under `asm-timeout/`
 
-  The program is 56 bytes of hand-written sBPF assembly (source:
-  https://github.com/blueshift-gg/asm under `asm-timeout/`):
-
-  ```
-  entrypoint:
-      ldxdw r0, [r1+0x0060]    ; r0 := current_slot
-      ldxdw r3, [r1+0x2898]    ; r3 := target_slot
-      jgt r0, r3, end          ; if current > target → end (timed out)
-      exit                     ; in window: exit with r0 = current
-  end:
-      lddw r0, 1               ; timed out: r0 := 1
-      exit                     ; exit with r0 = 1
-  ```
-
-  Decoded as 6 logical instructions (`lddw` occupies 2 byte-slots but
-  decodes to a single logical entry). This file:
-
-  1. Embeds the `.text` bytes from `asm-timeout.so`.
-  2. Proves `Decode.decodeProgram` produces the expected 6-element
-     `Array Insn`.
-  3. Proves `asm_timeout_prefix_spec` — the leading 3 instructions
-     (ldxdw + ldxdw + jgt) load the two memory slots and branch to
-     either pc=3 (in-window exit) or pc=4 (timeout, lddw + exit).
-
-  Demonstrates that *real* hand-written sBPF assembly admits a Lean
-  Hoare spec through qedsvm's macro infrastructure. The full
-  end-to-end lift to `Runner.run` halted output requires either two
-  separate macro proofs (one per exit branch) or an `sl_branch`
-  variant with non-converging branches; the prefix proof here is the
-  branching primitive itself, which is the most spec-revealing part.
+  Proves: decode pin + `asm_timeout_prefix_spec` (3-insn decision prefix,
+  pc → 3 or 4 depending on current vs target). Full end-to-end lift would need
+  two macro proofs (one per branch) or an `sl_branch` variant; the prefix is
+  the spec-revealing part.
 -/
 
 import SVM.SBPF.Macros
@@ -42,8 +17,7 @@ open SVM.SBPF
 open SVM.SBPF.Runner
 open Memory
 
-/-- The `.text` section of `asm-timeout.so` (56 bytes), extracted at
-    file offset `0x78`. Comments on each 8-byte slot. -/
+/-- `.text` of `asm-timeout.so` (56 bytes), file offset `0x78`. -/
 def asmTimeoutText : ByteArray :=
   ⟨#[
     0x79, 0x10, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00, -- ldxdw r0, [r1+0x60]
@@ -55,8 +29,7 @@ def asmTimeoutText : ByteArray :=
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00  -- exit
   ]⟩
 
-/-- The 6 decoded instructions. `lddw` collapses the 2 byte-slots
-    starting at byte offset 32 into a single logical entry at pc=4. -/
+/-- 6 decoded instructions (`lddw` at byte-offset 32 collapses to a single PC=4 entry). -/
 def asmTimeoutInsns : Array Insn :=
   #[ .ldx .dword .r0 .r1 0x60,
      .ldx .dword .r3 .r1 0x2898,
@@ -69,15 +42,8 @@ theorem asmTimeout_decodes :
     Decode.decodeProgram asmTimeoutText = some asmTimeoutInsns := by
   native_decide
 
-/-- The first 3 instructions (load, load, jgt) — the "decision" portion
-    of asm-timeout. After execution:
-
-    - `r0 = current` (loaded from memory at `inputAddr + 0x60`).
-    - `r3 = target`  (loaded from memory at `inputAddr + 0x2898`).
-    - `pc = 4` if `current > target` (timeout path → lddw + exit).
-    - `pc = 3` otherwise (in-window path → exit directly).
-
-    Memory and registers other than r0/r3 are unchanged. -/
+/-- 3-insn decision prefix: loads current/target slots, branches to pc=4 (timeout)
+    or pc=3 (in-window). r0=current, r3=target; other regs/mem unchanged. -/
 theorem asm_timeout_prefix_spec
     (inputAddr vR0_old vR3_old current target : Nat)
     (h_current_bound : current < 2 ^ 64)

@@ -1,14 +1,4 @@
 //! `qedsvm-cli` — drive the Lean reference SVM from the shell.
-//!
-//! ```
-//! qedsvm-cli --elf prog.so --input input.bin [--cu-budget 200000]
-//!                [--registry registry.bin]
-//! ```
-//!
-//! Outputs a structured report on stdout: exit outcome, CUs consumed,
-//! logs (text), return data (hex), and a hex digest of the modified
-//! input region. Exit code mirrors the program: 0 on `Halted(0)`,
-//! non-zero on any error or non-zero program return value.
 
 use std::process::ExitCode;
 

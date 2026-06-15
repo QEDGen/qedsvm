@@ -6,16 +6,10 @@ open Memory
 
 /-! ## Memory stores — dword width
 
-`stxdw` writes 8 consecutive bytes (little-endian decomposition of
-the value register `valReg`) to memory at `[baseReg + off]`. The
-precondition owns the two registers and an existing `memU64Is` claim
-with some `oldV`; the post replaces that with `memU64Is addr vSrc`.
-
-Region requirement: `containsWritable addr 8`.
-
-Note: no `vSrc < 2^64` hypothesis is needed because `writeU64` masks
-to `% 256` at each byte slot, and `256 | 2^64`, so `(vSrc % 2^64) / 256^i % 256
-= vSrc / 256^i % 256` for `i ∈ 0..7` (omega discharges). -/
+`stxdw` writes valReg's 8 little-endian bytes at `[baseReg + off]`,
+replacing a `memU64Is` claim. No `vSrc < 2^64` hypothesis: `writeU64`
+masks `% 256` per slot and `256 | 2^64`, so `(vSrc % 2^64)/256^i % 256
+= vSrc/256^i % 256` (omega discharges). -/
 
 /-- `stx .dword baseReg off valReg`: write valReg's 64 bits little-endian
     at `[baseReg + off]`. -/
@@ -54,7 +48,7 @@ theorem stxdw_spec
   have h_VM_regs_val : h_VM.regs valReg = some vSrc := by
     rw [← hu_val_mem]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
-  -- 8 byte projection facts at h_VM, h_P, hp levels (mirror of ldxdw).
+  -- 8-byte projection facts at h_VM, h_P, hp levels.
   have h_VM_mem_i (i_addr : Nat) (val : Nat)
       (h_atom : (PartialState.singletonMemU64 (effectiveAddr baseAddr off) oldV).mem i_addr
                 = some val) :
@@ -71,7 +65,6 @@ theorem stxdw_spec
   have hp_mem_i (i_addr : Nat) (val : Nat) (h_atom : h_P.mem i_addr = some val) :
       hp.mem i_addr = some val := by
     rw [← hu_PR]; exact PartialState.union_mem_of_left_some h_atom
-  -- Climb to extract baseAddr and vSrc through hp.
   have h_P_regs_base : h_P.regs baseReg = some baseAddr := by
     rw [← hu_base_VM]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -89,7 +82,7 @@ theorem stxdw_spec
   have hs_regs_val : s.regs.get valReg = vSrc := hcr_regs valReg vSrc hp_regs_val
   have hfetch : fetch s.pc = some (.stx .dword baseReg off valReg) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  -- The step writes (vSrc % 2^64) via writeU64.
+  -- step writes (vSrc % 2^64) via writeU64.
   have hexec : executeFn fetch s 1 = chargeCu
       { s with mem := Memory.writeU64 s.mem (effectiveAddr baseAddr off) (vSrc % 2 ^ 64),
                pc := s.pc + 1 } := by
@@ -134,7 +127,7 @@ theorem stxdw_spec
             h_R_sat⟩
     -- (a) Compat.
     · refine ⟨?_, ?_, ?_, ?_, ?_⟩
-      -- regs: unchanged by stxdw (only mem changes).
+      -- regs unchanged by stxdw (only mem changes).
       · intro r vr hvr
         show s.regs.get r = vr
         by_cases hrbase : r = baseReg
@@ -184,12 +177,9 @@ theorem stxdw_spec
             rw [← hu_PR]
             rw [PartialState.union_regs_of_left_none h_P_none]
             exact hvr
-      -- mem: new state mem = writeU64 ... (vSrc % 2^64).
-      -- At addr+i (i ∈ 0..7): writeU64 writes byte_i of (vSrc % 2^64) = byte_i of vSrc.
-      -- Outside [addr, addr+8): unchanged.
+      -- mem: at addr+i (i ∈ 0..7) writeU64 writes byte_i of vSrc; outside unchanged.
       · intro a vm hvm
         show (Memory.writeU64 s.mem (effectiveAddr baseAddr off) (vSrc % 2 ^ 64)) a = vm
-        -- Helper for each in-range case at offset i:
         by_cases ha0 : a = effectiveAddr baseAddr off
         · rw [ha0] at hvm ⊢
           have h_inner :
@@ -317,7 +307,7 @@ theorem stxdw_spec
                         unfold Memory.writeU64
                         simp
                         omega
-                      · -- a is outside [addr, addr+8).
+                      · -- a outside [addr, addr+8).
                         have h_outer_none :
                             ((PartialState.singletonReg baseReg baseAddr).union
                               ((PartialState.singletonReg valReg vSrc).union
@@ -341,7 +331,6 @@ theorem stxdw_spec
                         rw [← hu_PR]
                         rw [PartialState.union_mem_of_left_none h_P_none]
                         exact hvm
-      -- pc:
       · intro vp hvp
         have h_outer_pc :
             ((PartialState.singletonReg baseReg baseAddr).union
@@ -441,7 +430,7 @@ theorem stxdw_spec
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMemU64_pc
-    -- (c) Inner disjointness: singletonReg baseReg ⊥ (singletonReg valReg ⊎ singletonMemU64).
+    -- (c) Inner disjointness: singletonReg baseReg ⊥ (valReg ⊎ memU64).
     · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrbase : r = baseReg
         · right
@@ -460,15 +449,12 @@ theorem stxdw_spec
 
 /-! ## Memory stores from immediates — dword-width helper + `st .dword`
 
-The immediate sibling of `stxdw_spec`: no value register, the value
-is the instruction's immediate field. The `↦U64` atom decomposes
-into 8 byte cells, so the memory frame is 9-way (8 in-range +
-outside). Mirror of `cuTripleWithinMem_store_imm_word_via_reg_addr`
-scaled from 4 to 8 cells. -/
+Immediate sibling of `stxdw_spec`: no value register. The `↦U64` atom
+decomposes into 8 byte cells, so the mem frame is 9-way (8 in-range +
+outside). -/
 
-/-- Generic dword-store triple from an immediate value. The new value's
-    low 8 bytes overwrite `[baseReg + off .. +7]`; everything else is
-    framed. -/
+/-- Generic dword-store triple from an immediate value: the new value's
+    low 8 bytes overwrite `[baseReg + off .. +7]`, rest framed. -/
 theorem cuTripleWithinMem_store_imm_dword_via_reg_addr
     (baseReg : Reg) (off : Int)
     (baseAddr oldDwordVal newDwordVal : Nat) (pc : Nat) (insn : Insn)
@@ -773,9 +759,8 @@ theorem cuTripleWithinMem_store_imm_dword_via_reg_addr
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
 
-/-- `st .dword baseReg off imm`: store dword `toU64 imm` (truncated to
-    64 bits, `% 2^(8*8)`) at `[baseReg + off]`. Derived from the
-    immediate-store helper. -/
+/-- `st .dword baseReg off imm`: store `toU64 imm % 2^(8*8)` at
+    `[baseReg + off]`. Derived from the immediate-store helper. -/
 theorem stdw_spec
     (baseReg : Reg) (off : Int) (imm : Int)
     (baseAddr oldDwordVal : Nat) (pc : Nat) :

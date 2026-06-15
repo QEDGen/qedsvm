@@ -6,11 +6,8 @@ open Memory
 
 /-! ## Memory-byte reasoning helpers shared across widths
 
-`readU64_eq_of_bytes_match` connects 8 byte-level facts to a single
-`readU64` value via the `readU64_writeU64_same` lemma (a proven
-theorem, not an axiom) — we show `mem` agrees with `writeU64 mem addr v`
-at every address, then apply it. Used by `ldxdw_spec` to discharge step
-semantics. -/
+`readUN_eq_of_bytes_match`: N byte-level facts collapse to a single
+`readUN` value via `omega`. Used to discharge load step semantics. -/
 
 theorem readU16_eq_of_bytes_match {mem : Memory.Mem} {addr v : Nat}
     (hv : v < 2 ^ 16)
@@ -49,20 +46,9 @@ theorem readU64_eq_of_bytes_match {mem : Memory.Mem} {addr v : Nat}
 
 /-! ## Memory loads — byte-width helper + `ldx .byte`
 
-The SL memory-op pattern is "owns a destination register, a base
-register, and one memory byte; the instruction reads them and writes
-a derived value to the destination." Capturing this once collapses
-each per-instruction byte-load spec to a 3-line invocation that
-supplies only the `step` reduction.
-
-`cuTripleWithinMem_load_byte_via_reg_addr` is the generic pattern:
-- precondition owns `(dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) ** (addr ↦ₘ byteVal)`,
-- postcondition is the same shape with `dst` updated to `vNew`,
-- region requirement asserts the 1-byte read range is contained,
-- `h_step` is the per-instruction step reduction (caller-supplied).
-
-The proof here pays the 4-level partial-state destructure cost once;
-specs built atop it (like `ldxb_spec`) are mechanical. -/
+Generic byte-load triple: owns dst+src registers and one memory byte,
+reads them, writes a derived value to dst. Pays the 4-level partial-state
+destructure once so specs atop it (`ldxb_spec`) are mechanical. -/
 
 /-- Generic byte-load triple via a register-indexed address. -/
 theorem cuTripleWithinMem_load_byte_via_reg_addr
@@ -370,14 +356,9 @@ theorem ldxb_spec
       simp only [step, hsrc, Width.bytes, if_pos hreg,
                  Memory.readByWidth, Memory.readU8, hmem])
 
-/-- `ldx .byte r r off`: same-register variant — load a byte at `[r + off]`
-    into `r`. `step` reads `r` as the base address before writing the loaded
-    byte, so dst = src is well-defined. Owns one register atom (`r ↦ᵣ baseAddr`)
-    plus the byte cell; the post overwrites `r` with `byteVal % 256`. The
-    generic `ldxb_spec` can't cover this — it splits dst and src into two
-    register atoms, which collapse to a duplicate (unsatisfiable) `r` atom
-    when dst = src (e.g. the `ldxb r2, [r2]` pointer-deref at p_token's
-    initializeMint entry). -/
+/-- `ldx .byte r r off`: same-register variant. Owns ONE register atom (not
+    two): `ldxb_spec`'s two dst/src atoms collapse to a duplicate unsatisfiable
+    `r` atom when dst = src (e.g. p_token's `ldxb r2, [r2]` pointer-deref). -/
 theorem ldxb_same_spec
     (r : Reg) (off : Int) (baseAddr byteVal : Nat) (pc : Nat)
     (hne : r ≠ .r10) :
@@ -553,15 +534,11 @@ theorem ldxb_same_spec
 
 /-! ## Memory stores — byte-width helper + `stx .byte`
 
-The byte-store SL pattern: instruction reads two registers (base
-address + value), updates one memory byte to a value derived from
-those registers. Symmetric to the load helper but with the partial
-state's memory cell changing value between pre and post (the byte
-masked to 8 bits is what `writeU8` actually stores). -/
+Byte-store: reads base+value registers, updates one memory byte. Like the
+load helper but the memory cell changes value between pre and post. -/
 
-/-- Generic byte-store triple via a register-indexed address.
-    `newByteVal` is the actual byte stored, so callers pass it
-    pre-masked (`< 256`) — `h_lt` discharges `writeU8`'s internal mod. -/
+/-- Generic byte-store triple via a register-indexed address. Callers pass
+    `newByteVal` pre-masked (`< 256`); `h_lt` discharges `writeU8`'s mod. -/
 theorem cuTripleWithinMem_store_byte_via_reg_addr
     (baseReg valReg : Reg) (off : Int)
     (baseAddr vSrc oldByteVal newByteVal : Nat)
@@ -676,10 +653,9 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
               PartialState.singletonMem (effectiveAddr baseAddr off) (newByteVal),
               ?_, rfl, rfl, rfl⟩⟩,
             h_R_sat⟩
-    -- (a) Compat of the new witness with the post state (post = { s with mem := ..., pc := s.pc + 1 }).
+    -- (a) Compat of the new witness with the post state.
     · refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · intro r vr hvr
-        -- regs are unchanged in the post state
         show s.regs.get r = vr
         by_cases hrbase : r = baseReg
         · rw [hrbase] at hvr
@@ -744,7 +720,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
           rw [PartialState.union_mem_of_left_some h_inner] at hvm
           have : vm = newByteVal := (Option.some.inj hvm).symm
           rw [this]
-          -- writeU8 stores `newByteVal % 256` at addr; with h_lt, equals newByteVal.
+          -- writeU8 stores newByteVal % 256; h_lt makes it = newByteVal.
           unfold Memory.writeU8; simp
           exact h_lt
         · have h_outer_h1_none :
@@ -756,10 +732,9 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
             rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
             exact PartialState.singletonMem_mem_other ha
           rw [PartialState.union_mem_of_left_none h_outer_h1_none] at hvm
-          -- mem at a ≠ addr is unchanged by writeU8
+          -- a ≠ addr: unchanged by writeU8, falls through to pre compat.
           unfold Memory.writeU8
           simp [ha]
-          -- new state mem at a = s.mem a; from pre compat
           apply hcm_mem a vm
           have h_P_none : h_P.mem a = none := by
             rw [← hu_base_VM]
@@ -848,7 +823,7 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonMem_pc
-    -- (c) Inner disjointness: singletonReg baseReg ⊥ (singletonReg valReg ⊎ singletonMem addr).
+    -- (c) Inner disjointness: singletonReg baseReg ⊥ (valReg ⊎ mem).
     · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · by_cases hrbase : r = baseReg
         · right
@@ -860,15 +835,13 @@ theorem cuTripleWithinMem_store_byte_via_reg_addr
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
     -- (d) Innermost disjointness: singletonReg valReg ⊥ singletonMem addr.
-    -- singletonMem has no regs, singletonReg has no mem, neither owns pc.
     · refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · right; exact PartialState.singletonMem_regs r
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
 
 /-- `stx .byte baseReg off valReg`: store byte `(valReg & 0xff)` at
-    `[baseReg + off]`. Derived from the store helper with
-    `newByteVal := vSrc % 256`. -/
+    `[baseReg + off]`. Derived from the store helper, `newByteVal := vSrc % 256`. -/
 theorem stxb_spec
     (baseReg valReg : Reg) (off : Int)
     (baseAddr vSrc oldByteVal : Nat) (pc : Nat) :
@@ -888,13 +861,11 @@ theorem stxb_spec
 
 /-! ## Memory stores from immediates — byte-width helper + `st .byte`
 
-Two-resource pattern: owns one base register and one memory byte.
-Simpler than `stxb`'s helper because there's no value register —
-the value is the instruction's immediate field. -/
+Owns one base register and one memory byte; no value register (the value
+is the instruction's immediate field). -/
 
-/-- Generic byte-store triple from an immediate value. Mirror of
-    `cuTripleWithinMem_store_byte_via_reg_addr` minus the value
-    register. -/
+/-- Generic byte-store triple from an immediate value (the store helper
+    minus the value register). -/
 theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
     (baseReg : Reg) (off : Int)
     (baseAddr oldByteVal newByteVal : Nat) (pc : Nat) (insn : Insn)
@@ -982,7 +953,7 @@ theorem cuTripleWithinMem_store_imm_byte_via_reg_addr
           rw [PartialState.union_regs_of_left_some h_inner] at hvr
           have : vr = baseAddr := (Option.some.inj hvr).symm
           rw [hrbase, this]; exact hs_regs_base
-        · -- r ≠ baseReg: outer-h1 doesn't own r → falls through to h_R.
+        ·
           have h_outer_h1_none :
               ((PartialState.singletonReg baseReg baseAddr).union
                 (PartialState.singletonMem (effectiveAddr baseAddr off) newByteVal)).regs r

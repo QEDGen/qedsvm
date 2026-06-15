@@ -4,7 +4,7 @@
 
 A Lean 4 model of the Solana Virtual Machine. It operates on the compiled `.so`, the same artifact mainnet runs, and does two separate jobs:
 
-- **Execute** a program on a model proven byte-for-byte conformant with agave (differential-tested against mollusk on 32 fixtures, p-token Transfer at 76 CU identical, full suite ~3s). The `qedsvm-rs` crate is this executor, published mainly so the model can be diff-tested against mollusk and reused by fuzzing and diff-test harnesses.
+- **Execute** a program on a model proven byte-for-byte conformant with agave (differential-tested against mollusk across 46 fixtures, p-token Transfer at 76 CU identical, full suite in seconds). The `qedsvm-rs` crate is this executor, published mainly so the model can be diff-tested against mollusk and reused by fuzzing and diff-test harnesses.
 - **Verify** a program against a separation-logic spec with a proven compute-unit bound, in Lean: 142 per-instruction Hoare triples, composition tactics, and `qedlift` to lift a `.so` straight to a machine-checked proof with no `sorry`.
 
 > **Execution is not verification.** The Rust crate tells you what a program does on one input; it does not prove what it does on all of them. If you only use `qedsvm-rs`, you have a conformant executor, not a verified program. Verification lives entirely in the Lean layer.
@@ -15,7 +15,7 @@ Small trust base: Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean
 
 ```lean
 require qedsvm from git
-  "https://github.com/QEDGen/qedsvm.git" @ "v0.4.0"
+  "https://github.com/QEDGen/qedsvm.git" @ "v0.5.0"
 ```
 
 Prerequisites: Lean (via `elan`) and `cargo` / `rustc`. Lake builds `qedsvm-rs/lean-bridge/` automatically. The public module boundary (both proof engines + the discharge route) is documented in [docs/API.md](docs/API.md).
@@ -64,7 +64,7 @@ cargo run --features qedrecover --bin qedlift -- \
   --output examples/lean/Generated/ByteIncrementLifted.lean
 ```
 
-With `--trace`, qedlift follows the real happy path through branchy bytecode and additionally emits a `*_balance_correct` corollary (clean Nat debit/credit). The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, the Counter family, Logger, and six p-token arms (Transfer, TransferChecked, MintTo, Burn, CloseAccount, InitializeMint2), all proof-complete. Batch mode (`--idl`) lifts every instruction in a TOML or Codama IDL.
+With `--trace`, qedlift follows the real happy path through branchy bytecode and additionally emits a `*_balance_correct` corollary (clean Nat debit/credit). The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, the Counter family, Logger, a layout-general Vault (field-update + blob), heap-bump allocation, and six p-token arms (Transfer, TransferChecked, MintTo, Burn, CloseAccount, InitializeMint2), all proof-complete. Batch mode (`--idl`) lifts every instruction in a TOML or Codama IDL.
 
 For the full `.so` + IDL to proof workflow (qedrecover scoping, trace capture, qedlift, and `lake build`), see [`docs/PIPELINE.md`](docs/PIPELINE.md).
 
@@ -109,7 +109,7 @@ qedsvm-rs/            Cargo workspace
 ├── (root)            Mollusk-shaped Rust API
 ├── src/bin/qedlift.rs    Bytecode → Lean-proof lifter (--features qedrecover)
 └── lean-bridge/      Agave-pinned crypto staticlib called by Lean
-docs/                 Active design notes (docs/archive/ for shipped plans)
+docs/                 Reference docs (API, PIPELINE, COVERAGE)
 ```
 
 ## Origin

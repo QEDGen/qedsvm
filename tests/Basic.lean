@@ -1,15 +1,11 @@
 import SVM
 
--- Basic smoke tests for the SVM package.
--- Real proof patterns live in downstream consumers; this just verifies
--- that the public surface is wired up correctly.
+-- Smoke tests: verify the public surface is wired up.
 
 open SVM
 
--- Pubkey reflexivity
 example (k : Pubkey) : k = k := rfl
 
--- TOKEN_PROGRAM_ID is a concrete Pubkey
 example : TOKEN_PROGRAM_ID = TOKEN_PROGRAM_ID := rfl
 
 -- A well-formed CpiInstruction passes envelope predicates
@@ -22,7 +18,6 @@ example :
   unfold targetsProgram SVM.Cpi.targetsProgram
   rfl
 
--- Discriminator prefix check
 example :
     hasDiscriminator
       { programId := TOKEN_PROGRAM_ID

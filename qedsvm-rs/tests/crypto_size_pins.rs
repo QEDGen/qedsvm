@@ -1,25 +1,8 @@
-//! L7 (TCB hygiene): independent Rust-side pins on the crypto SHAPE
-//! invariants that `SVM/SBPF/CryptoTrust.lean` asserts as `axiom`s
-//! (e.g. `(Sha512.hash d).size = 64`). Those size axioms are trusted
-//! whenever a `native_decide` evaluates the corresponding `@[extern]
-//! opaque` function: the kernel believes the size claim without
-//! checking the native code. If a crate version bump ever changed an
-//! output length, the axiom would become false yet nothing in the Lean
-//! build would notice.
-//!
-//! These tests call the EXACT crates `lean-bridge` wraps (sha2 0.10.8,
-//! sha3 0.10.8, blake3 1.8.5 — Cargo unifies the versions across the
-//! workspace) and assert the lengths the axioms claim. A divergence
-//! fails here, in Rust, instead of silently invalidating a size axiom.
-//!
-//! Scope: the deterministic-length hash externs. Variable-output and
-//! point-parsing externs (secp256k1 recover -> 64, curve25519 point ==
-//! 32, bn254/bigmodexp) are size-guarded inline in the bridge itself
-//! (`if bytes.len() != N { return error }`); see `lean-bridge/src`.
+//! L7 (TCB hygiene): Rust-side pins on the crypto size axioms in `SVM/SBPF/CryptoTrust.lean`.
+//! Those axioms are trusted at native_decide time — a crate bump that changed an output length
+//! would silently invalidate an axiom without any Lean build failure. These tests catch that in Rust.
 
-// `sha2` and `sha3` both re-export the same `digest::Digest` trait;
-// one import brings `::digest()` into scope for every hasher below.
-use sha2::Digest as _;
+use sha2::Digest as _; // brings ::digest() into scope for sha2 + sha3
 
 /// `Sha256.hashAgave` axiom hook + `solana-sha256-hasher` shape: 32 B.
 #[test]

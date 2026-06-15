@@ -1,27 +1,22 @@
--- Cross-Program Invocation syscalls: `sol_invoke_signed` (Rust ABI)
--- and `sol_invoke_signed_c` (C ABI).
+-- CPI syscalls: `sol_invoke_signed` (Rust ABI) / `sol_invoke_signed_c` (C ABI).
 --
--- This is the PROOF-FACING stub used by `step` / `executeFn`. It fails
--- closed: a real CPI mutates callee account state, sets return data,
--- enforces privilege/signer/depth rules, and can fail (aborting the
--- caller). None of that is modeled here, so rather than return success
--- with zero effects (which would let a proof conclude "invoke
--- succeeded, all account memory unchanged" — false of essentially every
--- on-chain CPI) we abort. The diff-testing runner uses a separate,
--- richer CPI model (`Runner.cpiCallNextState`, reached via
--- `executeFnCpiWithFuel`) that intercepts CPI before `step`, so this
--- stub does not affect conformance testing. See docs/SOUNDNESS_AUDIT_*
--- (C4); a full proof-side CPI model is tracked as a design item (C5).
+-- PROOF-FACING stub used by `step`/`executeFn`. Fails closed: a real CPI
+-- mutates callee state, sets return data, and can abort the caller, none of
+-- which is modeled. Returning success-with-no-effects would let a proof
+-- conclude "invoke succeeded, all account memory unchanged" (false of nearly
+-- every on-chain CPI), so we abort. Diff-testing uses the richer
+-- `Runner.cpiCallNextState` (via `executeFnCpiWithFuel`), which intercepts CPI
+-- before `step`, so this stub doesn't affect conformance. See
+-- docs/SOUNDNESS_AUDIT_* (C4); full proof-side CPI model is C5.
 
 import SVM.SBPF.Machine
 
 namespace SVM.SBPF
 namespace Cpi
 
-/-- `INVOKE_UNITS_COST_SIMD_0339` from agave (execution_budget.rs:23).
-    The diff baseline is mollusk under `FeatureSet::all_enabled()`, which
-    activates SIMD-0339, so `get_invoke_unit_cost` returns 946 — NOT the
-    pre-SIMD-0339 `DEFAULT_INVOCATION_COST = 1000`. Empirically pinned by
+/-- `INVOKE_UNITS_COST_SIMD_0339` (execution_budget.rs:23). Diff baseline is
+    mollusk under `all_enabled()`, which activates SIMD-0339, so the cost is
+    946 — NOT the pre-SIMD-0339 `DEFAULT_INVOCATION_COST = 1000`. Pinned by
     the CPI diff fixtures' CU-exact assertions (audit M6). -/
 def cu : Nat := 946
 

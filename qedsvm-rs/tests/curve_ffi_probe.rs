@@ -1,11 +1,5 @@
-//! Isolated reproducer for the `Curve25519.validateEdwards` runtime
-//! FFI SIGSEGV. Runs the minimal `curve_validate_probe.so` through
-//! `qedsvm::Svm::process_instruction` and reports the outcome
-//! (or the SIGSEGV).
-//!
-//! This test does NOT use `--features diff-mollusk`; it exercises
-//! our engine alone so we can isolate the curve25519 FFI without any
-//! mollusk noise.
+//! Isolated probe for `Curve25519.validateEdwards` FFI (was a SIGSEGV reproducer).
+//! Runs `curve_validate_probe.so` through Svm alone (no mollusk) to isolate the curve25519 FFI path.
 
 use qedsvm::Svm;
 use solana_instruction::Instruction;
@@ -34,7 +28,5 @@ fn curve_validate_via_runtime() {
         .expect("qedsvm runs curve_validate_probe");
     eprintln!(">>> result = {:?}", r.program_result);
     eprintln!(">>> cu     = {}", r.compute_units_consumed);
-    // Don't assert specific outcome — we want to see if it crashes
-    // or returns. Both are acceptable signals at this stage.
-    let _ = r;
+    let _ = r; // any outcome is acceptable; we just confirm it doesn't crash
 }

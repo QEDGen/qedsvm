@@ -1,51 +1,34 @@
 -- Solana signature-verify precompiles.
 --
--- Three "programs" with fixed program-ids that the runtime dispatches
--- to a Rust `verify()` closure instead of the BPF VM:
+-- Three fixed-program-id "programs" the runtime dispatches to a Rust
+-- `verify()` closure instead of the BPF VM (agave's
+-- `precompiles/src/{ed25519,secp256k1,secp256r1}.rs`):
 --
 --   ed25519  (`Ed25519SigVerify1111…`)   — ed25519-dalek verify_strict
 --   secp256k1 (`KeccakSecp256k11111…`)   — libsecp256k1 ECDSA recover
 --   secp256r1 (`Secp256r1SigVerify1111…`) — openssl P-256 verify
 --
--- Agave's `precompiles/src/{ed25519,secp256k1,secp256r1}.rs`. Each
--- precompile reads a header (`num_signatures` byte + optional padding)
--- followed by `num_signatures` packed `SignatureOffsets` structs, then
--- the actual signature / pubkey / message bytes packed at the
--- referenced offsets within the same `ix.data` (or — in a full
--- transaction — within another instruction's data, addressed by the
--- per-offset `instruction_index`).
+-- Each reads a header (`num_signatures` byte + optional padding), then
+-- N packed `SignatureOffsets`, then sig/pubkey/message bytes at the
+-- referenced offsets.
 --
 -- ## Cross-instruction lookup (gap, documented)
 --
--- agave's `verify()` takes `instruction_datas: &[&[u8]]` and lets each
--- offset entry pull bytes from any instruction in the transaction.
--- qedsvm processes one instruction at a time and has no access to
--- the surrounding transaction. We support exactly one shape:
---
---   - ed25519 / secp256r1: `instruction_index == u16::MAX (0xFFFF)`
---     means "use the current instruction's data". Any other index
---     fails with the equivalent of `PrecompileError::InvalidDataOffsets`
---     (r0 := 1).
---   - secp256k1: index is a u8, no sentinel. agave looks up
---     `instruction_datas[index]`; we only support `index == 0`
---     (treating it as the current instruction), and reject anything
---     else.
---
--- This matches the common construction where a single-instruction
--- precompile invocation packs sig + pubkey + msg inline. Multi-
--- instruction precompiles (sig in instruction[i], msg in
--- instruction[j]) are a runtime concern that qedsvm doesn't model.
+-- agave's `verify()` can pull bytes from any instruction in the
+-- transaction; qedsvm processes one instruction at a time. We support
+-- only the inline shape:
+--   - ed25519 / secp256r1: `instruction_index == u16::MAX (0xFFFF)` =
+--     current instruction; any other index fails (≈ InvalidDataOffsets,
+--     r0 := 1).
+--   - secp256k1: index is a u8 with no sentinel; we accept only
+--     `index == 0` (current instruction) and reject the rest.
 --
 -- ## CU charging
 --
--- agave's cost-model charges per-signature
--- (`ED25519_VERIFY_STRICT_COST = 2400`, `SECP256K1_VERIFY_COST = 6690`,
--- `SECP256R1_VERIFY_COST = 4800`) at transaction-prep time, not at
--- runtime — precompiles never enter the program runtime's CU meter.
--- We charge the same per-signature cost here so the Native dispatch
--- result mirrors agave's accounting; transactions that route through
--- qedsvm see a single net CU figure that matches the on-chain
--- charge.
+-- agave's cost-model charges per-signature pre-execution
+-- (ED25519=2400, SECP256K1=6690, SECP256R1=4800); precompiles never
+-- enter the runtime CU meter. We charge the same per-signature cost so
+-- the net CU figure matches the on-chain charge.
 
 import SVM.Native.AcctInput
 import SVM.SBPF.Machine
@@ -60,19 +43,16 @@ open SVM.Native
 
 /-! ## FFI declarations -/
 
-/-- Strict ed25519 signature verification via `ed25519-dalek = 2.2.0`.
-    Returns 1 on success, 0 on any failure (invalid pubkey length,
-    invalid signature length, malleable signature, mathematical
-    verification failure). agave's precompile pins ed25519-dalek 1.0.1
-    and calls `verify_strict` with equivalent semantics. -/
+/-- Strict ed25519 verification via `ed25519-dalek = 2.2.0`; success on
+    valid, failure on bad length / malleable sig / math failure. agave
+    pins ed25519-dalek 1.0.1 `verify_strict` with equivalent semantics. -/
 @[extern "lean_ed25519_verify_strict"]
 opaque ed25519VerifyStrict
     (pubkey : @& ByteArray) (sig : @& ByteArray) (msg : @& ByteArray) :
     Bool
 
-/-- NIST P-256 ECDSA verification with low-S enforcement via
-    `p256 = 0.13`. Returns 1 on success, 0 otherwise. agave uses
-    openssl + manual `s ≤ half_order` checks; we use `p256` +
+/-- NIST P-256 ECDSA verification with low-S enforcement via `p256 = 0.13`.
+    agave uses openssl + manual `s ≤ half_order`; we use `p256` +
     `normalize_s().is_some()` rejection for the same low-S contract. -/
 @[extern "lean_secp256r1_verify"]
 opaque secp256r1Verify
@@ -110,11 +90,9 @@ def SECP256R1_PROGRAM_ID : Nat :=
 
 /-! ## CU costs (per signature)
 
-Sourced from agave's `cost-model/src/block_cost_limits.rs`. Precompile
-verification is paid by the cost-model layer pre-execution, not by
-the program runtime, so these *are* the charges (no in-program base
-cost on top). Multi-sig precompile instructions pay `num_signatures ×
-per_sig_cost`. -/
+From agave's `cost-model/src/block_cost_limits.rs`. Paid pre-execution,
+not by the program runtime, so these are the full charges; multi-sig pays
+`num_signatures × per_sig_cost`. -/
 
 def ED25519_VERIFY_STRICT_COST : Nat := 2400  -- 30 × 80
 def SECP256K1_VERIFY_COST      : Nat := 6690  -- 30 × 223
@@ -273,19 +251,15 @@ def dispatchSecp256r1 (ixData : ByteArray) (_accts : List AcctInput)
 /-! ## Secp256k1 dispatcher
 
 agave's `secp256k1.rs` differs from the others:
-
-  - Header is a single byte (no padding) — offsets start at byte 1.
+  - Single-byte header (no padding); offsets start at byte 1.
   - `SecpSignatureOffsets` is 11 bytes (u16/u8/u16/u8/u16/u16/u8):
-      sig_offset (u16) ‖ sig_ix_index (u8)
-      eth_addr_offset (u16) ‖ eth_addr_ix_index (u8)
-      msg_offset (u16) ‖ msg_size (u16) ‖ msg_ix_index (u8)
-  - The signature blob is 65 bytes: 64-byte sig + 1-byte recovery_id.
-  - Pubkey field is a 20-byte ETH address; we verify by running
-    `secp256k1_recover(keccak256(msg), sig, recovery_id)` and
-    matching `keccak256(recovered_pubkey)[12..32]`.
-  - No `u8::MAX` sentinel — instruction_index is a direct lookup.
-    We only support `index == 0` (treated as the current
-    instruction's data). -/
+      sig_offset(u16) ‖ sig_ix_index(u8) ‖ eth_addr_offset(u16) ‖
+      eth_addr_ix_index(u8) ‖ msg_offset(u16) ‖ msg_size(u16) ‖ msg_ix_index(u8)
+  - Signature blob is 65 bytes: 64-byte sig + 1-byte recovery_id.
+  - Pubkey is a 20-byte ETH address; verified by matching
+    `keccak256(secp256k1_recover(keccak256(msg), sig, recovery_id))[12..32]`.
+  - No sentinel; instruction_index is a direct lookup, we accept only
+    `index == 0` (current instruction). -/
 
 structure SecpOffsets where
   sigOffset       : Nat

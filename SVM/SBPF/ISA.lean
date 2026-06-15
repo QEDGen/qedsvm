@@ -1,25 +1,18 @@
--- sBPF Instruction Set Architecture for hand-written Solana programs
---
--- Minimal subset of the sBPF ISA sufficient to verify hand-written Solana
--- programs.
---
--- Reference: https://github.com/anza-xyz/sbpf
+-- sBPF Instruction Set Architecture — minimal subset sufficient to verify
+-- hand-written Solana programs. Reference: https://github.com/anza-xyz/sbpf
 
 namespace SVM.SBPF
 
 /-- 64-bit word modulus for wrapping arithmetic -/
 def U64_MODULUS : Nat := 2 ^ 64
 
-/-- sBPF registers: r0-r9 general purpose, r10 read-only frame pointer.
-    r0 holds return values / exit codes.
-    r1-r5 are caller-saved argument registers (used for all calls: syscalls, BPF-to-BPF, CPI).
-    r6-r9 are callee-saved.
-    r10 is the read-only stack frame pointer. -/
+/-- sBPF registers: r0 = return/exit, r1-r5 caller-saved args (all call kinds),
+    r6-r9 callee-saved, r10 read-only frame pointer. -/
 inductive Reg
   | r0 | r1 | r2 | r3 | r4 | r5 | r6 | r7 | r8 | r9 | r10
   deriving Repr, DecidableEq, BEq, Inhabited
 
-/-- Source operand: register or signed immediate (converted to unsigned by resolveSrc) -/
+/-- Source operand: register or signed immediate (made unsigned by resolveSrc). -/
 inductive Src
   | reg (r : Reg)
   | imm (v : Int)
@@ -47,15 +40,10 @@ def Width.mask : Width → Nat
   | .word  => 2 ^ 32 - 1
   | .dword => 2 ^ 64 - 1
 
-/-- sBPF syscall identifiers (Solana runtime).
-    These map to the sol_* functions available to on-chain programs.
-
-    The full registered set is mirrored from
-    `anza-xyz/agave/syscalls/src/lib.rs`. Several variants are
-    activation-gated in agave; we list them all here regardless of
-    feature flag, since modeling activation is a separate concern from
-    decoding. Variants whose semantics are not yet implemented in
-    `execSyscall` fall through to the default arm (`r0 := 0`). -/
+/-- sBPF syscall identifiers — the registered set mirrored from agave's
+    `syscalls/src/lib.rs`. We list all variants regardless of activation gate
+    (modeling activation is separate from decoding); unimplemented ones fall
+    through to `execSyscall`'s default arm (`r0 := 0`). -/
 inductive Syscall
   -- Logging
   | sol_log_
@@ -114,16 +102,12 @@ inductive Syscall
   -- Return data
   | sol_get_return_data
   | sol_set_return_data
-  -- A syscall whose name → hash mapping we don't (yet) know. The decoder
-  -- emits this for any `call <hash>` whose 32-bit hash isn't in our
-  -- syscall hash table.
+  -- A `call <hash>` whose 32-bit hash isn't in our syscall hash table.
   | unknown (hash : Nat)
   deriving Repr, DecidableEq
 
-/-- sBPF instructions.
-    Jump targets are absolute instruction indices (resolved from labels by parser).
-    This abstracts away lddw occupying 2 instruction slots in the binary encoding;
-    our model treats each logical instruction as one array element. -/
+/-- sBPF instructions. Jump targets are absolute instruction indices. Abstracts
+    away lddw's 2 binary slots — each logical instruction is one array element. -/
 inductive Insn
   -- Load 64-bit immediate into register
   | lddw  (dst : Reg) (imm : Int)
@@ -175,26 +159,16 @@ inductive Insn
   | jset  (dst : Reg) (src : Src) (target : Nat)
   -- Unconditional jump
   | ja    (target : Nat)
-  -- Syscall (`call <imm32>` where imm32 = Murmur3 hash of syscall name,
-  -- opcode 0x85 with `src = 0`)
+  -- Syscall (`call <imm32>`, imm32 = Murmur3 hash of name, opcode 0x85 src=0)
   | call  (syscall : Syscall)
-  -- Internal call (`call <imm32>` with `src = 1`, opcode 0x85). The
-  -- 32-bit immediate is a signed slot-offset from the next
-  -- instruction; the decoder resolves it to an absolute logical PC.
-  -- Semantics: push a call frame (return PC + saved r6–r9 + saved r10)
-  -- onto `State.callStack`, bump r10 by one V0 frame (0x1000), and jump
-  -- to target. `.exit` pops the frame — restoring r6–r9 and r10 — instead
-  -- of terminating, when the stack is non-empty. Callee-saved frame
-  -- preservation IS modeled (see `Execute.lean` `.call_local` / `.exit`).
+  -- Internal call (`call <imm32>` src=1). Pushes a call frame (return PC + saved
+  -- r6–r9 + r10) onto `State.callStack`, bumps r10 by one V0 frame (0x1000), and
+  -- jumps; `.exit` pops it (restoring r6–r9/r10) instead of terminating when the
+  -- stack is non-empty. Callee-saved preservation IS modeled (`Execute.lean`).
   | call_local (target : Nat)
-  -- Indirect call (`callx <reg>`, opcode 0x8d) — call target is the
-  -- runtime value of `reg`, interpreted as a logical PC. Cargo-built
-  -- Solana programs emit this for tail-call dispatch and for
-  -- panic/error paths in Rust's codegen.
-  --
-  -- v1 semantics: jump to `regs[reg]`. Like `.call_local`, no
-  -- call-frame return stack push (an exit would terminate, not
-  -- return). Most occurrences are in unreachable error branches.
+  -- Indirect call (`callx <reg>`, opcode 0x8d): jump to `regs[reg]` as a logical
+  -- PC. Emitted for tail-call dispatch / Rust panic paths. Like `.call_local`,
+  -- no return-stack push (mostly in unreachable error branches).
   | callx (reg : Reg)
   -- Program exit (exit code = value in r0)
   | exit
@@ -205,9 +179,8 @@ def toSigned64 (v : Nat) : Int :=
   if v < U64_MODULUS / 2 then ↑v
   else ↑v - ↑U64_MODULUS
 
-/-- Convert a signed integer to its unsigned 64-bit representation.
-    sBPF immediates are sign-extended to 64 bits; this mirrors that
-    so codegen can emit readable negative literals while staying in Nat. -/
+/-- Signed integer to unsigned 64-bit (sBPF immediates are sign-extended to 64
+    bits); lets codegen emit readable negative literals while staying in Nat. -/
 @[simp, reducible] def toU64 (v : Int) : Nat :=
   (v % (2^64 : Int)).toNat
 

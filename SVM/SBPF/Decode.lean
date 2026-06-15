@@ -1,8 +1,5 @@
 /-
-  sBPF bytecode decoder (pure parser).
-
-  Parses the 8-byte (or 16-byte for `lddw`) sBPF instruction encoding into
-  our `Insn` type.
+  sBPF bytecode decoder (pure parser) → our `Insn`.
 
   Encoding (per https://github.com/anza-xyz/sbpf):
 
@@ -11,14 +8,12 @@
       bytes 2-3  : signed 16-bit offset (little-endian) — PC-relative for jumps
       bytes 4-7  : signed 32-bit immediate (little-endian)
 
-  The `lddw` instruction spans 16 bytes; the second 8-byte slot's `imm`
-  field carries the high 32 bits of the 64-bit immediate.
+  `lddw` spans 16 bytes; the second slot's `imm` is the high 32 bits.
 
-  Jump targets in the binary are PC-relative *in 8-byte slot units*. Since
-  `lddw` occupies two slots but compresses to one logical `Insn` in our
-  model, jump-target resolution requires a byte-slot → logical-PC map. We
-  build it in a first pass (`buildSlotMap`); the second pass decodes
-  instructions with resolved targets.
+  Jump targets are PC-relative in 8-byte slot units, but `lddw` compresses
+  two slots to one logical `Insn`, so resolution needs a byte-slot →
+  logical-PC map: pass 1 (`buildSlotMap`) builds it, pass 2 decodes with
+  resolved targets.
 -/
 
 import SVM.SBPF.Execute
@@ -64,20 +59,15 @@ def readI16LE (bytes : ByteArray) (off : Nat) : Int :=
 def readI32LE (bytes : ByteArray) (off : Nat) : Int :=
   signExt32 (readU32LE bytes off)
 
-/-! ## Hex-string byte embedding
+/-! ## Hex-string byte embedding — qedlift embeds a large `.text` as a hex
+STRING (not a `#[..]` `ByteArray`): an array literal elaborates through
+nested `List.cons`, blowing `maxRecDepth` around a few KB, while a string is
+one token of any size. Decode pins evaluate this under `native_decide`. -/
 
-qedlift embeds a large `.text` section as a hex STRING literal rather
-than a `#[..]` `ByteArray` literal: an array literal elaborates through
-nested `List.cons` applications whose depth is the byte count, blowing
-`maxRecDepth` around a few KB, while a string literal is a single token
-of any size. The generated per-PC decode pins (`<Module>_decode_pins`)
-evaluate this decoder under `native_decide`. -/
-
-/-- Decode a hex string into a `ByteArray`. Characters that are not hex
-    digits (whitespace, newlines) are skipped, so callers may wrap long
-    embeddings freely; a dangling unpaired nibble is dropped. Corruption
-    of an embedded program is caught downstream: the decode pins compare
-    `decodeInsn` over these bytes against the expected instructions. -/
+/-- Decode a hex string into a `ByteArray`. Non-hex chars (whitespace) are
+    skipped so callers may wrap freely; a dangling nibble is dropped.
+    Corruption is caught downstream: the decode pins compare `decodeInsn`
+    over these bytes against the expected instructions. -/
 def bytesOfHex (s : String) : ByteArray := Id.run do
   let mut out := ByteArray.empty
   let mut hi : Option Nat := none
@@ -105,14 +95,10 @@ def decodeReg (n : Nat) : Option Reg :=
 
 /-! ## Pass 1: byte-slot → logical-PC map
 
-For each 8-byte slot index `i` in the binary, `slotMap[i]` is the logical
-PC of the instruction whose first byte is at offset `8*i`. For `lddw`,
-both the first slot (where the instruction lives) and the second slot
-(its 32-bit-immediate extension) map to the same logical PC.
-
-Jumping into the middle of an `lddw` is a malformed program; the map
-still produces *some* logical PC, but execution from that PC will
-re-execute the `lddw` rather than the program's intent. -/
+`slotMap[i]` = logical PC of the instruction whose first byte is at `8*i`.
+For `lddw`, both its slots map to the same logical PC. (Jumping into the
+middle of an `lddw` is malformed; the map still yields *some* PC, but
+execution re-runs the `lddw`. M4 fails such jumps closed in `decodeInsn`.) -/
 
 def buildSlotMap (bytes : ByteArray) : Array Nat :=
   go 0 0 #[] (bytes.size + 1)
@@ -134,20 +120,16 @@ where
 /-! ## Pass 2: single-instruction decoding with resolved jump targets -/
 
 /-- First-match lookup in the V0 function registry (key → target slot,
-    built by `Elf.buildFnRegistry`). First match mirrors agave's
-    entrypoint precedence (the e_entry pair is registered first). -/
+    `Elf.buildFnRegistry`). First match mirrors agave entrypoint precedence
+    (e_entry registered first). -/
 def fnRegLookup (fnReg : List (Nat × Nat)) (key : Nat) : Option Nat :=
   (fnReg.find? (fun p => p.1 = key)).map (·.2)
 
-/-- Decode one sBPF instruction starting at byte offset `off`. The `slotMap`
-    is consulted to translate PC-relative byte-slot offsets in branch
-    instructions into absolute logical-PC values; `fnReg` is the V0
-    function registry (murmur3 key → target slot, `Elf.buildFnRegistry`)
-    that resolves internal `call` immediates (audit H2).
-
-    Returns the decoded `Insn` plus the byte size consumed (8 normally,
-    16 for `lddw`), or `none` if the opcode is unrecognized or the
-    register fields are invalid. -/
+/-- Decode one sBPF instruction at byte offset `off`. `slotMap` translates
+    PC-relative byte-slot branch offsets to logical PCs; `fnReg` is the V0
+    function registry resolving internal `call` immediates (audit H2).
+    Returns `(Insn, byte size)` (8, or 16 for `lddw`), or `none` if the
+    opcode is unrecognized or register fields are invalid. -/
 def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
     (fnReg : List (Nat × Nat) := []) : Option (Insn × Nat) :=
   let opcode := readU8 bytes off
@@ -158,11 +140,10 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   let imm    := readI32LE bytes (off + 4)
   let dst?   := decodeReg dstN
   let src?   := decodeReg srcN
-  -- Resolve a PC-relative slot offset to a logical PC, or `none` if it
-  -- lands outside the program. Agave's verifier rejects an out-of-code
-  -- jump at load time (`JumpOutOfCode`); failing the decode (so the whole
-  -- program fails to load) reproduces that rather than silently
-  -- retargeting to PC 0. See docs/SOUNDNESS_AUDIT_* (H3).
+  -- Resolve a PC-relative slot offset to a logical PC, `none` if out of
+  -- code. Agave's verifier rejects out-of-code jumps at load
+  -- (`JumpOutOfCode`); failing the decode reproduces that instead of
+  -- silently retargeting to PC 0 (H3).
   let currentSlot : Int := (off / 8 : Int)
   let resolveTarget : Int → Option Nat := fun slotInt =>
     if slotInt < 0 then none
@@ -170,19 +151,17 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
       let n := slotInt.toNat
       if h : n < slotMap.size then
         let pc := slotMap[n]'h
-        -- M4: a target landing on the 2nd slot of an `lddw` is
-        -- `JumpToMiddleOfLddw` (agave verifier rejection). `buildSlotMap`
-        -- maps both slots of an `lddw` to the SAME logical PC and every
-        -- other instruction to a fresh one, so a continuation slot is
-        -- exactly one where `slotMap[n] = slotMap[n-1]`. Fail closed.
+        -- M4: a target on an `lddw`'s 2nd slot is `JumpToMiddleOfLddw`
+        -- (agave rejection). Both `lddw` slots share one logical PC and
+        -- every other insn has a fresh one, so a continuation slot is
+        -- exactly `slotMap[n] = slotMap[n-1]`. Fail closed.
         if n > 0 ∧ slotMap[n - 1]? = some pc then none else some pc
       else none
   let targetPc? : Option Nat := resolveTarget (currentSlot + 1 + off16)
-  -- M4: agave's verifier rejects any instruction that WRITES the read-only
-  -- frame pointer r10 (`CannotWriteR10`). The register-writing classes are
-  -- LDX (low3 = 1), ALU32 (low3 = 4), ALU64 (low3 = 7), and `lddw` (0x18);
-  -- stores (low3 = 2/3) use the dst nibble as a memory BASE, not a register
-  -- write, so stack stores `stx [r10+off], rN` stay valid. Fail closed.
+  -- M4: agave rejects any instruction WRITING the read-only r10
+  -- (`CannotWriteR10`). Register-writing classes: LDX (low3=1), ALU32
+  -- (low3=4), ALU64 (low3=7), `lddw` (0x18). Stores (low3=2/3) use dst as a
+  -- memory BASE, not a write, so `stx [r10+off], rN` stays valid. Fail closed.
   let writesDstReg : Bool :=
     (opcode &&& 0x07) == 0x01 || (opcode &&& 0x07) == 0x04
       || (opcode &&& 0x07) == 0x07 || opcode == 0x18
@@ -195,10 +174,9 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0x37 => dst?.map fun d => (.div64 d (.imm imm), 8)
   | 0x47 => dst?.map fun d => (.or64  d (.imm imm), 8)
   | 0x57 => dst?.map fun d => (.and64 d (.imm imm), 8)
-  -- M4: agave's verifier rejects an immediate shift ≥ the register width
-  -- (`ShiftWithOverflow`); the model previously masked `imm % 64`. Fail
-  -- closed at decode. (Register-sourced shifts are runtime-masked by both
-  -- agave and the model, so only the imm forms are gated.)
+  -- M4: agave rejects an immediate shift ≥ register width
+  -- (`ShiftWithOverflow`). Fail closed at decode. (Register-sourced shifts
+  -- are runtime-masked by both, so only imm forms are gated.)
   | 0x67 => if imm < 0 ∨ imm ≥ 64 then none else dst?.map fun d => (.lsh64 d (.imm imm), 8)
   | 0x77 => if imm < 0 ∨ imm ≥ 64 then none else dst?.map fun d => (.rsh64 d (.imm imm), 8)
   | 0x87 => dst?.map fun d => (.neg64 d, 8)
@@ -272,32 +250,21 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0xbd => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jle  d (.reg s) t, 8)
   | 0xcd => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jslt d (.reg s) t, 8)
   | 0xdd => dst?.bind fun d => src?.bind fun s => targetPc?.map fun t => (.jsle d (.reg s) t, 8)
-  -- Call (opcode 0x85). After R_BPF_64_32 relocation has run
-  -- (`SVM.SBPF.Elf.applyRelocations`), the imm field is one of:
-  --   - a known syscall's Murmur3 NAME hash (e.g. `sol_log_` →
-  --     0x207559bd), or
-  --   - an internal function's Murmur3 PC-bytes hash, registered in
-  --     the function registry at load (`Elf.buildFnRegistry`).
-  --
-  -- Resolution order mirrors agave V0 (interpreter.rs CALL_IMM):
-  -- syscall table first (`SyscallHash.fromHash`), then the function
-  -- registry, else fail closed at runtime. The `src` field is *not*
-  -- used for disambiguation in V0 — both src=0 and src=1 decode the
-  -- same way.
+  -- Call (0x85). After R_BPF_64_32 relocation (`Elf.applyRelocations`) the
+  -- imm is either a syscall's Murmur3 name hash or an internal function's
+  -- Murmur3 PC-bytes hash (registered by `Elf.buildFnRegistry`). Resolution
+  -- mirrors agave V0 (interpreter.rs CALL_IMM): syscall table
+  -- (`SyscallHash.fromHash`) first, then the function registry, else fail
+  -- closed. `src` is NOT used to disambiguate in V0.
   | 0x85 =>
     let immU := readU32LE bytes (off + 4)
     match SyscallHash.fromHash immU with
     | .unknown _ =>
-      -- V0 internal call (audit H2, closed): the relocated imm is a
-      -- murmur3 hash agave resolves through the function registry
-      -- (syscall registry first — the `fromHash` match above — then
-      -- the function registry; solana-sbpf interpreter.rs CALL_IMM).
-      -- A registered key resolves slot → logical PC via the slot map;
-      -- a registered slot past the program fails the decode (the
-      -- loader guarantees in-text targets, so this is malformed
-      -- input); an UNKNOWN key decodes to `.call (.unknown immU)`,
-      -- whose execution fails closed (`Misc.execUnknown`) — mirroring
-      -- agave's runtime `UnsupportedInstruction`. The pre-H2
+      -- V0 internal call (H2, closed): a registered key resolves slot →
+      -- logical PC; a registered slot past the program is malformed input
+      -- (the loader guarantees in-text targets) so the decode fails; an
+      -- UNKNOWN key → `.call (.unknown immU)`, executing fail-closed
+      -- (`Misc.execUnknown` = agave's `UnsupportedInstruction`). The pre-H2
       -- slot-offset interpretation with its PC-0 fallback is gone.
       match fnRegLookup fnReg immU with
       | some targetSlot =>
@@ -306,8 +273,7 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
         else none
       | none => some (.call (.unknown immU), 8)
     | sc => some (.call sc, 8)
-  -- Indirect call: `callx <reg>`. The target is the runtime value of
-  -- the src register (sBPF convention: src field of the opcode word).
+  -- Indirect call `callx <reg>`: target = runtime src-register value.
   | 0x8d => src?.map fun s => (.callx s, 8)
   -- Exit
   | 0x95 => some (.exit, 8)
@@ -326,8 +292,8 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0x7b => match dst?, src? with | some d, some s => some (.stx .dword d off16 s, 8) | _, _ => none
   -- lddw — 16-byte: low 32 bits in this slot's imm, high 32 in the next.
   | 0x18 =>
-    -- lddw needs a full 16 bytes; a truncated one at end-of-text is a
-    -- malformed program (agave rejects the incomplete instruction).
+    -- lddw needs 16 bytes; a truncated one at end-of-text is malformed
+    -- (agave rejects the incomplete instruction).
     if off + 16 > bytes.size then none
     else
       let immLoNat := readU32LE bytes (off + 4)
@@ -338,15 +304,11 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
 
 /-! ## Program decoding (two-pass) -/
 
-/-- Decode a flat sBPF bytecode array into a logical instruction sequence.
-    Each output element is one logical `Insn`; `lddw` becomes one entry
-    even though it spans 16 bytes in the binary, jump targets are
-    correctly resolved to logical PCs, and internal `call` immediates
-    resolve through the V0 function registry `fnReg`
-    (`Elf.buildFnRegistry`; pass `[]` for registry-less raw text — every
-    internal call then decodes to the fail-closed `.call (.unknown _)`).
-
-    Returns `none` if any instruction fails to decode. -/
+/-- Decode flat sBPF bytecode into a logical `Insn` sequence (`lddw` = one
+    entry, jump targets resolved to logical PCs, internal `call` immediates
+    resolved through the V0 registry `fnReg`; pass `[]` for raw text, where
+    every internal call decodes to fail-closed `.call (.unknown _)`).
+    `none` if any instruction fails to decode. -/
 def decodeProgram (bytes : ByteArray) (fnReg : List (Nat × Nat) := []) :
     Option (Array Insn) :=
   let slotMap := buildSlotMap bytes
@@ -359,9 +321,8 @@ where
     | fuel' + 1 =>
       if off ≥ bytes.size then some acc
       else if off + 8 > bytes.size then
-        -- A trailing partial slot (fewer than 8 bytes remain): the text
-        -- length is not a multiple of 8. Agave rejects this at load
-        -- (`ProgramLengthNotMultiple`). See docs/SOUNDNESS_AUDIT_* (M4).
+        -- Trailing partial slot (text length not a multiple of 8): agave
+        -- rejects at load (`ProgramLengthNotMultiple`) — M4.
         none
       else
         match decodeInsn bytes slotMap off fnReg with

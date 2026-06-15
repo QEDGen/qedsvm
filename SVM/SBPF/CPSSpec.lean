@@ -1,47 +1,31 @@
 /-
-  Bounded Hoare triples for sBPF code.
+  Bounded Hoare triples for sBPF code, after Jensen/Benton/Kennedy (POPL
+  2013, PPDP 2013) and the EvmAsm.Rv64.CPSSpec adaptation in
+  Verified-zkEVM/evm-asm. Primary form: `cuTripleWithin nSteps nCu entry
+  exit cr P Q` (see the def docstring).
 
-  Following Jensen/Benton/Kennedy (POPL 2013, PPDP 2013) and the
-  EvmAsm.Rv64.CPSSpec adaptation in Verified-zkEVM/evm-asm.
+  The bound is TWO indices: `nSteps` counts instructions (each charges 1
+  baseline CU into `cuConsumed` — H5 total metering), `nCu` upper-bounds
+  the syscall surcharge; total agave-CU = `nSteps + nCu` (`nCu = 0` for
+  non-syscall code). Composing adds both bounds.
 
-  The primary specification form is `cuTripleWithin nSteps nCu entry exit cr P Q`:
+  The budget side-condition (`cuConsumed + nSteps + nCu ≤ cuBudget`) is
+  what makes the triple sound against the VM's fail-closed budget halt:
+  `executeFn` stops (OutOfBudget) once `cuConsumed > cuBudget`, so
+  "reaches exit still running" only holds when the window provably fits.
+  `_seq` splits the budget via `executeFn_preserves_cuBudget`.
 
-    For every pc-free frame R and every `fetch` satisfying the code
-    requirement `cr`, starting from any state where (P ** R) holds,
-    pc = entry, exitCode = none, and the remaining compute budget covers
-    the window (`s.cuConsumed + nSteps + nCu ≤ s.cuBudget`), there exists
-    k ≤ nSteps such that `executeFn fetch s k` ends with pc = exit,
-    exitCode = none, `cuConsumed` increased by at most `nSteps + nCu`,
-    and (Q ** R) holds.
-
-  The bound is **two indices**: `nSteps` counts instructions executed
-  (each charges 1 baseline CU into `s.cuConsumed` — H5 total metering)
-  and `nCu` upper-bounds the syscall surcharge. Total agave-CU
-  consumption is `nSteps + nCu`. For non-syscall code `nCu = 0`. Compose
-  two triples and both bounds add; a whole program's CU bound is the sum
-  of its macros'.
-
-  The budget side-condition (H5) is what makes the triple sound against
-  the VM's fail-closed budget halt: `executeFn` stops (exitCode = none,
-  surfaced as OutOfBudget) the moment `cuConsumed` exceeds `cuBudget`,
-  so "execution reaches exit still running" is only true when the window
-  provably fits in the remaining budget. Sequential composition splits
-  the budget via `executeFn_preserves_cuBudget` + the first segment's
-  cuConsumed bound.
-
-  Frame rule is baked into the definition (universal R). Triples therefore
-  only describe the resources their code actually reads or writes.
+  Frame rule is baked in (universal R), so triples describe only the
+  resources their code reads or writes.
 -/
 
 import SVM.SBPF.SepLogic
 
 namespace SVM.SBPF
 
-/-! ## CodeReq — persistent code-layout side condition
-
-A `CodeReq` is a partial map from program-counter values to instructions.
-It is *persistent* (not consumed) — every execution under the triple is
-quantified over a `fetch` that satisfies the layout. -/
+/-! ## CodeReq — persistent code-layout side condition: a partial pc →
+instruction map, never consumed (every execution is quantified over a
+`fetch` satisfying it). -/
 
 abbrev CodeReq := Nat → Option Insn
 
@@ -54,8 +38,7 @@ def empty : CodeReq := fun _ => none
 def singleton (a : Nat) (i : Insn) : CodeReq :=
   fun a' => if a' = a then some i else none
 
-/-- A fetch function satisfies a code requirement when every address the
-    requirement pins down is honored by the fetch. -/
+/-- A fetch satisfies a `CodeReq` when it honors every address the req pins. -/
 def SatisfiedBy (cr : CodeReq) (fetch : Nat → Option Insn) : Prop :=
   ∀ a i, cr a = some i → fetch a = some i
 
@@ -67,32 +50,23 @@ def union (cr1 cr2 : CodeReq) : CodeReq :=
 def Disjoint (cr1 cr2 : CodeReq) : Prop :=
   ∀ a, cr1 a = none ∨ cr2 a = none
 
-/-- Tail-recursive helper for `fromList`. Folds a list of `(pc, insn)`
-    pairs into a left-folded chain `acc ∪ s₁ ∪ s₂ ∪ …`. Kept as a
-    separate def so the structural shape of `fromList` matches the
-    hand-written `(((s₀.union s₁).union s₂).union s₃)` form that
-    `cuTripleWithin_seq`-driven proofs produce, preserving `isDefEq`
-    against the chain `sl_block_iter` builds. -/
+/-- Helper for `fromList`: left-folds `(pc, insn)` pairs into `acc ∪ s₁ ∪ …`.
+    Separate def so the shape matches the hand-written
+    `(((s₀.union s₁).union s₂)…)` form, preserving `isDefEq` against the
+    chain `sl_block_iter` builds. -/
 def fromListAux : CodeReq → List (Nat × Insn) → CodeReq
   | acc, [] => acc
   | acc, (a, i) :: rest => fromListAux (acc.union (singleton a i)) rest
 
-/-- Build a `CodeReq` from a list of `(pc, insn)` pairs. Produces the
-    same left-folded `singleton ∪ singleton ∪ …` shape as the
-    hand-written union chains in the arm files, so existing proofs that
-    `unfold` the resulting CR see the identical Expr structure.
-
-    Use the `cr![ pc₀ ↦ ins₀, pc₁ ↦ ins₁, … ]` notation for the
-    common literal-list form. -/
+/-- Build a `CodeReq` from `(pc, insn)` pairs, in the same left-folded
+    `singleton ∪ …` shape as the hand-written arm-file chains (so `unfold`
+    sees identical Expr structure). See `cr![ … ]` for the literal form. -/
 def fromList : List (Nat × Insn) → CodeReq
   | [] => empty
   | (a, i) :: rest => fromListAux (singleton a i) rest
 
-/-! ### Reduction lemmas for `fromList`
-
-`fromList` reduces by `rfl` (it is a plain structural recursion via
-`fromListAux`). The lemmas below let `simp only [...]` drive the
-reduction in proofs that prefer named rewrites over `unfold`. -/
+/-! ### Reduction lemmas for `fromList` — it reduces by `rfl`; these let
+`simp only [...]` drive the reduction where named rewrites beat `unfold`. -/
 
 theorem fromListAux_nil (acc : CodeReq) : fromListAux acc [] = acc := rfl
 
@@ -183,32 +157,15 @@ end CodeReq
 
 /-! ## `cr![ pc ↦ ins, … ]` builder notation
 
-Sugar for `CodeReq.fromList [(pc₀, ins₀), (pc₁, ins₁), …]`. The macro
-expands directly to a left-folded `singleton ∪ singleton ∪ …` chain,
-matching the structural shape of the hand-written CR definitions in
-the arm files (so `isDefEq` against `sl_block_iter`-built chains is
-preserved without any user-visible change to the proof scripts).
-
-Example:
-```
-def transferArmDispatchCr (base target : Nat) : CodeReq :=
-  cr![ base + 0 ↦ .ldx .byte .r2 .r1 0,
-       base + 1 ↦ .jeq .r2 (.imm 3) target ]
-```
-expands to
-```
-(CodeReq.singleton (base + 0) (.ldx .byte .r2 .r1 0)).union
-  (CodeReq.singleton (base + 1) (.jeq .r2 (.imm 3) target))
-```
-
-Empty list `cr![]` elaborates to `CodeReq.empty`. -/
+Sugar for `CodeReq.fromList`, expanding to a left-folded
+`singleton ∪ singleton ∪ …` chain that matches the hand-written arm-file
+CR shape (so `isDefEq` against `sl_block_iter`-built chains is preserved).
+Empty `cr![]` → `CodeReq.empty`. -/
 
 /-- Single item of a `cr!` list: `pc ↦ ins`. -/
 syntax crItem := term:65 " ↦ " term:65
 
-/-- `cr![ pc₀ ↦ ins₀, …, pcₙ ↦ insₙ ]` — left-folded union of
-    `CodeReq.singleton`s. See module doc above for the shape this
-    expands to. -/
+/-- `cr![ pc₀ ↦ ins₀, … ]` — left-folded union of `CodeReq.singleton`s. -/
 syntax (name := crListNotation) "cr![" crItem,* "]" : term
 
 open Lean in
@@ -231,8 +188,7 @@ macro_rules
         acc ← `(($acc).union (CodeReq.singleton $pc $ins))
       return acc
 
-/-- Sanity: `cr!` produces the exact left-folded shape of the
-    hand-written union chain. Both sides are `rfl`-equal Exprs. -/
+/-- Sanity: `cr!` produces the hand-written union chain's exact shape (rfl). -/
 private example :
     cr![ 0 ↦ (Insn.ldx .byte .r2 .r1 0),
          1 ↦ (Insn.jeq .r2 (.imm 3) 7) ]
@@ -240,8 +196,7 @@ private example :
     ((CodeReq.singleton 0 (.ldx .byte .r2 .r1 0)).union
        (CodeReq.singleton 1 (.jeq .r2 (.imm 3) 7))) := rfl
 
-/-- Sanity: `CodeReq.fromList` reduces by `rfl` to the same left-folded
-    chain. -/
+/-- Sanity: `CodeReq.fromList` reduces by `rfl` to the same chain. -/
 private example :
     CodeReq.fromList [(0, Insn.ldx .byte .r2 .r1 0),
                       (1, Insn.jeq .r2 (.imm 3) 7)]
@@ -259,20 +214,13 @@ private example :
 
 /-! ## Bounded CPS-style triple -/
 
-/-- `cuTripleWithin nSteps nCu entry exit_ cr P Q`:
+/-- `cuTripleWithin nSteps nCu entry exit_ cr P Q`: for every pc-free frame
+    `R` and `fetch` honoring `cr`, from any state with `P ** R`, `pc = entry`,
+    running, execution reaches in ≤ `nSteps` steps a running state with
+    `pc = exit_`, `cuConsumed` up by ≤ `nSteps + nCu`, and `Q ** R`.
 
-    For every pc-free frame `R` and every instruction-fetch function
-    `fetch` honoring the code requirement `cr`, starting from a state
-    where `P ** R` holds, the program counter equals `entry`, and the
-    machine is running (exitCode = none), execution reaches in at most
-    `nSteps` steps a state where the program counter equals `exit_`, the
-    machine is still running, `cuConsumed` has increased by at most
-    `nCu`, and `Q ** R` holds.
-
-    Frame rule is built in (universal R, R must be pc-free).
-    Total agave-CU consumption is `nSteps + nCu`: `nSteps` counts
-    instructions executed and `nCu` is the syscall surcharge from
-    `State.cuConsumed`. -/
+    Frame rule built in (universal pc-free R). Total agave-CU = `nSteps`
+    (instructions) + `nCu` (syscall surcharge). -/
 def cuTripleWithin (nSteps nCu : Nat) (entry exit_ : Nat) (cr : CodeReq)
     (P Q : Assertion) : Prop :=
   ∀ (R : Assertion), R.pcFree →
@@ -326,11 +274,9 @@ theorem cuTripleWithin_mono_nCu {nSteps nCu nCu' : Nat} {entry exit_ : Nat}
   obtain ⟨k, hk, hpc', hex', hcu, hQR⟩ := h R hR fetch hcr s hPR hpc hex (by omega)
   exact ⟨k, hk, hpc', hex', by omega, hQR⟩
 
-/-- Cast a triple's `nSteps` / `nCu` / `exit_` to definitionally-equal
-    Nat expressions. Used by `sl_block_iter` to coerce the iteratively
-    built chain's `(... + ...)` bound expressions back to the goal's
-    closed-form ones (e.g. `1 + 1 + 1 + 1 → 4`, `0 + 0 + 0 + nCu → nCu`).
-    All three equalities discharged by `omega`/`decide` at use sites. -/
+/-- Cast `nSteps`/`nCu`/`exit_` to defeq Nat exprs. Used by `sl_block_iter`
+    to coerce the chain's `(… + …)` bounds back to closed form (e.g.
+    `1+1+1+1 → 4`); equalities discharged by `omega`/`decide` at use sites. -/
 theorem cuTripleWithin_cast {nSteps nSteps' nCu nCu' entry exit_ exit_' : Nat}
     {cr : CodeReq} {P Q : Assertion}
     (hN : nSteps = nSteps') (hM : nCu = nCu') (hE : exit_ = exit_')
@@ -352,11 +298,9 @@ theorem cuTripleWithin_refl {entry : Nat} {P Q : Assertion}
     obtain ⟨hp, hcompat, h1, h2, hd, hu, hP1, hR2⟩ := hPR
     exact ⟨hp, hcompat, h1, h2, hd, hu, h h1 hP1, hR2⟩
 
-/-- Sequential composition: chain two triples with the intermediate
-    assertion / PC matching, union the code requirements (disjoint), and
-    sum both bounds (step + syscall-CU).
-
-    This is the core machinery for verifying multi-instruction macros. -/
+/-- Sequential composition: chain two triples (matching intermediate
+    assertion + PC), disjoint-union the code reqs, sum both bounds. Core
+    machinery for multi-instruction macros. -/
 theorem cuTripleWithin_seq {N1 N2 M1 M2 : Nat} {pc1 pc2 pc3 : Nat}
     {cr1 cr2 : CodeReq}
     (hd : cr1.Disjoint cr2)
@@ -369,9 +313,8 @@ theorem cuTripleWithin_seq {N1 N2 M1 M2 : Nat} {pc1 pc2 pc3 : Nat}
   have hcr2 := CodeReq.SatisfiedBy_of_union_right hd hcr
   obtain ⟨k1, hk1, hpc_mid, hex_mid, hcu1, hQF⟩ :=
     h1 F hF fetch hcr1 s hPF hpc hex (by omega)
-  -- Budget split (H5): the intermediate state's budget is unchanged
-  -- (`executeFn_preserves_cuBudget`) and its cuConsumed grew by at most
-  -- N1 + M1, so the remainder N2 + M2 still fits.
+  -- Budget split (H5): midpoint budget unchanged, cuConsumed grew ≤ N1+M1,
+  -- so the remainder N2+M2 still fits.
   have hbud_mid : (executeFn fetch s k1).cuConsumed + N2 + M2
       ≤ (executeFn fetch s k1).cuBudget := by
     rw [executeFn_preserves_cuBudget]; omega
@@ -380,16 +323,14 @@ theorem cuTripleWithin_seq {N1 N2 M1 M2 : Nat} {pc1 pc2 pc3 : Nat}
   refine ⟨k1 + k2, Nat.add_le_add hk1 hk2, ?_, ?_, ?_, ?_⟩
   · rw [executeFn_compose]; exact hpc_end
   · rw [executeFn_compose]; exact hex_end
-  · -- Chain cuConsumed through the midpoint bound.
+  · -- Chain cuConsumed through the midpoint.
     rw [executeFn_compose]
     have := hcu2
     omega
   · rw [executeFn_compose]; exact hRF
 
-/-- Explicit frame rule (right): adding a pc-free assertion `F` to both
-    sides of a triple preserves it. Derived from the universal `R`
-    quantification in the triple definition by re-associating
-    `(P ** F) ** R = P ** (F ** R)`. -/
+/-- Frame rule (right): adding pc-free `F` to both sides. Derived from the
+    universal `R` via re-association `(P ** F) ** R = P ** (F ** R)`. -/
 theorem cuTripleWithin_frame_right (F : Assertion) (hF : F.pcFree)
     {N M : Nat} {pc1 pc2 : Nat} {cr : CodeReq} {P Q : Assertion}
     (h : cuTripleWithin N M pc1 pc2 cr P Q) :
@@ -402,8 +343,7 @@ theorem cuTripleWithin_frame_right (F : Assertion) (hF : F.pcFree)
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact holdsFor_sepConj_assoc.mpr hQFR
 
-/-- Explicit frame rule (left): adding a pc-free assertion `F` on the
-    left of a triple preserves it. Derived from `frame_right` via
+/-- Frame rule (left): adding pc-free `F` on the left. Via `frame_right` +
     `sepConj_comm`. -/
 theorem cuTripleWithin_frame_left (F : Assertion) (hF : F.pcFree)
     {N M : Nat} {pc1 pc2 : Nat} {cr : CodeReq} {P Q : Assertion}
@@ -414,16 +354,10 @@ theorem cuTripleWithin_frame_left (F : Assertion) (hF : F.pcFree)
     (fun hp hQF => (sepConj_comm hp).mp hQF)
     (cuTripleWithin_frame_right F hF h)
 
-/-- Widen an `emp`-pre/`emp`-post triple to use any pc-free assertion
-    `F` as its pre/post. Such triples (e.g. `ja_spec`) require nothing
-    of the state and change nothing, so they can be reused at any
-    state `F`. Used by `sl_block_iter` / `sl_branch` to auto-frame
-    `ja_spec`-style steps against the surrounding chain state without
-    the user manually composing `frame_right + sepConj_emp_left`.
-
-    Proof: frame with `F` on the right, then weaken via the
-    `sepConj_emp_left` iff to strip the trivial `emp **` prefix on
-    both sides. -/
+/-- Widen an `emp`/`emp` triple to any pc-free `F` as pre/post. Such triples
+    (e.g. `ja_spec`) require/change nothing, so they reuse at any state `F`.
+    Lets `sl_block_iter`/`sl_branch` auto-frame `ja_spec`-style steps without
+    a manual `frame_right + sepConj_emp_left`. -/
 theorem cuTripleWithin_widen_emp (F : Assertion) (hF : F.pcFree)
     {N M : Nat} {pc1 pc2 : Nat} {cr : CodeReq}
     (h : cuTripleWithin N M pc1 pc2 cr emp emp) :
@@ -435,16 +369,12 @@ theorem cuTripleWithin_widen_emp (F : Assertion) (hF : F.pcFree)
 
 /-! ## Memory-aware triple
 
-`cuTripleWithinMem` extends `cuTripleWithin` with a persistent side
-condition on `s.regions`. Memory ops (ldx/st/stx) need this because
-`step` traps to `ERR_ACCESS_VIOLATION` when the accessed range isn't
-covered by the region table — that check is a property of `s` (not
-something an assertion can own from `PartialState`), so it lives
-alongside `CodeReq` as a separate persistent input.
-
-`s.regions` is never mutated by `step` (see
-`executeFn_preserves_regions`), so once `rr` holds at entry it holds
-throughout the macro — composition just conjuncts. -/
+`cuTripleWithinMem` adds a persistent `s.regions` side condition. Memory
+ops (ldx/st/stx) need it because `step` traps to `ERR_ACCESS_VIOLATION`
+when the range isn't region-covered — a property of `s`, not ownable by a
+`PartialState` assertion, so it sits alongside `CodeReq` as a separate
+input. `s.regions` is never mutated (`executeFn_preserves_regions`), so
+`rr` holds throughout once true at entry; composition just conjuncts. -/
 
 def cuTripleWithinMem (nSteps nCu : Nat) (entry exit_ : Nat) (cr : CodeReq)
     (P Q : Assertion) (rr : Memory.RegionTable → Prop) : Prop :=
@@ -459,8 +389,8 @@ def cuTripleWithinMem (nSteps nCu : Nat) (entry exit_ : Nat) (cr : CodeReq)
       (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu ∧
       (Q ** R).holdsFor (executeFn fetch s k)
 
-/-- Every non-memory triple is also a memory triple with no region
-    requirement. Lets ALU/jump specs compose with memory specs. -/
+/-- A non-memory triple is a memory triple with no region requirement, so
+    ALU/jump specs compose with memory specs. -/
 theorem cuTripleWithin.toMem {nSteps nCu entry exit_ : Nat} {cr : CodeReq}
     {P Q : Assertion}
     (h : cuTripleWithin nSteps nCu entry exit_ cr P Q) :
@@ -468,9 +398,8 @@ theorem cuTripleWithin.toMem {nSteps nCu entry exit_ : Nat} {cr : CodeReq}
   intro R hR fetch hcr s hPR hpc hex hbud _
   exact h R hR fetch hcr s hPR hpc hex hbud
 
-/-- Sequential composition for memory triples: both bounds sum, code reqs
-    union, region conditions conjunct. Uses `executeFn_preserves_regions`
-    to carry `rr2` past the first segment. -/
+/-- Sequential composition for memory triples: bounds sum, code reqs union,
+    region conditions conjunct (`executeFn_preserves_regions` carries `rr2`). -/
 theorem cuTripleWithinMem_seq {N1 N2 M1 M2 : Nat} {pc1 pc2 pc3 : Nat}
     {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
     {P Q R : Assertion} {rr1 rr2 : Memory.RegionTable → Prop}
@@ -519,9 +448,8 @@ theorem cuTripleWithinMem_cast {nSteps nSteps' nCu nCu' entry exit_ exit_' : Nat
     cuTripleWithinMem nSteps' nCu' entry exit_' cr P Q rr := by
   subst hN; subst hM; subst hE; exact h
 
-/-- Rule of consequence for memory triples: strengthen the pre, weaken
-    the post, and strengthen `rr` (caller's stronger region claim implies
-    the spec's weaker one). -/
+/-- Rule of consequence for memory triples: strengthen pre, weaken post,
+    strengthen `rr` (caller's stronger region claim ⇒ the spec's weaker one). -/
 theorem cuTripleWithinMem_weaken {nSteps nCu : Nat} {entry exit_ : Nat}
     {cr : CodeReq}
     {P P' Q Q' : Assertion} {rr rr' : Memory.RegionTable → Prop}
@@ -540,10 +468,8 @@ theorem cuTripleWithinMem_weaken {nSteps nCu : Nat} {entry exit_ : Nat}
   obtain ⟨hp, hcompat, h1, h2, hd, hu, hQ1, hR2⟩ := hQR
   exact ⟨hp, hcompat, h1, h2, hd, hu, hpost h1 hQ1, hR2⟩
 
-/-- Memory + pure composition: chain a memory triple with a pure triple
-    (lifted via `.toMem`), keeping only the memory triple's region
-    requirement. Without this, `cuTripleWithinMem_seq` would add a
-    trivial `True` conjunct to the chain's `rr` for every pure step. -/
+/-- Memory + pure composition, keeping only the memory triple's `rr`.
+    Without this, `_seq` would add a trivial `True` conjunct per pure step. -/
 theorem cuTripleWithinMem_seq_pure_right {N1 N2 M1 M2 : Nat}
     {pc1 pc2 pc3 : Nat}
     {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
@@ -555,9 +481,8 @@ theorem cuTripleWithinMem_seq_pure_right {N1 N2 M1 M2 : Nat}
     (fun _ x => And.intro x True.intro)
     (cuTripleWithinMem_seq hd h1 h2.toMem)
 
-/-- Pure + memory composition: chain a pure triple (lifted via `.toMem`)
-    with a memory triple, keeping only the memory triple's region
-    requirement. Mirror of `cuTripleWithinMem_seq_pure_right`. -/
+/-- Pure + memory composition, keeping only the memory triple's `rr`.
+    Mirror of `cuTripleWithinMem_seq_pure_right`. -/
 theorem cuTripleWithinMem_seq_pure_left {N1 N2 M1 M2 : Nat}
     {pc1 pc2 pc3 : Nat}
     {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
@@ -576,9 +501,8 @@ theorem cuTripleWithinMem_frame_left (F : Assertion) (hF : F.pcFree)
     (h : cuTripleWithinMem N M pc1 pc2 cr P Q rr) :
     cuTripleWithinMem N M pc1 pc2 cr (F ** P) (F ** Q) rr := by
   intro R hR fetch hcr s hPFR hpc hex hbud h_reg
-  -- F ** P ** R → P ** F ** R via comm; apply frame_right; then swap back.
+  -- F ** P ** R → P ** F ** R via comm; frame_right; swap back.
   have h' := cuTripleWithinMem_frame_right F hF h
-  -- h' : cuTripleWithinMem N M pc1 pc2 cr (P ** F) (Q ** F) rr
   have hPFR' : ((P ** F) ** R).holdsFor s := by
     have : ((F ** P) ** R).holdsFor s ↔ ((P ** F) ** R).holdsFor s :=
       holdsFor_iff_pointwise (fun h => by
@@ -601,17 +525,12 @@ theorem cuTripleWithinMem_frame_left (F : Assertion) (hF : F.pcFree)
         exact ⟨h1, h2, hd, hu, (sepConj_comm h1).mp hFQ, hRsat⟩)
   exact this.mp hQFR
 
-/-! ## Reshape wrappers for `**` permutations
+/-! ## Reshape wrappers for `**` permutations — `_weaken` specializations
+taking a pointwise iff (not a one-way implication). `sl_block_iter` emits
+iffs by construction, so the caller plugs them without packaging `.mp`. -/
 
-Specializations of `_weaken` that take a pointwise iff instead of a
-one-directional implication. The elab-level permutation builder in
-`Tactic/SL.lean` (`sl_block_iter`) emits iffs by construction; these
-wrappers let the caller plug the iff directly without manually packaging
-its `.mp` direction. -/
-
-/-- Reshape the post of a triple via a pointwise iff `Q ↔ Q'`. Takes
-    the iff in OLD ↔ NEW orientation (so the chain's existing post is
-    on the left). -/
+/-- Reshape the post via a pointwise iff `Q ↔ Q'` (OLD ↔ NEW orientation,
+    chain's existing post on the left). -/
 theorem cuTripleWithin_reshape_post {N M pc1 pc2 : Nat} {cr : CodeReq}
     {P Q Q' : Assertion}
     (iff_post : ∀ h, Q h ↔ Q' h)
@@ -619,10 +538,8 @@ theorem cuTripleWithin_reshape_post {N M pc1 pc2 : Nat} {cr : CodeReq}
     cuTripleWithin N M pc1 pc2 cr P Q' :=
   cuTripleWithin_weaken (fun _ x => x) (fun hp hQ => (iff_post hp).mp hQ) h
 
-/-- Reshape the pre of a triple via a pointwise iff `P ↔ P'`. Takes
-    the iff in OLD ↔ NEW orientation (chain's existing pre on the
-    left). The lemma applies `.mpr` to convert the new pre `P'` back
-    into the old `P` needed by `weaken`. -/
+/-- Reshape the pre via a pointwise iff `P ↔ P'` (OLD ↔ NEW orientation);
+    `.mpr` converts the new pre `P'` back to the old `P` for `weaken`. -/
 theorem cuTripleWithin_reshape_pre {N M pc1 pc2 : Nat} {cr : CodeReq}
     {P P' Q : Assertion}
     (iff_pre : ∀ h, P h ↔ P' h)
@@ -648,23 +565,14 @@ theorem cuTripleWithinMem_reshape_pre {N M pc1 pc2 : Nat} {cr : CodeReq}
 
 /-! ## Branching triple — two-target form
 
-`cuTripleWithinBranch N entry exitT exitF cond cr P Q`:
-
-  Like `cuTripleWithin`, but the exit PC is one of two depending on
-  whether the carried Decidable Prop `cond` holds at entry. The post
-  `Q` is the same on both branches (jcond instructions don't mutate
-  registers or memory — they only move the PC).
-
-The triple's structural support — frame, sequencing, refl — mirrors
-`cuTripleWithin`'s. The key new combinator is `cuTripleWithinBranch_join`,
-which composes a branch triple with two `cuTripleWithin` follow-up
-chains landing at a common `pcJoin` PC, producing a single
-`cuTripleWithin` from `entry` to `pcJoin` whose post is
-`(if cond then Rt else Rf)` (the `cond`-conditioned union of the two
-chains' posts).
-
-This is the foundation for verifying Solana programs with non-trivial
-control flow — discriminant dispatch, error-path checks, etc. -/
+`cuTripleWithinBranch`: like `cuTripleWithin` but the exit PC is one of
+two depending on a Decidable `cond` at entry; post `Q` is the same on
+both branches (jcond only moves the PC). Structural support mirrors
+`cuTripleWithin`'s; the key combinator `cuTripleWithinBranch_join`
+composes a branch with two follow-up chains landing at a common `pcJoin`,
+producing a `cuTripleWithin` whose post is `(if cond then Rt else Rf)`.
+Foundation for non-trivial control flow (discriminant dispatch, error
+paths). -/
 
 def cuTripleWithinBranch (nSteps nCu : Nat) (entry exitT exitF : Nat)
     (cond : Prop) [Decidable cond] (cr : CodeReq)
@@ -679,9 +587,8 @@ def cuTripleWithinBranch (nSteps nCu : Nat) (entry exitT exitF : Nat)
       (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu ∧
       (Q ** R).holdsFor (executeFn fetch s k)
 
-/-- Bridge: an existing `cuTripleWithin` with an `if cond then pcT else
-    pcF` exit (the shape that jcond specs produce) lifts directly into
-    the branch family. -/
+/-- Bridge: a `cuTripleWithin` with an `if cond then pcT else pcF` exit
+    (the shape jcond specs produce) lifts into the branch family. -/
 theorem cuTripleWithin.toBranch {N M : Nat} {pc pcT pcF : Nat} {cr : CodeReq}
     {P Q : Assertion} {cond : Prop} [Decidable cond]
     (h : cuTripleWithin N M pc (if cond then pcT else pcF) cr P Q) :
@@ -689,9 +596,8 @@ theorem cuTripleWithin.toBranch {N M : Nat} {pc pcT pcF : Nat} {cr : CodeReq}
   intro R hR fetch hcr s hPR hpc hex hbud
   exact h R hR fetch hcr s hPR hpc hex hbud
 
-/-- Frame rule (right) for the branch triple. Same shape as
-    `cuTripleWithin_frame_right`: adding a pc-free assertion `F` to
-    both sides preserves the triple. -/
+/-- Frame rule (right) for the branch triple: adding pc-free `F` to both
+    sides. -/
 theorem cuTripleWithinBranch_frame_right (F : Assertion) (hF : F.pcFree)
     {N M : Nat} {pc pcT pcF : Nat} {cr : CodeReq} {P Q : Assertion}
     {cond : Prop} [Decidable cond]
@@ -705,9 +611,8 @@ theorem cuTripleWithinBranch_frame_right (F : Assertion) (hF : F.pcFree)
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact holdsFor_sepConj_assoc.mpr hQFR
 
-/-- Rule of consequence for the branch triple: strengthen the pre,
-    weaken the post (same Q on both branches), keep both bounds +
-    exit PCs + `cond`. -/
+/-- Rule of consequence for the branch triple: strengthen pre, weaken post
+    (same Q on both branches), keep bounds + exit PCs + `cond`. -/
 theorem cuTripleWithinBranch_weaken {N M : Nat} {pc pcT pcF : Nat}
     {cr : CodeReq}
     {P P' Q Q' : Assertion} {cond : Prop} [Decidable cond]
@@ -736,19 +641,12 @@ theorem cuTripleWithinBranch_frame_left (F : Assertion) (hF : F.pcFree)
     (fun hp hQF => (sepConj_comm hp).mp hQF)
     (cuTripleWithinBranch_frame_right F hF h)
 
-/-- Branch composition (join rule): given a branch triple at the
-    entry, two follow-up `cuTripleWithin` chains landing at a common
-    `pcJoin` (one for each branch outcome), and code-req disjointness
-    among the three segments, produce a single `cuTripleWithin` from
-    entry to `pcJoin` whose post is `(if cond then Rt else Rf)`.
-
-    Bounds: step `N0 + max NT NF` and CU surcharge `M0 + max MT MF`.
-    The `max` reflects that one of the two branches is taken — we
-    don't know which without `cond`, so the upper bound is the
-    larger of the two.
-
-    Code-req union: `(crBr ∪ crT) ∪ crF` — left-folded so the result's
-    shape matches what `sl_block_iter`-style proofs produce. -/
+/-- Branch composition (join rule): a branch triple plus two follow-up
+    chains landing at a common `pcJoin`, disjoint code reqs, yields a
+    `cuTripleWithin` from entry to `pcJoin` with post `(if cond then Rt
+    else Rf)`. Bounds `N0 + max NT NF` / `M0 + max MT MF`: `max` because
+    one branch is taken but `cond` is unknown statically. Union
+    `(crBr ∪ crT) ∪ crF` left-folded to match `sl_block_iter`'s shape. -/
 theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
     {pc0 pcT pcF pcJoin : Nat}
     {crBr crT crF : CodeReq}
@@ -763,7 +661,7 @@ theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
       ((crBr.union crT).union crF)
       P (if cond then Rt else Rf) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- max facts surfaced for omega (which doesn't reason about `max`).
+  -- max facts surfaced for omega (it doesn't reason about `max`).
   have hmaxNT := Nat.le_max_left NT NF
   have hmaxNF := Nat.le_max_right NT NF
   have hmaxMT := Nat.le_max_left MT MF
@@ -796,7 +694,7 @@ theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
       h_T R hRfree fetch hcr_T (executeFn fetch s k0) hQR hpc_mid' hex_mid
         (hbud_mid NT MT hmaxNT hmaxMT)
     refine ⟨k0 + k1, ?_, ?_, ?_, ?_, ?_⟩
-    · -- k0 + k1 ≤ N0 + max NT NF
+    ·
       apply Nat.add_le_add hk0
       exact Nat.le_trans hk1 (Nat.le_max_left NT NF)
     · rw [executeFn_compose]; exact hpc_end
@@ -821,9 +719,8 @@ theorem cuTripleWithinBranch_join {N0 NT NF M0 MT MF : Nat}
       simp only [hcond, if_false]
       exact hRfR
 
-/-- Specialization of `cuTripleWithinBranch_join` for the common case
-    where both branches reach the same post `Rjoin`. Eliminates the
-    `if cond then Rt else Rf` from the result. -/
+/-- `cuTripleWithinBranch_join` specialized to both branches reaching the
+    same post `Rjoin`, eliminating the `if cond then Rt else Rf`. -/
 theorem cuTripleWithinBranch_join_uniform {N0 NT NF M0 MT MF : Nat}
     {pc0 pcT pcF pcJoin : Nat}
     {crBr crT crF : CodeReq}
@@ -844,38 +741,20 @@ theorem cuTripleWithinBranch_join_uniform {N0 NT NF M0 MT MF : Nat}
 
 /-! ## SL ↔ WP bridge — concrete-execution corollary
 
-`cuTripleWithinMem N entry exit_ cr P Q rr` is universally quantified over
-`fetch` and a pc-free frame `R`. Specializing `R := emp` collapses the
-triple to a concrete statement about `executeFn`: given any specific
-`fetch` honoring `cr`, any state where `P` holds with `pc = entry` and
-the region requirement met, running ≤ N steps lands at `pc = exit_` with
-`Q` holding.
+Specializing the triple's universal `R := emp` collapses it to a concrete
+`executeFn` statement, linking the two repo methodologies:
+- **SL** (`cuTripleWithin{,Mem}` + `Tactic.SL`): compositional macro
+  library; `seq`/frame rules sum CU bounds, union code reqs, preserve
+  disjoint resources. Used when callers don't know the surrounding program.
+- **WP** (`Tactic.WP.wp_exec`): concrete-execution; unfolds `executeFn`
+  step-by-step over a fixed `fetch`. Used to prove a specific compiled
+  program satisfies a closed property.
+`.toExec` downgrades an SL spec to a WP-style `executeFn fetch s k = s'`
+fact a `wp_exec` proof composes its segments around. -/
 
-This is the link between the two methodologies in this repo:
-
-- **SL track** (`cuTripleWithin{,Mem}` + `SVM.SBPF.Tactic.SL`) is
-  compositional. Per-instruction specs live in `InstructionSpecs.lean`;
-  the `seq` + frame rules sum CU bounds, union code requirements, and
-  preserve disjoint resources. Use SL when building a *library* of
-  reusable macro specs whose users don't know the surrounding program.
-
-- **WP track** (`SVM.SBPF.Tactic.WP.wp_exec`) is concrete-execution.
-  Given a fixed compiled program (concrete `fetch`) and a concrete fuel
-  bound, `wp_exec` unfolds `executeFn` step-by-step and discharges the
-  resulting goal. Use WP when proving a *specific compiled program*
-  satisfies a closed property (terminates with a given exitCode).
-
-`cuTripleWithinMem.toExec` lets an SL spec downgrade to a WP-style fact
-about `executeFn`. A macro library proven in the SL discipline becomes
-directly usable inside a `wp_exec`-style proof of an end-to-end program:
-the SL macro yields `executeFn fetch s k = s'` for some `k ≤ CU-bound`,
-and the surrounding `wp_exec` proof composes its before/after segments
-around that k-step jump. -/
-
-/-- Bridge: a `cuTripleWithinMem` triple specializes to a concrete fact
-    on `executeFn`. The pc-free frame `R` is instantiated to `emp`, so
-    `P` and `Q` need not be sepConj'd with anything at the use site.
-    Exposes both bounds: `k ≤ nSteps` and `cuConsumed_delta ≤ nCu`. -/
+/-- Bridge: a `cuTripleWithinMem` triple specializes to a concrete
+    `executeFn` fact (`R := emp`, so no sepConj at the use site). Exposes
+    both bounds. -/
 theorem cuTripleWithinMem.toExec {N M entry exit_ : Nat} {cr : CodeReq}
     {P Q : Assertion} {rr : Memory.RegionTable → Prop}
     (h : cuTripleWithinMem N M entry exit_ cr P Q rr)
@@ -896,9 +775,8 @@ theorem cuTripleWithinMem.toExec {N M entry exit_ : Nat} {cr : CodeReq}
   refine ⟨k, hk, hpc', hex', hcu, ?_⟩
   exact (holdsFor_iff_pointwise sepConj_emp_right).mp hQ_emp
 
-/-- Bridge for non-memory triples: convenience wrapper that routes
-    through `cuTripleWithin.toMem` and discharges the trivial region
-    requirement. -/
+/-- Bridge for non-memory triples: routes through `.toMem` and discharges
+    the trivial region requirement. -/
 theorem cuTripleWithin.toExec {N M entry exit_ : Nat} {cr : CodeReq}
     {P Q : Assertion}
     (h : cuTripleWithin N M entry exit_ cr P Q)
@@ -915,28 +793,18 @@ theorem cuTripleWithin.toExec {N M entry exit_ : Nat} {cr : CodeReq}
 
 /-! ## Terminating triple — abort / panic / success-exit
 
-`cuTripleWithin` requires `exitCode = none` post — it cannot express
-"this program intentionally aborts at this PC with this error code".
-`cuTripleAbortsWithin` is the dual: starting from any state where `P` holds
-(plus a pc-free frame), within `nSteps` execution reaches `exitCode = some
-errCode`. There is **no post-condition** on the partial state — once the
-program aborts, the only spec content is the exit code.
+`cuTripleWithin` requires `exitCode = none` post, so it can't express an
+intentional abort. `cuTripleAbortsWithin` is the dual: within `nSteps`,
+execution reaches `exitCode = some errCode`, with NO post on the partial
+state (once aborted, the only content is the exit code). Unlocks
+`exit`/`sol_panic_`/`abort` and, by sequencing, error-path `require`
+patterns `P{c₁}Q ∧ Q{c₂}aborts → P{c₁;c₂}aborts`. -/
 
-This unlocks the `exit` / `sol_panic_` / `abort` instructions and, by
-sequencing, error-path `require` patterns of the form
-`P { c₁ } Q ∧ Q { c₂ } aborts → P { c₁; c₂ } aborts`. -/
-
-/-- `cuTripleAbortsWithin nSteps nCu entry cr P errCode`:
-
-    For every pc-free frame `R` and every instruction-fetch function
-    `fetch` honoring the code requirement `cr`, starting from a state
-    where `P ** R` holds, the program counter equals `entry`, and the
-    machine is running (exitCode = none), execution reaches in at most
-    `nSteps` steps a state whose `exitCode` is `some errCode` and whose
-    `cuConsumed` has increased by at most `nCu`.
-
-    Frame rule is built in (universal R, R must be pc-free).
-    There is no post-condition on the partial state. -/
+/-- `cuTripleAbortsWithin nSteps nCu entry cr P errCode`: for every pc-free
+    frame `R` and `fetch` honoring `cr`, from a running state with `P ** R`
+    and `pc = entry`, execution reaches in ≤ `nSteps` a state with
+    `exitCode = some errCode` and `cuConsumed` up by ≤ `nSteps + nCu`. Frame
+    built in; no post on the partial state. -/
 def cuTripleAbortsWithin (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
     (P : Assertion) (errCode : Nat) : Prop :=
   ∀ (R : Assertion), R.pcFree →
@@ -947,8 +815,7 @@ def cuTripleAbortsWithin (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
       (executeFn fetch s k).exitCode = some errCode ∧
       (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu
 
-/-- Rule of consequence (pre-weakening) for aborting triples. There is no
-    post to weaken — abort triples have no post. -/
+/-- Rule of consequence (pre-weakening) for aborting triples (no post). -/
 theorem cuTripleAbortsWithin_weaken {nSteps nCu : Nat} {entry : Nat}
     {cr : CodeReq}
     {P P' : Assertion} {errCode : Nat}
@@ -975,14 +842,12 @@ theorem cuTripleAbortsWithin_mono_nSteps {nSteps nSteps' nCu : Nat}
 
 /-! ## Typed-fault triples (`cuTripleFaultsWithin`)
 
-`cuTripleAbortsWithin` records only the `exitCode` sentinel of the halt.
-After L1 every fault site ALSO sets `State.vmError := some e` (the typed
-channel that distinguishes a real VM fault from a program-returned sentinel
-of the same numeric value). `cuTripleFaultsWithin` strengthens the abort
-triple to carry that typed fault: the post pins `exitCode = some e.toSentinel`
-AND `vmError = some e`. It forgets back to `cuTripleAbortsWithin` via
-`cuTripleFaultsWithin_toAborts`, so every existing abort-consumer still
-composes. -/
+After L1, every fault site sets `State.vmError := some e` (the typed
+channel distinguishing a real VM fault from a program-returned sentinel of
+the same numeric value). This strengthens the abort triple to pin
+`exitCode = some e.toSentinel` AND `vmError = some e`, forgetting back to
+`cuTripleAbortsWithin` via `_toAborts` so existing abort-consumers still
+compose. -/
 def cuTripleFaultsWithin (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
     (P : Assertion) (e : VmError) : Prop :=
   ∀ (R : Assertion), R.pcFree →
@@ -994,10 +859,8 @@ def cuTripleFaultsWithin (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
       (executeFn fetch s k).vmError = some e ∧
       (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu
 
-/-- A typed-fault triple forgets to an aborting triple at the fault's
-    sentinel (`e.toSentinel`): drop the `vmError` conjunct. Lets the
-    stronger faulting specs back-fill the existing `cuTripleAbortsWithin`
-    consumers without re-proving them. -/
+/-- Forget the `vmError` conjunct: a fault triple is an abort triple at
+    `e.toSentinel`, back-filling existing abort-consumers without re-proving. -/
 theorem cuTripleFaultsWithin_toAborts {nSteps nCu : Nat} {entry : Nat}
     {cr : CodeReq} {P : Assertion} {e : VmError}
     (h : cuTripleFaultsWithin nSteps nCu entry cr P e) :
@@ -1028,9 +891,8 @@ theorem cuTripleFaultsWithin_mono_nSteps {nSteps nSteps' nCu : Nat}
   obtain ⟨k, hk, hexit, hvm, hcu⟩ := h R hR fetch hcr s hPR hpc hex (by omega)
   exact ⟨k, Nat.le_trans hk hle, hexit, hvm, by omega⟩
 
-/-- Sequencing into a typed fault: a non-terminating triple `P { c₁ } Q`
-    chained with a faulting triple `Q { c₂ } faults e` yields a faulting
-    triple `P { c₁; c₂ } faults e`. The `vmError`-carrying analog of
+/-- Sequencing into a typed fault: `P{c₁}Q` chained with `Q{c₂}faults e`
+    yields `P{c₁;c₂}faults e`. `vmError`-carrying analog of
     `cuTripleAbortsWithin_seq_abort`. -/
 theorem cuTripleFaultsWithin_seq_fault {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
     {cr1 cr2 : CodeReq}
@@ -1054,16 +916,10 @@ theorem cuTripleFaultsWithin_seq_fault {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
   · rw [executeFn_compose]; exact hvm_end
   · rw [executeFn_compose]; omega
 
-/-- Sequencing into abort: a non-terminating triple `P { c₁ } Q` chained
-    with an aborting triple `Q { c₂ } aborts` yields an aborting triple
-    `P { c₁; c₂ } aborts`. Both bounds sum, code requirements
-    disjoint-union.
-
-    Mirrors `cuTripleWithin_seq`, but the second segment is an
-    `cuTripleAbortsWithin` and the result has no post-state. This is the
-    composition rule that lets error-path checks compose: run some
-    discriminant decoding under `cuTripleWithin`, then dispatch to an
-    `abort` / `sol_panic_` block under `cuTripleAbortsWithin`. -/
+/-- Sequencing into abort: `P{c₁}Q` chained with `Q{c₂}aborts` yields
+    `P{c₁;c₂}aborts`, bounds summing, code reqs disjoint-union. Like
+    `cuTripleWithin_seq` but the tail aborts (no post-state): lets a
+    discriminant-decode prefix dispatch to an `abort`/`sol_panic_` block. -/
 theorem cuTripleAbortsWithin_seq_abort {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
     {cr1 cr2 : CodeReq}
     (hd : cr1.Disjoint cr2)
@@ -1085,9 +941,8 @@ theorem cuTripleAbortsWithin_seq_abort {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
   · rw [executeFn_compose]; exact hex_end
   · rw [executeFn_compose]; omega
 
-/-- Frame rule (right) for aborting triples: adding a pc-free assertion
-    `F` to the precondition preserves the triple. Since there is no
-    post, only the pre is reshaped. -/
+/-- Frame rule (right) for aborting triples: add pc-free `F` to the pre
+    (no post, so only the pre is reshaped). -/
 theorem cuTripleAbortsWithin_frame_right (F : Assertion) (hF : F.pcFree)
     {N M : Nat} {pc : Nat} {cr : CodeReq} {P : Assertion} {errCode : Nat}
     (h : cuTripleAbortsWithin N M pc cr P errCode) :
@@ -1108,15 +963,11 @@ theorem cuTripleAbortsWithin_frame_left (F : Assertion) (hF : F.pcFree)
 
 /-! ## Memory-aware aborting triple
 
-`cuTripleAbortsWithinMem` extends `cuTripleAbortsWithin` with a
-persistent `rr` precondition on `s.regions`, mirroring how
-`cuTripleWithinMem` extends `cuTripleWithin`. It's the shape produced
-when sequencing a memory-laden running prefix into a terminating tail
-(`.exit`, `.call .abort`, `.call .sol_panic_`).
-
-`s.regions` is never mutated by `step`, so the `rr` discharge is
-single-point at entry; nothing additional needs to be re-established
-after the abort. -/
+`cuTripleAbortsWithinMem` adds a persistent `rr` on `s.regions` (as
+`cuTripleWithinMem` does to `cuTripleWithin`): the shape from sequencing a
+memory-laden prefix into a terminating tail (`.exit`/`.call .abort`/
+`.call .sol_panic_`). `rr` is discharged single-point at entry (`s.regions`
+never mutated; nothing to re-establish after abort). -/
 
 def cuTripleAbortsWithinMem (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
     (P : Assertion) (rr : Memory.RegionTable → Prop) (errCode : Nat) : Prop :=
@@ -1129,9 +980,8 @@ def cuTripleAbortsWithinMem (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
       (executeFn fetch s k).exitCode = some errCode ∧
       (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu
 
-/-- Every non-memory aborting triple is also a memory aborting triple
-    with no region requirement. Lets pure abort specs (e.g.
-    `exit_aborts_spec_cuTriple`) compose with memory-laden prefixes. -/
+/-- A non-memory aborting triple is a memory one with no region requirement,
+    so pure abort specs compose with memory-laden prefixes. -/
 theorem cuTripleAbortsWithin.toMem {nSteps nCu entry : Nat} {cr : CodeReq}
     {P : Assertion} {errCode : Nat}
     (h : cuTripleAbortsWithin nSteps nCu entry cr P errCode) :
@@ -1139,15 +989,10 @@ theorem cuTripleAbortsWithin.toMem {nSteps nCu entry : Nat} {cr : CodeReq}
   intro R hR fetch hcr s hPR hpc hex hbud _
   exact h R hR fetch hcr s hPR hpc hex hbud
 
-/-- Memory-aware sequencing into abort: a memory triple `P { c₁ } Q`
-    chained with a memory-aware aborting triple `Q { c₂ } aborts`
-    yields a memory-aware aborting triple `P { c₁; c₂ } aborts`. Bounds
-    sum, code reqs union, region conditions conjunct (mirroring
-    `cuTripleWithinMem_seq`).
-
-    The most common use: a long memory-laden running prefix terminated
-    by `.exit` / `.call .abort` / `.call .sol_panic_`, lifted from
-    `cuTripleAbortsWithin` via `.toMem`. -/
+/-- Memory-aware sequencing into abort: `P{c₁}Q` chained with a Mem-aware
+    `Q{c₂}aborts` yields a Mem-aware `P{c₁;c₂}aborts`, bounds summing, code
+    reqs union, regions conjunct (mirrors `cuTripleWithinMem_seq`). Common
+    use: a long memory-laden prefix terminated by `.exit`/`.call .abort`. -/
 theorem cuTripleWithinMem_seq_abort {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
     {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
     {P Q : Assertion} {rr1 rr2 : Memory.RegionTable → Prop}
@@ -1174,9 +1019,8 @@ theorem cuTripleWithinMem_seq_abort {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
   · rw [executeFn_compose]; exact hex_end
   · rw [executeFn_compose]; omega
 
-/-- Rule of consequence for memory-aware aborting triples: strengthen
-    the pre, and strengthen `rr` (caller's stronger region claim implies
-    the spec's weaker one). No post to weaken. -/
+/-- Rule of consequence for memory-aware aborting triples: strengthen pre
+    and `rr` (no post to weaken). -/
 theorem cuTripleAbortsWithinMem_weaken {nSteps nCu : Nat} {entry : Nat}
     {cr : CodeReq}
     {P P' : Assertion} {rr rr' : Memory.RegionTable → Prop} {errCode : Nat}
@@ -1190,11 +1034,9 @@ theorem cuTripleAbortsWithinMem_weaken {nSteps nCu : Nat} {entry : Nat}
     exact ⟨hp, hcompat, h1, h2, hd, hu, hpre h1 hP'1, hR2⟩
   exact h R hR fetch hcr s hPR hpc hex hbud (h_rr _ h_reg')
 
-/-- Variant where the abort tail is a non-Mem triple (most common: the
-    abort tail is `.exit`, which has no memory ops). Discharges by
-    lifting the abort tail via `.toMem`, then routing through the
-    Mem-aware seq. The result keeps only the prefix's region
-    requirement (the abort tail's lifted `True` is collapsed). -/
+/-- Variant where the abort tail is non-Mem (commonly `.exit`): lift the
+    tail via `.toMem`, route through the Mem seq, keep only the prefix's
+    `rr` (the tail's lifted `True` collapses). -/
 theorem cuTripleWithinMem_seq_abort_pure {N1 N2 M1 M2 : Nat}
     {pc1 pc2 : Nat}
     {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
@@ -1209,12 +1051,11 @@ theorem cuTripleWithinMem_seq_abort_pure {N1 N2 M1 M2 : Nat}
 
 /-! ## Memory-aware TYPED-FAULT triples (`cuTripleFaultsWithinMem`)
 
-The `vmError`-carrying analog of `cuTripleAbortsWithinMem`: the Mem-aware
-fault triple a memory-laden running prefix produces when terminated by a
-typed fault (`.call .abort` / `.call .sol_panic_` ⇒ `.abort`, an OOB
-syscall ⇒ `.accessViolation`). A per-lift fault corollary composes the
-lift's running prefix with the terminal fault spec via
-`cuTripleWithinMem_seq_fault[_pure]`, then surfaces `vmError = some e`. -/
+The `vmError`-carrying analog of `cuTripleAbortsWithinMem`: a memory-laden
+prefix terminated by a typed fault (`.call .abort`/`.sol_panic_` ⇒
+`.abort`, OOB syscall ⇒ `.accessViolation`). A per-lift fault corollary
+composes the prefix with the terminal fault spec via
+`cuTripleWithinMem_seq_fault[_pure]`, surfacing `vmError = some e`. -/
 
 def cuTripleFaultsWithinMem (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
     (P : Assertion) (rr : Memory.RegionTable → Prop) (e : VmError) : Prop :=
@@ -1229,8 +1070,7 @@ def cuTripleFaultsWithinMem (nSteps nCu : Nat) (entry : Nat) (cr : CodeReq)
       (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + nSteps + nCu
 
 /-- A non-memory typed-fault triple is a memory one with no region
-    requirement (the terminal fault — `.abort`/`.sol_panic_` — has no
-    memory ops, so its `cuTripleFaultsWithin` spec lifts trivially). -/
+    requirement (terminal `.abort`/`.sol_panic_` have no memory ops). -/
 theorem cuTripleFaultsWithin.toMem {nSteps nCu entry : Nat} {cr : CodeReq}
     {P : Assertion} {e : VmError}
     (h : cuTripleFaultsWithin nSteps nCu entry cr P e) :
@@ -1239,8 +1079,7 @@ theorem cuTripleFaultsWithin.toMem {nSteps nCu entry : Nat} {cr : CodeReq}
   exact h R hR fetch hcr s hPR hpc hex hbud
 
 /-- Forget the `vmError` conjunct: a Mem fault triple is a Mem abort triple
-    at the fault's sentinel. Keeps the existing `cuTripleAbortsWithinMem`
-    consumers working off the stronger faulting spec. -/
+    at the fault's sentinel, back-filling `cuTripleAbortsWithinMem` consumers. -/
 theorem cuTripleFaultsWithinMem_toAborts {nSteps nCu : Nat} {entry : Nat}
     {cr : CodeReq} {P : Assertion} {rr : Memory.RegionTable → Prop} {e : VmError}
     (h : cuTripleFaultsWithinMem nSteps nCu entry cr P rr e) :
@@ -1276,9 +1115,8 @@ theorem cuTripleWithinMem_seq_fault {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
   · rw [executeFn_compose]; exact hvm_end
   · rw [executeFn_compose]; omega
 
-/-- Variant where the fault tail is a non-Mem triple (the common case:
-    `.call .abort` / `.call .sol_panic_`). Mirror of
-    `cuTripleWithinMem_seq_abort_pure`. -/
+/-- Variant where the fault tail is non-Mem (`.call .abort`/`.sol_panic_`).
+    Mirror of `cuTripleWithinMem_seq_abort_pure`. -/
 theorem cuTripleWithinMem_seq_fault_pure {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
     {cr1 cr2 : CodeReq} (hd : cr1.Disjoint cr2)
     {P Q : Assertion} {rr1 : Memory.RegionTable → Prop} {e : VmError}

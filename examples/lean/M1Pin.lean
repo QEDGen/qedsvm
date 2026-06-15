@@ -1,19 +1,10 @@
 /-
-Regression pins for soundness-audit M1: the ELF loader fails CLOSED when a
-relocation cannot resolve its symbol.
+Regression pins for soundness-audit M1: ELF loader fails CLOSED on unresolvable relocations.
 
-solana-sbpf 0.14.4 `relocate` (elf.rs:969-973) reads each `R_Bpf_64_64` /
-`R_Bpf_64_32` relocation's symbol as
-`dynamic_symbol_table().and_then(|t| t.get(r_sym)).ok_or(UnknownSymbol)?`,
-so a relocation referencing a missing `.dynsym` or an out-of-range symbol
-index fails the LOAD. The total `Elf.applyRelocations` would instead
-0-fill the bad read and patch a wrong address; `Elf.relocationsResolvable`
-(checked by `runElf` / `runElfWithFuel`) makes the loader fail closed.
-
-These pins use the real `counter_with_helper.so` (1 `R_Bpf_64_32` reloc,
-symbol index 2, `.dynsym` has 3 symbols) and a copy with that reloc's
-symbol index bumped to `0xFFFF` (out of range). The valid binary must stay
-resolvable (no over-rejection); the corrupted one must fail closed.
+agave (elf.rs:969-973) treats a missing/OOB symbol index as `UnknownSymbol` → load failure.
+`Elf.relocationsResolvable` (checked by `runElf`) gates this; `applyRelocations` alone would
+0-fill and produce a wrong address. Pins use the real `counter_with_helper.so` + a copy with
+the reloc's symbol index corrupted to `0xFFFF`. Valid binary must still parse (no over-rejection).
 -/
 import SVM.SBPF.Runner
 import H2Pin
@@ -21,53 +12,47 @@ import H2Pin
 namespace Examples.M1Pin
 open SVM.SBPF
 
-/-- The real binary: its single `R_Bpf_64_32` relocation resolves (symbol
-    index 2 < 3 dynsym entries), so the gate accepts it. -/
+/-- Real binary: symbol index 2 < 3 dynsym entries → gate accepts it. -/
 theorem valid_so_relocs_resolvable :
     (do let h ← Elf.parseHeader Examples.H2Pin.counterWithHelperSo
         pure (Elf.relocationsResolvable Examples.H2Pin.counterWithHelperSo h))
       = some true := by native_decide
 
-/-- `counter_with_helper.so` with the relocation's symbol index corrupted to
-    `0xFFFF` (≥ the 3-entry `.dynsym`). Everything else is byte-identical, so
-    it still parses as an ELF — only the symbol resolution is broken. -/
+/-- Same binary with reloc symbol index corrupted to `0xFFFF`; parses as ELF but
+    symbol resolution fails (index ≥ 3-entry `.dynsym`). -/
 def corruptedSo : ByteArray := Decode.bytesOfHex
   "7f454c46020101000000000000000000030007010100000040010000000000004000000000000000b80200000000000000000000400038000300400007000600010000000500000020010000000000002001000000000000200100000000000048000000000000004800000000000000001000000000000001000000040000000802000000000000080200000000000008020000000000007800000000000000780000000000000000100000000000000200000006000000680100000000000068010000000000006801000000000000a000000000000000a0000000000000000800000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000079130000000000000f230000000000007b3100000000000095000000000000007912000000000000070100000800000085100000ffffffffb70000000000000095000000000000001e000000000000000400000000000000110000000000000070020000000000001200000000000000100000000000000013000000000000001000000000000000060000000000000008020000000000000b000000000000001800000000000000050000000000000050020000000000000a00000000000000190000000000000016000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000100000012000100400100000000000028000000000000000c000000120001002001000000000000200000000000000000656e747279706f696e7400696e6372656d656e745f6279000000000000000050010000000000000a000000ffff0000002e74657874002e64796e737472002e72656c2e64796e002e64796e73796d002e64796e616d6963002e736873747274616200000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000010000000100000006000000000000002001000000000000200100000000000048000000000000000000000000000000080000000000000000000000000000002000000006000000030000000000000068010000000000006801000000000000a000000000000000040000000000000008000000000000001000000000000000180000000b0000000200000000000000080200000000000008020000000000004800000000000000040000000100000008000000000000001800000000000000070000000300000002000000000000005002000000000000500200000000000019000000000000000000000000000000010000000000000000000000000000000f00000009000000020000000000000070020000000000007002000000000000100000000000000003000000000000000800000000000000100000000000000029000000030000000000000000000000000000000000000080020000000000003300000000000000000000000000000001000000000000000000000000000000"
 
-/-- The corrupted reloc is unresolvable — agave's `UnknownSymbol`. -/
+/-- Corrupted reloc is unresolvable (agave `UnknownSymbol`). -/
 theorem oob_reloc_symbol_unresolvable :
     (do let h ← Elf.parseHeader corruptedSo
         pure (Elf.relocationsResolvable corruptedSo h))
       = some false := by native_decide
 
-/-- The loader fails CLOSED: `runElf` returns `none` rather than 0-filling
-    the bad symbol read and running with a wrong relocation. -/
+/-- `runElf` returns `none` rather than 0-filling the bad symbol and running. -/
 theorem runElf_fails_closed_on_oob_reloc :
     Runner.runElf corruptedSo = none := by native_decide
 
 /-! ## Header identity gates: `ei_osabi` and `e_type` (M1)
 
-agave's `validate` (solana-sbpf 0.14.4 elf.rs:721,727) rejects
-`ei_osabi ≠ ELFOSABI_NONE` (`WrongAbi`) and `e_type ≠ ET_DYN`
-(`WrongType`). `parseHeader` now gates both; these pins corrupt one byte
-each of the real `.so` and check the parse fails, plus that the
-uncorrupted binary still parses (no over-rejection). -/
+agave `validate` (elf.rs:721,727) rejects `ei_osabi ≠ ELFOSABI_NONE` and `e_type ≠ ET_DYN`.
+`parseHeader` gates both; pins corrupt one byte each and confirm fail + no over-rejection. -/
 
-/-- Overwrite one byte — for crafting single-field header corruptions. -/
+/-- Overwrite one byte (used to craft single-field header corruptions). -/
 def setByte (b : ByteArray) (i : Nat) (v : UInt8) : ByteArray :=
   ⟨b.data.set! i v⟩
 
-/-- `ei_osabi = 1` (byte 7): agave `WrongAbi` — parse fails. -/
+/-- `ei_osabi = 1` (byte 7) → agave `WrongAbi` → parse fails. -/
 theorem osabi_nonzero_fails :
     Elf.parseHeader (setByte Examples.H2Pin.counterWithHelperSo 7 1) = none := by
   native_decide
 
-/-- `e_type = ET_EXEC = 2` (offset 16): agave `WrongType` — parse fails. -/
+/-- `e_type = ET_EXEC = 2` (byte 16) → agave `WrongType` → parse fails. -/
 theorem etype_exec_fails :
     Elf.parseHeader (setByte Examples.H2Pin.counterWithHelperSo 16 2) = none := by
   native_decide
 
-/-- The uncorrupted binary still parses (the gates don't over-reject). -/
+/-- Uncorrupted binary still parses (no over-rejection). -/
 theorem valid_so_still_parses :
     (Elf.parseHeader Examples.H2Pin.counterWithHelperSo).isSome = true := by
   native_decide

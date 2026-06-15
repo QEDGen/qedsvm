@@ -5,27 +5,17 @@ namespace SVM.Cpi
 open SVM.Pubkey
 
 /- ============================================================================
-   CPI (Cross-Program Invocation) Modeling — Generic Envelope
+   CPI (Cross-Program Invocation) — Generic Envelope
 
-   Models CPI at the invoke_signed level: any Solana CPI is a program ID,
-   a list of account metas, and serialized instruction data. This is generic
-   across ALL Solana programs — no per-instruction structs needed.
+   Models CPI at the invoke_signed level: a program ID, account metas, and
+   serialized instruction data. Generic across ALL Solana programs — no
+   per-instruction structs. (Anchor's CpiContext + anchor-spl wrappers bottom
+   out in solana_program::program::invoke_signed with the same triple.)
 
-   Anchor programs CPI via CpiContext + anchor-spl wrappers, which under the
-   hood call solana_program::program::invoke_signed with:
-     - An Instruction { program_id, accounts: Vec<AccountMeta>, data: Vec<u8> }
-     - Account infos
-     - Signer seeds (for PDA signing)
-
-   Verification scope:
-   - Correct program is called (program_id)
-   - Accounts are in correct order with correct pubkeys and flags
-   - Instruction discriminator is correct (first N bytes of data)
-
-   Trust boundary (not verified):
-   - Parameter serialization within data bytes (SDK territory)
-   - External program execution semantics
-   - PDA signer seed derivation and validity
+   Verified: correct program_id, account order/pubkeys/flags, instruction
+   discriminator (first N data bytes).
+   Trust boundary (NOT verified): parameter serialization within data bytes
+   (SDK territory), external program execution, PDA signer-seed derivation.
    ============================================================================ -/
 
 /-- Solana account metadata passed to a CPI instruction -/
@@ -43,9 +33,7 @@ structure CpiInstruction where
   deriving Repr, DecidableEq
 
 /- ============================================================================
-   Well-known program IDs
-
-   Pubkeys decoded from base58 to big-endian Nat.
+   Well-known program IDs — base58 decoded to big-endian Nat.
    Source: https://github.com/solana-program
    ============================================================================ -/
 
@@ -86,12 +74,9 @@ def STAKE_PROGRAM_ID : Pubkey :=
 /- ============================================================================
    SPL Token instruction discriminators (single u8 byte)
 
-   Token and Token-2022 share the same discriminators for instructions 0-24.
-   These are the instructions most commonly invoked via anchor-spl CPI wrappers.
-
-   Anchor pattern:
-     token::transfer(CpiContext::new(..., Transfer { from, to, authority }), amount)?;
-   maps to invoke_signed with data = DISC_TRANSFER ++ le_u64(amount)
+   Token and Token-2022 share discriminators 0-24. Anchor pattern:
+     token::transfer(CpiContext::new(..., Transfer{from,to,authority}), amount)?
+   maps to invoke_signed with data = DISC_TRANSFER ++ le_u64(amount).
    ============================================================================ -/
 
 def DISC_INITIALIZE_MINT     : List Nat := [0]
@@ -116,9 +101,7 @@ def DISC_INITIALIZE_MINT2    : List Nat := [20]
 /- ============================================================================
    System Program instruction discriminators (4-byte LE u32)
 
-   Anchor pattern:
-     system_program::transfer(CpiContext::new(..., Transfer { from, to }), amount)?;
-   maps to invoke_signed with data = [2,0,0,0] ++ le_u64(amount)
+   e.g. system_program::transfer maps to data = [2,0,0,0] ++ le_u64(amount).
    ============================================================================ -/
 
 def DISC_SYS_CREATE_ACCOUNT : List Nat := [0, 0, 0, 0]

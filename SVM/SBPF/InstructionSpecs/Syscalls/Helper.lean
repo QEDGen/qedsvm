@@ -6,15 +6,9 @@ open Memory
 
 /-! ## Generic syscall helper: writes only `r0`, leaves everything else alone
 
-Many syscalls (logging, return-data set, get-stack-height, etc.) follow a
-common shape at the SL level: write some value to `r0`, leave registers /
-memory / pc otherwise unchanged. The actual `step` result mutates
-`State.log`, `State.returnData`, `State.cuConsumed`, or other observable
-side-channel fields — but those are all silent in `PartialState` by design.
-
-This helper captures the pattern. Each concrete syscall spec just supplies
-four projection lemmas (`regs`, `mem`, `pc`, `exitCode`) on the step
-result, plus the new `r0` value. -/
+SL shape shared by many syscalls (logging, return-data set, get-stack-height):
+write `r0`, leave regs/mem/pc unchanged. The `step` result also mutates
+`log`/`returnData`/`cuConsumed` etc., but those are silent in `PartialState`. -/
 
 theorem cuTripleWithin_syscall_writes_r0_only
     (sc : Syscall) (vNew : Nat) (pc : Nat) (nCu : Nat)
@@ -137,13 +131,10 @@ theorem cuTripleWithin_syscall_writes_r0_only
 
 /-! ## Region-checked variant: writes `r0`, reads a fixed slice at `rAddr`
 
-Audit H6. Like `cuTripleWithin_syscall_writes_r0_only`, but for a syscall
-that translates a fixed-size read slice `[addrV, addrV + rLen)` (e.g.
-`sol_log_pubkey` reading the 32-byte pubkey). The precondition pins the
-address register `rAddr` so the spec can name the slice; the `rr` region
-requirement `containsRange addrV rLen` is exactly what each
-region-conditional step projection needs to collapse the syscall's
-`guardRead`. -/
+Audit H6. Like the r0-only helper but for a syscall reading a fixed slice
+`[addrV, addrV+rLen)` (e.g. `sol_log_pubkey`). The precondition pins `rAddr`
+to name the slice; the `rr` requirement `containsRange addrV rLen` is what
+each region-conditional step projection needs to collapse `guardRead`. -/
 theorem cuTripleWithinMem_syscall_writes_r0_reads_fixed
     (sc : Syscall) (vNew : Nat) (pc : Nat) (nCu : Nat)
     (rAddr : Reg) (addrV rLen : Nat) (hAddr : rAddr ≠ .r0)
@@ -179,7 +170,7 @@ theorem cuTripleWithinMem_syscall_writes_r0_reads_fixed
   have hcm_mem := hcompat.mem
   have hcm_rd  := hcompat.returnData
   have hcm_cs  := hcompat.callStack
-  -- Climb r0 = r0Old, rAddr = addrV up through h_P to s.regs.
+  -- Climb r0/rAddr values up through h_P to s.regs.
   have h_P_regs_r0 : h_P.regs .r0 = some r0Old := by
     rw [← hu_r0_rA]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -356,12 +347,10 @@ theorem cuTripleWithinMem_syscall_writes_r0_reads_fixed
 
 /-! ## Region-checked variant: writes `r0`, reads a slice `[rAddr, rAddr+rLen)`
 
-Audit H6. The variable-length companion of
-`cuTripleWithinMem_syscall_writes_r0_reads_fixed`: the read length is the
-runtime value of a register `rLen` (e.g. `sol_log_` reading `[r1, r1+r2)`),
-so the precondition pins BOTH the address register `rAddr` and the length
-register `rLen`, and `rr = containsRange addrV lenV`. The three registers
-`.r0`, `rAddr`, `rLen` are pairwise distinct. -/
+Audit H6. Variable-length companion of the fixed-slice helper: read length is
+the runtime value of `rLen` (e.g. `sol_log_` reading `[r1, r1+r2)`), so the
+precondition pins both `rAddr` and `rLen` (pairwise distinct from `.r0`), with
+`rr = containsRange addrV lenV`. -/
 theorem cuTripleWithinMem_syscall_writes_r0_reads_var
     (sc : Syscall) (vNew : Nat) (pc : Nat) (nCu : Nat)
     (rAddr rLen : Reg) (addrV lenV : Nat)
@@ -400,9 +389,7 @@ theorem cuTripleWithinMem_syscall_writes_r0_reads_var
   have hcm_mem := hcompat.mem
   have hcm_rd  := hcompat.returnData
   have hcm_cs  := hcompat.callStack
-  -- hu_r0_T1 : (singletonReg .r0 r0Old).union (((PartialState.singletonReg rAddr addrV).union (PartialState.singletonReg rLen lenV))) = h_P, where
-  -- ((PartialState.singletonReg rAddr addrV).union (PartialState.singletonReg rLen lenV)) = (singletonReg rAddr addrV).union (singletonReg rLen lenV).
-  -- Climb register values up through h_P.
+  -- hu_r0_T1 : (r0 ∪ (rAddr ∪ rLen singletons)) = h_P. Climb values up through h_P.
   have h_P_regs_r0 : h_P.regs .r0 = some r0Old := by
     rw [← hu_r0_T1]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -495,8 +482,7 @@ theorem cuTripleWithinMem_syscall_writes_r0_reads_var
     rw [← hu_PR]; exact PartialState.union_returnData_of_left_none h_P_rd
   have hp_cs : hp.callStack = hR.callStack := by
     rw [← hu_PR]; exact PartialState.union_callStack_of_left_none h_P_cs
-  -- Post-state partial: `r0 ** (rAddr ** rLen)`, matching the precond shape.
-  -- Disjointness pieces for the post.
+  -- Post-state partial `r0 ** (rAddr ** rLen)` (precond shape); disjointness pieces.
   have hd_rA_rL_post : (PartialState.singletonReg rAddr addrV).Disjoint
       (PartialState.singletonReg rLen lenV) := by
     refine ⟨fun r => ?_, fun a => Or.inl (PartialState.singletonReg_mem a),
@@ -629,12 +615,10 @@ theorem cuTripleWithinMem_syscall_writes_r0_reads_var
 
 /-! ## Generic syscall helper: writes a STATE-DEPENDENT value to `r0`
 
-Like `cuTripleWithin_syscall_writes_r0_only`, but for syscalls whose new
-`r0` value depends on State fields that are SILENT in `PartialState`
-(e.g. `sol_remaining_compute_units` reads the CU meter). The SL post can
-only say "`r0` was written to SOME value" — the existential. The proof is
-identical to the fixed-value helper with `vNew := f s`; the post witness
-is `⟨f s, rfl⟩`. -/
+Like the r0-only helper but the new `r0` depends on State fields silent in
+`PartialState` (e.g. `sol_remaining_compute_units` reads the CU meter), so the
+SL post can only say "`r0` was written to SOME value" (the existential). Proof
+is the fixed-value helper with `vNew := f s`; post witness `⟨f s, rfl⟩`. -/
 
 theorem cuTripleWithin_syscall_writes_r0_fn
     (sc : Syscall) (f : State → Nat) (pc : Nat) (nCu : Nat)
@@ -758,20 +742,15 @@ theorem cuTripleWithin_syscall_writes_r0_fn
 /-! ## CPI syscalls: `sol_invoke_signed` / `sol_invoke_signed_c`
 
 The proof-facing step-level CPI is a FAIL-CLOSED stub
-(`Cpi.exec = { exitCode := some ERR_UNSUPPORTED_INSTRUCTION }`): a real
-cross-program invocation mutates callee account memory, sets return
-data, enforces privilege/signer/depth rules, and can fail — none of
-which is modeled in `step`. Rather than fabricate a successful,
-effect-free invoke (which a lift could read as "all account memory
-unchanged"), `step` aborts. The real cross-program execution lives in
-`Runner.cpiCallNextState` (reached via `executeFnCpiWithFuel`), which the
-diff_mollusk CPI tests exercise; that path intercepts CPI before `step`
-and is unaffected by this stub.
-
-So a lift over `step` that reaches a CPI proves an ABORT at that point.
-These `*_aborts_spec`s state exactly that. A future proof-side CPI model
-that agrees with `cpiCallNextState` would replace them with effectful
-postconditions. See docs/SOUNDNESS_AUDIT_* (C4/C5). -/
+(`Cpi.exec = { exitCode := some ERR_UNSUPPORTED_INSTRUCTION }`): `step` aborts
+rather than fabricate a successful effect-free invoke (which a lift could
+misread as "all account memory unchanged") since the real invoke's account
+mutation / return data / privilege+signer+depth rules / failure are unmodeled.
+Real CPI lives in `Runner.cpiCallNextState` (via `executeFnCpiWithFuel`,
+exercised by diff_mollusk), which intercepts CPI before `step`, unaffected here.
+So a lift reaching CPI proves an ABORT; these `*_aborts_spec`s state exactly
+that. A future step-level CPI model agreeing with `cpiCallNextState` would
+replace them with effectful posts. See docs/SOUNDNESS_AUDIT_* (C4/C5). -/
 
 theorem call_sol_invoke_signed_aborts_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,

@@ -1,13 +1,7 @@
--- Separation-logic atom for `Pubkey`.
---
--- `SVM/SBPF/Pubkey.lean` defines `pubkeyAt mem base pk` over the flat `Mem`
--- model. This module adds the SL-level companion `pubkeyIs base pk`: an
--- `Assertion` over partial states, composable with the other `↦`-atoms in
--- `SepLogic.lean` via separating conjunction `**`.
---
--- Shape: four chained `↦U64` atoms at offsets 0, 8, 16, 24 — matching the
--- in-memory representation that compiled sBPF code reads via four `ldxdw`
--- chunk-loads (see `SVM.Pubkey.Pubkey` doc-comment).
+-- Separation-logic atom for `Pubkey`: the SL companion `pubkeyIs base pk` to
+-- `Pubkey.lean`'s flat-`Mem` `pubkeyAt`, composable with other `↦`-atoms via
+-- `**`. Shape: four chained `↦U64` at offsets 0/8/16/24, matching the four
+-- `ldxdw` chunk-loads compiled sBPF code uses.
 
 import SVM.SBPF.Pubkey
 import SVM.SBPF.SepLogic

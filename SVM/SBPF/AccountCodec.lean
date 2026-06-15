@@ -1,25 +1,13 @@
 /-
   Layout-driven account codec + its aggregation — keystone #2.
 
-  An account is a `List (Nat × FieldVal)`: each entry is a byte offset (from
-  the account base) and a field value (an owned `u64`, an owned `pubkey`,
-  or an opaque `blob` of byte segments). This is exactly the layout a
-  Codama/Anchor IDL describes (field type → `FieldVal` kind, field order →
-  offsets) — qedgen emits the per-program record; this is what its bytes
-  decode to.
-
-  `codecCoarse` is the field-atom form a spec consumes (`↦U64` / `↦Pubkey`
-  / `↦Bytes`); `codecFine` is the scattered form a lift owns (dwords +
-  bytes + framed gaps). `account_agg` proves them equivalent **once**,
-  generically over any field list — the coarse and fine forms differ only
-  at `blob` fields, which keystone #1 (`memBytesIs_segs`) bridges. The
-  hand-written `src_account_eq` / `mint_account_eq` / … all become
-  instances: pick the field list, this lemma does the proof.
-
-  A field-update handler (qedgen `def fooTransition s := some {s with f := …}`)
-  refines its lift by: the codec with `f` updated = the codec with one
-  field-atom changed; `account_agg` reshapes coarse⟷fine; `sl_exact` closes.
-  No per-program aggregation proof.
+  An account is a `List (Nat × FieldVal)` (offset from base, owned u64/pubkey
+  or opaque blob) — the layout a Codama/Anchor IDL describes. `codecCoarse`
+  is the field-atom form a spec consumes; `codecFine` is the scattered form a
+  lift owns. `account_agg` proves them equivalent **once**, generically over
+  any field list (coarse and fine differ only at `blob` fields, bridged by
+  keystone #1 `memBytesIs_segs`), so the hand-written `src_account_eq` /
+  `mint_account_eq` / … become instances — no per-program aggregation proof.
 -/
 
 import SVM.SBPF.SegAggregation
@@ -29,8 +17,8 @@ namespace SVM.SBPF
 
 open SVM.Pubkey
 
-/-- A decoded account field: an owned u64, an owned pubkey (four u64
-    limbs), or an opaque blob given as a byte-segment list. -/
+/-- A decoded account field: owned u64, owned pubkey (four u64 limbs), or
+    opaque byte-segment blob. -/
 inductive FieldVal where
   | byte   (v : Nat)
   | u64    (v : Nat)
@@ -46,9 +34,8 @@ def coarse (addr : Nat) : FieldVal → Assertion
   | .pubkey p => pubkeyIs addr p
   | .blob segs => memBytesIs addr (segsBytes segs)
 
-/-- Fine field atoms — the scattered form a lift owns. Differs from
-    `coarse` only on `blob`, where the `↦Bytes` blob expands to its
-    segments. -/
+/-- Fine field atoms — the scattered form a lift owns. Differs from `coarse`
+    only on `blob`, where `↦Bytes` expands to its segments. -/
 def fine (addr : Nat) : FieldVal → Assertion
   | .byte v   => memByteIs addr v
   | .u64 v    => memU64Is addr v
@@ -105,18 +92,16 @@ theorem account_agg (base : Nat) :
       (sepConj_iff_congr_right _ (ih hvr) h)
 
 /-- Equality form of `account_agg` (via `funext`/`propext`), for `rw`ing a
-    coarse account codec to its fine (scattered) form inside a refinement
-    goal — the layout-general counterpart of the SPL `*_account_eq`
-    lemmas. -/
+    coarse codec to its fine form in a refinement goal — the layout-general
+    counterpart of the SPL `*_account_eq` lemmas. -/
 theorem codecCoarse_eq_fine (base : Nat) (fields : List (Nat × FieldVal))
     (hv : codecValid fields) : codecCoarse base fields = codecFine base fields := by
   funext h; exact propext (account_agg base fields hv h)
 
 /-! ## Validation — the SPL token account is an instance
 
-`src_account_eq`'s content (mint pubkey, owner pubkey, amount u64, and a
-`rest` blob owning bytes 72/108/109 with framed gaps) is the field list
-below; `account_agg` proves the aggregation with no bespoke lemma. -/
+`src_account_eq`'s content is the field list below; `account_agg` proves the
+aggregation with no bespoke lemma. -/
 
 example (base c0 c1 c2 c3 o0 o1 o2 o3 amount b72 b108 b109 : Nat) (g1 g2 : ByteArray)
     (h72 : b72 < 256) (h108 : b108 < 256) (h109 : b109 < 256) :

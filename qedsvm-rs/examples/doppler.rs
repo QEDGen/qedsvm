@@ -1,31 +1,6 @@
-//! Doppler oracle demo via the mollusk-shaped `Svm` API.
-//!
-//! Exercises all three code paths of doppler's `entrypoint`
-//! (https://github.com/blueshift-gg/doppler):
-//!
-//! 1. Happy path: admin OK + new_seq > current_seq → full update.
-//! 2. Bad admin: hits the `lddw r0, 1; exit` inline-asm fast-exit in
-//!    `Admin::check`.
-//! 3. Stale sequence: hits the `lddw r0, 2; exit` inline-asm fast-exit
-//!    in `Oracle::check_and_update`.
-//!
-//! Unlike the shell-script version that hand-builds a 0x50f0-byte
-//! parameter buffer, this driver constructs Solana-shaped accounts and
-//! lets `qedsvm::serialize_parameters` place the bytes at the
-//! offsets doppler reads from. The Svm API mirrors mollusk's API
-//! signature, so swap-in is trivial.
-//!
-//! Run:
-//!   cargo run --release --example doppler --manifest-path qedsvm-rs/Cargo.toml
-//!
-//! The example self-bootstraps the doppler `.so`:
-//!   1. If `$DOPPLER_SO` is set, uses it.
-//!   2. Else, looks for a cached `target/examples-cache/doppler/doppler_program.so`.
-//!   3. Else, clones https://github.com/blueshift-gg/doppler, patches the
-//!      `#[no_mangle]`-on-panic_handler issue, runs `cargo-build-sbf`, caches
-//!      the output, and uses it.
-//!
-//! First run takes ~20s for the clone + build; subsequent runs hit the cache.
+//! Doppler oracle demo: exercises happy-path update, bad-admin fast-exit (r0=1), stale-seq fast-exit (r0=2).
+//! Bootstraps the .so from $DOPPLER_SO or cached clone (first run ~20s).
+//! Run: cargo run --release --example doppler --manifest-path qedsvm-rs/Cargo.toml
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,8 +10,7 @@ use solana_account::{Account, AccountSharedData, ReadableAccount};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
-// `admnz5UvRa93HM5nTrxXmsJ1rw2tvXMBFGauvCgzQhE` — doppler's hardcoded
-// admin pubkey (lifted from doppler/doppler/src/admin.rs).
+// `admnz5UvRa93HM5nTrxXmsJ1rw2tvXMBFGauvCgzQhE` — doppler's hardcoded admin pubkey (doppler/src/admin.rs)
 const ADMIN: [u8; 32] = [
     0x08, 0x9d, 0xbe, 0xc9, 0x64, 0x97, 0xab, 0xd0,
     0xdb, 0x21, 0x79, 0x52, 0x69, 0xba, 0xb9, 0x4b,
@@ -44,7 +18,7 @@ const ADMIN: [u8; 32] = [
     0xd0, 0xa5, 0xdc, 0x76, 0xec, 0xcb, 0x51, 0xd1,
 ];
 
-/// `repr(C) { sequence: u64, payload: u64 }` packed as 16 LE bytes.
+/// Oracle account data: `{ sequence: u64, payload: u64 }` as 16 LE bytes.
 fn oracle_bytes(sequence: u64, payload: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(16);
     data.extend_from_slice(&sequence.to_le_bytes());
@@ -58,8 +32,7 @@ fn pid(seed: u64) -> Pubkey {
     Pubkey::from(b)
 }
 
-/// Build the standard doppler update instruction.
-/// `data` is `[new_sequence:u64, new_payload:u64]`.
+/// Doppler update ix: data = [new_sequence:u64, new_payload:u64].
 fn update_ix(admin: Pubkey, oracle: Pubkey, new_sequence: u64, new_payload: u64)
     -> Instruction
 {
@@ -81,8 +54,7 @@ fn scenario(label: &str, svm: &Svm, ix: &Instruction,
     println!("  program_result:        {:?}", r.program_result);
     println!("  compute_units_consumed: {}", r.compute_units_consumed);
 
-    // Inspect the resulting oracle account (index 1) data, if present.
-    if let Some((_, oracle_post)) = r.resulting_accounts.get(1) {
+    if let Some((_, oracle_post)) = r.resulting_accounts.get(1) { // print oracle post-state if present
         let data = oracle_post.data();
         if data.len() >= 16 {
             let seq = u64::from_le_bytes(data[..8].try_into().unwrap());
@@ -94,11 +66,7 @@ fn scenario(label: &str, svm: &Svm, ix: &Instruction,
     println!();
 }
 
-/// Locate or build the doppler .so. Returns the path.
-///
-/// 1. `$DOPPLER_SO` override → used directly.
-/// 2. Cached `target/examples-cache/doppler/doppler_program.so` → used.
-/// 3. Otherwise clone + patch + build, then cache.
+/// Locate or build doppler .so: $DOPPLER_SO override, then cached build, then clone+patch+build.
 fn locate_doppler_so() -> PathBuf {
     if let Ok(p) = std::env::var("DOPPLER_SO") {
         return PathBuf::from(p);
@@ -119,8 +87,7 @@ fn locate_doppler_so() -> PathBuf {
             .arg(&src_dir),
             "git clone doppler");
     }
-    // Patch the `#[no_mangle] #[panic_handler]` combo that the bundled rustc rejects.
-    patch_panic_handler(&src_dir.join("doppler/src/panic_handler.rs"));
+    patch_panic_handler(&src_dir.join("doppler/src/panic_handler.rs")); // remove #[no_mangle] from #[panic_handler]
     run(Command::new("cargo-build-sbf")
         .current_dir(src_dir.join("program")),
         "cargo-build-sbf");
@@ -154,24 +121,23 @@ fn main() {
         .unwrap_or_else(|e| panic!("failed to read .so at {}: {e}", so_path.display()));
 
     let admin_pk = Pubkey::from(ADMIN);
-    let oracle_pk = pid(0xc0); // arbitrary oracle account key
+    let oracle_pk = pid(0xc0);
     let program_id = pid(0xd0);
 
     let mut svm = Svm::default();
     svm.add_program(&program_id, &doppler_so);
 
-    // === Scenario 1: happy path ===
     let admin_acct = AccountSharedData::from(Account {
         lamports: 10_000_000_000,
         data: vec![],
-        owner: Pubkey::new_from_array([0u8; 32]), // system_program
+        owner: Pubkey::new_from_array([0u8; 32]),
         executable: false,
         rent_epoch: 0,
     });
     let oracle_acct_pre = AccountSharedData::from(Account {
-        lamports: 1_000_000,                          // rent-irrelevant for this demo
-        data: oracle_bytes(/* sequence */ 100, /* payload */ 1000),
-        owner: program_id,                            // owned by doppler program
+        lamports: 1_000_000,
+        data: oracle_bytes(100, 1000),
+        owner: program_id,
         executable: false,
         rent_epoch: 0,
     });
@@ -181,24 +147,19 @@ fn main() {
              &[(admin_pk, admin_acct.clone()),
                (oracle_pk, oracle_acct_pre.clone())]);
 
-    // === Scenario 2: bad admin ===
-    // Wrong admin pubkey → Admin::check fast-exit (r0=1).
-    let bad_admin_pk = pid(0xbad);
+    let bad_admin_pk = pid(0xbad); // wrong admin → Admin::check fast-exit (r0=1)
     let ix_bad = update_ix(bad_admin_pk, oracle_pk, 101, 1500);
     scenario("bad admin pubkey → Admin::check fast-exit (r0=1)",
              &svm, &ix_bad,
              &[(bad_admin_pk, admin_acct.clone()),
                (oracle_pk, oracle_acct_pre.clone())]);
 
-    // === Scenario 3: stale oracle ===
-    // new_seq = current_seq (not strictly greater) → Oracle fast-exit (r0=2).
-    let ix_stale = update_ix(admin_pk, oracle_pk, 100, 1500);
+    let ix_stale = update_ix(admin_pk, oracle_pk, 100, 1500); // stale: new_seq=current → Oracle::check fast-exit (r0=2)
     scenario("stale oracle (new_seq=100 = current=100) → Oracle::check_and_update fast-exit (r0=2)",
              &svm, &ix_stale,
              &[(admin_pk, admin_acct),
                (oracle_pk, oracle_acct_pre)]);
 
-    // Sanity: every scenario should be Success/Failure (not OutOfBudget).
     println!("Done — 3 scenarios, all run via Svm::process_instruction.");
-    let _: ProgramResult = ProgramResult::Success; // type sanity
+    let _: ProgramResult = ProgramResult::Success;
 }

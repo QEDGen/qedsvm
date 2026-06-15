@@ -1,18 +1,6 @@
-//! End-to-end integration test for `Svm::with_rent_state_enforcement`.
-//!
-//! The math (`rent_minimum_balance`, `get_account_rent_state`,
-//! `rent_transition_allowed`) and `validate_post_state`'s direct
-//! behavior are covered by unit tests in `src/svm.rs`. This file
-//! exercises the wire-up through the full `Svm::process_instruction`
-//! pipeline: BPF program execution → resulting accounts →
-//! `validate_post_state(..., self.enforce_rent_state)` → final
-//! `ProgramResult`.
-//!
-//! Why it's a separate test file: the rent enforcement flag is off
-//! by default, and turning it on is incompatible with the
-//! `diff-mollusk` fixtures (mollusk's per-instruction harness skips
-//! the transaction-level rent check; our test scenarios deliberately
-//! exercise *rejection*, which mollusk wouldn't replicate).
+//! Integration test for `Svm::with_rent_state_enforcement`.
+//! Unit-level math is in `src/svm.rs`; this exercises the full pipeline wiring.
+//! Flag is off by default; these scenarios test rejection that mollusk's harness skips.
 
 use qedsvm::{ProgramResult, Svm, ERR_INVALID_POSTSTATE};
 use solana_account::{Account, AccountSharedData};
@@ -70,10 +58,7 @@ fn build_transfer_scenario(
     (ix, accounts)
 }
 
-/// **Smoke**: enforcement off (default) — a transfer that credits a
-/// RentPaying recipient succeeds. The post-state has the recipient
-/// in an invalid rent state (RentPaying credited), but the gate is
-/// disabled. Baseline for the rejection test below.
+/// Enforcement off: credit-to-RentPaying succeeds; gate disabled.
 #[test]
 fn rent_enforcement_off_admits_invalid_transition() {
     let caller_id = pid(60);
@@ -82,9 +67,7 @@ fn rent_enforcement_off_admits_invalid_transition() {
     let system_owner = Pubkey::new_from_array([0u8; 32]);
 
     let from_pre = shared(5_000_000, vec![], system_owner); // RentExempt for 0-data
-    // RentPaying: 100 lamports for 1000 bytes data — well below the
-    // rent-exempt minimum of (128 + 1000) * 6960 = 7_850_880.
-    let to_pre = shared(100, vec![0u8; 1000], system_owner);
+    let to_pre = shared(100, vec![0u8; 1000], system_owner); // RentPaying: 100 < (128+1000)*6960
 
     let (ix, accounts) = build_transfer_scenario(
         caller_id, from_pk, to_pk,
@@ -103,11 +86,7 @@ fn rent_enforcement_off_admits_invalid_transition() {
     );
 }
 
-/// **Rejection**: enforcement on — the *same* transfer that crediit
-/// a RentPaying recipient is now rejected with
-/// `Failure { exit_code: ERR_INVALID_POSTSTATE }`. Demonstrates the
-/// flag flows from `Svm` through `process_instruction` into
-/// `validate_post_state`.
+/// Enforcement on: same transfer rejected with ERR_INVALID_POSTSTATE; flag flows through validate_post_state.
 #[test]
 fn rent_enforcement_on_rejects_credit_to_rent_paying() {
     let caller_id = pid(60);
@@ -144,9 +123,7 @@ fn rent_enforcement_on_rejects_credit_to_rent_paying() {
     }
 }
 
-/// **Admission**: enforcement on — a transfer where both source and
-/// destination remain in valid rent states (RentExempt throughout)
-/// succeeds. Sanity that the gate isn't blanket-rejecting.
+/// Enforcement on: exempt-to-exempt transfer succeeds; sanity that the gate isn't blanket-rejecting.
 #[test]
 fn rent_enforcement_on_admits_exempt_to_exempt_transfer() {
     let caller_id = pid(60);
@@ -154,8 +131,7 @@ fn rent_enforcement_on_admits_exempt_to_exempt_transfer() {
     let to_pk = pid(62);
     let system_owner = Pubkey::new_from_array([0u8; 32]);
 
-    // Both accounts RentExempt at 0-data (1M > minimum of 891_360).
-    let from_pre = shared(5_000_000, vec![], system_owner);
+    let from_pre = shared(5_000_000, vec![], system_owner); // both RentExempt at 0-data (> 891_360)
     let to_pre = shared(2_000_000, vec![], system_owner);
 
     let (ix, accounts) = build_transfer_scenario(

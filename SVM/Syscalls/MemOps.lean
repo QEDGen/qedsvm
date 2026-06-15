@@ -6,18 +6,14 @@ import SVM.SBPF.Machine
 namespace SVM.SBPF
 namespace MemOps
 
-/-- `mem_op_consume(n) = max(10, n / 250)`. `n` is r3 for all four
-    mem-op syscalls. -/
+/-- `mem_op_consume(n) = max(10, n / 250)`; `n` = r3 for all four mem-ops. -/
 @[simp] def cu (s : State) : Nat := Nat.max 10 (s.regs.r3 / 250)
 
-/-- `sol_memcpy(dst, src, n)` / `sol_memmove(dst, src, n)`. Both share
-    semantics in our model (no overlap-handling distinction): copy `n`
-    bytes from `src` to `dst`. Sets r0 = 0.
-
-    H6: agave translates the `src` slice (Load) and the `dst` slice
-    (Store) before touching memory; either out of region faults with
-    `AccessViolation`. The `guardRead`/`guardWrite` pair reproduces both
-    checks (zero-length is allowed, mirroring `translate_slice`). -/
+/-- `sol_memcpy`/`sol_memmove(dst, src, n)`: copy `n` bytes src→dst, set
+    r0 = 0. Modeled identically (no overlap distinction).
+    H6: agave translates `src` (Load) and `dst` (Store) first; either out of
+    region faults. `guardRead`/`guardWrite` reproduce both (zero-length
+    allowed). -/
 @[simp] def execCopy (s : State) : State :=
   let dst := s.regs.r1
   let src := s.regs.r2
@@ -29,9 +25,8 @@ namespace MemOps
       else s.mem a
     { s with regs := s.regs.set .r0 0, mem := mem' }
 
-/-- `sol_memset(dst, val, n)`: write the low byte of r2 into `n` bytes
-    starting at `dst`. H6: the `dst` slice (Store) must be in a writable
-    region. -/
+/-- `sol_memset(dst, val, n)`: write the low byte of r2 into `n` bytes at
+    `dst`. H6: `dst` slice (Store) must be writable. -/
 @[simp] def execSet (s : State) : State :=
   let dst := s.regs.r1
   let val := s.regs.r2 % 256
@@ -43,12 +38,10 @@ namespace MemOps
     { s with regs := s.regs.set .r0 0, mem := mem' }
 
 /-- `sol_memcmp(p1, p2, n, out)`: write the i32 difference of the first
-    differing byte pair (`a - b`, where `a,b ∈ [0,255]` so the result is
-    in `[-255,255]`), as a two's-complement u32, to `*r4`. Agave writes
-    this exact difference, not just the sign. See docs/SOUNDNESS_AUDIT_*
-    (H7). H6: both input slices (Load) must be in region, and the
-    fixed 4-byte `*r4` result (Store, `translate_type_mut`) must be in a
-    writable region — the latter is checked even for `n = 0`. -/
+    differing byte pair (`a - b`, in `[-255,255]`) as two's-complement u32 to
+    `*r4`. Agave writes the exact difference, not just the sign. See
+    docs/SOUNDNESS_AUDIT_* (H7). H6: both inputs (Load) in region, and the
+    fixed 4-byte `*r4` result (Store) writable — checked even for `n = 0`. -/
 @[simp] def execCmp (s : State) : State :=
   let p1   := s.regs.r1
   let p2   := s.regs.r2

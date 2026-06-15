@@ -6,9 +6,8 @@ open Memory
 
 /-! ## Syscall: `sol_log_`
 
-`sol_log_(ptr, len)`: log a byte slice from `[r1..r1+r2)`, set `r0 := 0`.
-Memory is read but not written; r1 and r2 are unchanged. `State.log` is
-silent in `PartialState` by design. -/
+`sol_log_(ptr, len)`: log `[r1..r1+r2)`, set `r0 := 0`. Memory read not written;
+r1/r2 unchanged. `State.log` is silent in `PartialState` by design. -/
 
 theorem call_sol_log_spec (r0Old r1V r2V : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
@@ -48,8 +47,8 @@ theorem call_sol_log_spec (r0Old r1V r2V : Nat) (pc : Nat) (nCu : Nat)
 
 /-! ## Syscall: `sol_log_pubkey`
 
-`sol_log_pubkey(ptr)`: log 32 bytes from `[r1..r1+32)`, set `r0 := 0`.
-Same single-atom shape as `sol_log_`. -/
+`sol_log_pubkey(ptr)`: log 32 bytes from `[r1..r1+32)`, `r0 := 0`. Same
+single-atom shape as `sol_log_`. -/
 
 theorem call_sol_log_pubkey_spec (r0Old r1V : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
@@ -86,8 +85,8 @@ theorem call_sol_log_pubkey_spec (r0Old r1V : Nat) (pc : Nat) (nCu : Nat)
 
 /-! ## Syscall: `sol_get_stack_height`
 
-Returns the current CPI depth in `r0`. Our model fixes this to `1`
-(top-level) regardless of `State.callStack` — see `Misc.execGetStackHeight`. -/
+Returns CPI depth in `r0`; our model fixes it to `1` (top-level) regardless of
+`State.callStack` (`Misc.execGetStackHeight`). -/
 
 theorem call_sol_get_stack_height_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
@@ -151,22 +150,14 @@ theorem call_sol_log_compute_units_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
 
 /-! ## Syscall: `sol_log_data`
 
-`sol_log_data(fields_ptr, count)`: read `count` SliceDesc descriptors
-from r1, base64-encode each slice they point to, emit joined message.
-Memory is read (descriptors + each slice) but not written. r0 := 0.
+`sol_log_data(fields_ptr, count)`: read `count` SliceDesc descriptors, base64
+each pointed slice, emit joined message. r0 := 0.
 
-H6: `Logging.execLogData` region-checks BOTH the descriptor array
-`[r1, r1 + count*16)` and each dereferenced slice `[ptr, ptr+len)`, so an
-out-of-region access traps with `vmError := some .accessViolation`. Unlike
-the single-slice log syscalls, this read region is NOT expressible as an
-`rr : Memory.RegionTable → Prop` side-condition: the per-slice ranges are
-read FROM memory the precondition does not own, and `rr` cannot see `s.mem`.
-There is therefore no register-footprint happy-path triple for
-`sol_log_data` — the prior unconditional `(.r0 ↦ᵣ r0Old) ⟶ (.r0 ↦ᵣ 0)` spec
-became false once the guards can fault and had no consumers. The boundary is
-pinned cross-engine by the `oob_log_data.so` diff fixture, and on the model
-side by `SVM.SBPF.Logging.execLogData_faults_oob` (the descriptor-array
-fault direction). -/
+H6: `Logging.execLogData` region-checks the descriptor array AND each slice,
+faulting `accessViolation` out of region. The read region is NOT expressible as
+an `rr : RegionTable → Prop` side-condition (per-slice ranges live in memory the
+precondition doesn't own, and `rr` can't see `s.mem`), so there's no happy-path
+triple. Pinned by `oob_log_data.so` + `Logging.execLogData_faults_oob`. -/
 
 /-! ## Syscall: `sol_get_epoch_stake`
 
@@ -215,23 +206,15 @@ theorem call_sol_get_processed_sibling_instruction_spec
 
 /-! ## Syscall: `sol_get_sysvar` (SIMD-0127 generic accessor)
 
-`sol_get_sysvar(sysvar_id_addr = r1, var_addr = r2, offset = r3,
-length = r4)`: looks the 32-byte id at `*r1` up in the (baked) sysvar
-cache and copies `buf[offset..offset+length)` to `*r2`, returning 0.
-This is the SUCCESS path — the spec owns the id bytes (read-only,
-framed) and the output buffer; the post-state has `r0 = 0` and the
-output buffer holding `slice` (the requested sysvar window, supplied
-together with `hSlice` pinning it to `buf`).
+`sol_get_sysvar(r1=id_addr, r2=out, r3=off, r4=len)`: look up the 32-byte id at
+`*r1` in the baked sysvar cache, copy `buf[off..off+len)` to `*r2`, return 0.
+SUCCESS path: spec owns id bytes (read-only, framed) + output buffer; post has
+`r0 = 0` and the buffer holding `slice` (`hSlice` pins it to `buf`).
 
-H7: the pre-fix spec claimed `r0 := 0` with memory UNCHANGED — false
-on chain (the real syscall fills the buffer). The hypotheses
-discharge, in agave's check order: the `var_addr < MM_INPUT_START`
-parameter restriction (`hOutAddr`), the u64 offset/length overflow
-aborts (`hOffLen`/`hOutLen`), the cache hit (`hBuf` — use the
-`SysvarData.sysvarBuffer_*` evaluation lemmas), and the in-range
-window (`hInRange`). The `h_disj` hypothesis keeps the id read
-disjoint from the output write (implicit in the sepConj but accepted
-explicitly, as in `call_sol_get_return_data_spec`). -/
+H7: the pre-fix spec claimed memory UNCHANGED — false on chain. Hypotheses
+discharge in agave's check order: `var_addr < MM_INPUT_START`, u64 off/len
+overflow, cache hit, in-range window. `h_disj` keeps the id read disjoint from
+the output write. -/
 
 theorem call_sol_get_sysvar_spec
     (r0Old idA outA offV lenV : Nat)
@@ -257,7 +240,6 @@ theorem call_sol_get_sysvar_spec
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) ** (outA ↦Bytes slice)) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- ==== Phase 1: destructure the 7-atom precondition. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r1, h_T2, hd_r1_T2, hu_r1_T2, h_r1_pred, h_T2_sat⟩ := h_T1_sat
@@ -276,7 +258,7 @@ theorem call_sol_get_sysvar_spec
   clear h_r0 h_r1 h_r2 h_r3 h_r4 h_id h_out
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
-  -- ==== Phase 2: range-disjointness corollaries from h_disj. ====
+  -- range-disjointness corollaries from h_disj
   have h_id_out_disj (i : Nat) (hi : i < 32) :
       idA + i < outA ∨ idA + i ≥ outA + lenV := by
     rcases h_disj with h | h
@@ -287,7 +269,6 @@ theorem call_sol_get_sysvar_spec
     rcases h_disj with h | h
     · right; omega
     · left; omega
-  -- ==== Phase 3: lift atom projections through hp. ====
   have h_P_regs_r0 : h_P.regs .r0 = some r0Old := by
     rw [← hu_r0_T1]
     exact PartialState.union_regs_of_left_some
@@ -365,7 +346,7 @@ theorem call_sol_get_sysvar_spec
   have hs_r2_field : s.regs.r2 = outA := hs_regs_r2
   have hs_r3_field : s.regs.r3 = offV := hs_regs_r3
   have hs_r4_field : s.regs.r4 = lenV := hs_regs_r4
-  -- The id bytes at idA (through the Bytes32 atom).
+  -- id bytes at idA (through the Bytes32 atom)
   have h_P_mem_id (i : Nat) (hi : i < 32) :
       h_P.mem (idA + i) = some (idBytes.get! i).toNat := by
     rw [← hu_r0_T1,
@@ -386,7 +367,7 @@ theorem call_sol_get_sysvar_spec
         ← hu_id_out]
     exact PartialState.union_mem_of_left_some
       (PartialState.singletonMem32Bytes_mem_at idA idBytes i hi)
-  -- The output buffer bytes at outA.
+  -- output buffer bytes at outA
   have h_P_mem_out (i : Nat) (hi : i < bsOut.size) :
       h_P.mem (outA + i) = some (bsOut.get! i).toNat := by
     have h_out_id_no : outA + i < idA ∨ outA + i ≥ idA + 32 := by
@@ -417,15 +398,14 @@ theorem call_sol_get_sysvar_spec
   have hs_mem_id (i : Nat) (hi : i < 32) :
       s.mem (idA + i) = (idBytes.get! i).toNat :=
     hcm_mem (idA + i) _ (hp_mem_id i hi)
-  -- ==== Phase 4: readBytes at idA recovers idBytes; executeFn shape. ====
+  -- readBytes at idA recovers idBytes
   have h_readBytes : readBytes s.mem idA 32 = idBytes := by
     apply readBytes_eq_of_match s.mem idA 32 idBytes hIdSize
     intro i hi
     rw [hs_mem_id i hi]
     exact Nat.mod_eq_of_lt (idBytes.get! i).toNat_lt
-  -- Branch dischargers, phrased on the raw register fields so they fire
-  -- BEFORE the hs_*_field rewrites (agave's check order: parameter
-  -- restriction, u64 overflows, cache hit, window in range).
+  -- branch dischargers in agave's check order: param restriction, u64
+  -- overflows, cache hit, window in range
   have h_if1 : ¬ (s.regs.r2 ≥ Memory.INPUT_START) := by
     rw [hs_r2_field]; exact Nat.not_le.mpr hOutAddr
   have h_if2 : ¬ (s.regs.r3 + s.regs.r4 ≥ U64_MODULUS
@@ -484,7 +464,7 @@ theorem call_sol_get_sysvar_spec
     rw [if_neg]
     rintro ⟨h1, h2⟩
     rcases h_out_addr with h | h <;> omega
-  -- ==== Phase 5: facts about hR. ====
+  -- facts about hR
   have hd_PR_regs := hd_PR.regs
   have hd_PR_mem := hd_PR.mem
   have h_R_no_r0 : h_R.regs .r0 = none := by
@@ -518,7 +498,7 @@ theorem call_sol_get_sysvar_spec
     rcases hd_PR_mem (idA + i) with hl | hr
     · rw [h_P_mem_id i hi] at hl; nomatch hl
     · exact hr
-  -- P owns no returnData / callStack (all atoms are regs/mem).
+  -- P owns no returnData / callStack (all atoms are regs/mem)
   have h_P_rd_pre : h_P.returnData = none := by
     rw [← hu_r0_T1, ← hu_r1_T2, ← hu_r2_T3, ← hu_r3_T4, ← hu_r4_T5,
         ← hu_id_out]
@@ -527,7 +507,7 @@ theorem call_sol_get_sysvar_spec
     rw [← hu_r0_T1, ← hu_r1_T2, ← hu_r2_T3, ← hu_r3_T4, ← hu_r4_T5,
         ← hu_id_out]
     rfl
-  -- ==== Phase 6: build the post heap. ====
+  -- build the post heap
   let h_r0_new : PartialState := PartialState.singletonReg .r0 0
   let h_r1_new : PartialState := PartialState.singletonReg .r1 idA
   let h_r2_new : PartialState := PartialState.singletonReg .r2 outA
@@ -662,7 +642,7 @@ theorem call_sol_get_sysvar_spec
             (PartialState.singletonMem32Bytes_regs .r0)]
       exact PartialState.singletonMemBytes_regs .r0
     · left; exact PartialState.singletonReg_regs_other hr
-  -- Per-field projections of h_P_new.
+  -- per-field projections of h_P_new
   have h_P_new_regs_r0 : h_P_new.regs .r0 = some 0 := by
     show (h_r0_new.union h_T1_new).regs .r0 = some 0
     exact PartialState.union_regs_of_left_some
@@ -834,7 +814,7 @@ theorem call_sol_get_sysvar_spec
                       (PartialState.singletonMemBytes outA slice))))))).callStack
         = none
     rfl
-  -- ==== Phase 7: outer disjointness h_P_new ⫫ h_R. ====
+  -- outer disjointness h_P_new ⫫ h_R
   have hd_PnewR : h_P_new.Disjoint h_R :=
     { regs := fun r => by
         by_cases h0 : r = .r0
@@ -878,7 +858,6 @@ theorem call_sol_get_sysvar_spec
       pc := Or.inl h_P_new_pc
       returnData := Or.inl h_P_new_rd_none
       callStack := Or.inl h_P_new_cs_none }
-  -- ==== Phase 8: assemble the witness. ====
   refine ⟨1, Nat.le_refl 1, ?_, hexec_exit, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · rw [hstep_eq]
@@ -1007,19 +986,16 @@ theorem call_sol_get_sysvar_spec
 
 /-! ## `sol_get_sysvar` with a CELLS-shaped out region (qedlift)
 
-For a 17-byte sysvar slice (rent) whose buffer the program then reads
-as dwords, the blob shape would overlap the read cells; this variant
-owns the out region as TWO `↦U64` cells + one `↦ₘ` byte, pre AND post
-(H8 Phase C-2, `docs/QEDLIFT_ALIASING_DESIGN.md`). Derived from
-`call_sol_get_sysvar_spec` with
-`bsOut := u64LE oldD0 ++ (u64LE oldD1 ++ byteBA oldB)`. -/
+For a 17-byte sysvar slice (rent) the program reads as dwords, the blob shape
+would overlap the read cells; this variant owns the out region as TWO `↦U64`
+cells + one `↦ₘ` byte, pre AND post (H8 Phase C-2). Derived from
+`call_sol_get_sysvar_spec` with `bsOut := u64LE oldD0 ++ (u64LE oldD1 ++ byteBA
+oldB)`. -/
 
 set_option maxHeartbeats 1600000 in
-/-- `sol_get_sysvar` (success, exact 17-byte slice) over a
-    cell-granular out region. The slice decomposition
-    (`hsl : slice = u64LE w0 ++ (u64LE w1 ++ byteBA wb)`) and the cell
-    addresses (`ha1`/`ha2`) are parameters the emitter discharges by
-    `decide` / surfaces as side hypotheses. -/
+/-- `sol_get_sysvar` (success, exact 17-byte slice) over a cell-granular out
+    region. The slice decomposition `hsl` and cell addresses `ha1`/`ha2` are
+    parameters the emitter discharges by `decide` / surfaces as side hyps. -/
 theorem call_sol_get_sysvar_cells17_spec
     (r0Old idA outA offV lenV a1 a2 : Nat)
     (oldD0 oldD1 oldB w0 w1 wb : Nat)
@@ -1050,7 +1026,7 @@ theorem call_sol_get_sysvar_cells17_spec
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) **
         ((outA ↦U64 w0) ** ((a1 ↦U64 w1) ** (a2 ↦ₘ wb)))) := by
-  -- The cells ↔ blob decomposition, parametric over the cell values.
+  -- cells ↔ blob decomposition, parametric over the cell values
   have hcells : ∀ (d0 d1 b : Nat), b < 256 → ∀ h',
       memBytesIs outA (PartialState.u64LE d0
         ++ (PartialState.u64LE d1 ++ PartialState.byteBA b)) h'
@@ -1109,11 +1085,9 @@ theorem call_sol_get_sysvar_cells17_spec
 
 /-! ## Syscall: `.unknown` (unrecognized hash)
 
-For any unrecognized / unregistered syscall hash agave rejects the
-program; we fail closed with the same effect (`exitCode :=
-ERR_UNSUPPORTED_INSTRUCTION`) rather than fabricate success. A lift that
-reaches an unknown syscall therefore proves an ABORT. See
-docs/SOUNDNESS_AUDIT_* (H7). -/
+agave rejects any unregistered syscall hash; we fail closed with the same effect
+(`exitCode := ERR_UNSUPPORTED_INSTRUCTION`), so a lift reaching an unknown
+syscall proves an ABORT. SOUNDNESS_AUDIT (H7). -/
 
 theorem call_sol_unknown_aborts_spec (hash : Nat) (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,

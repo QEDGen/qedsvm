@@ -1,49 +1,9 @@
 /-
-  Layer 3b artifact #9 (N+8): the 4-instruction **post-call cleanup**
-  between the third `call_local` exit (PC 13) and the far-jump
-  (PC 17). Bytes 0x7758-0x7770 of
-  `qedsvm-rs/tests/fixtures/p_token.so` (release
-  `p-token@v1.0.0-rc.1`).
+  L3b N+8: 4-insn post-call cleanup (bytes 0x7758-0x7770, p-token@v1.0.0-rc.1).
 
-  Chain (adds 4 components to ThirdCall's 75-CU run through PC 13):
-
-  - `mov64 r1, -0x1` at PC 13 — sentinel "FP-overflow returned" value
-    bound to r1. Overwritten in two insns; only matters if the
-    subsequent `jsgt` *takes* the branch, which the happy path
-    arranges not to do.
-  - `jsgt r0, 0x0, +0x1` at PC 14. After ThirdCall, r0 = cmpTableLt.
-    Happy path needs `toSigned64 cmpTableLt ≤ 0` so the branch
-    doesn't fire and we fall through to PC 15. The taken branch
-    would skip the ldxdw, leaving the sentinel r1 = -1 bound — the
-    "FP comparison says amount > maxI64AsDouble" error path that
-    pinocchio bubbles up to its caller.
-  - `ldxdw r1, [r10 - 0x828]` at PC 15. Restores the converted i64
-    from the stack slot that L4TwoCallsExt stored at PC 9. After
-    this, r1 = f64ToI64Result initR6 — the actual transfer amount
-    expressed as an integer.
-  - `mov64 r4, r9` at PC 16. Stages r9 (an accounts-array pointer
-    held since the prelude) into r4 ahead of the far-jump.
-
-  Triple advances PC 0 → 17. Total CU = 75 + 4 = **79 CU**.
-
-  Re: ROADMAP wording. The roadmap says "1 CU remaining" before this
-  arm. That framing was based on mollusk's measured 76-CU final
-  total, but L1-L5's 75 CU was only the FP-validation prelude — the
-  post-call cleanup (this arm, 4 CU) and the account-mutation block
-  reached via the far-jump (~50 insns, several syscalls) still add
-  real CU. The actual "remaining" CU at end of L5 is much more than
-  1; the 76-CU mollusk number reflects the *total* program CU, not
-  the CU-after-L5.
-
-  New precondition vs ThirdCall: `toSigned64 cmpTableLt ≤ 0`. The
-  LT-path callee returns r0 from the lookup table at
-  `lookupTableBase + ltOffset`; for pinocchio's actual table, that
-  value's high bit is set (= negative signed), so the jsgt falls
-  through. The explicit precondition makes the dependence visible.
-
-  Followup: PTokenTransferArmAccountMutation.lean (L7) covers the
-  far-jump at PC 17 to byte 0x9068 plus the account-mutation block
-  that actually shifts the token balances.
+  Adds to ThirdCall: mov r1←-1 (FP-overflow sentinel), jsgt-NT (cmpTableLt≤0 signed),
+  ldxdw r1←stack (restores f64ToI64Result), mov r4←r9. 79 CU total, pc → 17.
+  New precondition: `toSigned64 cmpTableLt ≤ 0` (jsgt collapse).
 -/
 
 import PToken.TransferArm.L5ThirdCall
@@ -64,12 +24,10 @@ open Examples.PTokenTransferArmTwoCallsExt (maxI64AsDouble)
 open Examples.PTokenTransferArmThirdCall
   (transferArmThirdCallCr callerContPc3 calleeEntry3)
 
-/-- PC right after the last instruction in this arm; the far-jump
-    at PC 17 is the next arm's responsibility. -/
+/-- Exit PC of this arm (far-jump at PC 17 is handled by the next arm). -/
 def beforeFarJumpPc : Nat := 17
 
-/-- Combined CodeReq: extends `transferArmThirdCallCr` (which ends at
-    PC 13) with the 4-insn post-call cleanup at PCs 13..16. -/
+/-- CodeReq: `transferArmThirdCallCr` + 4-insn cleanup at PCs 13..16. -/
 def transferArmFarJumpCr : CodeReq :=
   (((transferArmThirdCallCr.union
       (CodeReq.singleton 13 (.mov64 .r1 (.imm (-1))))).union
@@ -121,7 +79,6 @@ theorem p_token_transfer_arm_far_jump_spec
           rt.containsRange
             (effectiveAddr (lookupTableBase + ltOffset) 0) 8 = true) ∧
         rt.containsRange (effectiveAddr initR10 stackSlotOff) 8 = true) := by
-  -- Use ThirdCall as a single chain component.
   have h_third_call :=
     Examples.PTokenTransferArmThirdCall.p_token_transfer_arm_third_call_spec
       initR0 initR1 initR2 initR3 initR4 initR5 initR6
@@ -129,12 +86,9 @@ theorem p_token_transfer_arm_far_jump_spec
       oldStackVal cmpTableGt cmpTableLt
       h_initR6_sign h_initR6_notNaN h_initR6_lb h_initR6_ub
       h_initR6_lt_maxI64 h_cmpTable_pos h_cmpTableLt_ub
-  -- mov64 r1, -1 at PC 13. vOld of r1 = lookupTableBase + ltOffset
-  -- (from ThirdCall's post).
   have h_mov_sentinel := mov64_imm_spec .r1 (-1)
     (lookupTableBase + ltOffset) 13 (by decide)
-  -- jsgt r0, 0, target=16 at PC 14. Under h_cmpTableLt_le_zero, the
-  -- branch doesn't fire and PC collapses to 15.
+  -- jsgt collapse: cmpTableLt≤0 signed → branch NT, falls to PC 15.
   have h_jsgt := jsgt_imm_spec .r0 0 cmpTableLt 14 16
   have h_toU64_0 : toU64 (0 : Int) = 0 := by unfold toU64; decide
   have h_signed_0 : toSigned64 0 = 0 := by
@@ -147,15 +101,9 @@ theorem p_token_transfer_arm_far_jump_spec
         have h_not : ¬ (toSigned64 cmpTableLt > (0 : Int)) := by
           omega
         simp [h_not]] at h_jsgt
-  -- ldxdw r1, [r10 - 0x828] at PC 15. v = f64ToI64Result initR6
-  -- (written to the slot by L4TwoCallsExt's stxdw at PC 9, preserved
-  -- through L5's callee body and exit). vOldDst of r1 = toU64 (-1)
-  -- (from h_mov_sentinel).
+  -- f64ToI64Result < 2^64: it's `_ % U64_MODULUS >>> shift`, both bounded.
   have h_f64_ub : f64ToI64Result initR6 < 2 ^ 64 := by
     unfold f64ToI64Result
-    -- Final form is `with_hidden >>> shift_amount`. `with_hidden < 2^64`
-    -- since it's `_ % U64_MODULUS`. Right shift of a value < 2^64 is
-    -- also < 2^64.
     have h_mod : ∀ n : Nat, n % U64_MODULUS < 2 ^ 64 := by
       intro n
       show n % U64_MODULUS < U64_MODULUS
@@ -167,7 +115,6 @@ theorem p_token_transfer_arm_far_jump_spec
   have h_ldxdw := ldxdw_spec .r1 .r10 stackSlotOff
     (toU64 ((-1) : Int)) initR10 (f64ToI64Result initR6) 15
     (by decide) h_f64_ub
-  -- mov64 r4, r9 at PC 16. vOld of r4 = initR6 (from ThirdCall's post).
   have h_mov_r4 := mov64_reg_spec .r4 .r9 initR6 initR9 16 (by decide)
   unfold transferArmFarJumpCr beforeFarJumpPc
   show cuTripleWithinMem (75 + 1 + 1 + 1 + 1) 0 0 (16 + 1) _ _ _ _

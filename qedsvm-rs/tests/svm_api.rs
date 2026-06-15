@@ -1,12 +1,4 @@
-//! Mollusk-shaped API smoke test. Drives `Svm::process_instruction`
-//! against the hand-assembled `helloElf` (mov64 r0, 42; exit) — same
-//! fixture as `tests/smoke.rs`, but through the high-level instruction
-//! API instead of the raw `run_buffer` entry.
-//!
-//! The hello program doesn't touch its input buffer, so its resulting
-//! state is uninteresting beyond "Failure(exit_code=42), no logs, no
-//! return data". The point is to exercise the full plumbing path:
-//!   instruction + accounts → serialize → Lean → deserialize → result
+//! API smoke tests for `Svm::process_instruction` (helloElf fixture); exercises full serialize→Lean→deserialize path.
 
 use qedsvm::{
     deserialize_account_writes, serialize_parameters,
@@ -16,10 +8,7 @@ use solana_account::{Account, AccountSharedData};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
-// 289-byte ELF: mov64 r0, 42; exit. Same fixture as
-// `SVM.SBPF.RunnerDemo.helloElf` and `tests/smoke.rs`. Generated from
-// the Lean fixture (see `tests/fixtures/`).
-const HELLO_ELF: &[u8] = include_bytes!("fixtures/hello.elf");
+const HELLO_ELF: &[u8] = include_bytes!("fixtures/hello.elf"); // 289B: `mov64 r0, 42; exit` = RunnerDemo.helloElf
 
 fn pid(seed: u64) -> Pubkey {
     let mut b = [0u8; 32];
@@ -54,10 +43,7 @@ fn process_instruction_with_no_accounts_returns_helloelfs_exit_code() {
 
 #[test]
 fn process_instruction_with_accounts_round_trips_unchanged_buffer() {
-    // hello ELF doesn't touch the input region, so accounts come back
-    // identical to what we put in. This exercises serialize +
-    // deserialize on a real (Pubkey, AccountSharedData) shape.
-    let program_id = pid(2);
+    let program_id = pid(2); // hello ELF never touches input; accounts come back identical
     let key = pid(3);
     let owner = pid(4);
     let pre = shared(7_777, vec![0xAA, 0xBB, 0xCC], owner);
@@ -95,9 +81,7 @@ fn unknown_program_returns_svm_error() {
 
 #[test]
 fn compute_units_consumed_matches_program_length() {
-    // The hello ELF is `mov64 r0, 42; exit` — two instructions.
-    // Each step under `executeFnCpiWithFuel` consumes 1 fuel unit,
-    // so consumed should be exactly 2.
+    // hello ELF = 2 instructions (mov64 r0,42; exit); 1 fuel per step → CU=2.
     let program_id = pid(7);
     let mut svm = Svm::default();
     svm.add_program(&program_id, HELLO_ELF);
@@ -108,13 +92,7 @@ fn compute_units_consumed_matches_program_length() {
     assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
 }
 
-/// Registering a second program triggers the CPI registry path
-/// (`run_buffer_with_registry`) instead of the plain `run_buffer`
-/// entry. The "main" program (hello ELF) doesn't actually CPI, so
-/// the registry's contents go unused — this is purely an exercise of
-/// the FFI plumbing: encode_registry → Lean parseRegistry → runner.
-/// Asserts the same observable result as the single-program case,
-/// proving the new entry is wire-compatible.
+/// Second program registered → registry path (`run_buffer_with_registry`); same result as single-program case.
 #[test]
 fn process_instruction_with_multiple_programs_routes_through_registry() {
     let main_id = pid(20);
@@ -130,12 +108,7 @@ fn process_instruction_with_multiple_programs_routes_through_registry() {
 
 #[test]
 fn process_instruction_accepts_shuffled_caller_accounts() {
-    // instruction.accounts is [A, B]; caller passes [B, A]. The
-    // canonical-ordering refactor must look accounts up by pubkey
-    // and produce a result that matches what we'd get if the caller
-    // had passed [A, B]. hello ELF doesn't touch the buffer, so we
-    // can assert the resulting_accounts shape and lamport values
-    // match instruction.accounts order.
+    // ix.accounts=[A,B], caller passes [B,A]; canonical-ordering must look up by pubkey and return in ix order.
     let program_id = pid(50);
     let a = pid(51);
     let b = pid(52);
@@ -164,18 +137,12 @@ fn process_instruction_accepts_shuffled_caller_accounts() {
     assert_eq!(a1.lamports(), 222);
     assert_eq!(a0.data(), &[0xAA]);
     assert_eq!(a1.data(), &[0xBB]);
-    // hello ELF still exits 42 — the point is validate_post_state
-    // doesn't downgrade to ERR_INVALID_POSTSTATE just because the
-    // caller's slice was shuffled.
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 }); // validate_post_state not triggered by shuffle
 }
 
 #[test]
 fn process_instruction_ignores_extra_caller_accounts() {
-    // Caller passes one extra account that isn't referenced by
-    // instruction.accounts. The extra must be silently dropped: it
-    // shouldn't appear in resulting_accounts and shouldn't poison
-    // lamport-conservation (its lamports must not enter the sum).
+    // Extra account not in ix.accounts must be silently dropped (not in resulting_accounts, not in lamport sum).
     let program_id = pid(60);
     let used = pid(61);
     let extra = pid(62);
@@ -188,8 +155,6 @@ fn process_instruction_ignores_extra_caller_accounts() {
         accounts: vec![AccountMeta::new(used, false)],
         data: vec![],
     };
-    // Extra account has wildly more lamports than `used` — if it leaked
-    // into the conservation sum, post_sum (only `used`) wouldn't match.
     let supplied = vec![
         (used, shared(100, vec![], owner)),
         (extra, shared(9_999_999, vec![], owner)),
@@ -198,8 +163,7 @@ fn process_instruction_ignores_extra_caller_accounts() {
 
     assert_eq!(result.resulting_accounts.len(), 1);
     assert_eq!(result.resulting_accounts[0].0, used);
-    // Lamport conservation passed → program_result not downgraded.
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 }); // lamport conservation passed
 }
 
 #[test]
@@ -213,8 +177,7 @@ fn missing_account_returns_serialize_error() {
         accounts: vec![AccountMeta::new(missing, false)],
         data: vec![],
     };
-    // Pass an empty accounts list — the `missing` pubkey isn't there.
-    match svm.process_instruction(&ix, &[]) {
+    match svm.process_instruction(&ix, &[]) { // missing pubkey → MissingAccount
         Err(SvmError::Serialize(SerializeError::MissingAccount(pk))) => {
             assert_eq!(pk, missing);
         }
@@ -227,8 +190,7 @@ fn too_many_accounts_returns_serialize_error() {
     let program_id = pid(10);
     let mut svm = Svm::default();
     svm.add_program(&program_id, HELLO_ELF);
-    // 256 accounts → exceeds the 255 cap (NON_DUP_MARKER = 0xFF).
-    let metas: Vec<AccountMeta> =
+    let metas: Vec<AccountMeta> = // 256 > 255 cap (NON_DUP_MARKER = 0xFF)
         (0..256).map(|i| AccountMeta::new(pid(1000 + i), false)).collect();
     let accounts: Vec<(Pubkey, AccountSharedData)> =
         (0..256).map(|i| (pid(1000 + i), shared(0, vec![], pid(0)))).collect();
@@ -243,10 +205,7 @@ fn too_many_accounts_returns_serialize_error() {
 
 #[test]
 fn cu_budget_exhaustion_reports_full_budget_consumed() {
-    // Set the budget to 1 — not enough to finish even `mov64 r0, 42;
-    // exit`. The runner should run 1 step, then return state with
-    // exitCode = none. With v1 fuel accounting consumed = budget - 0
-    // = 1 (the remaining fuel was zero at the OOG transition).
+    // Budget=1 → can't finish even 2-insn program; consumed=1 (remaining fuel=0 at OOG).
     let program_id = pid(8);
     let mut svm = Svm::default().with_cu_budget(1);
     svm.add_program(&program_id, HELLO_ELF);
@@ -258,10 +217,7 @@ fn cu_budget_exhaustion_reports_full_budget_consumed() {
 
 #[test]
 fn compute_budget_from_instructions_picks_up_set_unit_limit() {
-    // Build a transaction-shaped ix list: one ComputeBudget
-    // `SetComputeUnitLimit(50_000)` followed by the actual program ix.
-    // After `with_compute_budget_from_instructions` the per-instruction
-    // budget should reflect the 50k value, not the 200k default.
+    // SetComputeUnitLimit(50_000) followed by prog ix → budget reflects 50k, not 200k default.
     let program_id = pid(9);
     let cb_id = solana_sdk_ids::compute_budget::ID;
     // Discriminant 2 + u32 LE = 50000 (0xC350)
@@ -277,12 +233,8 @@ fn compute_budget_from_instructions_picks_up_set_unit_limit() {
     svm.add_program(&program_id, HELLO_ELF);
 
     let result = svm.process_instruction(&prog_ix, &[]).expect("runs");
-    // hello.elf is 2 BPF instructions, well under 50k. Budget honored.
     assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
-    assert!(result.compute_units_consumed < 50_000);
-    // And not the default 200_000 — budget plumbing actually changed.
-    // (Test that exhaustion at 50_001 would still pass on a longer
-    // program is implicit — we just need to know the limit moved.)
+    assert!(result.compute_units_consumed < 50_000); // well under 50k; confirms budget changed from 200k default
 }
 
 #[test]
@@ -298,8 +250,7 @@ fn compute_budget_from_instructions_no_set_limit_keeps_default() {
 
 #[test]
 fn compute_budget_from_instructions_last_set_limit_wins() {
-    // Two SetComputeUnitLimit ixs: the second's value (100k) overrides
-    // the first's (10k). Mirrors agave's iterate-and-overwrite.
+    // Two SetComputeUnitLimit ixs: last (100k) overrides first (10k); mirrors agave iterate-and-overwrite.
     let program_id = pid(11);
     let cb_id = solana_sdk_ids::compute_budget::ID;
     let set_10k  = Instruction { program_id: cb_id, accounts: vec![],
@@ -314,35 +265,12 @@ fn compute_budget_from_instructions_last_set_limit_wins() {
 
     let result = svm.process_instruction(&prog_ix, &[]).expect("runs");
     assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
-    // hello.elf well under 10k, so a wrong-direction precedence (10k
-    // wins) would still pass this exit-code check. The CU bound here
-    // is < 100k AND ≥ 10k — but hello is only 2 insns so we can't
-    // distinguish. The "last wins" semantics are covered by an
-    // OutOfBudget-on-set-1 test if needed; this asserts the call works.
-    assert!(result.compute_units_consumed > 0);
+    assert!(result.compute_units_consumed > 0); // hello is 2 insns, can't distinguish 10k vs 100k; just assert the call works
 }
 
-// --- pinocchio borrow_state reproducer (issue #2) ---
-//
-// Pinocchio's RuntimeAccount overlays a `borrow_state: u8` field on
-// byte 0 of each per-account record (= the dup_info byte). When a
-// program calls `try_borrow_mut_*`, that byte is set to 0; the matching
-// `Drop` restores it to `NOT_BORROWED` (0xFF). If a borrow guard
-// outlives the entrypoint return (a valid Pinocchio pattern), the byte
-// stays at 0 (mut-borrowed) or 1..254 (partial immutable borrow drops).
-//
-// Our deserializer reads dup_info from the buffer and rejects anything
-// it can't make sense of — turning a perfectly valid Pinocchio handler
-// into `BufferParse(InvalidDupIndex)`. Worse, with ≥2 accounts a
-// stomped value can collide with a real dup index and silently return
-// the wrong account.
-//
-// Confirmed mechanism: `solana-account-view/src/lib.rs`
-// (`NOT_BORROWED = u8::MAX` is "the same as NON_DUP_MARKER"; `Drop for
-// RefMut` writes `NOT_BORROWED`; `try_borrow_mut` writes 0).
-//
-// These tests drive the failure synthetically by stomping the byte
-// post-serialize — no Pinocchio program required.
+// Pinocchio borrow_state reproducer (issue #2): RuntimeAccount overlays borrow_state on the dup_info byte.
+// try_borrow_mut writes 0; Drop restores 0xFF; a guard leaked across return leaves byte at 0..254.
+// Tests stomp the byte post-serialize to drive the failure without a real Pinocchio program.
 
 fn stomp_first_dup_byte(buf: &mut [u8], to: u8) {
     // [u64 num_accounts][u8 dup_info ...] — first dup byte is at offset 8.
@@ -351,8 +279,7 @@ fn stomp_first_dup_byte(buf: &mut [u8], to: u8) {
 
 #[test]
 fn deserialize_tolerates_pinocchio_mut_borrow_leaked_to_byte_zero() {
-    // Reporter's exact shape: 1 read-only account, byte 0 of the record
-    // ends at 0 (try_borrow_mut held across return).
+    // try_borrow_mut held across return leaves byte at 0; deserializer must tolerate.
     let program_id = pid(60);
     let key = pid(61);
     let owner = pid(62);
@@ -376,7 +303,7 @@ fn deserialize_tolerates_pinocchio_mut_borrow_leaked_to_byte_zero() {
 
 #[test]
 fn deserialize_tolerates_partial_immutable_borrow_drop() {
-    // try_borrow + miss-a-drop leaves byte at 0xFE.
+    // miss-a-drop of immutable borrow leaves byte at 0xFE; deserializer must tolerate.
     let program_id = pid(63);
     let key = pid(64);
     let owner = pid(65);
@@ -398,11 +325,7 @@ fn deserialize_tolerates_partial_immutable_borrow_drop() {
 
 #[test]
 fn deserialize_with_two_distinct_accounts_does_not_misread_stomped_byte_as_dup() {
-    // The dangerous case: 2 *distinct* accounts, byte 0 of the second
-    // record stomped to 0. A buffer-trusting deserializer would treat
-    // that as "this is a dup of account 0" and return account 0's data
-    // for the second slot — silently wrong. We assert the right key
-    // comes back in slot 1.
+    // 2 distinct accounts, second's dup byte stomped to 0 — buffer-trusting code silently aliases; must not.
     let program_id = pid(70);
     let a = pid(71);
     let b = pid(72);
@@ -421,11 +344,6 @@ fn deserialize_with_two_distinct_accounts_does_not_misread_stomped_byte_as_dup()
     let pre = [(a, pre_a.clone()), (b, pre_b.clone())];
     let mut buf = serialize_parameters(&ix, &pre, &program_id).expect("serialize");
 
-    // Locate the second account's dup byte. First record is:
-    //   [u64 num_accounts] + 1B dup + 1B sig + 1B writable + 1B exec
-    //   + 4B padding + 32B key + 32B owner + 8B lamports + 8B data_len
-    //   + data_len bytes + align_pad + MAX_PERMITTED_DATA_INCREASE
-    //   + 8B rent_epoch
     use solana_program_entrypoint::{BPF_ALIGN_OF_U128, MAX_PERMITTED_DATA_INCREASE};
     let first_record_data_len = 3usize;
     let align_pad = (BPF_ALIGN_OF_U128 - first_record_data_len % BPF_ALIGN_OF_U128) % BPF_ALIGN_OF_U128;

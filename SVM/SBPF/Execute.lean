@@ -1,15 +1,10 @@
--- sBPF execution semantics: single-step and multi-step evaluation
---
--- Defines the machine state, register file, and the step function that gives
--- operational semantics to each sBPF instruction.
+-- sBPF execution semantics: single- and multi-step evaluation.
 
 import SVM.SBPF.ISA
 import SVM.SBPF.Memory
 import SVM.SBPF.Machine
--- Crypto syscall modules. Each `import` provides both `exec` and the
--- corresponding `cu` charge for the syscall(s) it owns; the
--- dispatchers below are the only place a `Syscall` variant maps to
--- those bodies.
+-- Crypto syscall modules: each provides `exec` + `cu`; the dispatchers below
+-- are the only place a `Syscall` variant maps to those bodies.
 import SVM.Syscalls.Sha256
 import SVM.Syscalls.Sha512
 import SVM.Syscalls.Keccak256
@@ -21,7 +16,7 @@ import SVM.Syscalls.Bls12_381
 import SVM.Syscalls.AltBn128
 import SVM.Syscalls.BigModExp
 import SVM.Syscalls.Pda
--- Non-crypto syscall modules. Same shape: `exec` + `cu`.
+-- Non-crypto syscall modules (same shape: `exec` + `cu`).
 import SVM.Syscalls.Logging
 import SVM.Syscalls.MemOps
 import SVM.Syscalls.Sysvar
@@ -36,13 +31,10 @@ open Memory
 
 /-! ## Per-syscall CU costs
 
-Pure dispatcher. Each syscall variant maps to its module's `cu`
-constant (or `cu (s)` for the few variable-cost cases). Mirrors
-agave master's `SVMTransactionExecutionCost::default()` from
-`program-runtime/src/execution_budget.rs`; the *value* of each
-charge lives next to the syscall body. The caller in `step`
-subtracts the per-instruction baseline of 1 before bumping
-`State.cuConsumed`. -/
+Pure dispatcher mirroring agave's `SVMTransactionExecutionCost::default()`
+(`program-runtime/src/execution_budget.rs`); each charge's value lives next to
+its syscall body. The `step` caller subtracts the per-instruction baseline of 1
+before bumping `State.cuConsumed`. -/
 
 def syscallCu (sc : Syscall) (s : State) : Nat :=
   match sc with
@@ -71,17 +63,15 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_alt_bn128_group_op                      => AltBn128.cuGroupOp s
   | .sol_alt_bn128_compression                   => AltBn128.cuCompression s
   | .sol_big_mod_exp                             => BigModExp.cu s
-  -- PDA. `create` is a fixed `cuPerAttempt`; `try_find` scales
-  -- per bump-loop iteration (matches agave's pre-loop + per-failed
-  -- iter charging in `SyscallTryFindProgramAddress::rust`).
+  -- PDA: `create` fixed; `try_find` scales per bump-loop iteration (matches
+  -- agave's pre-loop + per-failed-iter charging in `SyscallTryFindProgramAddress::rust`).
   | .sol_create_program_address                  => Pda.cuCreate
   | .sol_try_find_program_address                => Pda.cuTryFind s
   -- CPI
   | .sol_invoke_signed | .sol_invoke_signed_c    => Cpi.cu
-  -- Sysvars — agave charges `sysvar_base_cost + size_of::<T>()`,
-  -- so each typed sysvar getter has its own constant. `sol_get_sysvar`
-  -- (the size-parameterized generic) charges the length-dependent
-  -- `cuGetSysvar`; `sol_get_epoch_stake` (which doesn't fetch a
+  -- Sysvars — agave charges `sysvar_base_cost + size_of::<T>()`, so each typed
+  -- getter has its own constant. The size-parameterized `sol_get_sysvar`
+  -- charges length-dependent `cuGetSysvar`; `sol_get_epoch_stake` (fetches no
   -- struct) stays on the bare base cost.
   | .sol_get_clock_sysvar                        => Sysvar.cuClock
   | .sol_get_rent_sysvar                         => Sysvar.cuRent
@@ -107,20 +97,9 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
 
 /-- Execute a syscall.
 
-    Logging syscalls (`sol_log_*`) write into `State.log` as observable
-    side effects — `sol_log_` and `sol_log_pubkey` log their bytes
-    verbatim; `sol_log_64_` hex-formats r1..r5 as `0x<hex>, 0x<hex>,
-    …`; `sol_log_compute_units_` formats the consumed-CU count;
-    `sol_log_data` reads the slice array and emits hex-encoded fields
-    joined by space (slightly diverges from agave's base64 — see
-    `SVM.SBPF.Logging` docstring for the rationale).
-
-    Memory syscalls (`sol_memcpy_*`, `sol_memmove_*`, `sol_memset_*`,
-    `sol_memcmp_*`) are implemented with their actual byte-moving / byte-
-    comparison semantics on `Mem`.
-
-    `sol_set_return_data` / `sol_get_return_data` use `State.returnData`.
-
+    Logging syscalls write into `State.log`; `sol_log_data` emits space-joined
+    hex fields, diverging from agave's base64 (see `SVM.SBPF.Logging` docstring).
+    Memory syscalls have real byte-move/compare semantics on `Mem`.
     Unmodeled syscalls fall through to the default arm (set `r0 := 0`). -/
 
 @[simp] def execSyscall (sc : Syscall) (s : State) : State :=
@@ -320,31 +299,19 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
 
   | .call syscall =>
     let s' := execSyscall syscall s
-    -- Agave charges `1 (instruction baseline) + syscallCu` per
-    -- syscall step. Our per-step fuel decrement already accounts
-    -- for the 1; bump `cuConsumed` by the full `syscallCu`.
+    -- Agave charges `1 (baseline) + syscallCu`; the baseline 1 is already
+    -- handled per-step, so bump `cuConsumed` by the full `syscallCu`.
     { s' with pc := pc'
               cuConsumed := s'.cuConsumed + syscallCu syscall s }
 
   | .call_local target =>
-    -- Push a `CallFrame` (retPc, r6, r7, r8, r9, r10), then jump
-    -- and bump r10 by one V0 frame. Matches solana-sbpf's
-    -- `Interpreter::push_frame` AS WIRED BY THE AGAVE PROGRAM-RUNTIME
-    -- WE COMPARE AGAINST: agave 4.0 sets
-    --   enable_stack_frame_gaps = !feature_set.virtual_address_space_adjustments
-    -- and `FeatureSet::all_enabled()` (which mollusk uses) activates
-    -- that feature, leaving gaps **off**. So even though the V0 sBPF
-    -- version reports `stack_frame_gaps() = true`, the effective
-    -- num_frames is 1 and r10 bumps by `stack_frame_size = 0x1000`,
-    -- not 0x2000. (Earlier mainnet feature gates flipped the same
-    -- way for direct mapping; the net is the same: modern agave bumps
-    -- by 0x1000 per call.) r6–r9 are snapshotted so `.exit` can
-    -- restore them (LLVM treats those as callee-saved). V1/V2 leave
-    -- r10 to the program — not modeled yet. r10 is updated via direct
-    -- record syntax (not `RegFile.set`) so the user-visible no-op
-    -- lemma for r10 writes (`RegFile.set_r10`, a theorem) is preserved.
-    -- Call-depth limit (H4): the 65th nested frame aborts with
-    -- `CallDepthExceeded` in solana-sbpf. Fail closed at MAX_CALL_DEPTH.
+    -- Push a `CallFrame`, jump, bump r10 by one V0 frame. r10 bumps by
+    -- `stack_frame_size = 0x1000` not 0x2000: agave under `FeatureSet::all_enabled()`
+    -- (mollusk's config) leaves `enable_stack_frame_gaps` off, so effective
+    -- num_frames is 1 despite V0 reporting `stack_frame_gaps() = true`.
+    -- r6–r9 are snapshotted for `.exit` to restore (LLVM callee-saved). r10 uses
+    -- direct record syntax (not `RegFile.set`) so the r10-write no-op lemma holds.
+    -- Call-depth limit (H4): solana-sbpf aborts the 65th frame; fail closed at MAX_CALL_DEPTH.
     if s.callStack.length ≥ MAX_CALL_DEPTH then
       { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED, vmError := some .callDepthExceeded }
     else
@@ -356,11 +323,9 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
                callStack := frame :: s.callStack }
 
   | .callx _reg =>
-    -- Indirect call. Real sBPF V0 pushes a frame, translates the
-    -- register value as a virtual address to a logical PC, and checks
-    -- call depth; none of that is modeled (and the target-register
-    -- field differs across SBPF versions). Rather than fabricate a bare
-    -- jump — which could prove a false exit code — we fail closed.
+    -- Indirect call: V0's frame push + VA→PC translation + depth check aren't
+    -- modeled (and the target-register field varies across SBPF versions). Fail
+    -- closed rather than fabricate a bare jump that could prove a false exit code.
     -- See docs/SOUNDNESS_AUDIT_*.md (C2).
     { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction }
 
@@ -379,21 +344,17 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
 
 abbrev Program := Array Insn
 
-/-- Charge one instruction's BASELINE compute unit. `cuConsumed` is the
-    TOTAL CU meter (baseline 1/instruction + the syscall surcharge `step`
-    already adds), so the budget check below sees the real agave-CU total.
-    Only `cuConsumed` changes — every other field (and every `step_*`
-    projection lemma) is untouched. -/
+/-- Charge one instruction's baseline compute unit. `cuConsumed` is the total CU
+    meter (baseline 1/instruction + the syscall surcharge `step` adds), so the
+    budget check sees the real agave-CU total. Only `cuConsumed` changes. -/
 @[simp] def chargeCu (s : State) : State :=
   { s with cuConsumed := s.cuConsumed + 1 }
 
 /-- Execute using a function-based instruction fetch (O(1) per step).
 
-    Fails CLOSED on compute-budget overrun (H5): before each instruction,
-    if `cuConsumed` (total CU so far) already exceeds `cuBudget`, halt and
-    return the over-budget state with `exitCode = none` — surfaced as
-    `OutOfBudget` on the wire, matching agave's `ComputeBudgetExceeded`.
-    The check is idempotent (a resumed over-budget state re-halts). -/
+    Fails closed on compute-budget overrun (H5): if `cuConsumed` exceeds
+    `cuBudget` before an instruction, halt with `exitCode = none` (wire
+    `OutOfBudget`, matching agave's `ComputeBudgetExceeded`). Idempotent. -/
 def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
   match fuel with
   | 0 => s
@@ -406,10 +367,8 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
       | none => { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }
       | some insn => executeFn fetch (chargeCu (step insn s)) fuel'
 
-/-- Create an initial machine state with r1 pointing to the input buffer.
-    `regions` is the memory map the program runs under — `.ldx`/`.st`/`.stx`
-    check accesses against this table and trap with `ERR_ACCESS_VIOLATION`
-    on a miss. -/
+/-- Initial machine state, r1 → input buffer. `regions` is the memory map;
+    `.ldx`/`.st`/`.stx` check against it and trap `ERR_ACCESS_VIOLATION` on miss. -/
 @[simp] def initState (inputAddr : Nat) (mem : Mem) (regions : RegionTable)
     (cuBudget : Nat := 200000) : State where
   regs := { r1 := inputAddr, r10 := STACK_START + 0x1000 }
@@ -418,15 +377,10 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
   pc := 0
   cuBudget := cuBudget
 
-/-- Two-pointer initial state for SIMD-0321 programs.
-    r1 = input buffer, r2 = instruction data pointer.
-    `entryPc` allows starting at a non-zero entrypoint (e.g. when error
-    handlers are laid out before the entrypoint).
-
-    `cuBudget` defaults to the per-instruction transaction default
-    (200k, matching `Runner.RunConfig`): spec-side concrete runs are
-    now budget-metered (H5), so a default of 0 would halt after one
-    instruction. -/
+/-- Two-pointer initial state for SIMD-0321 programs: r1 = input buffer,
+    r2 = instruction data pointer. `entryPc` allows a non-zero entrypoint.
+    `cuBudget` defaults to 200k (the tx default, matching `Runner.RunConfig`):
+    runs are budget-metered (H5), so a default of 0 would halt after one step. -/
 @[simp] def initState2 (inputAddr insnAddr : Nat) (mem : Mem) (regions : RegionTable)
     (entryPc : Nat := 0) (cuBudget : Nat := 200000) : State where
   regs := { r1 := inputAddr, r2 := insnAddr, r10 := STACK_START + 0x1000 }
@@ -448,9 +402,8 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
     executeFn fetch s 0 = s := by
   simp [executeFn]
 
-/-- An over-budget running state is a fixed point of `executeFn`: the
-    budget check halts immediately, for any fuel. Companion to
-    `executeFn_halted` (which covers `exitCode = some`). -/
+/-- An over-budget running state is a fixed point of `executeFn` (budget check
+    halts for any fuel). Companion to `executeFn_halted` (`exitCode = some`). -/
 theorem executeFn_overBudget (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (h_run : s.exitCode = none) (h_over : s.cuConsumed > s.cuBudget) :
     executeFn fetch s n = s := by
@@ -501,35 +454,27 @@ theorem executeFn_compose (fetch : Nat → Option Insn) (s : State) (n m : Nat) 
 
 /-! ## Frame pointer (r10) — user-write invariance
 
-User code cannot write to r10: `RegFile.set .r10 v = rf` is a no-op
-(see `RegFile.set_r10` / `RegFile.set_preserves_r10` near the top of
-this file). User-visible ALU and load instructions all go through
-`RegFile.set`, so as far as user code can see r10 is constant from
-entry. The runtime, on the other hand, *does* update r10 when
-allocating frames — `.call_local` bumps it by 0x1000, `.exit`
-restores from the saved value on the call stack. Those use direct
-record syntax, not `RegFile.set`, so the no-op lemma is untouched. -/
+`RegFile.set .r10 v = rf` is a no-op (see `RegFile.set_r10`), and user ALU/load
+arms all route through `RegFile.set`, so r10 is constant under user code. The
+runtime updates r10 via direct record syntax (`.call_local` +0x1000, `.exit`
+restores), bypassing `RegFile.set`, so the no-op lemma is untouched. -/
 
 @[simp] theorem execSyscall_preserves_r10 (sc : Syscall) (s : State) :
     (execSyscall sc s).regs.r10 = s.regs.r10 := by
-  -- Every syscall body preserves r10 in every branch (no syscall writes
-  -- r10). `simp` unfolds the bodies (incl. commitOptional); `repeat' split`
-  -- breaks any residual `if`/`match` guards (e.g. validate's nested
-  -- curve-id ifs, Pda/Poseidon's Option match) so each leaf closes.
+  -- No syscall writes r10. `simp` unfolds bodies; `repeat' split` breaks
+  -- residual `if`/`match` guards (validate's curve-id ifs, Pda/Poseidon Option).
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
 
-/-- Whether an instruction is `.call_local` — the only `step` arm that
-    *pushes* onto `callStack`. The `.exit` arm with non-empty `callStack`
-    *pops*, but the run starts with `callStack = []` and never grows it
-    unless a `.call_local` is fetched along the way. (Moved here from
-    `RunnerBridge.lean` for the conditional r10 lemmas below.) -/
+/-- Whether an instruction is `.call_local` — the only `step` arm that pushes
+    onto `callStack` (`.exit` pops, but the run starts `callStack = []` and only
+    grows via `.call_local`). Used by the conditional r10 lemmas below. -/
 def Insn.isCallLocal : Insn → Bool
   | .call_local _ => true
   | _             => false
 
-/-- `execTryFind` preserves `callStack` in both match arms. Companion
-    to `execTryFind_preserves_regions` at `Pda.lean:193`. -/
+/-- `execTryFind` preserves `callStack` in both arms. Companion to
+    `execTryFind_preserves_regions` at `Pda.lean:193`. -/
 @[simp] theorem execTryFind_preserves_callStack (s : State) :
     (Pda.execTryFind s).callStack = s.callStack := by
   simp only [Pda.execTryFind]
@@ -542,9 +487,8 @@ def Insn.isCallLocal : Insn → Bool
     rfl
   · rfl
 
-/-- `execSyscall` never modifies `callStack`. The CPI-stub
-    `Cpi.exec` just sets `r0 := 0`; all other syscalls touch only
-    `regs`/`mem`/`log`/`returnData`. -/
+/-- `execSyscall` never modifies `callStack` (CPI-stub `Cpi.exec` sets `r0 := 0`;
+    other syscalls touch only `regs`/`mem`/`log`/`returnData`). -/
 @[simp] theorem execSyscall_preserves_callStack (sc : Syscall) (s : State) :
     (execSyscall sc s).callStack = s.callStack := by
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
@@ -552,17 +496,12 @@ def Insn.isCallLocal : Insn → Bool
 
 /-! ## Conditional r10 frame lemmas (#32 item 4)
 
-Blanket r10 preservation is FALSE under call-stack semantics:
-`.call_local` bumps r10 by a frame and `.exit` restores it from the
-popped frame. The honest form is conditional — r10 (and the empty
-call stack) are preserved across any window in which no `.call_local`
-is fetched: with the stack empty, `.exit` halts instead of popping,
-`.callx` is a jump with no frame push, and every other instruction
-either goes through `RegFile.set` (a no-op on r10) or a syscall
-(`execSyscall_preserves_r10`). These are the upstream replacements
-for the four blanket lemmas qedgen's vendored copy carried
-(`step_preserves_r10`, `executeFn_preserves_r10`,
-`executeFn_r10_initState{,2}`). -/
+Blanket r10 preservation is FALSE: `.call_local` bumps r10, `.exit` restores it.
+The honest form is conditional on no `.call_local` being fetched in the window —
+then with an empty stack `.exit` halts (no pop), `.callx` pushes nothing, and
+every other arm routes through `RegFile.set` (r10 no-op) or a syscall
+(`execSyscall_preserves_r10`). Upstream replacements for the four blanket lemmas
+in qedgen's vendored copy. -/
 
 /-- One step preserves r10 when the instruction is not `.call_local`
     and the call stack is empty. -/
@@ -644,17 +583,10 @@ theorem executeFn_r10_initState2
 
 /-! ## Region table — execution invariant
 
-The `step` function never mutates `s.regions`: the field stays fixed
-once the runner has built it. Pattern proofs that compose multiple
-steps need this to discharge a "bounds in the new state" obligation
-from the original bound.
-
-Each syscall body is a record-update over `s` that doesn't mention
-`regions`, so `(execSyscall sc s).regions = s.regions` reduces by
-definitional unfolding once `sc` is concrete (i.e. after `cases sc`).
-`step`'s ALU/jump arms are pure record-updates too; the branchy arms
-(`ldx`/`st`/`stx`/`div*`/`mod*` and `exit`) require a `split` or a
-match-case to surface the underlying record-update. -/
+`step` never mutates `s.regions`; multi-step pattern proofs need this to carry a
+bounds obligation into the new state. Syscall bodies and ALU/jump arms are pure
+record-updates not mentioning `regions`; the branchy arms (`ldx`/`st`/`stx`/`div*`/`mod*`/`exit`)
+need a `split` or match-case to surface the record-update. -/
 
 @[simp] theorem execSyscall_preserves_regions (sc : Syscall) (s : State) :
     (execSyscall sc s).regions = s.regions := by
@@ -690,15 +622,12 @@ match-case to surface the underlying record-update. -/
 
 /-! ## cuBudget invariance (H5)
 
-`cuBudget` is set once at state creation and never mutated by execution —
-neither by `step` (no arm mentions it), nor by any syscall body, nor by
-`chargeCu` (which only bumps `cuConsumed`). The budget side-condition in
-`cuTripleWithin` survives sequential composition because of exactly this:
-the intermediate state's budget equals the initial one. -/
+`cuBudget` is set once at state creation and never mutated by `step`, any syscall,
+or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition in
+`cuTripleWithin` survives sequential composition: intermediate budget = initial. -/
 
-/-- `execTryFind` preserves `cuBudget` in both match arms. Companion to
-    `execTryFind_preserves_regions` / `_callStack` — `simp` needs it at
-    the PDA leaf of the blanket syscall lemma below. -/
+/-- `execTryFind` preserves `cuBudget` in both arms. Companion to
+    `execTryFind_preserves_regions`/`_callStack`; `simp` needs it at the PDA leaf. -/
 @[simp] theorem execTryFind_preserves_cuBudget (s : State) :
     (Pda.execTryFind s).cuBudget = s.cuBudget := by
   simp only [Pda.execTryFind]
@@ -747,19 +676,15 @@ the intermediate state's budget equals the initial one. -/
 
 /-! ## Paired execution (for tactic automation)
 
-`execInsn` and `execSegment` mirror `step` and `executeFn` exactly but
-return `PUnit × State` instead of bare `State`. This paired form lets
-`wp_exec` unfold one instruction at a time via `dsimp [execInsn, ...]`
-at O(1) kernel depth per step — avoiding the recursive blowup that would
-occur from unfolding `executeFn` directly. -/
+`execInsn`/`execSegment` mirror `step`/`executeFn` but return `PUnit × State`.
+The pairing lets `wp_exec` unfold one instruction at a time via `dsimp` at O(1)
+kernel depth, avoiding the blowup of unfolding `executeFn` directly. -/
 
-/-- A paired state transition: takes a state, returns `((), newState)`.
-    The `PUnit` tag is structurally required so `dsimp` can reduce
-    one instruction at a time without unfolding the full recursion. -/
+/-- A paired state transition `s ↦ ((), newState)`; the `PUnit` tag lets `dsimp`
+    reduce one instruction without unfolding the full recursion. -/
 abbrev Step := State → PUnit × State
 
-/-- Single-step paired transition: mirrors `step` exactly but returns
-    `PUnit × State` for tactic-friendly unfolding. -/
+/-- Single-step paired transition: mirrors `step`, returns `PUnit × State`. -/
 @[simp] def execInsn (insn : Insn) : Step := fun s =>
   let rf := s.regs
   let mem := s.mem

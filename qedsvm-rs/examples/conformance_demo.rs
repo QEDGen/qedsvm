@@ -1,19 +1,7 @@
 //! qedsvm vs mollusk: byte+CU conformance demo.
-//!
-//! Runs two real `cargo-build-sbf`-produced ELFs through both engines
-//! and prints a side-by-side comparison:
-//!
-//!   1. `incrementer.so`  Mutates accounts[0].data[0..8] via u64+1 write-back.
-//!                        Smallest fixture that produces a non-trivial post-state.
-//!   2. `p_token.so`      pinocchio's SPL Token reimplementation. Transfer 250
-//!                        of a token from source to dest. The headline fixture:
-//!                        76 CU, byte-for-byte equal to mollusk on every output.
-//!
-//! Run:
-//!   cargo run --release --features diff-mollusk \
-//!     --manifest-path qedsvm-rs/Cargo.toml --example conformance_demo
-//!
-//! Exit code 0 if every fixture is byte+CU identical, 1 otherwise.
+//! Fixtures: incrementer.so (u64+1 write-back) + p_token.so Transfer 250 (76 CU).
+//! Run: cargo run --release --features diff-mollusk --manifest-path qedsvm-rs/Cargo.toml --example conformance_demo
+//! Exit 0 if byte+CU identical, 1 otherwise.
 
 #![cfg(feature = "diff-mollusk")]
 
@@ -234,9 +222,7 @@ fn p_token_transfer() -> Comparison {
 }
 
 fn main() {
-    // Silence mollusk's internal tracing (its `register-tracing` feature
-    // emits DEBUG-level solana_runtime logs to stderr).
-    std::env::set_var("RUST_LOG", "off");
+    std::env::set_var("RUST_LOG", "off"); // silence mollusk's register-tracing DEBUG logs
 
     println!("qedsvm vs mollusk: byte+CU conformance demo");
     println!("===========================================");

@@ -1,42 +1,9 @@
 /-
-  Layer 3b artifact (happy-path chain, H3d): Hoare triple over the
-  next 8 instructions of the p-token Transfer main body at bytes
-  0x8778-0x87b0 of `qedsvm-rs/tests/fixtures/p_token.so`.
+  L3b H3d: 8-insn frozen-check + balance-check (bytes 0x8778-0x87b0, p-token@v1.0.0-rc.1).
 
-  Continues H3c. Resets r6/r7 to new constants, checks that neither
-  account is "frozen" (state ≠ 2), then loads the transfer amount
-  and source balance and validates that the balance covers the
-  amount (no underflow).
-
-  The 8 instructions:
-
-  ```
-  8778: b7 06 00 00 00 00 ...   mov64 r6, 0x0
-  8780: b7 07 00 00 11 00 ...   mov64 r7, 0x11
-  8788: 15 03 08 03 02 00 ...   jeq r3, 0x2, +0x308     ← NOT taken: srcState ≠ 2
-  8790: 15 05 07 03 02 00 ...   jeq r5, 0x2, +0x307     ← NOT taken: dstState ≠ 2
-  8798: 79 22 81 7a 00 00 ...   ldxdw r2, [r2 + 0x7a81] ← txAmount (dst=src=r2)
-  87a0: b7 07 00 00 01 00 ...   mov64 r7, 0x1
-  87a8: 79 13 a0 00 00 00 ...   ldxdw r3, [r1 + 0xa0]   ← srcBalance
-  87b0: ad 23 03 03 00 00 ...   jlt r3, r2, +0x303      ← NOT taken: srcBalance ≥ txAmount
-  ```
-
-  The `ldxdw r2, [r2 + 0x7a81]` is the **same-register load** —
-  read r2's value as base, then write the loaded value back to r2.
-  Required adding `ldxdw_same_spec` to the framework
-  (`SVM/SBPF/InstructionSpecs/MemDwordLoad.lean`) since the standard
-  `ldxdw_spec` carries an implicit `dst ≠ src` from its partial-state
-  disjointness obligations.
-
-  Spec: 8 CU advancing PC 0 → 8. Post:
-  - r2 := txAmount (was baseAddr, now overwritten)
-  - r3 := srcBalance
-  - r6 := toU64 0
-  - r7 := toU64 1
-  - r1, r5, mem cells preserved.
-
-  3 if-collapses: 2 jeq-not-taken + 1 jlt-reg-not-taken (under
-  srcBalance ≥ txAmount).
+  Continues H3c. Resets r6/r7, checks neither account is frozen (state≠2), loads txAmount
+  via same-register ldxdw (r2←mem[r2+0x7a81]; required `ldxdw_same_spec`), loads srcBalance,
+  validates srcBalance≥txAmount. 8 CU, 3 if-collapses (2 jeq-NT + 1 jlt-reg-NT).
 -/
 
 import PToken.TransferArm.H3cStateChecks
@@ -87,13 +54,12 @@ theorem p_token_transfer_arm_h3d_spec
   have h1 := mov64_imm_spec .r7 0x11 (toU64 0) (base + 1) (by decide)
   have h2 := jeq_imm_spec .r3 2 (srcState % 256) (base + 2) h3dErrPc
   have h3 := jeq_imm_spec .r5 2 (dstState % 256) (base + 3) h3dErrPc
-  -- Same-register ldxdw: reads r2's value as base, writes loaded value back to r2.
+  -- Same-register load: base from r2, result written back to r2.
   have h4 := ldxdw_same_spec .r2 0x7a81 baseAddr txAmount (base + 4) (by decide) h_amt_lt
   have h5 := mov64_imm_spec .r7 1 (toU64 0x11) (base + 5) (by decide)
   have h6 := ldxdw_spec .r3 .r1 0xa0 (srcState % 256) initR1 srcBalance (base + 6)
                         (by decide) h_bal_lt
   have h7 := jlt_reg_spec .r3 .r2 srcBalance txAmount (base + 7) h3dErrPc
-  -- Collapse the three cond branches.
   rw [show (if srcState % 256 = toU64 2 then h3dErrPc else (base + 2) + 1) = base + 3 from by
         have hno : ¬ (srcState % 256 = toU64 2) := by
           show ¬ (srcState % 256 = 2); omega

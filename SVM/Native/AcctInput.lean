@@ -1,11 +1,8 @@
 -- Account input view for native program handlers.
 --
--- The CPI handler in `Runner.lean` parses each caller-supplied
--- `AccountInfo` via `parseAccountInfo` into a `Runner.ParsedAcct`.
--- For native dispatch we hand the per-account info to the handler
--- in a trimmed-down struct (`AcctInput`) that only carries fields
--- a native program reads/writes — keeping the Native modules
--- decoupled from the BPF marshaling internals in Runner.
+-- Trimmed-down per-account struct (`AcctInput`) that carries only the
+-- fields a native program reads/writes, keeping Native modules decoupled
+-- from Runner's BPF marshaling internals.
 
 import SVM.SBPF.Memory
 
@@ -13,10 +10,9 @@ namespace SVM.Native
 
 open SVM.SBPF.Memory
 
-/-- Per-account info that native handlers operate on. The
-    `*RefAddr`/`*Ptr` fields are caller-memory addresses the
-    handler writes through, mirroring agave's `BorrowedAccount`
-    API where mutations land in the caller's view of the account. -/
+/-- Per-account info native handlers operate on. The `*RefAddr`/`*Ptr`
+    fields are caller-memory addresses written through, mirroring agave's
+    `BorrowedAccount` (mutations land in the caller's account view). -/
 structure AcctInput where
   /-- Account pubkey (32 bytes, raw little-endian). -/
   key             : ByteArray
@@ -30,23 +26,18 @@ structure AcctInput where
   isSigner        : Bool
   /-- Whether the BPF caller marked this account as writable. -/
   isWritable      : Bool
-  /-- Caller-memory u64 slot holding the live lamport balance.
-      Writing here is how System::Transfer mutates lamports. -/
+  /-- Caller-memory u64 slot holding the live lamport balance; System::Transfer writes here. -/
   lamportsRefAddr : Nat
   /-- Caller-memory pointer to the 32-byte owner slot. -/
   ownerPtr        : Nat
   /-- Caller-memory pointer to the account-data byte buffer. -/
   dataPtr         : Nat
-  /-- Caller-memory u64 slot holding the live data length. System
-      operations that resize an account (CreateAccount, Allocate)
-      write the new length here. -/
+  /-- Caller-memory u64 slot holding the live data length; resize ops (CreateAccount, Allocate) write it. -/
   dataLenRefAddr  : Nat
   deriving Inhabited
 
-/-- Outcome of a native dispatch. `r0` is the CPI exit code surfaced
-    to the BPF caller; `cu` is added to `State.cuConsumed` by the
-    caller's CPI arm. `mem` is the post-call caller memory
-    (lamport/owner/data mutations applied). -/
+/-- Outcome of a native dispatch: `r0` CPI exit code, `cu` added to
+    `State.cuConsumed` by the caller's CPI arm, `mem` post-call caller memory. -/
 structure NativeResult where
   mem : Mem
   r0  : Nat

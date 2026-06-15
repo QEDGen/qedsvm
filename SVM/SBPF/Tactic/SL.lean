@@ -1,59 +1,36 @@
 /-
-  Phase C — separation-logic tactic suite.
+  Phase C — separation-logic tactic suite. Surface: 4 tactics + 1 term macro.
 
-  Surface (4 tactics + 1 term macro):
+  - `sl_disjoint_codereq` (macro_rules) — discharge `CodeReq.Disjoint` for a
+    union-of-singletons via `Disjoint_union_left` + `decide`. Auto-discharges
+    the disjointness subgoals from `sl_block_iter`'s composition steps.
 
-  - `sl_disjoint_codereq` (macro_rules) — discharge `CodeReq.Disjoint`
-    goals for a union-of-singletons via `Disjoint_union_left` + `decide`.
-    Used as the auto-discharge for the disjointness subgoals collected
-    by `sl_block_iter`'s composition steps.
+  - `sl_pcfree` (elab) — discharge `(...).pcFree` over atoms joined by `**`.
+    Elab-wrapped so the recursive `apply pcFree_sepConj <;> sl_pcfree` branch
+    bails on unresolved metavariables (else `apply` spuriously sets
+    `?F := ?A ** ?B` and loops). Auto-discharges F.pcFree from the framing steps.
 
-  - `sl_pcfree` (elab) — discharge `(...).pcFree` goals built from
-    atomic assertions (`emp`, `regIs`, `memByteIs`, the `memU{16,32,64}Is`
-    flavours) joined by `**`. Elab-wrapped so the recursive
-    `apply pcFree_sepConj <;> sl_pcfree` branch bails when the target
-    still has unresolved metavariables (otherwise `apply` spuriously
-    solves a `?F.pcFree` goal by setting `?F := ?A ** ?B` and loops).
-    Used as the auto-discharge for the F.pcFree subgoals collected by
-    `sl_block_iter`'s framing steps.
+  - `sl_swap_first h` (term macro) — swap the first two atoms of a 3-fold
+    sepConj in `h`'s pre/post. Pre-aligns a spec's atom order to the macro state
+    when natural orders differ (the frame-extractor only handles prefix/suffix
+    alignment, so interleaved permutations need this hint).
 
-  - `sl_swap_first h` (term macro) — reshape `h`'s pre/post via
-    `sepConj_swap_first_two` (swap the first two atoms of a 3-fold
-    sepConj). Used to pre-align a spec's atom order to the surrounding
-    macro state when its natural order differs (e.g. `stxb_spec`
-    produces `baseReg ** valReg ** mem` but a macro composing it after
-    a `ldxb` step holds the value-reg first). The frame-extractor in
-    `sl_block_iter` only handles prefix / suffix atom alignment, so
-    interleaved permutations need this hint.
+  - `sl_block_iter [h1,…,hn]` (full elab) — chain `n` per-instruction specs into
+    one triple. Walks left-to-right, extracts each frame `F_i`
+    (state ≡ P_i ** F_i prefix, or F_i ** P_i suffix), frames via
+    `cuTripleWithin{,Mem}_frame_{right,left}`, composes via the
+    `..._seq{,_pure_left,_pure_right}` variant matching the (chain, step)
+    pure/mem combination. The `_seq_pure_*` lemmas drop the trivial-`True` `rr`
+    factor a pure step contributes, so the chain's `rr` is a left-folded `∧` of
+    only memory-side region requirements — matching user-written `rr_goal`.
+    pcFree/Disjoint subgoals go to `sl_pcfree`/`sl_disjoint_codereq`. Works for
+    arbitrary `n` (the prior `macro_rules`-only `sl_block` couldn't do 3+ steps:
+    nested `by`-block elab order left middle frames indeterminable at isDefEq).
 
-  - `sl_block_iter [h1, h2, …, hn]` (full elab) — chain `n`
-    per-instruction specs into a single triple. Walks left-to-right,
-    syntactically extracts the frame `F_i` per step
-    (state ≡ P_i ** F_i, prefix; or state ≡ F_i ** P_i, suffix), builds
-    the framed step via `cuTripleWithin{,Mem}_frame_{right,left}`, then
-    composes via the variant of `..._seq{,_pure_left,_pure_right}` that
-    matches the (chain, step) pure/mem combination. The
-    `_seq_pure_left/right` lemmas drop the trivial `True` `rr` factor a
-    pure step would otherwise contribute, so the chain's `rr` is a
-    left-folded `∧` of only the memory-side region requirements —
-    matching the natural shape of user-written `rr_goal`. pcFree and
-    Disjoint subgoals collected during the walk are dispatched via
-    `sl_pcfree` and `sl_disjoint_codereq`.
-
-    Works for arbitrary `n` (including the 3+ step direct compositions
-    that the previous `macro_rules`-only `sl_block` couldn't handle:
-    nested `by`-block elaboration order made the middle steps' frame
-    `F` indeterminable at `isDefEq` time).
-
-  Limitations of `sl_block_iter` — each requires the user to pre-shape
-  the spec list:
-
-  - The user's `goalPre` atoms must match each step's `P_i` either as a
-    prefix or suffix of the right-spine. Interleaved permutations
-    aren't handled; use `sl_swap_first` to pre-permute a spec.
-
-  - `rr_goal` must be a left-folded `∧` of the memory steps' rr's in
-    the same order they appear in the spec list.
+  `sl_block_iter` requires the user pre-shape the spec list: each step's `P_i`
+  must match `goalPre` as a right-spine prefix/suffix (interleaved → use
+  `sl_swap_first`); `rr_goal` must be a left-folded `∧` of the memory steps'
+  rr's in spec-list order.
 -/
 
 import Lean
@@ -122,10 +99,8 @@ elab_rules : tactic
         evalTactic (← `(tactic| apply pcFree_sepConj <;> sl_pcfree))
 
 /-! ## sl_swap_first — swap first two atoms of a 3-fold sepConj
-
-Given `h : cuTripleWithinMem N e e' cr (A ** B ** R) (A' ** B' ** R') rr`,
-produces `cuTripleWithinMem N e e' cr (B ** A ** R) (B' ** A' ** R') rr`.
-Used to pre-align a spec's atom order before `sl_block_iter`. -/
+Pre-aligns a spec's atom order before `sl_block_iter`:
+`(A ** B ** R)/(A' ** B' ** R') → (B ** A ** R)/(B' ** A' ** R')`. -/
 
 macro "sl_swap_first " h:term : term =>
   `(cuTripleWithinMem_weaken
@@ -139,8 +114,7 @@ namespace SLBlockIter
 
 open Lean Lean.Meta Lean.Elab.Tactic
 
-/-- Components extracted from a `cuTripleWithin[Mem]` application
-    type. -/
+/-- Components extracted from a `cuTripleWithin[Mem]` application type. -/
 structure StepInfo where
   isMem : Bool
   hyp : Expr
@@ -148,11 +122,9 @@ structure StepInfo where
   post : Expr
   deriving Inhabited
 
-/-- Parse a `cuTripleWithin[Mem]` type. Returns the parsed shape or
-    `none` if the type isn't a triple. Strips mdata; avoids `whnf` or
-    `unfold` because both `cuTripleWithin` and `cuTripleWithinMem` are
-    `def`s whose bodies reduce to `∀ R, …` (peering through them
-    erases the head constant we dispatch on). -/
+/-- Parse a `cuTripleWithin[Mem]` type (`none` if not a triple). Strips mdata
+    but avoids `whnf`/`unfold`: both triples are `def`s reducing to `∀ R, …`, so
+    peering through them erases the head constant we dispatch on. -/
 def parseTripleType (e : Expr) : MetaM (Option (Bool × Expr × Expr)) := do
   let e := (← instantiateMVars e).consumeMData
   let args := e.getAppArgs
@@ -165,8 +137,7 @@ def parseTripleType (e : Expr) : MetaM (Option (Bool × Expr × Expr)) := do
     return none
   | _ => return none
 
-/-- Extract the `cr` (code-requirement) argument from a `cuTripleWithin[Mem]`
-    application type. -/
+/-- Extract the `cr` (code-requirement) arg from a `cuTripleWithin[Mem]` type. -/
 def getCr (e : Expr) : MetaM Expr := do
   let e := (← instantiateMVars e).consumeMData
   let args := e.getAppArgs
@@ -178,14 +149,10 @@ def getCr (e : Expr) : MetaM Expr := do
   | _ => pure ()
   throwError m!"sl_block_iter.getCr: expected cuTripleWithin[Mem] type, got\n  {e}"
 
-/-- Recursively flatten a sepConj tree to its leaf atoms in left-to-right
-    order. `A ** B ** C` yields `[A, B, C]`; left-folded `(A ** B) ** C`
-    also yields `[A, B, C]`; atomic `X` yields `[X]`. Calls `Expr.eta`
-    before each step so an eta-expanded assertion produced by
-    `cuTripleWithinMem_weaken` over a lambda is seen through to its
-    underlying `sepConj` head. Both subtrees are recursed so non-right-
-    folded shapes (e.g. `(P ** Q) ** F` produced by a frame rule over a
-    multi-atom `P`) still flatten to the correct atom list. -/
+/-- Flatten a sepConj tree to its leaf atoms, left-to-right (any bracketing →
+    `[A, B, C]`). `Expr.eta` per step sees through eta-expanded assertions from
+    `cuTripleWithinMem_weaken`; both subtrees recurse so non-right-folded shapes
+    (`(P ** Q) ** F` from a frame rule over multi-atom `P`) still flatten right. -/
 partial def flattenSepConj (e : Expr) : List Expr :=
   let e := e.consumeMData.eta
   if e.isAppOfArity ``SVM.SBPF.sepConj 2 then
@@ -202,17 +169,11 @@ def rebuildSepConj : List Expr → MetaM Expr
     let tail ← rebuildSepConj rest
     mkAppM ``SVM.SBPF.sepConj #[a, tail]
 
-/-- Build a pointwise iff `∀ h, e h ↔ (right-fold of flatten e) h`.
-    Returns `none` if `e` is already right-folded (refl). Recursively
-    descends the sepConj tree, applying `sepConj_assoc` at each left-
-    grouped junction to pull the leftmost atom out, and lifting the
-    recursive normalization of the tail via `sepConj_iff_congr_right`.
-    Used after each frame application to keep `chain.pre`/`chain.post`
-    in fully right-folded form so the iff terms produced by
-    `buildPermuteIff` match the chain's Expr literally at the
-    `reshape_*` call sites. The `none` short-circuit avoids wrapping
-    chain with a no-op `reshape_pre`/`_post` when the chain side is
-    already right-folded (e.g. after a single-atom-pre frame step). -/
+/-- Build a pointwise iff `∀ h, e h ↔ (right-fold of flatten e) h` (`none` if
+    `e` already right-folded). Descends the tree, `sepConj_assoc` at each left-
+    grouped junction, lifting tail normalization via `sepConj_iff_congr_right`.
+    Keeps `chain.pre`/`.post` right-folded so `buildPermuteIff`'s iffs match the
+    chain Expr literally at the `reshape_*` sites; `none` avoids a no-op reshape. -/
 partial def buildRightFoldIff (e : Expr) : MetaM (Option Expr) := do
   let e := e.consumeMData.eta
   if !e.isAppOfArity ``SVM.SBPF.sepConj 2 then
@@ -228,14 +189,12 @@ partial def buildRightFoldIff (e : Expr) : MetaM (Option Expr) := do
     | some iff_R =>
       return some (← mkAppM ``SVM.SBPF.sepConj_iff_congr_right #[L, iff_R])
   else
-    -- L = (A ** L_rest); pull A out via sepConj_assoc, then recurse on the
-    -- *whole* reassociated form `A ** (L_rest ** R)`. Recursing on the whole
-    -- (rather than just `L_rest ** R` under a `congr_right A`) is what flattens
-    -- a *compound* head `A` — e.g. the codec's expanded pubkey group
-    -- `(c0 ** c1 ** c2 ** c3)` sitting as the head of `group ** rest`. Treating
-    -- such an `A` atomically left it nested, diverging from `flattenSepConj`'s
-    -- full flatten. Termination: each `assoc` lifts the leftmost atom one level,
-    -- strictly reducing the left-spine `sepConj` depth.
+    -- L = (A ** L_rest); pull A out via sepConj_assoc, recurse on the *whole*
+    -- reassociated `A ** (L_rest ** R)`. Recursing on the whole (not just
+    -- `L_rest ** R` under `congr_right A`) flattens a *compound* head `A` (e.g.
+    -- the codec's expanded pubkey group `(c0 ** c1 ** c2 ** c3)`), which treating
+    -- `A` atomically would leave nested. Termination: each assoc lifts the
+    -- leftmost atom one level, strictly reducing left-spine sepConj depth.
     let L_args := L.getAppArgs
     let A := L_args[0]!
     let L_rest := L_args[1]!
@@ -251,18 +210,13 @@ partial def buildRightFoldIff (e : Expr) : MetaM (Option Expr) := do
       return some combined
 
 /-! ## Pointwise-iff permutation construction
+Build a pointwise iff between two same-multiset atom lists' (compared via
+`isDefEq`) right-folded sepConjs. Aligns spec atoms with a running state when
+no prefix/suffix match exists. -/
 
-Given two `List Expr` of atoms over the same multiset (compared via
-`isDefEq`), build a Lean term proving the pointwise iff between their
-right-folded sepConjs. Used by `extractFrame`/`slBlockIter` to align
-spec atoms with a running state whose atom order doesn't naturally
-admit a prefix or suffix match. -/
-
-/-- Build a pointwise iff `∀ h, (atoms folded) h ↔ (atoms with k,k+1 swapped, folded) h`.
-    Requires `atoms.length ≥ k + 2`. Lifts the head swap (`sepConj_comm`
-    if 2-atom tail, else `sepConj_swap_first_two`) by `k` applications of
-    `sepConj_iff_congr_right` to push the swap deeper into the right
-    spine. -/
+/-- Pointwise iff `∀ h, (atoms folded) h ↔ (atoms with k,k+1 swapped, folded) h`
+    (needs `atoms.length ≥ k + 2`). Lifts the head swap (`sepConj_comm` / `_swap_first_two`)
+    by `k` `sepConj_iff_congr_right`s to push it down the right spine. -/
 def buildAdjacentSwapIff (atoms : List Expr) (k : Nat) : MetaM Expr := do
   let n := atoms.length
   unless k + 2 ≤ n do
@@ -289,14 +243,10 @@ def buildAdjacentSwapIff (atoms : List Expr) (k : Nat) : MetaM Expr := do
     inner ← mkAppM ``SVM.SBPF.sepConj_iff_congr_right #[leftAtom, inner]
   return inner
 
-/-- Normalize an atom Expr's address subterm using a fixed set of
-    common rewrites:
-      `effectiveAddr base (Int.ofNat n) → base + n`
-      `effectiveAddr base 0 → base` (subsumed by the above + Nat.add_zero)
-    This collapses the syntactic gap between `stxdw_spec`-produced
-    atoms (which use `effectiveAddr baseAddr off`) and macro/syscall
-    spec atoms (which write `baseAddr + 8` or `baseAddr` directly).
-    Walks via `Lean.Meta.transform`. -/
+/-- Normalize an atom's address via `effectiveAddr base (Int.ofNat n) → base + n`
+    (and `… 0 → base`), via `Lean.Meta.transform`. Collapses the syntactic gap
+    between `stxdw_spec` atoms (`effectiveAddr baseAddr off`) and macro/syscall
+    spec atoms (`baseAddr + 8` / `baseAddr` written directly). -/
 private def normalizeAtomExpr (e : Expr) : MetaM Expr :=
   Lean.Meta.transform e (post := fun e' => do
     let e'' := e'.consumeMData
@@ -327,12 +277,10 @@ private def normalizeAtomExpr (e : Expr) : MetaM Expr :=
         | _ => return .continue
     | _ => return .continue)
 
-/-- Atom equality. Structural-first (`==` → `eqv`), then normalize
-    `effectiveAddr` forms via `normalizeAtomExpr` and retry `==`,
-    finally fall back to `isDefEq`. The normalization step catches
-    the specific `stxdw_spec` vs macro-spec address-form mismatch
-    that triggered ~96K `Nat.rec` invocations per iter at iter 5 of
-    the stack-macro composition. -/
+/-- Atom equality: structural-first (`==`→`eqv`), then `normalizeAtomExpr` + retry
+    `==`, finally `isDefEq`. Normalization catches the `stxdw_spec` vs macro-spec
+    address mismatch that triggered ~96K `Nat.rec` per iter at iter 5 of the
+    stack-macro composition. -/
 private def atomEq (a b : Expr) : MetaM Bool := do
   if a == b then return true
   if a.eqv b then return true
@@ -341,14 +289,11 @@ private def atomEq (a b : Expr) : MetaM Bool := do
   if aN == bN then return true
   isDefEq a b
 
-/-- Selection-sort `src` into `tgt`-prefix order. For each `i ∈ [0..|tgt|)`,
-    finds `tgt[i]` in `src.drop i` (modulo `atomEq`) and bubbles it down
-    to position `i` via a sequence of adjacent transpositions. Returns
-    `none` if `tgt` is not a sub-multiset of `src`; else returns
-    `(swaps, finalAtoms)` where `swaps` is the list of positions `k`
-    indicating "swap positions `k` and `k+1` of the current state" in
-    order, and `finalAtoms` is the resulting permuted atom list (with
-    `tgt` as a prefix). -/
+/-- Selection-sort `src` into `tgt`-prefix order: bubble each `tgt[i]` (found in
+    `src.drop i` via `atomEq`) down to `i` by adjacent transpositions. `none` if
+    `tgt` isn't a sub-multiset of `src`; else `(swaps, finalAtoms)` where each
+    `swaps` position `k` means "swap state positions `k`,`k+1`", `finalAtoms` has
+    `tgt` as prefix. -/
 partial def bubbleSortToPrefix (src tgt : List Expr) :
     MetaM (Option (List Nat × List Expr)) := do
   if tgt.length > src.length then return none
@@ -375,18 +320,10 @@ partial def bubbleSortToPrefix (src tgt : List Expr) :
         p := p - 1
   return some (swaps.reverse, work.toList)
 
-/-- Build an iff `∀ h, (rebuildSepConj atoms) h ↔ (foldSepConj atoms_lit) h`
-    where `atoms_lit` is the Lean `List Assertion` literal containing
-    `atoms`. The iff "adds the trailing emp" — `foldSepConj` always
-    emits `... ** emp`, while `rebuildSepConj` does not.
-
-    Term depth: O(|atoms|) — one `congr_right` per atom + one
-    `sepConj_emp_right_symm` at the singleton base. Compare to the
-    old O(N²) chain.
-
-    Singleton (`[a]`): produces `sepConj_emp_right_symm a`.
-    Recursive (`a :: rest`): produces `sepConj_iff_congr_right a (recurse on rest)`.
-    Empty: throws (callers ensure non-empty). -/
+/-- Iff `∀ h, (rebuildSepConj atoms) h ↔ (foldSepConj atoms_lit) h`, adding the
+    trailing emp (`foldSepConj` emits `… ** emp`, `rebuildSepConj` doesn't).
+    O(|atoms|) term depth (one `congr_right` per atom + one
+    `sepConj_emp_right_symm` base), vs the old O(N²). Throws on empty. -/
 partial def buildRebuildToFoldIff : List Expr → MetaM Expr
   | [] => throwError "buildRebuildToFoldIff: empty atoms"
   | [a] => mkAppOptM ``SVM.SBPF.sepConj_emp_right_symm #[some a]
@@ -414,17 +351,13 @@ def mkNatListLit (ns : List Nat) : MetaM Expr := do
     acc ← mkAppOptM ``List.cons #[some natType, some kLit, some acc]
   return acc
 
-/-- Build the full pointwise iff `∀ h, (src folded) h ↔ (final folded) h`
-    where `final = tgt ++ frame` is `src` permuted to put `tgt` first.
-    Returns `none` if `tgt`'s atoms aren't a sub-multiset of `src`'s.
-    On success returns `(maybeIff, frame, didPermute)` where
-    `maybeIff = none` iff the permutation was the identity.
-
-    The iff is composed left-to-right via `sepConj_iff_trans_pw` over
-    `buildAdjacentSwapIff` outputs (one per bubble-sort swap). This
-    produces an O(N²) term in worst case, but each swap iff stays
-    bounded (no `applySwaps` reduction by Lean's kernel — which the
-    list-based alternative was incurring at ~100× cost). -/
+/-- Pointwise iff `∀ h, (src folded) h ↔ (final folded) h`, `final = tgt ++ frame`
+    (src permuted to put `tgt` first). `none` if `tgt` isn't a sub-multiset of
+    `src`; else `(maybeIff, frame, didPermute)` with `maybeIff = none` iff the
+    permutation was identity. Composed left-to-right via `sepConj_iff_trans_pw`
+    over `buildAdjacentSwapIff` outputs (one per swap): O(N²) worst case but each
+    swap iff stays bounded — no kernel `applySwaps` reduction (the list-based
+    alternative incurred ~100×). -/
 def buildPermuteIff (src tgt : List Expr) :
     MetaM (Option (Option Expr × List Expr × Bool)) := do
   match ← bubbleSortToPrefix src tgt with
@@ -460,24 +393,21 @@ inductive FrameResult where
   | noFrame
   | right (F : Expr)
   | left (F : Expr)
-  /-- A general permutation is needed before frame-extraction. The
-      `reshapeIff` proves `∀ h, (state folded) h ↔ ((target ++ frame)
-      folded) h`. `frameExpr` is the right-folded `frame` (atoms not in
-      `target`, in the post-permutation order). After applying the iff
-      via `weaken`, frame-extraction proceeds as a right-frame. -/
+  /-- Permutation needed before frame-extraction. `reshapeIff : ∀ h, (state folded) h ↔
+      ((target ++ frame) folded) h`; `frameExpr` is the right-folded `frame`. After
+      applying the iff via `weaken`, frame-extraction proceeds as a right-frame. -/
   | reshape (reshapeIff : Expr) (frameExpr : Option Expr)
   deriving Inhabited
 
-/-- Try to strip `targetAtoms` as a prefix of `stateAtoms` (modulo
-    `isDefEq`). Returns the remaining suffix on success. -/
+/-- Strip `targetAtoms` as a prefix of `stateAtoms` (modulo `atomEq`), returning
+    the remaining suffix. -/
 def tryStripPrefix : List Expr → List Expr → MetaM (Option (List Expr))
   | sAtoms, [] => return some sAtoms
   | [], _ :: _ => return none
   | s :: sRest, t :: tRest => do
     if ← atomEq s t then tryStripPrefix sRest tRest else return none
 
-/-- Try to strip `targetAtoms` as a suffix of `stateAtoms`. Returns the
-    remaining prefix on success. -/
+/-- Strip `targetAtoms` as a suffix of `stateAtoms`, returning the remaining prefix. -/
 def tryStripSuffix (stateAtoms targetAtoms : List Expr) :
     MetaM (Option (List Expr)) := do
   if targetAtoms.length > stateAtoms.length then return none
@@ -492,12 +422,9 @@ def tryStripSuffix (stateAtoms targetAtoms : List Expr) :
   if ← go suffixPart targetAtoms then return some prefixPart
   else return none
 
-/-- Compute the frame so that `state ≡ target ** F` (right frame),
-    `state ≡ F ** target` (left frame), `state ≡ target` (no frame), or
-    `state ≡ (target ** F) modulo permutation` (reshape needed).
-    Prefix/suffix paths are tried first as fast no-permute matches;
-    permutation falls back when target atoms are interleaved with
-    extra state atoms. -/
+/-- Compute the frame: `state ≡ target ** F` (right), `F ** target` (left),
+    `target` (none), or `target ** F` mod permutation (reshape). Fast prefix/suffix
+    paths first; permutation falls back when target atoms are interleaved. -/
 def extractFrame (state target : Expr) : MetaM FrameResult := do
   let stateAtoms := flattenSepConj state
   let targetAtoms := flattenSepConj target
@@ -523,13 +450,10 @@ def extractFrame (state target : Expr) : MetaM FrameResult := do
           else some <$> rebuildSepConj frame
         return .reshape iff frameExpr
 
-/-- Build the framed step. Pure steps stay pure; `composeSteps` picks
-    `_seq_pure_left/right` to chain them with a memory neighbour
-    without adding a trivial-True `rr` factor. Appends the F.pcFree
-    mvar (if any) to `pcfreeGoals`. Handles the post-reshape cases:
-    `.noFrame` / `.right` / `.left` only — `.reshape` is converted to
-    `.right` (or `.noFrame`) by `slBlockIter` after applying the iff.
-    -/
+/-- Build the framed step. Pure steps stay pure (`composeSteps` chains them via
+    `_seq_pure_*`). Appends the F.pcFree mvar to `pcfreeGoals`. Handles only
+    `.noFrame`/`.right`/`.left`; `.reshape` is lowered to `.right`/`.noFrame` by
+    `slBlockIter` before this call. -/
 def buildFramedStep (info : StepInfo) (fr : FrameResult)
     (pcfreeGoals : IO.Ref (List MVarId)) :
     MetaM (Expr × Bool) := do
@@ -541,8 +465,7 @@ def buildFramedStep (info : StepInfo) (fr : FrameResult)
     let pcfreeType ← mkAppOptM ``SVM.SBPF.Assertion.pcFree #[some F]
     let hF ← mkFreshExprMVar pcfreeType
     pcfreeGoals.modify (hF.mvarId! :: ·)
-    -- Extract N, M, pc1, pc2, cr, P, Q (and rr for Mem) from h's type to
-    -- skip mkAppM's implicit-arg inference work.
+    -- Extract N,M,pc1,pc2,cr,P,Q (+rr) from h's type to skip mkAppM inference.
     let hType ← inferType h
     let hArgs := (← instantiateMVars hType).consumeMData.getAppArgs
     let N := hArgs[0]!; let M := hArgs[1]!
@@ -580,10 +503,8 @@ def buildFramedStep (info : StepInfo) (fr : FrameResult)
   | .reshape .. =>
     throwError "sl_block_iter.buildFramedStep: .reshape should be lowered to .right / .noFrame before this call"
 
-/-- Apply `cuTripleWithin{,Mem}_reshape_post` to chain so its post becomes
-    `newPost`. Uses the pointwise iff `iff_post : ∀ h, chainPost h ↔
-    newPost h`. Extracts N/pc1/pc2/cr/P/Q from `chain`'s type
-    explicitly so `mkAppOptM` doesn't have to infer them. -/
+/-- Reshape chain's post to `newPost` via `cuTripleWithin{,Mem}_reshape_post` and
+    `iff_post : ∀ h, chainPost h ↔ newPost h`. Args extracted explicitly to skip inference. -/
 def reshapeChainPost (chain : Expr) (chainIsMem : Bool) (iff_post : Expr) :
     MetaM Expr := do
   let chainType ← inferType chain
@@ -601,8 +522,8 @@ def reshapeChainPost (chain : Expr) (chainIsMem : Bool) (iff_post : Expr) :
       #[some N, some M, some pc1, some pc2, some cr, some P, some Q, none,
         some iff_post, some chain]
 
-/-- Apply `cuTripleWithin{,Mem}_reshape_pre` to chain so its pre becomes
-    `newPre`. Uses the pointwise iff `iff_pre : ∀ h, newPre h ↔ chainPre h`. -/
+/-- Reshape chain's pre to `newPre` via `cuTripleWithin{,Mem}_reshape_pre` and
+    `iff_pre : ∀ h, newPre h ↔ chainPre h`. -/
 def reshapeChainPre (chain : Expr) (chainIsMem : Bool) (iff_pre : Expr) :
     MetaM Expr := do
   let chainType ← inferType chain
@@ -620,29 +541,21 @@ def reshapeChainPre (chain : Expr) (chainIsMem : Bool) (iff_pre : Expr) :
       #[some N, some M, some pc1, some pc2, some cr, some P, none, some Q,
         some iff_pre, some chain]
 
-/-- Compose two consecutive (already framed) triples. Picks the lemma
-    variant that preserves the memory side's `rr` (no trivial-True
-    factor in the chain's rr).
+/-- Compose two consecutive (already framed) triples, picking the lemma variant
+    that preserves the memory side's `rr` (no trivial-True factor).
 
-    Uses `mkAppOptM` with all implicit args (N, pc, cr, P, Q, R, rr)
-    extracted explicitly from `h1`/`h2`'s types, instead of letting
-    `mkAppM` infer them. Inference walks the chain's `inferType`
-    repeatedly — for a chain that grows in depth each iteration, this
-    is O(depth × iter) wasted work and was the bottleneck in the
-    stack-macro composition. Explicit extraction reads off the args
-    in one pass and skips inference entirely.
+    All implicit args (N, pc, cr, P, Q, R, rr) are extracted explicitly from
+    `h1`/`h2` rather than inferred: `mkAppM` re-walks the chain's `inferType` each
+    iter (O(depth × iter)), the stack-macro composition bottleneck; explicit
+    extraction reads them in one pass.
 
-    Layout: `cuTripleWithin N pc1 pc2 cr P Q` →
-      args[0..5] = N, pc1, pc2, cr, P, Q.
-    `cuTripleWithinMem N pc1 pc2 cr P Q rr` →
-      args[0..6] = N, pc1, pc2, cr, P, Q, rr. -/
+    Layout: `cuTripleWithin N M pc1 pc2 cr P Q` (Mem appends rr at args[7]). -/
 def composeSteps (h1 h2 : Expr) (isMem1 isMem2 : Bool)
     (disjGoals : IO.Ref (List MVarId)) : MetaM (Expr × Bool) := do
   let h1Type ← inferType h1
   let h2Type ← inferType h2
   let h1Args := (← instantiateMVars h1Type).consumeMData.getAppArgs
   let h2Args := (← instantiateMVars h2Type).consumeMData.getAppArgs
-  -- New layout: cuTripleWithin N M pc1 pc2 cr P Q (Mem appends rr).
   let N1 := h1Args[0]!
   let M1 := h1Args[1]!
   let pc1 := h1Args[2]!
@@ -697,14 +610,10 @@ def dischargeGoals (mvars : List MVarId) (tac : TSyntax `tactic)
       catch e =>
         throwError m!"sl_block_iter: {label} failed on residual subgoal:\n  {← instantiateMVars (← mvarId.getType)}\n  {e.toMessageData}"
 
-/-- Build a proof of `F.pcFree` directly, in one structural pass over the
-    `sepConj` tree — dispatching each leaf atom on its head constant to
-    the matching `pcFree_<atom>` lemma (which takes the atom's own args).
-    Replaces the `sl_pcfree` tactic's per-atom `first | exact …`
-    backtracking (10 elaboration attempts × every atom × every growing
-    frame = O(n²) and the dominant `sl_block_iter` cost); this is a
-    single `mkAppM` per node, no backtracking, no tactic-framework
-    overhead. -/
+/-- Prove `F.pcFree` directly in one structural pass, dispatching each leaf atom
+    on its head constant to the matching `pcFree_<atom>` lemma. One `mkAppM` per
+    node — replaces `sl_pcfree`'s per-atom `first | exact …` backtracking
+    (O(n²), the dominant `sl_block_iter` cost). -/
 partial def provePcFree (f : Expr) : MetaM Expr := do
   let f := f.consumeMData
   match f.getAppFn.constName? with
@@ -715,15 +624,13 @@ partial def provePcFree (f : Expr) : MetaM Expr := do
       let b := args[args.size - 1]!
       mkAppM ``SVM.SBPF.pcFree_sepConj #[← provePcFree a, ← provePcFree b]
     else
-      -- Leaf atom `SVM.SBPF.<atom>`: apply `SVM.SBPF.pcFree_<atom>` to
-      -- the atom's explicit args (e.g. regIs r v → pcFree_regIs r v).
+      -- Leaf atom: apply `pcFree_<atom>` to its args (regIs r v → pcFree_regIs r v).
       let lemmaName := Name.str c.getPrefix ("pcFree_" ++ c.getString!)
       mkAppM lemmaName f.getAppArgs
   | none => throwError m!"provePcFree: not an assertion atom:\n  {f}"
 
-/-- Fast bulk discharge of the `F.pcFree` frame side-goals via
-    `provePcFree`. Falls back to the `sl_pcfree` tactic on any atom shape
-    `provePcFree` doesn't recognise. -/
+/-- Bulk-discharge `F.pcFree` side-goals via `provePcFree`, falling back to the
+    `sl_pcfree` tactic on unrecognised atoms. -/
 def dischargePcFree (mvars : List MVarId) : TacticM Unit := do
   for mvarId in mvars do
     if !(← mvarId.isAssigned) then
@@ -734,12 +641,9 @@ def dischargePcFree (mvars : List MVarId) : TacticM Unit := do
         catch _ => setGoals [mvarId]; evalTactic (← `(tactic| sl_pcfree))
       | _ => setGoals [mvarId]; evalTactic (← `(tactic| sl_pcfree))
 
-/-- Build a proof of `cr1.Disjoint cr2` directly, recursing over the
-    `union`/`singleton` tree (`Disjoint_union_{left,right}` for unions,
-    `singleton_disjoint_singleton` + a `decide` of `pc₁ ≠ pc₂` at the
-    leaves). Replaces `sl_disjoint_codereq`'s `first | …` backtracking
-    (O(k) per goal × n growing goals = O(n²), the dominant cost once
-    pcFree is fast). -/
+/-- Prove `cr1.Disjoint cr2` directly, recursing the `union`/`singleton` tree
+    (`Disjoint_union_{left,right}`; `singleton_disjoint_singleton` + `decide
+    (pc₁ ≠ pc₂)` at leaves). Replaces `sl_disjoint_codereq`'s O(n²) backtracking. -/
 partial def proveDisjoint (a b : Expr) : MetaM Expr := do
   let a := a.consumeMData; let b := b.consumeMData
   match a.getAppFn.constName? with
@@ -757,15 +661,10 @@ partial def proveDisjoint (a b : Expr) : MetaM Expr := do
       let aa := a.getAppArgs; let bb := b.getAppArgs
       let pc1 := aa[aa.size - 2]!
       let pc2 := bb[bb.size - 2]!
-      -- `mkDecideProof` discharges `pc₁ ≠ pc₂` only when both PCs are
-      -- ground (concrete Nat literals): `decide (pc₁ ≠ pc₂)` must reduce
-      -- to `true`. For symbolic, base-shifted PCs (`base + 0 ≠ base + 7`,
-      -- as in the hand-written base-relative proofs) it gets stuck and
-      -- yields a kernel-invalid term. Throw on non-ground PCs so
-      -- `dischargeDisjoint` falls back to the `sl_disjoint_codereq`
-      -- tactic, whose `first | decide | omega` handles symbolic linear
-      -- inequalities. (The fast path still covers concrete PCs — the
-      -- O(n²)→O(n) case that motivated this builder.)
+      -- `mkDecideProof` of `pc₁ ≠ pc₂` only reduces for ground PCs; on symbolic
+      -- base-shifted PCs (`base + 0 ≠ base + 7`) it yields a kernel-invalid term.
+      -- Throw so `dischargeDisjoint` falls back to `sl_disjoint_codereq`
+      -- (`first | decide | omega` handles symbolic linear inequalities).
       if pc1.hasFVar || pc1.hasMVar || pc2.hasFVar || pc2.hasMVar then
         throwError m!"proveDisjoint: non-ground PCs, deferring to tactic:\n  {pc1} ≠ {pc2}"
       let ne ← mkAppM ``Ne #[pc1, pc2]
@@ -774,9 +673,8 @@ partial def proveDisjoint (a b : Expr) : MetaM Expr := do
     | _ => throwError m!"proveDisjoint: rhs not a CodeReq union/singleton:\n  {b}"
   | _ => throwError m!"proveDisjoint: lhs not a CodeReq union/singleton:\n  {a}"
 
-/-- Fast bulk discharge of the `cr1.Disjoint cr2` side-goals via
-    `proveDisjoint`; falls back to `sl_disjoint_codereq` on shapes it
-    doesn't recognise. -/
+/-- Bulk-discharge `cr1.Disjoint cr2` side-goals via `proveDisjoint`, falling back
+    to `sl_disjoint_codereq` on unrecognised shapes. -/
 def dischargeDisjoint (mvars : List MVarId) : TacticM Unit := do
   for mvarId in mvars do
     if !(← mvarId.isAssigned) then
@@ -788,14 +686,10 @@ def dischargeDisjoint (mvars : List MVarId) : TacticM Unit := do
       else
         setGoals [mvarId]; evalTactic (← `(tactic| sl_disjoint_codereq))
 
-/-- Right-normalize the `pre` and `post` of a triple expression so both
-    become `rebuildSepConj (flatten _)`. Applied after each frame
-    application to keep intermediate chain states in a canonical right-
-    folded shape — needed because `frame_right F hF h` produces `(P ** F)`
-    which is non-right-folded when `P` is multi-atom (e.g. memory specs
-    like `ldxdw` whose pre / post own 3 atoms). Each side is wrapped
-    only when `buildRightFoldIff` returns a non-refl iff; otherwise the
-    chain is returned unchanged for that side. -/
+/-- Right-normalize a triple's pre/post to `rebuildSepConj (flatten _)`, after
+    each frame, to keep chain states canonically right-folded — `frame_right F hF
+    h` produces a non-right-folded `(P ** F)` when `P` is multi-atom (e.g.
+    `ldxdw`'s 3-atom pre/post). Each side wrapped only on a non-refl iff. -/
 def rightNormalizeChain (chain : Expr) (chainIsMem : Bool) : MetaM Expr := do
   let chainType ← inferType chain
   let some (_, chainPre, chainPost) ← parseTripleType chainType |
@@ -807,11 +701,9 @@ def rightNormalizeChain (chain : Expr) (chainIsMem : Bool) : MetaM Expr := do
   | none => pure chain'
   | some iff_post => reshapeChainPost chain' chainIsMem iff_post
 
-/-- Bridge chain's pre/post atom order to the user-stated `goalPre` /
-    `goalPost` shape. Both sides have the same atom multisets (by
-    construction: each step's framing collected the unmatched atoms as
-    the frame, and post atoms = pre atoms with the consumed atoms
-    renamed). Each bridge uses `buildPermuteIff` over the atom lists. -/
+/-- Bridge chain's pre/post atom order to the goal's via `buildPermuteIff`. Same
+    atom multisets by construction (framing collects unmatched atoms as the frame;
+    post atoms = pre atoms with consumed atoms renamed). -/
 def bridgeChainToGoal (chain : Expr) (chainIsMem : Bool)
     (goalPre goalPost : Expr) : MetaM Expr := do
   let chainType ← inferType chain
@@ -847,24 +739,17 @@ def bridgeChainToGoal (chain : Expr) (chainIsMem : Bool)
       throwError m!"sl_block_iter.bridgeChainToGoal: chain post has extra atoms not in goalPost: {frame.toArray}"
     reshapeChainPost chain' chainIsMem iff
 
-/-- Detect a bare `SVM.SBPF.emp` assertion (used to identify
-    `ja_spec`-style steps that can be auto-widened to the surrounding
-    chain state). -/
+/-- Detect a bare `emp` assertion (marks `ja_spec`-style steps auto-widenable to
+    the chain state). -/
 def isEmpAssertion (e : Expr) : Bool :=
   (e.consumeMData).isConstOf ``SVM.SBPF.emp
 
-/-- Build the chain expression from a step-hypothesis list and a
-    starting state. Walks left-to-right: for each step, extract the
-    frame against the current state (possibly with permutation reshape
-    on the chain), build the framed step, right-normalize it, compose
-    with the chain. Returns the composed chain term + isMem flag —
-    leaves the goal alone, so callers (sl_block_iter, sl_branch) can
-    bridge or assemble as they need. pcFree + Disjoint subgoals are
-    appended to the IO.Refs for the caller to discharge.
-
-    Auto-widens `emp/emp` step hypotheses (e.g. `ja_spec`) to use the
-    current chain state via `cuTripleWithin_widen_emp`, so users don't
-    have to hand-write the `frame_right + sepConj_emp_left` dance. -/
+/-- Build the chain term from a step-hypothesis list + starting state. Per step:
+    extract the frame (with reshape on the chain if needed), build the framed
+    step, right-normalize, compose. Returns the chain term + isMem and leaves the
+    goal alone (callers bridge/assemble); pcFree+Disjoint subgoals go to the
+    IO.Refs. Auto-widens `emp/emp` steps (e.g. `ja_spec`) to the chain state via
+    `cuTripleWithin_widen_emp`, sparing the user the `frame_right + sepConj_emp_left` dance. -/
 def buildChainExpr (startState : Expr) (hExprs : List Expr)
     (pcfreeGoals disjGoals : IO.Ref (List MVarId)) :
     MetaM (Expr × Bool) := do
@@ -877,10 +762,6 @@ def buildChainExpr (startState : Expr) (hExprs : List Expr)
     let mut hType ← inferType h
     let some (stepIsMem, stepPre, stepPost) ← parseTripleType hType |
       throwError m!"buildChainExpr: hypothesis is not a cuTripleWithin[Mem]:\n  {hType}"
-    -- Auto-widen `cuTripleWithin _ _ _ _ emp emp` steps to use the
-    -- current chain state as their pre/post via `cuTripleWithin_widen_emp`.
-    -- Avoids forcing the user to manually frame+strip-emp for the
-    -- common `ja_spec`-shaped specs.
     let mut stepPre := stepPre
     let mut stepPost := stepPost
     if !stepIsMem && isEmpAssertion stepPre && isEmpAssertion stepPost then
@@ -945,10 +826,8 @@ def slBlockIter (hExprs : List Expr) : TacticM Unit := withMainContext do
   -- Bridge chain.pre / chain.post to goalPre / goalPost atom order.
   let bridged₀ ← bridgeChainToGoal chainExpr chainIsMem goalPre goalPost
   let bridgedType₀ ← inferType bridged₀
-  -- Coerce the chain's Nat bounds (nSteps, nCu, exit_) to the goal's
-  -- closed-form ones. The chain's bounds are nested `(a + b)` from each
-  -- `cuTripleWithin_seq` step; the goal usually carries the closed sum.
-  -- `cuTripleWithin_cast` discharges each equality via `omega` / `rfl`.
+  -- Coerce the chain's nested-`(a+b)` Nat bounds (nSteps, nCu, exit_) to the
+  -- goal's closed sums, each equality via `cuTripleWithin_cast` (omega/rfl).
   let cArgs := (← instantiateMVars bridgedType₀).consumeMData.getAppArgs
   let tArgs := (← instantiateMVars target).consumeMData.getAppArgs
   let expectedArity := if chainIsMem then 8 else 7
@@ -988,16 +867,12 @@ def mkPwIffType (lhs rhs : Expr) : MetaM Expr := do
     let body ← mkAppM ``Iff #[mkApp lhs h, mkApp rhs h]
     mkForallFVars #[h] body
 
-/-- Bridge two pointwise-defeq, equal-length atom lists with a pointwise iff
-    `∀ h, rebuild(as) h ↔ rebuild(bs) h`, ascribing each atom pair's defeq in
-    isolation. This is the workhorse behind `sl_exact` matching atoms that are
-    defeq but not syntactically equal (e.g. the lift's `effectiveAddr baseAddr
-    160` vs an aggregation rewrite's `baseAddr + 160`): composing the match iff
-    through one side then the other forces the kernel into a *single* `isDefEq`
-    over the whole ~50-atom sepConj, which it bails on (returning a spurious type
-    mismatch) at that scale even though every leaf is defeq. Hinting each pair
-    separately keeps every `isDefEq` single-atom and cheap. Returns `none` when
-    `as` and `bs` are already syntactically identical. -/
+/-- Bridge two pointwise-defeq equal-length atom lists with `∀ h, rebuild(as) h ↔
+    rebuild(bs) h`, ascribing each atom pair's defeq in isolation. Workhorse behind
+    `sl_exact` matching defeq-but-not-syntactic atoms (lift's `effectiveAddr base
+    160` vs aggregation's `base + 160`): a single whole-sepConj `isDefEq` bails
+    spuriously at ~50 atoms even though every leaf is defeq, so we keep each check
+    single-atom. `none` when `as`/`bs` are already syntactically identical. -/
 partial def buildDefeqBridge : List Expr → List Expr → MetaM (Option Expr)
   | [], [] => return none
   | [a], [b] =>
@@ -1025,31 +900,26 @@ partial def buildDefeqBridge : List Expr → List Expr → MetaM (Option Expr)
 
 end SLBlockIter
 
-/-- `sl_block_iter [h₁, …]` composes the per-instruction specs into the
-goal triple. The optional `generalizing [e₁, …]` clause abstracts each
-listed value expression to a fresh opaque variable (`generalize … at *`)
-BEFORE composition — complex bit-level values (wrapAdd/shift/mod chains)
-carry no proof content of their own (the per-opcode spec already proved
-what each computes), so threading them as opaque Nats keeps the
-mechanical composition from re-reducing arithmetic via `whnf` at every
-step. This is the dominant cost on long arms; abstracting it took
-`PTokenTransferChecked` from a >15-minute timeout to closing. The
-theorem statement is unaffected (generalize only touches the proof
-goal); the bridge `e = v` stays in scope for the refinement layer. -/
+/-- `sl_block_iter [h₁, …]` composes the per-instruction specs into the goal
+triple. Optional `generalizing [e₁, …]` opaque-ifies each listed value
+(`generalize … at *`) BEFORE composition: bit-level values (wrapAdd/shift/mod
+chains) carry no proof content (the per-opcode spec already proved them), so
+threading them as opaque Nats stops the composition re-reducing arithmetic via
+`whnf` each step — the dominant cost on long arms (took `PTokenTransferChecked`
+from a >15-min timeout to closing). Statement unaffected; the bridge `e = v` stays
+in scope for the refinement layer. -/
 syntax "sl_block_iter" "[" term,* "]" (" generalizing" " [" term,* "]")? : tactic
 
 open Lean Lean.Elab.Tactic in
 elab_rules : tactic
   | `(tactic| sl_block_iter [$hs,*] $[generalizing [$gs,*]]?) => withMainContext do
-      -- Value-abstraction pre-pass: opaque-ify each listed value at the
-      -- goal and every hypothesis (so the chain and goal stay aligned).
+      -- Opaque-ify each listed value at goal + every hyp (keeps chain/goal aligned).
       if let some gs := gs then
         for g in gs.getElems do
           let v := mkIdent (← mkFreshUserName `vgen)
           let h := mkIdent (← mkFreshUserName `hgen)
           evalTactic (← `(tactic| generalize $h : $g = $v at *))
-      -- Re-enter context (generalize rewrote the have-hypotheses) and
-      -- compose. The have names are stable across generalize.
+      -- Re-enter context (generalize rewrote the haves; names stay stable).
       withMainContext do
         let hExprs ← hs.getElems.toList.mapM
           (fun h => Lean.Elab.Term.elabTermAndSynthesize h.raw none)
@@ -1057,17 +927,14 @@ elab_rules : tactic
 
 /-! ## sl_branch — branch + join + post-distribute combinator
 
-`sl_branch h_br [h_T₁, h_T₂, …] [h_F₁, h_F₂, …]` discharges a
-`cuTripleWithin N pc₀ pcJoin cr P Q` goal by composing:
+`sl_branch h_br [h_T,…] [h_F,…]` discharges a `cuTripleWithin N pc₀ pcJoin cr P Q`
+goal by composing:
 
-- `h_br` — a pre-framed `cuTripleWithinBranch` triple at `pc₀` that
-  the user has already widened to the macro's full state via
-  `cuTripleWithinBranch_frame_{left,right}`. Its `cond` is extracted
-  from the type and threaded into the post-distribute step.
-- `[h_T,*]` — step hypotheses for the true branch, in the format
-  `sl_block_iter` accepts. The branch chain is built by reusing
-  `sl_block_iter` directly.
-- `[h_F,*]` — same for the false branch.
+- `h_br` — pre-framed `cuTripleWithinBranch` at `pc₀`, already widened to the
+  macro's full state via `cuTripleWithinBranch_frame_{left,right}`; its `cond`
+  threads into the post-distribute step.
+- `[h_T,*]`/`[h_F,*]` — true/false-branch steps in `sl_block_iter`'s format;
+  each branch chain is built by reusing `sl_block_iter`.
 
 Internally emits one tactic block:
 
@@ -1086,28 +953,20 @@ case _post =>
   · simp only [_hc, if_false] at _hpost ⊢; exact _hpost
 ```
 
-Source order matters: the chain cases run first, filling the `crT` /
-`crF` metas, so `sl_disjoint_codereq`'s `decide` sees concrete code
-requirements.
+Source order matters: chain cases run first, filling the `crT`/`crF` metas so
+`sl_disjoint_codereq`'s `decide` sees concrete code requirements.
 
-Limitations (matching `sl_block_iter`'s):
-
-- The user's goal `cr` must be `((crBr ∪ crT_chain) ∪ crF_chain)` in
-  the left-folded shape `cuTripleWithinBranch_join` produces.
-- The goal `N` must equal `N0_h_br + max NT_chain NF_chain`.
-- The goal `P` must equal `h_br`'s pre.
-- The post-distribute `simp only [_hc, if_*]` finisher assumes the
-  goal post mentions `cond` only inside `if … then … else …` terms
-  with both branches having the same surrounding shape (the natural
-  case — `r0 ↦ᵣ (if cond then a else b)`-style atoms). If the
-  shapes diverge, fall back to a manual `weaken + by_cases`. -/
+Limitations (matching `sl_block_iter`'s): goal `cr` must be the left-folded
+`((crBr ∪ crT_chain) ∪ crF_chain)`; goal `N` must equal `N0_h_br + max NT_chain
+NF_chain`; goal `P` must equal `h_br`'s pre; the post-distribute finisher assumes
+the goal post mentions `cond` only inside `if … then … else …` with both branches
+the same surrounding shape (`r0 ↦ᵣ (if cond then a else b)`) — else fall back to
+manual `weaken + by_cases`. -/
 
 namespace SLBranch
 open Lean Lean.Meta Lean.Elab.Tactic Lean.Elab.Term
 
-/-- Parsed shape of a `cuTripleWithinBranch` application type.
-    Layout matches the declaration:
-    `cuTripleWithinBranch nSteps entry exitT exitF cond [Dec] cr P Q`. -/
+/-- Parsed `cuTripleWithinBranch nSteps entry exitT exitF cond [Dec] cr P Q`. -/
 structure BranchInfo where
   cond : Expr
   Q : Expr
@@ -1135,10 +994,10 @@ elab_rules : tactic
       let hBrType ← inferType hBrExpr
       let brInfo ← SLBranch.parseBranchType hBrType
       let condStx ← Lean.PrettyPrinter.delab brInfo.cond
-      -- Build each branch chain into a concrete term against `brInfo.Q`
-      -- (the join's intermediate `Q`). Pre-building avoids the
-      -- application-order trap where `refine cuTripleWithinBranch_join`
-      -- with chain-meta arguments leaves `1 + max ?NT ?NF` unreduced.
+      -- Build each branch chain into a concrete term against `brInfo.Q` (the
+      -- join's intermediate `Q`). Pre-building avoids the application-order trap
+      -- where `refine cuTripleWithinBranch_join` with chain-meta args leaves
+      -- `1 + max ?NT ?NF` unreduced.
       let pcfreeGoals ← IO.mkRef ([] : List MVarId)
       let disjGoals ← IO.mkRef ([] : List MVarId)
       let tStepExprs ← tSteps.getElems.toList.mapM
@@ -1147,8 +1006,8 @@ elab_rules : tactic
         (fun s => elabTermAndSynthesize s.raw none)
       let (hTExpr, _) ← buildChainExpr brInfo.Q tStepExprs pcfreeGoals disjGoals
       let (hFExpr, _) ← buildChainExpr brInfo.Q fStepExprs pcfreeGoals disjGoals
-      -- Assemble the join term with the chains concrete and disjointness
-      -- as fresh metas. `mkAppM` unifies the cond/cr/N args naturally.
+      -- Assemble the join term: chains concrete, disjointness as fresh metas
+      -- (mkAppM unifies cond/cr/N naturally).
       let mkDisjMvar (a b : Expr) : MetaM Expr := do
         mkFreshExprMVar (← mkAppM ``SVM.SBPF.CodeReq.Disjoint #[a, b])
       let hBrArgs := ((← instantiateMVars hBrType).consumeMData).getAppArgs
@@ -1161,14 +1020,11 @@ elab_rules : tactic
       let joinExpr ← mkAppM ``SVM.SBPF.cuTripleWithinBranch_join
         #[disjBT, disjBF, disjTF, hBrExpr, hTExpr, hFExpr]
       let joinType ← inferType joinExpr
-      -- Wrap in `cuTripleWithin_weaken` so the goal post can be in
-      -- atom-distributed `(r ↦ᵣ if cond then a else b)` form rather
-      -- than the join's natural `if cond then (r ↦ᵣ a) else (r ↦ᵣ b)`.
-      -- Splice the join term in by asserting it as a local hypothesis
-      -- first — delab'ing an Expr with metavariables loses the meta
-      -- references and triggers fresh elaboration, which fails. The
-      -- assert keeps the disjointness metas in `joinExpr` referable
-      -- so they can be discharged after the refine.
+      -- Wrap in `cuTripleWithin_weaken` so the goal post can be atom-distributed
+      -- `(r ↦ᵣ if cond then a else b)` rather than the join's `if cond then (r ↦ᵣ
+      -- a) else (r ↦ᵣ b)`. Splice the join in via `assert` (not delab — delab'ing
+      -- an Expr with metavars loses the refs and re-elaborates, failing); assert
+      -- keeps `joinExpr`'s disjointness metas referable for discharge after refine.
       let mainGoal ← getMainGoal
       let asserted ← mainGoal.assert `_h_joined joinType joinExpr
       let (joinedFVar, postIntro) ← asserted.intro1
@@ -1183,9 +1039,8 @@ elab_rules : tactic
           by_cases _hc : $condStx
           · simp only [_hc, if_true]  at _hpost ⊢; exact _hpost
           · simp only [_hc, if_false] at _hpost ⊢; exact _hpost))
-      -- Discharge collected side conditions: chain disjointness +
-      -- pcFree (from buildChainExpr) + branch-level disjointness (the
-      -- three Disjoint metas just synthesized).
+      -- Discharge side conditions: chain disjointness + pcFree (from
+      -- buildChainExpr) + the three branch-level Disjoint metas.
       let chainDisjs := (← disjGoals.get).reverse
       let branchDisjs := [disjBT, disjBF, disjTF].map (·.mvarId!)
       dischargeGoals (branchDisjs ++ chainDisjs)
@@ -1195,20 +1050,14 @@ elab_rules : tactic
 
 /-! ## sl_rw_abs — Gap-3 workaround helper
 
-The `sl_block_iter` composition hits a kernel-level wall when SL atoms
-contain `wrapAdd r10V (toU64 -80)`-shaped addresses (~96K `Nat.rec`
-per iter at iter 5 of an 11-instruction macro — see
-`[[sl-block-iter-perm-rewrite]]`). The cost is structural to the spec
-form; surgical `@[irreducible]` attempts (Path A, 2026-05-17) confirmed
-no kernel-attribute change moves the bottleneck without breaking other
-proofs.
+`sl_block_iter` hits a kernel wall on `wrapAdd r10V (toU64 -80)`-shaped atom
+addresses (~96K `Nat.rec` per iter; see `[[sl-block-iter-perm-rewrite]]`); the
+cost is structural to the spec form (`@[irreducible]` attempts, Path A 2026-05-17,
+didn't move it). The proven workaround (`pda_n1_stack_macro_spec`): parameterize
+expensive addresses by abstract `Nat` vars with bridging equalities so `isDefEq`
+sees clean atoms. This macro cuts the rewrite boilerplate that requires:
 
-The proven workaround (in `pda_n1_stack_macro_spec`) is to parameterize
-expensive atom addresses by abstract `Nat` variables with bridging
-equalities, so the kernel's `isDefEq` sees clean atoms. This macro
-reduces the manual rewrite boilerplate the workaround requires:
-
-Before (manual):
+Before:
 ```
 rw [← hDesc] at h2
 rw [← hDesc] at h4
@@ -1220,10 +1069,9 @@ After:
 sl_rw_abs [hDesc, hOut] at [h2, h4, h9]
 ```
 
-The macro applies `try rw [← hAbs] at hN` for each (abstraction,
-hypothesis) cross-product, silently skipping cases where the rewrite
-doesn't apply. Use it after constructing the per-step specs and
-before `sl_block_iter`. -/
+Applies `try rw [← hAbs] at hN` over the (abstraction, hyp) cross-product,
+skipping non-applicable cases. Use after building per-step specs, before
+`sl_block_iter`. -/
 
 syntax "sl_rw_abs" "[" ident,* "]" "at" "[" ident,* "]" : tactic
 
@@ -1238,13 +1086,11 @@ elab_rules : tactic
 
 /-! ## sl_reshape_pre / sl_reshape_post — permute a triple's pre/post
 
-`sl_reshape_pre [a₀, …, aₖ]` reshapes the pre of a `cuTripleWithin(Mem)`
-goal so the listed atoms come first and the rest become the trailing
-frame, via `buildPermuteIff` + `cuTripleWithin{,Mem}_reshape_pre`. The
-listed atoms must be a sub-multiset of the current pre (matched up to
-`isDefEq` + address normalization). No-op if already in order. This is
-the reusable permutation step for reshaping a lifted triple into a
-refinement's `setupPre ** field-atoms …` shape. -/
+`sl_reshape_pre [a₀,…,aₖ]` reshapes a `cuTripleWithin(Mem)` goal's pre so the
+listed atoms (a sub-multiset, matched up to `isDefEq` + address normalization)
+come first and the rest become the trailing frame, via `buildPermuteIff` +
+`cuTripleWithin{,Mem}_reshape_pre` (no-op if in order). The reusable step for
+reshaping a lifted triple into a refinement's `setupPre ** field-atoms …` shape. -/
 
 open Lean Lean.Meta Lean.Elab.Tactic Lean.Elab.Term SLBlockIter in
 /-- Shared core: `argIdx = 5` reshapes the pre, `6` the post. -/
@@ -1289,17 +1135,16 @@ elab "sl_reshape_post" "[" atoms:term,* "]" : tactic =>
 
 /-! ## sl_exact — close a triple goal from a permutation-equal hypothesis
 
-`sl_exact h` closes a `cuTripleWithin(Mem)` goal using `h : cuTripleWithin(Mem)`
-with the same N/M/pc/cr/rr whose pre and post are the goal's pre/post up
-to sep-conj permutation AND re-bracketing. This is what makes refinement
-wiring ergonomic: after expanding the codec atoms, the goal's pre/post
-are permutations of a framed lift triple's, and `sl_exact` matches them
-(handling the non-right-folded `P ** F` bracketing `frame_right` produces). -/
+`sl_exact h` closes a `cuTripleWithin(Mem)` goal from `h` of the same
+N/M/pc/cr/rr whose pre/post are the goal's up to sep-conj permutation AND
+re-bracketing. Makes refinement wiring ergonomic: after expanding codec atoms the
+goal's pre/post are permutations of a framed lift triple's, and `sl_exact` matches
+them (handling the non-right-folded `P ** F` bracketing `frame_right` produces). -/
 
 open Lean Lean.Meta Lean.Elab.Tactic Lean.Elab.Term SLBlockIter in
-/-- Pointwise iff `∀ s, A s ↔ B s` when `A`, `B` are the same atom
-    multiset, composing `A ↔ rebuild(flatten A) ↔ rebuild(flatten B) ↔ B`
-    (right-fold normalization on each side + the bubble-sort permutation). -/
+/-- Pointwise iff `∀ s, A s ↔ B s` for same-multiset `A`, `B`, composing
+    `A ↔ rebuild(flatten A) ↔ rebuild(flatten B) ↔ B` (right-fold each side +
+    bubble-sort permutation). -/
 private def buildMatchIff (A B : Expr) : MetaM Expr := do
   let fa := flattenSepConj A
   let fb := flattenSepConj B
@@ -1309,9 +1154,9 @@ private def buildMatchIff (A B : Expr) : MetaM Expr := do
       unless frame.isEmpty do
         throwError m!"sl_exact: hypothesis has extra atoms not in the goal"
       pure permIff?   -- rebuild(fa) ↔ rebuild(faPermuted), or none if equal
-  -- `faPermuted` = `fa`'s atoms reordered into `fb`'s order (the endpoint of
-  -- `permOpt`). Its atoms are `A`'s representations, which may be defeq-but-not-
-  -- syntactically-equal to `fb`'s (e.g. `effectiveAddr base 160` vs `base+160`).
+  -- `faPermuted` = `fa` reordered into `fb`'s order (permOpt's endpoint). Its
+  -- atoms are `A`'s, possibly defeq-but-not-syntactic to `fb`'s
+  -- (`effectiveAddr base 160` vs `base+160`).
   let faPermuted ← match ← bubbleSortToPrefix fa fb with
     | some (_, final) => pure (final.take fb.length)
     | none => throwError m!"sl_exact: pre/post atoms are not a permutation"

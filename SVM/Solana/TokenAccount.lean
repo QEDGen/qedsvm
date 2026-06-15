@@ -14,16 +14,10 @@
 --   ----   ----
 --   total = 165 bytes
 --
--- This module provides `tokenAcctBalance` — a bundled SL atom over the
--- mint / owner / amount triple (the load-bearing fields for Transfer-class
--- proofs) with the remaining 93 bytes carried as an opaque `rest : ByteArray`
--- frame parameter. Compositional refinement proofs unfold this predicate to
--- align with the per-instruction `↦U64` and `↦Pubkey` atoms.
---
--- This is the qedsvm-side data-model library that high-level Transfer
--- theorems land against. Companion predicates (`accountInfoHeader`,
--- `pdaDerivation`) will live in sibling files as Layer 3b consumers surface
--- the need.
+-- `tokenAcctBalance`: a bundled SL atom over the mint / owner / amount triple
+-- (the load-bearing fields for Transfer-class proofs) with the remaining 93
+-- bytes as an opaque `rest : ByteArray` frame. Refinement proofs unfold it to
+-- align with the per-instruction `↦U64` / `↦Pubkey` atoms.
 
 import SVM.SBPF.PubkeySL
 
@@ -43,8 +37,7 @@ def OWNER_OFF : Nat := 32
 /-- Byte offset of the `amount` field (8-byte little-endian u64). -/
 def AMOUNT_OFF : Nat := 64
 
-/-- Byte offset of the opaque tail (delegate / state / is_native /
-    delegated_amount / close_authority). -/
+/-- Byte offset of the opaque tail (delegate / state / is_native / delegated_amount / close_authority). -/
 def REST_OFF : Nat := 72
 
 /-- Total serialized size of an SPL Token account. -/
@@ -55,22 +48,13 @@ def REST_SIZE : Nat := 93
 
 /-! ## SL predicate -/
 
-/-- An SPL Token account at byte address `ata` with the given mint, owner,
-    and balance. The remaining 93 bytes (delegate / state / is_native /
-    delegated_amount / close_authority) are carried as an opaque `rest`
-    byte-array; well-formed callers require `rest.size = REST_SIZE`.
+/-- An SPL Token account at byte address `ata` with the given mint, owner, and
+    balance. The remaining 93 bytes (delegate / state / is_native /
+    delegated_amount / close_authority) are an opaque `rest` byte-array;
+    well-formed callers require `rest.size = REST_SIZE`.
 
-    Use site shape for a Transfer-class theorem:
-
-    ```
-    tokenAcctBalance ataA mint authA preA restA **
-      tokenAcctBalance ataB mint authB preB restB **
-      ...
-    ```
-
-    The post-state of a balance-preserving Transfer rebinds only the
-    `amount` argument (`preA - x` / `preB + x`); `mint`, `owner`, and
-    `rest` flow through unchanged. -/
+    A balance-preserving Transfer post-state rebinds only `amount` (`preA - x` /
+    `preB + x`); `mint`, `owner`, `rest` flow through unchanged. -/
 def tokenAcctBalance
     (ata : Nat) (mint owner : Pubkey) (amount : Nat) (rest : ByteArray) :
     Assertion :=

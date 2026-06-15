@@ -1,44 +1,9 @@
 /-
-  Layer 3b artifact (happy-path chain, H4b): Hoare triple over the
-  **balance mutation slice** at bytes 0xA300-0xA350 of
-  `qedsvm-rs/tests/fixtures/p_token.so`. **This is the arm that
-  actually moves tokens.**
+  L3b H4b: 11-insn balance mutation (bytes 0xA300-0xA350, p-token@v1.0.0-rc.1).
 
-  The 11 instructions:
-
-  ```
-  a300: ldxb  r4, [r1 + 0x5219]     ← auth/signer byte
-  a308: jeq   r4, 0x0, ...           ← NOT taken: auth ≠ 0
-  a310: jeq   r2, 0x0, ...           ← NOT taken: amount ≠ 0
-  a318: sub64 r3, r2                 ← src balance -= amount
-  a320: stxdw [r1 + 0xa0], r3        ← STORE new src balance
-  a328: ldxdw r3, [r1 + 0x29a8]      ← load dst balance
-  a330: add64 r3, r2                 ← r3 += amount
-  a338: stxdw [r1 + 0x29a8], r3      ← STORE new dst balance
-  a340: mov64 r0, 0x0
-  a348: ldxb  r3, [r1 + 0xcd]        ← close-flag byte
-  a350: jne   r3, 0x1, -0x571        ← TAKEN: close ≠ 1; jumps to byte 0x77D0 (H5 exit)
-  ```
-
-  Chain context: entered via H4a's `jne r4, 0x163` (taken). At entry
-  r2 holds the transfer amount (from H3d) and r3 holds the source
-  balance (also from H3d), preserved through H3e/H3f/H4a since none
-  touched r2 or r3.
-
-  Spec: 11 CU advancing PC 0 → h4bTarget (synthetic local PC where
-  the final jne lands; downstream glue maps to byte 0x77D0). Post:
-  - src balance at `[r1+0xa0]` updated to `wrapSub srcBalance txAmount`
-  - dst balance at `[r1+0x29a8]` updated to `wrapAdd dstBalance txAmount`
-  - r0 := 0, r3 := closeFlag % 256, r4 := authByte % 256
-  - r1, r2 preserved.
-
-  3 if-collapses (2 jeq-imm-NT + 1 jne-imm-TAKEN). Under the
-  no-underflow hypothesis already established by H3d's
-  `srcBalance ≥ txAmount`, downstream consumers can reduce wrapSub
-  to plain `Nat` subtraction (same pattern as `MinimalTransferAsm`).
-
-  This is the slice that closes the gap to `BalanceSpec` —
-  the actual token-balance shift the high-level spec aspires to.
+  The arm that actually moves tokens: jeq auth≠0 (NT), jeq amount≠0 (NT), sub/store src,
+  load/add/store dst, r0←0, load close-flag, jne close≠1 (TAKEN → H5). 11 CU, pc → h4bTarget.
+  3 if-collapses (2 NT + 1 TAKEN). Closes the gap to BalanceSpec.
 -/
 
 import PToken.TransferArm.H4aDestMintCheck
@@ -110,12 +75,11 @@ theorem p_token_transfer_arm_h4b_spec
   have h9  := ldxb_spec .r3 .r1 0xcd (wrapAdd dstBalance txAmount)
                 initR1 closeFlag (base + 9) (by decide)
   have h10 := jne_imm_spec .r3 1 (closeFlag % 256) (base + 10) target
-  -- Collapse the 2 NT jeqs.
   rw [show (if (authByte % 256) = toU64 0 then h4bErrPc else (base + 1) + 1) = base + 2 from by
         rw [if_neg h_auth_ne_0]] at h1
   rw [show (if txAmount = toU64 0 then h4bErrPc else (base + 2) + 1) = base + 3 from by
         rw [if_neg h_amt_ne_0]] at h2
-  -- Collapse the TAKEN final jne.
+  -- Final jne taken: close≠1.
   rw [show (if (closeFlag % 256) ≠ toU64 1 then target else (base + 10) + 1) = target from by
         rw [if_pos h_close_ne_1]] at h10
   unfold h4bCr

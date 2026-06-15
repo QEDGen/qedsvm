@@ -7,26 +7,20 @@ open Memory
 
 /-! ## Syscall: `sol_get_return_data` — H6 output region check
 
-H6: `ReturnData.execGet` now routes both output writes (the return-data
-buffer `[r1, r1+copyLen)` and the 32-byte setter id `[r3, r3+32)`)
-through `State.guardWrite`, so an out-of-region (or non-writable)
+H6: `execGet` routes both output writes (buffer `[r1, r1+copyLen)` + 32-byte
+setter id `[r3, r3+32)`) through `guardWrite`, so out-of-region/non-writable
 output traps with a typed `accessViolation` (`execGet_faults_oob`).
 
-The old `call_sol_get_return_data_spec` (a `cuTripleWithin` over
-`returnDataIs` + both output buffers) is DELETED: it was UNCONSUMED (no
-lift composed it; only comment cross-references in `Log.lean` /
-`Mem.lean`), and its success postcondition no longer holds for an
-unguarded out-of-region output — the honest characterization is the
-fault-direction lemma. -/
+The old `call_sol_get_return_data_spec` is DELETED: UNCONSUMED (no lift
+composed it), and its success post no longer holds for an unguarded
+out-of-region output — the honest characterization is the fault lemma. -/
 
 
 /-! ## Silent-syscall helper: `cuTripleWithin_syscall_silent`
 
-For syscalls whose `step` is a no-op on `PartialState` (regs, mem, pc
-all match modulo `pc + 1`). The spec is `emp ↓ emp` — the syscall
-advances pc by 1 and consumes fuel/CU but doesn't observably touch
-any SL-tracked resource. Composed with the frame rule, it transports
-any pc-free assertion through the call. -/
+For syscalls whose `step` is a no-op on `PartialState` (regs/mem match, pc+1).
+Spec `emp ↓ emp`: advances pc, consumes CU, touches no SL-tracked resource;
+with the frame rule it transports any pc-free assertion through the call. -/
 
 theorem cuTripleWithin_syscall_silent
     (sc : Syscall) (pc : Nat) (nCu : Nat)
@@ -118,13 +112,11 @@ theorem cuTripleWithin_syscall_silent
 
 /-! ## Syscall: `sol_remaining_compute_units`
 
-H7: `execRemainingComputeUnits` writes the REAL remaining compute budget
-to `r0` (`cuBudget − (cuConsumed + 1 + Misc.cu)`, H5 total metering).
-The meter fields (`cuBudget`/`cuConsumed`) are SILENT in `PartialState`,
-so the SL-level postcondition cannot pin the value — the honest spec is
-existential: `r0` was overwritten with SOME value. A lift can therefore
-no longer prove "`r0` preserved" across this syscall (which would be
-false on chain), but also cannot claim to know the returned budget. -/
+H7: `execRemainingComputeUnits` writes the REAL remaining budget to `r0`
+(`cuBudget − (cuConsumed + 1 + Misc.cu)`, H5 metering). The meter fields are
+SILENT in `PartialState`, so the honest post is existential ("`r0` set to SOME
+value"): a lift can't prove "`r0` preserved" (false on chain) nor pin the
+returned budget. -/
 
 theorem call_sol_remaining_compute_units_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,

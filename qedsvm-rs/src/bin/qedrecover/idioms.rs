@@ -1,53 +1,30 @@
-//! Idiom recogniser — the asm-side dual of the Layer-0 domain
-//! vocabulary (lever 4 from issue #11).
+//! Idiom recogniser — asm-side domain vocabulary (lever 4, issue #11).
 //!
-//! Recovery (main.rs) emits CFG metadata; this module recognises
-//! canonical instruction shapes inside the recovered blocks and tags
-//! them with domain-level names, so the surface reads
-//! `u64_field_decrement base=r5 off=72 amount=r8` instead of
-//! `ldxdw r1, [r5+72]; sub64 r1, r8; stxdw [r5+72], r1`.
-//!
-//! Starter vocabulary, chosen from shapes that are honestly
-//! recognisable WITHOUT dataflow analysis (consecutive instructions
-//! inside one basic block, plus one call-window pattern):
-//!
-//! - `u64_field_increment` / `u64_field_decrement` — the
-//!   load/add-or-sub/store-back triple on the same `[base+off]` u64
-//!   cell. This is the balance-mutation shape every token lift proves
-//!   (`amount ±= x`), and the asm form of `lamports_add`/`lamports_sub`.
-//! - `error_propagation_check` — `call f` followed within a short
-//!   window by a conditional jump testing r0: the compiled
-//!   `Err(e) => return e` propagation seam. p_token's transfer arm
-//!   returns ALL its nonzero errors through this shape (the constant
-//!   error landings live in the entrypoint prelude; see
-//!   `constExitBlocks`), so these tags mark exactly where error-exit
-//!   reasoning must cross a call boundary.
-//! - `read_discriminator` — the dispatcher's `ldx rD, [r1+0]` load.
-//!   Emitted from the already-recovered dispatch site (where r1 is
-//!   known to be the input pointer), not from a blind scan.
-//!
-//! Constant error exits are tagged separately (`constExitBlocks`,
-//! main.rs) since they carry a payload (the exit code), not just a
-//! shape name.
+//! Tags canonical instruction shapes inside recovered blocks without dataflow analysis
+//! (consecutive-instruction patterns + one call-window pattern):
+//! - `u64_field_increment`/`u64_field_decrement`: ldx/alu/stx triple on the same `[base+off]`
+//!   cell — the balance-mutation shape every token lift proves (`lamports_add`/`lamports_sub`).
+//! - `error_propagation_check`: `call f` + conditional r0 test within a short fall-through window
+//!   — the `Err(e) => return e` seam; marks where error-exit reasoning must cross a call boundary.
+//! - `read_discriminator`: emitted from the already-recovered dispatch site (r1 = input pointer
+//!   by Solana ABI), not from a blind scan — that's what makes the tag sound.
+//! Constant error exits are tagged separately in main.rs (`constExitBlocks`) as they carry a payload.
 
 use solana_sbpf::{ebpf, static_analysis::{Analysis, CfgNode}};
 
-/// One recognised idiom occurrence: the logical PC of the shape's
-/// first instruction, the canonical pattern name, and the rendered
-/// bindings (registers/offsets the pattern matched).
+/// One recognised idiom: `pc` = logical PC of the pattern's first instruction.
 pub struct Idiom {
     pub pc:     usize,
     pub name:   &'static str,
     pub detail: String,
 }
 
-/// How far past a `call` the r0 test may sit. p_token interleaves a
-/// spill restore plus the `lsh64/rsh64 r0, 32` unpack of pinocchio's
-/// `ProgramError` encoding before testing, so the window is 4.
+/// Max instructions past a `call` to search for the r0 test. p_token inserts a spill-restore
+/// + `lsh64/rsh64 r0,32` pinocchio `ProgramError` unpack before the test, so window = 4.
 const CALL_TEST_WINDOW: usize = 4;
 
 fn is_cond_jump_on_r0(insn: &ebpf::Insn) -> bool {
-    // JMP/JMP32 class, conditional (not ja/call/exit), reading r0.
+    // JMP/JMP32 class, conditional (excludes ja/call/exit), dst=r0.
     let class = insn.opc & 0x07;
     if class != 0x05 && class != 0x06 { return false; }
     if matches!(insn.opc, ebpf::JA | ebpf::CALL_IMM | ebpf::CALL_REG | ebpf::EXIT) {
@@ -56,15 +33,11 @@ fn is_cond_jump_on_r0(insn: &ebpf::Insn) -> bool {
     insn.dst == 0
 }
 
-/// Scan one block for in-block idioms.
 fn scan_block(analysis: &Analysis, b: &CfgNode, out: &mut Vec<Idiom>) {
     let insns = &analysis.instructions;
     let r = &b.instructions;
     let mut i = r.start;
     while i < r.end {
-        // u64_field_{increment,decrement}: ldxdw v,[base+off];
-        // {add64,sub64} v, a; stxdw [base+off], v — consecutive, same
-        // base register, same offset, value register threaded through.
         if i + 2 < r.end {
             let (ld, alu, st) = (&insns[i], &insns[i + 1], &insns[i + 2]);
             if ld.opc == ebpf::LD_DW_REG
@@ -90,11 +63,7 @@ fn scan_block(analysis: &Analysis, b: &CfgNode, out: &mut Vec<Idiom>) {
                 continue;
             }
         }
-        // error_propagation_check: call f; …; cond-jump on r0 within
-        // the window. A call always terminates its basic block (the
-        // CFG splits at `insn.ptr + 1`), so the r0 test lives in the
-        // fall-through successor — follow the single destination edge
-        // and scan its head.
+        // A call always splits the CFG, so the r0 test lives in the fall-through successor.
         if insns[i].opc == ebpf::CALL_IMM && b.destinations.len() == 1 {
             if let Some(next) = analysis.cfg_nodes.get(&b.destinations[0]) {
                 let nr = &next.instructions;
@@ -114,10 +83,7 @@ fn scan_block(analysis: &Analysis, b: &CfgNode, out: &mut Vec<Idiom>) {
     }
 }
 
-/// Scan the recovered arm slice. `dispatch` is the already-recovered
-/// dispatcher site `(load_pc, disc_width_bytes)`, emitted as the
-/// `read_discriminator` idiom (r1 is the input pointer there by the
-/// Solana ABI, which is what makes the tag sound).
+/// Scan the recovered arm slice. `dispatch = (load_pc, disc_width_bytes)` emits a `read_discriminator` idiom.
 pub fn scan_arm(
     analysis: &Analysis,
     arm_blocks: &[&CfgNode],

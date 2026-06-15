@@ -1,89 +1,56 @@
 -- The Upgradeable BPF Loader (BPF Loader v3) — native, not BPF.
 --
 -- Reference: agave's `solana-bpf-loader-program/src/lib.rs`
--- (`process_loader_upgradeable_instruction`, ~600 lines covering 8
--- variants) and `solana-loader-v3-interface-6.1.1/src/{state,instruction}.rs`.
---
+-- (`process_loader_upgradeable_instruction`) and
+-- `solana-loader-v3-interface-6.1.1/src/{state,instruction}.rs`.
 -- PROGRAM_ID = `BPFLoaderUpgradeab1e11111111111111111111111`.
--- CU = `UPGRADEABLE_LOADER_COMPUTE_UNITS = 2370` (flat per invocation,
--- charged at the *outer* `process_instruction_inner` boundary in
--- agave; we charge it uniformly in `dispatch`).
+-- CU = `UPGRADEABLE_LOADER_COMPUTE_UNITS = 2370`, flat per invocation
+-- (agave charges at the outer `process_instruction_inner` boundary; we
+-- charge uniformly in `dispatch`).
 --
--- ## What this module ships
---
--- All 8 variants decode and dispatch end-to-end:
---
---   * InitializeBuffer     — Uninitialized → Buffer { authority }
---   * Write                — bounds-checked copy into buffer payload
---   * DeployWithMaxDataLen — PDA verify + buffer→payer drain +
---                             inline System::CreateAccount + buffer
---                             payload copy → programdata + state writes
---   * Upgrade              — state verify + buffer→programdata copy +
---                             tail-zero + lamport spill
---   * SetAuthority         — Buffer / ProgramData authority rotation
---   * Close                — all three target states (Uninit / Buffer /
---                             ProgramData), full lamport-drain semantics
---   * ExtendProgram        — data_len grow + inline System::Transfer
---                             for rent gap (when rent_min > 0)
---   * SetAuthorityChecked  — same as SetAuthority + new-authority signer
+-- All 8 variants decode and dispatch end-to-end (InitializeBuffer, Write,
+-- DeployWithMaxDataLen, Upgrade, SetAuthority, Close, ExtendProgram,
+-- SetAuthorityChecked).
 --
 -- ## Model simplifications (documented gaps)
 --
--- These come from agave-side machinery we don't replicate, all of
--- which are described in the project charter as "spec where
--- meaningful, skip when machinery is harness-only":
+-- agave-side machinery we don't replicate (charter: "spec where
+-- meaningful, skip when machinery is harness-only"):
 --
---   * **ELF verification.** agave's `deploy_program!` macro
---     verifies the ELF and stashes the JIT-compiled program in the
---     transaction's program cache for subsequent invocations. We
---     have no program cache, so Deploy / Upgrade / Extend skip the
---     verify side-effect. Future code paths that load the freshly-
---     deployed program will go through `Decode.decodeProgram` at
---     invocation time anyway.
---   * **Rent::minimum_balance.** We model `rent_min(len) = 0` (the
---     same simplification documented in the project's Tier-2 deferred
---     items). Affected branches:
---     - Deploy's payer-pays-rent step charges 1 lamport (the
---       `max(1, rent_min)` lower bound).
---     - Upgrade's spill formula leaves 1 lamport on programdata.
---     - ExtendProgram skips the System::Transfer top-up when
---       programdata already has ≥ 1 lamport.
---   * **executable flag on Deploy.** agave's `program.set_executable(true)`
---     mutates the TransactionContext's view; the BPF caller's
---     `AccountInfo` exec bit is not writable from within a Native in
---     our model (AcctInput doesn't expose its slot). The harness
---     surfaces executable=true via the resulting_accounts builder
---     for accounts owned by the loader; the Lean dispatch itself
---     leaves the bit alone.
---   * **Inter-Native CPI (closed 2026-05-15).** Deploy and
---     ExtendProgram do `native_invoke_signed(system_instruction::…)`
---     in agave, which charges `Cpi.cu = 946` per call. The earlier
---     Loader v3 closure (commit 2c1c1ab) inlined the System
---     side-effects to avoid building inter-Native CPI plumbing. This
---     module now composes via `System.dispatch` directly with
---     synthetic `isSigner = true` on the PDA-derived account
---     (mirrors agave's `invoke_signed` where seeds authorize the
---     PDA). Deploy's CU = 2370 + 946 + 150 = 3466, matching agave;
---     ExtendProgram's rent-gap Transfer (only fires when
---     `rent_min > 0`) charges the same `946 + 150` premium.
---   * **Close ProgramData same-slot freshness.** agave rejects
---     Close when `clock.slot == programdata.slot`. With both = 0
---     in our model the gate would always fire; we bypass it.
+--   * **ELF verification.** agave's `deploy_program!` verifies the ELF
+--     and caches the JIT program; we have no program cache, so
+--     Deploy/Upgrade/Extend skip the verify side-effect. Loads go
+--     through `Decode.decodeProgram` at invocation time anyway.
+--   * **Rent::minimum_balance.** We model `rent_min(len) = 0` (Tier-2
+--     deferred). So Deploy charges 1 lamport (the `max(1, rent_min)`
+--     floor), Upgrade's spill leaves 1 lamport on programdata, and
+--     ExtendProgram skips the top-up when programdata already has ≥ 1.
+--   * **executable flag on Deploy.** agave's `set_executable(true)`
+--     mutates the TransactionContext; AcctInput doesn't expose that
+--     slot, so the harness surfaces executable=true via the
+--     resulting_accounts builder and the Lean dispatch leaves it alone.
+--   * **Inter-Native CPI (closed 2026-05-15).** Deploy/ExtendProgram do
+--     `native_invoke_signed(system_instruction::…)` in agave (Cpi.cu =
+--     946/call). We compose via `System.dispatch` directly with
+--     synthetic `isSigner = true` on the PDA-derived account (agave's
+--     invoke_signed authorizes via seeds). Deploy's CU = 2370+946+150 =
+--     3466 matches agave; ExtendProgram's rent-gap Transfer (only when
+--     `rent_min > 0`) charges the same 946+150 premium.
+--   * **Close ProgramData same-slot freshness.** agave rejects Close
+--     when `clock.slot == programdata.slot`; both = 0 in our model
+--     would always fire, so we bypass the gate.
 --
 -- ## State layout (agave's `UpgradeableLoaderState`)
 --
--- bincode enum, u32 LE tag. Pubkey `Option` is 1-byte presence flag
--- followed by 32 bytes (regardless of presence; the trailing slot
--- isn't read when the tag is `None`, but the *account-data size* is
--- fixed at `size_of_*_metadata`).
+-- bincode enum, u32 LE tag. Pubkey `Option` = 1-byte presence flag + 32
+-- bytes (account-data size fixed at `size_of_*_metadata` regardless).
 --
 --   tag 0  Uninitialized        4 bytes
 --   tag 1  Buffer               37 bytes  [4 tag | 1 Some/None | 32 pubkey]
 --   tag 2  Program              36 bytes  [4 tag | 32 programdata pubkey]
 --   tag 3  ProgramData          45 bytes  [4 tag | 8 slot | 1 Some/None | 32 pubkey]
 --
--- After the metadata, the buffer / programdata payload (ELF bytes)
--- continues to `accts[i].dataLen`.
+-- Buffer/programdata ELF payload follows the metadata to `accts[i].dataLen`.
 
 import SVM.Native.AcctInput
 import SVM.Native.System
@@ -106,19 +73,16 @@ open SVM.Native
 def PROGRAM_ID : Nat :=
   0x00008004107a53c0d224c1163db9c2002bae63f73e1510e2b0a1884e91f6a802
 
-/-- The 32-byte BPF Loader v3 program-id (used as an owner-field
-    comparison on Close / ExtendProgram / Upgrade). -/
+/-- The 32-byte BPF Loader v3 program-id (owner-field check on Close/ExtendProgram/Upgrade). -/
 def PROGRAM_ID_BYTES : ByteArray :=
   ⟨#[0x02, 0xa8, 0xf6, 0x91, 0x4e, 0x88, 0xa1, 0xb0,
      0xe2, 0x10, 0x15, 0x3e, 0xf7, 0x63, 0xae, 0x2b,
      0x00, 0xc2, 0xb9, 0x3d, 0x16, 0xc1, 0x24, 0xd2,
      0xc0, 0x53, 0x7a, 0x10, 0x04, 0x80, 0x00, 0x00]⟩
 
-/-- `UPGRADEABLE_LOADER_COMPUTE_UNITS` from
-    `programs/bpf_loader/src/lib.rs:37`. Flat charge for every
-    management instruction; the cost is consumed before dispatch in
-    agave (`process_instruction_inner`), so it accrues whether the
-    inner match succeeds or not. -/
+/-- `UPGRADEABLE_LOADER_COMPUTE_UNITS` from `programs/bpf_loader/src/lib.rs:37`.
+    Flat charge consumed before dispatch in agave, so it accrues even when
+    the inner match fails. -/
 def CU_DEFAULT : Nat := 2370
 
 /-! ## State enum -/
@@ -213,10 +177,8 @@ def decode (ixData : ByteArray) : LoaderIx :=
 
 /-! ## State read/write -/
 
-/-- Read the `LoaderState` stored at `acct.dataPtr` in caller memory.
-    `acct.dataLen` is the full account data length (which must be at
-    least the metadata size for the variant). Truncated reads return
-    `.invalid`. -/
+/-- Read the `LoaderState` at `dataPtr`. `dataLen` must be ≥ the
+    variant's metadata size; truncated reads return `.invalid`. -/
 private def readState (mem : Mem) (dataPtr dataLen : Nat) : LoaderState :=
   if dataLen < SIZE_UNINITIALIZED then .invalid
   else
@@ -272,12 +234,8 @@ private def writeBufferState (mem : Mem) (dataPtr : Nat)
   let m1 := writeU32 mem dataPtr TAG_BUFFER
   match authority with
   | none =>
-    -- Option tag = 0; agave pads remaining 32 bytes with whatever was
-    -- there. We zero the slot to keep behaviour reproducible.
-    let m2 := writeU32 m1 (dataPtr + 4) 0  -- writes the option byte +
-                                              -- 3 surrounding bytes; the
-                                              -- option byte is what
-                                              -- matters
+    -- Option tag = 0; we zero the slot (agave leaves stale bytes) for reproducibility.
+    let m2 := writeU32 m1 (dataPtr + 4) 0  -- only the option byte matters here
     writeZeros m2 (dataPtr + 5) 32
   | some pk =>
     let m2 := fun a => if a = dataPtr + 4 then 1 else m1 a
@@ -433,15 +391,12 @@ private def commonCloseAccount (mem : Mem) (target recipient authority : AcctInp
   else if !authority.isSigner then fail mem
   else if target.lamports + recipient.lamports ≥ U64_MODULUS then fail mem
   else
-    -- Drain lamports.
     let newR := recipient.lamports + target.lamports
     let m1 := writeU64 mem target.lamportsRefAddr 0
     let m2 := writeU64 m1 recipient.lamportsRefAddr newR
-    -- Shrink data_len to SIZE_UNINITIALIZED in both buffer-side and
-    -- BPF input-buffer slots (mirrors System::CreateAccount's pair).
+    -- Shrink data_len in both buffer-side and BPF input-buffer slots.
     let m3 := writeU64 m2 target.dataLenRefAddr SIZE_UNINITIALIZED
     let m4 := writeU64 m3 (target.dataPtr - 8) SIZE_UNINITIALIZED
-    -- Reset the tag to Uninitialized.
     let m5 := writeU32 m4 target.dataPtr TAG_UNINITIALIZED
     ⟨m5, 0, CU_DEFAULT⟩
 
@@ -455,20 +410,17 @@ private def commonCloseAccount (mem : Mem) (target recipient authority : AcctInp
 def execClose (mem : Mem) (accts : List AcctInput) : NativeResult :=
   match accts with
   | closeAcct :: recipient :: rest =>
-    -- agave guards `close.key == recipient.key` rejection. We mirror.
+    -- agave rejects `close.key == recipient.key`.
     if pubkeyEq closeAcct.key recipient.key then fail mem
     else
       match readState mem closeAcct.dataPtr closeAcct.dataLen with
       | .uninitialized =>
-        -- Drain lamports straight into recipient.
         if recipient.lamports + closeAcct.lamports ≥ U64_MODULUS then fail mem
         else
           let m1 := writeU64 mem closeAcct.lamportsRefAddr 0
           let m2 := writeU64 m1 recipient.lamportsRefAddr
                               (recipient.lamports + closeAcct.lamports)
-          -- data_length stays at SIZE_UNINITIALIZED; the state already
-          -- says Uninitialized so no rewrite needed (agave does
-          -- `set_data_length(size_of_uninitialized())`).
+          -- Tag stays Uninitialized; only data_len is set (agave's set_data_length).
           let m3 := writeU64 m2 closeAcct.dataLenRefAddr SIZE_UNINITIALIZED
           let m4 := writeU64 m3 (closeAcct.dataPtr - 8) SIZE_UNINITIALIZED
           ⟨m4, 0, CU_DEFAULT⟩
@@ -483,14 +435,8 @@ def execClose (mem : Mem) (accts : List AcctInput) : NativeResult :=
           if !program.isWritable then fail mem
           else if !isOwnerLoader program.owner then fail mem
           else
-            -- Slot freshness check: agave rejects Close if the program
-            -- was deployed *in this slot*. Our currentSlot is 0; the
-            -- stored slot is whatever was serialised, which is also 0
-            -- for any fixture using mollusk defaults. Agave's check is
-            -- `clock.slot == slot`; with both = 0 the check fires
-            -- (Close fails). We document this as a known divergence
-            -- and bypass the freshness gate here — programs deployed
-            -- in the same slot can still be closed in our model.
+            -- Slot-freshness gate bypassed: agave's `clock.slot == slot`
+            -- would always fire with both = 0 in our model (known divergence).
             match readState mem program.dataPtr program.dataLen with
             | .program programdataAddr =>
               if !pubkeyEq programdataAddr closeAcct.key then fail mem
@@ -503,42 +449,26 @@ def execClose (mem : Mem) (accts : List AcctInput) : NativeResult :=
 
 /-! ## Deploy / Upgrade / Extend
 
-These three variants share the pattern "verify state-chain →
-manipulate lamports → copy buffer payload → write state". They also
-share two model simplifications (see top-doc):
+Share the pattern "verify state-chain → manipulate lamports → copy
+buffer payload → write state", and two simplifications (see top-doc):
+`rent_min(_) = 0` (so `1.max(rent_min)` clamps to 1) and the inner
+System CPI composed via `System.dispatch`. -/
 
-  * `rent_min(_) = 0` — agave's Rent sysvar would compute per-byte
-    lamports; we don't model the Rent sysvar's value, so the
-    `1.max(rent_min)` clamp always lands at 1.
-  * The internal `native_invoke_signed(system_instruction::...)` is
-    inlined (lamport / data_len / owner writes done directly) rather
-    than re-entering the System dispatcher. This saves a Cpi.cu
-    charge of 946 + 150 vs agave; net CU figures will differ by
-    that amount per inner invocation. -/
-
-/-- The MAX_PERMITTED_DATA_LENGTH constant agave clamps deploys
-    against. Matches `solana_system_interface::MAX_PERMITTED_DATA_LENGTH`. -/
+/-- `solana_system_interface::MAX_PERMITTED_DATA_LENGTH`; deploy clamp. -/
 private def MAX_PERMITTED_DATA_LENGTH : Nat := 10 * 1024 * 1024
 
-/-- Stub for `Rent::minimum_balance(_)`. Our model treats every
-    rent-exempt computation as 0 lamports. The downstream
-    `1.max(rent_min)` formula then clamps to 1. -/
+/-- Stub for `Rent::minimum_balance(_)` = 0; `1.max(rent_min)` clamps to 1. -/
 private def rentMin (_dataLen : Nat) : Nat := 0
 
-/-- SIMD-0431: a successful Extend must add at least 10 KiB unless
-    the account is within 10 KiB of MAX_PERMITTED_DATA_LENGTH. We
-    enforce the bound directly (agave gates this behind a feature
-    flag; we treat the gate as always-active since modern fixtures
-    won't run pre-SIMD-0431 paths). -/
+/-- SIMD-0431: Extend must add ≥ 10 KiB unless within 10 KiB of
+    MAX_PERMITTED_DATA_LENGTH. We treat agave's feature gate as always-active. -/
 private def MINIMUM_EXTEND_PROGRAM_BYTES : Nat := 10240
 
 /-! ### Inter-Native CPI composition
 
-Build the bincode ix data for a few `SystemInstruction` variants we
-invoke as inner CPI calls, then dispatch through `System.dispatch`.
-`Cpi.cu = 946` is added to the cu figure to mirror agave's
-`invoke_units` charge — System contributes its own `System.CU_DEFAULT
-= 150` on top via its result. -/
+Build bincode ix data for the `SystemInstruction` variants we invoke as
+inner CPI calls, then dispatch through `System.dispatch`. `Cpi.cu = 946`
+is added (agave's `invoke_units`); System adds its own 150 via its result. -/
 
 private def U64_BYTES (n : Nat) : ByteArray := Id.run do
   let mut out := ByteArray.empty
@@ -567,11 +497,8 @@ private def encodeSystemCreateAccount (lamports space : Nat) (owner : ByteArray)
 private def encodeSystemTransfer (lamports : Nat) : ByteArray :=
   U32_BYTES 2 ++ U64_BYTES lamports
 
-/-- Compose an inner `System.dispatch` call from within a Loader v3
-    executor. Adds `Cpi.cu = 946` to the inner CU charge; returns
-    `none` if the dispatch fails (unknown variant) or the inner call
-    returned a non-zero r0. Successful returns expose the composed
-    (mem, cu) pair so the caller can fold them into its NativeResult. -/
+/-- Inner `System.dispatch` call adding `Cpi.cu = 946`. Returns `none` on
+    dispatch failure or non-zero inner r0; otherwise the composed (mem, cu). -/
 private def invokeSystem (ixData : ByteArray) (subAccts : List AcctInput)
     (mem : Mem) : Option (Mem × Nat) :=
   match System.dispatch ixData subAccts mem with
@@ -594,14 +521,12 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
   match accts with
   | payer :: pdAcct :: program :: buffer :: _rent :: _clock :: _sys ::
     authority :: _ =>
-    -- Verify Program account: Uninitialized + large enough + rent-exempt
-    -- (we skip the rent check, per `rentMin = 0`).
+    -- Verify Program: Uninitialized + large enough (rent check skipped, `rentMin = 0`).
     match readState mem program.dataPtr program.dataLen with
     | .uninitialized =>
       if program.dataLen < SIZE_PROGRAM then fail mem
       else
-        -- Verify Buffer account: Buffer state + authority matches +
-        -- authority signed.
+        -- Verify Buffer: Buffer state + authority matches + signed.
         match readState mem buffer.dataPtr buffer.dataLen with
         | .buffer authorityAddr =>
           if !authorityEq authorityAddr (some authority.key) then fail mem
@@ -616,8 +541,7 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
               else if maxDataLen < bufferDataLen then fail mem
               else if programDataLen > MAX_PERMITTED_DATA_LENGTH then fail mem
               else
-                -- PDA verify: find_program_address([program.key], LOADER)
-                -- == pdAcct.key.
+                -- PDA verify: find_program_address([program.key], LOADER) == pdAcct.key.
                 match SVM.SBPF.Pda.tryFindProgramAddress
                         [program.key] PROGRAM_ID_BYTES with
                 | none => fail mem
@@ -631,9 +555,8 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
                       let payerAfterDrain := payer.lamports + buffer.lamports
                       let m_drain := writeU64 mem payer.lamportsRefAddr payerAfterDrain
                       let m_buf0  := writeU64 m_drain buffer.lamportsRefAddr 0
-                      -- Inter-Native CPI: System::CreateAccount. Synthesize
-                      -- isSigner=true on the PDA-derived account (the loader's
-                      -- invoke_signed in agave authorizes via the seeds).
+                      -- CPI System::CreateAccount; synthetic isSigner on the
+                      -- PDA (agave's invoke_signed authorizes via seeds).
                       let cpiPayer := { payer with lamports := payerAfterDrain }
                       let cpiPd    := { pdAcct with isSigner := true }
                       let createIx := encodeSystemCreateAccount
@@ -642,8 +565,6 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
                       match invokeSystem createIx [cpiPayer, cpiPd] m_buf0 with
                       | none => fail mem
                       | some (m_sys, sysCu) =>
-                        -- After System::CreateAccount: programdata has lamports +
-                        -- dataLen + owner set; payer is decremented.
                         -- Set ProgramData state.
                         let m7 := writeProgramDataState m_sys pdAcct.dataPtr 0
                                                        (some authority.key)
@@ -653,7 +574,7 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
                         let m8 := writeBytes m7
                                   (pdAcct.dataPtr + SIZE_PROGRAMDATA_META)
                                   bufferDataLen src
-                        -- Buffer dataLen → size_of_buffer(0) = 37.
+                        -- Buffer dataLen → size_of_buffer = 37.
                         let m9 := writeU64 m8 buffer.dataLenRefAddr
                                           SIZE_BUFFER_METADATA
                         let m10 := writeU64 m9 (buffer.dataPtr - 8)
@@ -662,8 +583,7 @@ def execDeployWithMaxDataLen (mem : Mem) (accts : List AcctInput)
                         let m11 := writeU32 m10 program.dataPtr TAG_PROGRAM
                         let m12 := writeBytes m11 (program.dataPtr + 4) 32
                                               pdAcct.key
-                        -- NOTE: program.executable is left unset; see
-                        -- module-level "executable flag on Deploy".
+                        -- program.executable left unset; see "executable flag on Deploy".
                         ⟨m12, 0, CU_DEFAULT + sysCu⟩
         | _ => fail mem
     | _ => fail mem  -- AccountAlreadyInitialized
@@ -681,7 +601,6 @@ def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
   match accts with
   | pdAcct :: program :: buffer :: spill :: _rent :: _clock ::
     authority :: _ =>
-    -- Verify Program account.
     if !program.isWritable then fail mem
     else if !isOwnerLoader program.owner then fail mem
     else
@@ -689,7 +608,6 @@ def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
       | .program programdataAddr =>
         if !pubkeyEq programdataAddr pdAcct.key then fail mem
         else
-          -- Verify Buffer account.
           match readState mem buffer.dataPtr buffer.dataLen with
           | .buffer authorityAddr =>
             if !authorityEq authorityAddr (some authority.key) then fail mem
@@ -701,7 +619,6 @@ def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
                 let bufferDataLen := buffer.dataLen - bufferDataOffset
                 if bufferDataLen = 0 then fail mem
                 else
-                  -- Verify ProgramData account.
                   let balanceRequired := Nat.max 1 (rentMin pdAcct.dataLen)
                   if pdAcct.dataLen <
                        SIZE_PROGRAMDATA_META + bufferDataLen then fail mem
@@ -728,10 +645,9 @@ def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
                         let tailLen :=
                           pdAcct.dataLen - (SIZE_PROGRAMDATA_META + bufferDataLen)
                         let m2 := writeZeros m1 tailStart tailLen
-                        -- Update ProgramData state with current slot.
                         let m3 := writeProgramDataState m2 pdAcct.dataPtr 0
                                                        (some authority.key)
-                        -- Spill: spill += programdata + buffer - balance_required.
+                        -- Spill = programdata + buffer - balance_required.
                         let totalLamports := pdAcct.lamports + buffer.lamports
                         let excess := totalLamports - balanceRequired
                         if spill.lamports + excess ≥ U64_MODULUS then fail mem
@@ -741,7 +657,6 @@ def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
                           let m5 := writeU64 m4 buffer.lamportsRefAddr 0
                           let m6 := writeU64 m5 pdAcct.lamportsRefAddr
                                             balanceRequired
-                          -- Buffer dataLen → 37.
                           let m7 := writeU64 m6 buffer.dataLenRefAddr
                                             SIZE_BUFFER_METADATA
                           let m8 := writeU64 m7 (buffer.dataPtr - 8)
@@ -758,10 +673,8 @@ def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
     2. `[]` System program (optional)
     3. `[writable, signer]` payer (optional, only when rent gap > 0)
 
-    The `check_authority` variant (`ExtendProgramChecked`, not in
-    agave's 8 variants in this version) shifts the authority into
-    account index 2 and the payer into 4. We model only the
-    unchecked form. -/
+    We model only the unchecked form (`ExtendProgramChecked` isn't in
+    agave's 8 variants this version). -/
 def execExtendProgram (mem : Mem) (accts : List AcctInput)
     (additionalBytes : Nat) : NativeResult :=
   match accts with
@@ -791,11 +704,10 @@ def execExtendProgram (mem : Mem) (accts : List AcctInput)
                 -- Same-slot check skipped (slot = 0 in our model).
                 if upgradeAuth.isNone then fail mem
                 else
-                  -- Rent gap: balance_required = max(1, rent_min(newLen)) = 1.
-                  -- If programdata already has ≥ 1 lamport, no transfer.
+                  -- Rent gap = max(1, rent_min(newLen)) = 1; no transfer if already ≥ 1.
                   let balanceRequired := Nat.max 1 (rentMin newLen)
                   let needTransfer := pdAcct.lamports < balanceRequired
-                  -- Inter-Native CPI System::Transfer for the rent gap.
+                  -- CPI System::Transfer for the rent gap.
                   let cpiResult : Option (Mem × Nat) :=
                     if needTransfer then
                       match rest with
@@ -811,7 +723,6 @@ def execExtendProgram (mem : Mem) (accts : List AcctInput)
                     -- Grow programdata.dataLen to newLen.
                     let m1 := writeU64 baseMem pdAcct.dataLenRefAddr newLen
                     let m2 := writeU64 m1 (pdAcct.dataPtr - 8) newLen
-                    -- Re-write ProgramData state header (slot stays 0).
                     let m3 := writeProgramDataState m2 pdAcct.dataPtr 0
                                                     upgradeAuth
                     ⟨m3, 0, CU_DEFAULT + sysCu⟩
@@ -821,10 +732,9 @@ def execExtendProgram (mem : Mem) (accts : List AcctInput)
 
 /-! ## Dispatcher -/
 
-/-- Single dispatch entry. The Tier-1 #2 native-program convention is
-    "return `some` whenever the program-id matches" — even
-    unknown discriminants surface a deterministic `r0=1` so the
-    failure doesn't silently fall through to the BPF registry. -/
+/-- Single dispatch entry: returns `some` whenever the program-id matches,
+    so unknown discriminants surface `r0=1` instead of falling through to
+    the BPF registry. -/
 def dispatch (ixData : ByteArray) (accts : List AcctInput) (mem : Mem) :
     Option NativeResult :=
   match decode ixData with

@@ -1,42 +1,12 @@
 /-
-  Layer 3b artifact (happy-path chain, H1): Hoare triple over the
-  2-instruction p-token **entry dispatch** at bytes 0x828-0x830 of
-  `qedsvm-rs/tests/fixtures/p_token.so` (release `p-token@v1.0.0-rc.1`).
+  L3b H1: 2-insn entry dispatch at bytes 0x828-0x830 (p-token@v1.0.0-rc.1).
 
-  This is the first arm in a re-targeted happy-path chain. The earlier
-  L1-L6 series (`L1Setup` ... `L6FarJump`) proves the FP-precision
-  validation path the pinocchio compiler emits behind a precision
-  guard — confirmed off-path for `Transfer { amount: 250 }` by
-  trace investigation 2026-05-25. H1-H... covers the PCs actually
-  visited by the standard fixture.
+  Reads discriminator byte into r2 (ldxb), then jeq on `disc % 256 = 3` (Transfer).
+  Happy path: 2 CU, pc → dispatchTarget. H1-H... re-targets the chain after
+  trace investigation confirmed L1-L6 covers the off-path FP-precision guard.
 
-  Trace anchor: `STEP pc=000000c6` (ldxb reads `0x03` into r2) followed
-  by `STEP pc=000000c7` (jeq matches, jumps to pc=00000130 — the magic-
-  byte account-layout cascade). The 2 CU here are the entire dispatch.
-
-  The 2 instructions, lifted from `qedsvm-rs/tests/fixtures/p_token.disasm`:
-
-  ```
-  828: 71 12 00 00 ...      ldxb r2, [r1 + 0x0]            ← read discriminator
-  830: 15 02 6d 00 03 .. .. jeq  r2, 0x3, +0x6d            ← Transfer? jump to validation
-  ```
-
-  Semantics: pinocchio's entrypoint reads the instruction discriminator
-  byte from the first byte of its input region (r1 points at the
-  Solana program input buffer; offset 0 holds the discriminator after
-  pinocchio's zero-copy layout), then dispatches on `3 = Transfer`. The
-  happy path under the hypothesis "discriminator = 3" lands at the
-  jeq target (locally `dispatchTarget`).
-
-  Spec: given `disc % 256 = toU64 3` in the precondition, executes
-  2 CU advancing PC 0 → `dispatchTarget`, leaving r1 and the input
-  byte preserved and r2 = `disc % 256`.
-
-  PC layout mirrors `PTokenValidationPrelude.lean`'s convention: the
-  jeq target value `1 + 1 + 0x6d = 0x6f` is a synthetic local PC
-  capturing the disasm offset field for visual link, not an absolute
-  image PC (real-image lddw counts diverge between byte and PC arithmetic).
-  Glue consumers re-instantiate at the actual absolute target.
+  `dispatchTarget` = synthetic local PC `1+1+0x6d`; glue consumers re-instantiate
+  at the actual absolute target (lddw byte-vs-PC counts differ in real image).
 -/
 
 import SVM.SBPF.InstructionSpecs
@@ -48,16 +18,10 @@ namespace Examples.PTokenTransferArmDispatch
 open SVM.SBPF
 open Memory
 
-/-- Synthetic local PC for the jeq target on the Transfer dispatch.
-    Computed as `1 + 1 + 0x6d` (PC of jeq + 1 + the jeq's offset field).
-    Real image PC differs because of lddw byte-vs-PC counts; downstream
-    glue picks the absolute value. Kept as the default-target hint; the
-    `base`-parameterized variant below takes the target as a parameter. -/
+/-- Synthetic local target = `1+1+0x6d` (PC+1+offset); real image PC differs. -/
 def dispatchTarget : Nat := 0x6f
 
-/-- The CodeReq for the 2-instruction Transfer-arm dispatch, base-shifted
-    so the local PCs become `base + 0` and `base + 1`. The jeq target
-    is supplied externally (not shifted by `base`). -/
+/-- CodeReq for the 2-insn dispatch; jeq target supplied externally (not shifted). -/
 def transferArmDispatchCr (base : Nat) (target : Nat) : CodeReq :=
   cr![ base + 0 ↦ .ldx .byte .r2 .r1 0,
        base + 1 ↦ .jeq .r2 (.imm 3) target ]
@@ -72,11 +36,9 @@ theorem p_token_transfer_arm_dispatch_spec
       ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ disc % 256) **
         (effectiveAddr initR1 0 ↦ₘ disc))
       (fun rt => rt.containsRange (effectiveAddr initR1 0) 1 = true) := by
-  -- h0: ldxb reads the discriminator byte → r2 := disc % 256.
   have h0 := ldxb_spec .r2 .r1 0 initR2 initR1 disc (base + 0) (by decide)
-  -- h1: jeq's exit PC is `if disc % 256 = toU64 3 then target else (base+1)+1`.
   have h1 := jeq_imm_spec .r2 3 (disc % 256) (base + 1) target
-  -- Collapse the conditional: under h_disc the jeq is taken.
+  -- h_disc collapses the jeq: target taken.
   rw [show (if (disc % 256) = toU64 3 then target else (base + 1) + 1) = target
         from by rw [h_disc]; simp] at h1
   unfold transferArmDispatchCr

@@ -1,27 +1,12 @@
 /-
-  Program Derived Address (PDA) derivation.
+  Program Derived Address (PDA) derivation: pure-Lean
+  `sol_create_program_address` / `sol_try_find_program_address`, built only on
+  `Sha256.hash` (FIPS-180-4) and `Curve25519.validateEdwards` (lean-bridge).
 
-  Pure-Lean implementation of `sol_create_program_address` and
-  `sol_try_find_program_address`. The algorithm only depends on:
-    - `Sha256.hash`            (pure-Lean FIPS-180-4)
-    - `Curve25519.validateEdwards`  (lean-bridge → curve25519-dalek)
-  No new bridge code; this entire module is built from primitives
-  already in the repo.
-
-  Algorithm (`Address::create_program_address` in solana-sdk):
-    1. Validate `seeds.length ≤ 16` and `∀ s ∈ seeds, s.size ≤ 32`.
-    2. Compute `h = SHA-256(seed₀ ‖ seed₁ ‖ … ‖ program_id ‖ "ProgramDerivedAddress")`.
-    3. If `h` is on the ed25519 curve, reject (it could be a real
-       pubkey with a private key, defeating the PDA security property).
-    4. Otherwise return `h` as the PDA.
-
-  `try_find_program_address` iterates a 1-byte bump seed from 255 down
-  to 0, appending it to the seeds, until `create_program_address`
-  succeeds.
-
-  Wired to `.sol_create_program_address` and
-  `.sol_try_find_program_address` via `execCreate` / `execTryFind`
-  below.
+  `create_program_address`: validate seeds (≤16, each ≤32), hash
+  `seed* ‖ program_id ‖ "ProgramDerivedAddress"`, reject if on the ed25519 curve
+  (could be a real pubkey, defeating the PDA security property), else return it.
+  `try_find_program_address` iterates a 1-byte bump seed 255→0 until that succeeds.
 -/
 
 import SVM.SBPF.Machine
@@ -31,26 +16,20 @@ import SVM.Syscalls.Curve25519
 namespace SVM.SBPF
 namespace Pda
 
-/-- Solana caps the number of seeds and per-seed length. Exceeding
-    either yields `MaxSeedLengthExceeded` in agave. -/
+/-- Seed-count / per-seed-length caps; exceeding either is `MaxSeedLengthExceeded`. -/
 def MAX_SEEDS    : Nat := 16
 def MAX_SEED_LEN : Nat := 32
 
-/-- The 21-byte marker `"ProgramDerivedAddress"` (ASCII). Appended
-    after `program_id` in the hash input so PDAs are
-    distinguishable from `Address::create_with_seed` outputs. -/
+/-- The 21-byte ASCII marker `"ProgramDerivedAddress"`, appended after
+    `program_id` so PDAs are distinct from `create_with_seed` outputs. -/
 def PDA_MARKER : ByteArray := ⟨#[
   0x50, 0x72, 0x6f, 0x67, 0x72, 0x61, 0x6d,   -- "Program"
   0x44, 0x65, 0x72, 0x69, 0x76, 0x65, 0x64,   -- "Derived"
   0x41, 0x64, 0x64, 0x72, 0x65, 0x73, 0x73]⟩  -- "Address"
 
-/-- `Address::create_program_address(seeds, program_id)`. Returns
-    `some <32-byte PDA>` if valid (within seed-count / seed-length
-    limits, hash result not on the ed25519 curve); `none` on any
-    failure mode. Matches agave's discrimination — failures are
-    lumped into a single `none` here; the syscall arm maps to
-    `r0 := 1` in either case (Solana's create_program_address
-    syscall doesn't distinguish error codes either). -/
+/-- `Address::create_program_address(seeds, program_id)`. `some <32-byte PDA>` if
+    valid (within limits, hash off the ed25519 curve), else `none`. All failures
+    lump to `none` → `r0 := 1`; the real syscall doesn't distinguish either. -/
 def createProgramAddress (seeds : List ByteArray) (programId : ByteArray) : Option ByteArray :=
   if seeds.length > MAX_SEEDS then none
   else if seeds.any (fun s => s.size > MAX_SEED_LEN) then none
@@ -61,18 +40,12 @@ def createProgramAddress (seeds : List ByteArray) (programId : ByteArray) : Opti
     if Curve25519.validateEdwards h then none
     else some h
 
-/-- A 1-byte ByteArray containing the bump value (must be `< 256`;
-    we truncate via `toUInt8` for safety in case of caller error). -/
+/-- 1-byte ByteArray holding the bump (truncated via `toUInt8`). -/
 private def bumpSeed (bump : Nat) : ByteArray := ⟨#[bump.toUInt8]⟩
 
-/-- Inner loop for `tryFindProgramAddress`. Returns both the search
-    result and the *number of attempts* the loop made (= number of
-    `createProgramAddress` calls performed, including the one that
-    succeeded). Used by both `tryFindProgramAddress` and the per-call
-    CU charge — agave charges `1500` per attempt (initial + each
-    failed iteration). Mirrors agave's `SyscallTryFindProgramAddress`
-    loop bound: iterates `bump` from 255 down to **1**, never tries
-    `bump = 0` (the `0..u8::MAX` range in agave's source). -/
+/-- Inner loop for `tryFindProgramAddress`: returns the result plus the attempt
+    count (= `createProgramAddress` calls, used for the per-attempt 1500 CU charge).
+    Iterates `bump` 255→**1**, never `bump = 0` (agave's `0..u8::MAX` range). -/
 private def tryFindLoopWithIters (seeds : List ByteArray) (programId : ByteArray)
     : Nat → Option (ByteArray × UInt8) × Nat
   | 0 => (none, 0)
@@ -84,12 +57,8 @@ private def tryFindLoopWithIters (seeds : List ByteArray) (programId : ByteArray
       let (rest, restIters) := tryFindLoopWithIters seeds programId bump
       (rest, restIters + 1)
 
-/-- `Address::find_program_address(seeds, program_id)` (agave's
-    `sol_try_find_program_address`). Iterates `bump` from 255 down to
-    1, appending `[bump]` as the trailing seed each time, and returns
-    the first `(off-curve PDA, bump)`. Returns `none` only if every
-    bump in 255..=1 yields an on-curve hash — statistically
-    impossible in real use; agave also never tries `bump = 0`. -/
+/-- `find_program_address`: iterate `bump` 255→1 appending `[bump]`, return the
+    first `(off-curve PDA, bump)`. `none` only if all 255..=1 are on-curve. -/
 def tryFindProgramAddress (seeds : List ByteArray) (programId : ByteArray)
     : Option (ByteArray × UInt8) :=
   (tryFindLoopWithIters seeds programId 255).1
@@ -102,10 +71,8 @@ def tryFindProgramAddressWithIters (seeds : List ByteArray) (programId : ByteArr
 
 /-! ## Syscall bindings -/
 
-/-- Read `n` seeds from a `VmSlice` array as a `List ByteArray`.
-    Mirrors `readSlices` from Machine.lean but keeps each seed as a
-    separate list element — `createProgramAddress` /
-    `tryFindProgramAddress` need the structured form. -/
+/-- Read `n` seeds from a `VmSlice` array as `List ByteArray` (like Machine's
+    `readSlices` but keeps each seed separate, as the PDA helpers need). -/
 @[simp] def readSeeds (mem : Memory.Mem) (seedsA n : Nat) : List ByteArray :=
   (List.range n).map (fun i =>
     let descAddr := seedsA + i * 16
@@ -113,35 +80,18 @@ def tryFindProgramAddressWithIters (seeds : List ByteArray) (programId : ByteArr
     let len := Memory.readU64 mem (descAddr + 8)
     readBytes mem ptr len)
 
-/-- CU charge for one `create_program_address` attempt. Agave's
-    `create_program_address_units` from `SVMTransactionExecutionCost`.
-    `sol_create_program_address` pays exactly this once;
-    `sol_try_find_program_address` pays this **per iteration** of its
-    bump loop (initial + each failed attempt = total attempts made).
-    Matches agave's `SyscallTryFindProgramAddress::rust` charging
-    model (consume before loop + consume at end of each failed
-    iteration). -/
+/-- CU per `create_program_address` attempt (agave's
+    `create_program_address_units`). `create` pays once; `try_find` pays this
+    per bump-loop iteration (consume before loop + at end of each failed one). -/
 def cuPerAttempt : Nat := 1_500
 
 /-- CU charge for `sol_create_program_address`. Single flat cost. -/
 def cuCreate : Nat := cuPerAttempt
 
-/-- State-dependent CU charge for `sol_try_find_program_address`.
-    Reads seeds + program_id from caller memory, simulates the bump
-    loop, and charges `cuPerAttempt × attempts_made` — matching
-    agave's `SyscallTryFindProgramAddress::rust` charging model:
-    one consume before the loop + one consume at the end of each
-    failed iteration. The loop simulation runs `tryFindLoopWithIters`
-    so the charged iteration count is byte-for-byte identical to
-    what `execTryFind` actually performs.
-
-    On success at attempt `k` (1 ≤ k ≤ 255): iters = k, CU = k × 1500.
-    On full-search failure (all 255 attempts on-curve): iters = 255,
-    plus agave's pre-loop charge that never gets the early-return
-    short-circuit, so CU = 256 × 1500.
-
-    Pure-but-State-keyed: invoked via the existing `syscallCu`
-    dispatcher in `Execute.lean`. -/
+/-- State-dependent CU for `sol_try_find_program_address`: simulate the bump loop
+    via the same `tryFindLoopWithIters` `execTryFind` runs, charge
+    `cuPerAttempt × attempts + extra`. Success at attempt k: k × 1500;
+    full-search failure: 256 × 1500 (255 iters + the un-short-circuited pre-loop). -/
 def cuTryFind (s : State) : Nat :=
   let seeds := readSeeds s.mem s.regs.r1 s.regs.r2
   let pid   := readBytes s.mem s.regs.r3 32
@@ -154,28 +104,20 @@ def cuTryFind (s : State) : Nat :=
 /-- Execute `sol_create_program_address`.
     ABI: r1 = `*const [VmSlice; N]`, r2 = N, r3 = `*const [u8; 32]`
     program_id, r4 = `*mut [u8; 32]` out. r0 = 0/1. -/
--- NOTE (M7, deferred): agave ABORTS with `BadSeeds` for > MAX_SEEDS seeds
--- or an over-long seed; the model returns in-band r0:=1 (via
--- `createProgramAddress` → none → commitOptional). Adding the abort
--- changes `execCreate`'s structure and breaks the two LEGITIMATE n0/n1
--- `call_create_program_address_*_spec` proofs (~400 lines each) that
--- reduce `execCreate` to `commitOptional`. Left as-is. (Programs use
--- valid seeds, so the divergence is rarely reachable.)
+-- NOTE (M7, deferred): agave ABORTS with `BadSeeds` for > MAX_SEEDS / over-long
+-- seeds; the model returns in-band r0:=1. Adding the abort restructures
+-- `execCreate` and breaks the two `call_create_program_address_*_spec` proofs;
+-- rarely reachable (programs use valid seeds), so left as-is.
 @[simp] def execCreate (s : State) : State :=
-  -- H6: agave translates the program_id `[r3,32)` (Load), the seed descriptor
-  -- array `[r1, r2·16)` plus each seed slice (Load), and the 32-byte output
-  -- `[r4,32)` (Store). `guardedCommit` checks output → descriptor array →
-  -- each slice → `commitOptional`; the extra `guardRead` covers the program_id.
-  -- Any out-of-region (or non-writable output) access traps. The guards reuse
-  -- the poseidon `guardedCommit` combinator, so `execCreate` stays `@[simp]`.
+  -- H6: guardedCommit checks output `[r4,32)` → descriptor array `[r1,r2·16)` →
+  -- each seed slice → commitOptional; the extra guardRead covers program_id `[r3,32)`.
   s.guardRead s.regs.r3 32 fun s =>
     s.guardedCommit s.regs.r4 32 s.regs.r1 s.regs.r2
       (createProgramAddress (readSeeds s.mem s.regs.r1 s.regs.r2)
                             (readBytes s.mem s.regs.r3 32))
 
-/-- H6 fault direction: an out-of-region program_id `[r3,32)` traps with a
-    typed access violation (the first guarded slice; the output `[r4,32)`,
-    the seed descriptor array and each seed slice are the others). -/
+/-- H6 fault direction: an out-of-region program_id `[r3,32)` (the first guarded
+    slice) traps with a typed access violation. -/
 theorem execCreate_faults_oob (s : State)
     (hoob : s.regions.containsRange s.regs.r3 32 = false) :
     (execCreate s).vmError = some .accessViolation := by
@@ -189,11 +131,8 @@ theorem execCreate_faults_oob (s : State)
 /-- Execute `sol_try_find_program_address`.
     Same as `execCreate` plus r5 = `*mut [u8; 1]` bump output. -/
 def execTryFind (s : State) : State :=
-  -- H6: agave translates the program_id `[r3,32)`, the seed descriptor array
-  -- `[r1, r2·16)` and each seed slice (Load) up front; on a successful search
-  -- it then translates the 32-byte PDA output `[r4,32)` and the 1-byte bump
-  -- output `[r5,1)` (Store) before writing. Any out-of-region (or non-writable
-  -- output) access traps with a typed access violation.
+  -- H6: guard program_id `[r3,32)`, descriptor array `[r1,r2·16)` and each seed
+  -- slice up front; on success guard the PDA output `[r4,32)` + bump `[r5,1)` too.
   s.guardRead s.regs.r3 32 fun s =>
   s.guardRead s.regs.r1 (s.regs.r2 * 16) fun s =>
   s.guardSlices s.regs.r1 s.regs.r2 fun s =>
@@ -212,11 +151,9 @@ def execTryFind (s : State) : State :=
         { s with regs := s.regs.set .r0 0, mem := mem' }
     | none => { s with regs := s.regs.set .r0 1 }
 
-/-- `execTryFind` preserves r10 in both match arms. Marked `@[simp]`
-    so `execSyscall_preserves_r10`'s blanket simp closes the
-    `sol_try_find_program_address` arm without case-splitting on
-    `result`. (`execTryFind` itself isn't `@[simp]` because simp would
-    then try to unfold the whole body inside this very proof.) -/
+/-- `execTryFind` preserves r10 in both arms. `@[simp]` so
+    `execSyscall_preserves_r10` closes the arm without case-splitting on `result`
+    (`execTryFind` itself isn't `@[simp]`, else simp unfolds its body in this proof). -/
 @[simp] theorem execTryFind_preserves_r10 (s : State) :
     (execTryFind s).regs.r10 = s.regs.r10 := by
   simp only [execTryFind]
@@ -229,10 +166,8 @@ def execTryFind (s : State) : State :=
     simp
   · simp
 
-/-- `execTryFind` preserves the region table in both match arms.
-    Companion to `execTryFind_preserves_r10`; lets the blanket
-    `execSyscall_preserves_regions` close `sol_try_find_program_address`
-    without case-splitting on `result`. -/
+/-- `execTryFind` preserves the region table in both arms (companion to
+    `execTryFind_preserves_r10`). -/
 @[simp] theorem execTryFind_preserves_regions (s : State) :
     (execTryFind s).regions = s.regions := by
   simp only [execTryFind]
@@ -245,8 +180,8 @@ def execTryFind (s : State) : State :=
     rfl
   · rfl
 
-/-- H6 fault direction: an out-of-region program_id `[r3,32)` traps with a
-    typed access violation (the first guarded slice). -/
+/-- H6 fault direction: an out-of-region program_id `[r3,32)` (the first guarded
+    slice) traps with a typed access violation. -/
 theorem execTryFind_faults_oob (s : State)
     (hoob : s.regions.containsRange s.regs.r3 32 = false) :
     (execTryFind s).vmError = some .accessViolation := by
