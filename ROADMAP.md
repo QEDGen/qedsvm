@@ -21,16 +21,16 @@ qedsvm is the model and spec layer downstream verification tools sit on, not a v
 | C. Tactic suite (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) | ✅ shipped |
 | D. sBPF macro library | ✅ mostly shipped |
 | E. Solana program library | ⚠️ partial, System `Transfer` end-to-end; SPL Token / ATA / Anchor patterns pending |
-| F. Differential testing (mollusk fixtures) | ✅ 32 fixtures byte+CU equal |
+| F. Differential testing (mollusk fixtures) | ✅ 46 fixtures byte+CU equal |
 | G. ELF loader + arbitrary program execution | ✅ shipped |
 | H. Crypto syscalls (12), agave-pinned crates | ✅ shipped |
 | Solana data-model SL predicates (`SVM/Solana/`) | ✅ 3 shipped; ~10 more queued |
 
-**Headline numbers.** 142 per-instruction Hoare triples · 32 diff-mollusk fixtures including p-token Transfer at 76 CU byte+CU identical to mollusk · full suite ~3 s · end-to-end Hoare-triple proof over compiler-emitted bytecode covering **76 of 76 CU** on the p-token Transfer happy path, terminating with exitCode = 0 · `qedlift` lifts a `.so` straight to a `sorry`-free Lean triple.
+**Headline numbers.** 142 per-instruction Hoare triples · 46 diff-mollusk fixtures including p-token Transfer at 76 CU byte+CU identical to mollusk · full suite in seconds · end-to-end Hoare-triple proof over compiler-emitted bytecode covering **76 of 76 CU** on the p-token Transfer happy path, terminating with exitCode = 0 · `qedlift` lifts a `.so` straight to a `sorry`-free Lean triple.
 
-## Next: Direction-A MIR pivot
+## Next: the discharge route
 
-Per [QEDGen/solana-skills#66](https://github.com/QEDGen/solana-skills/issues/66): grow the `SVM/Solana/` SL-predicate library as each MIR intrinsic (`Stmt::TokenTransfer`, `Stmt::SystemTransfer`, `Stmt::Pda`, …) surfaces a refinement target. ~10 more predicates at half a day each. The pinocchio Transfer chain's `tokenAcctBalance`-wrapped form (currently flat byte-level form) lands as a side artifact of the first MIR consumer that demands it.
+The hand-built abstract MIR pilot (`Mir.lean` / `Triples.lean`) is retired: it validated the refinement mechanism on real bytecode, then converged onto a layout-general route. The current target is `qedsvm_discharge` (`SVM/SBPF/Tactic/Discharge.lean`), which proves a qedgen-emitted `ensures_axiom`-shaped obligation (`accessor post = accessor pre ± amount`) against pinned bytecode by projecting the lifted `cuTripleWithinMem` through the codec reshape. Remaining work: collapse the bespoke `AsmRefinesToken*` predicates onto the one layout-general `AsmRefinesFieldUpdate` obligation as qedgen consumes the surface ([QEDGen/solana-skills#86](https://github.com/QEDGen/solana-skills/issues/86)), and broaden codec/syscall coverage (see [`docs/COVERAGE.md`](docs/COVERAGE.md)).
 
 ## Later
 
@@ -42,7 +42,3 @@ Per [QEDGen/solana-skills#66](https://github.com/QEDGen/solana-skills/issues/66)
 ## Methodology
 
 The separation-logic / bounded-Hoare-triple methodology is lifted from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm), which descends from Kennedy/Benton/Jensen/Dagand, *"Coq: The world's best macro assembler?"* (PPDP 2013). evm-asm's primary use is *authoring* verified RV64IM macros; qedsvm's primary use is *verifying decompiled* sBPF against specs.
-
----
-
-Tooling-track ideas: [`docs/improvement-plan.md`](docs/improvement-plan.md). Founding rationale: [`docs/founding-rationale.md`](docs/founding-rationale.md).

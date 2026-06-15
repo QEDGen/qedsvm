@@ -6,8 +6,6 @@ docs/*
 !docs/API.md
 !docs/PIPELINE.md
 !docs/COVERAGE.md
-!docs/MIR.md
-!docs/abstract-domain-direction.md
 rust-bridge/target/
 .agents/
 .claude/

@@ -2,7 +2,7 @@
 
 Date: 2026-06-02
 Status: reference for the current (fixture-driven) pipeline
-Related: `qedsvm-rs/src/bin/qedrecover.rs`, `qedsvm-rs/src/bin/qedlift.rs`, `examples/lean/Generated/`, [COVERAGE.md](COVERAGE.md) (what an arbitrary `.so` + IDL actually gets you), [MIR.md](MIR.md) (the abstract layer the lifted triple refines)
+Related: `qedsvm-rs/src/bin/qedrecover.rs`, `qedsvm-rs/src/bin/qedlift.rs`, `examples/lean/Generated/`, [COVERAGE.md](COVERAGE.md) (what an arbitrary `.so` + IDL actually gets you), [API.md](API.md) (the stable package surface the lifted triple targets)
 
 How a compiled Solana program plus its IDL becomes a machine-checked Hoare triple. This documents what the toolchain does today, including the seams that are still manual. Everything below is grounded in the `p_token` fixtures under `qedsvm-rs/tests/fixtures/`.
 
