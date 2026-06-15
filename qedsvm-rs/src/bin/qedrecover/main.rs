@@ -34,8 +34,6 @@ use sha2::Digest;
 
 #[derive(Debug, Deserialize)]
 struct Overlay {
-    #[allow(dead_code)]
-    schema_version: u32,
     idl: String,
     #[serde(rename = "instruction")]
     instructions: Vec<OverlayIx>,
@@ -757,11 +755,8 @@ struct Recovered<'a> {
     load_pc:       usize,
     jeq_pc:        usize,
     arm_entry:     usize,
-    #[allow(dead_code)] func_start:  usize,
-    #[allow(dead_code)] func_blocks: usize,
     arm_blocks:    Vec<&'a CfgNode>,
     arm_insns:     usize,
-    #[allow(dead_code)] arm_exits:   usize,
 }
 
 /// Run dispatcher recognition + CFG slicing on one IDL instruction.
@@ -808,32 +803,22 @@ fn recover_one<'a>(
                 load_pc:    usize::MAX,
                 jeq_pc:     usize::MAX,
                 arm_entry:  usize::MAX,
-                func_start: usize::MAX,
-                func_blocks: 0,
                 arm_blocks: Vec::new(),
                 arm_insns:  0,
-                arm_exits:  0,
             }));
         }
     };
 
     let func_set    = function_block_set(analysis, arm_entry);
-    let func_start  = func_set.iter().next().copied().unwrap_or(arm_entry);
-    let func_blocks = func_set.len();
     let arm_blocks  = slice_cfg(analysis, arm_entry, Some(&func_set));
     let arm_insns: usize = arm_blocks.iter()
         .map(|b| b.instructions.end - b.instructions.start)
         .sum();
-    let arm_exits = arm_blocks.iter()
-        .filter(|b| b.destinations.is_empty()
-                 || b.destinations.iter().any(|d| !func_set.contains(d)))
-        .count();
 
     Ok(Some(Recovered {
         disc_value,
         load_pc, jeq_pc, arm_entry,
-        func_start, func_blocks,
-        arm_blocks, arm_insns, arm_exits,
+        arm_blocks, arm_insns,
     }))
 }
 
@@ -929,12 +914,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  {:24}  {:>4}  {:>15}  {:>6}  {:>5}  {:>5}  {}",
                          idl_ix.name, r.disc_value, dpc, arm_logical,
                          r.arm_blocks.len(), r.arm_insns, claim);
-                // Optional per-instruction extras when overlay names this
-                // instruction (i.e., the project is actively claiming it):
-                if ov.is_some() {
-                    let _ = (r.func_start, r.func_blocks, r.arm_exits);
-                    // (kept compact for now; --detail flag is the next step.)
-                }
             }
         }
     }

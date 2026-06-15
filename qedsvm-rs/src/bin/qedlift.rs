@@ -112,7 +112,6 @@ struct QedMeta {
 #[derive(Debug, serde::Deserialize)]
 struct QedMetaIx {
     name:          String,
-    #[allow(dead_code)] refines: Option<String>,
     cu_budget:     Option<u64>,
     discriminator: QedMetaDisc,
     /// Recovered facts qedrecover computed over the CFG and serialized
@@ -128,16 +127,15 @@ struct QedMetaDisc {
     value: i64,
 }
 
-/// The `[instruction.recovered]` sub-table. Only `arm_entry_pc` is
-/// consumed today (the dispatch PCs are kept for diagnostics/symmetry;
-/// `block_count`/`blocks`/etc. are left to serde to ignore).
+/// The `[instruction.recovered]` sub-table. qedlift consumes only
+/// `arm_entry_pc`; the other keys qedrecover writes (`dispatch_load_pc`/
+/// `dispatch_jeq_pc`, `block_count`/`blocks`/etc.) are diagnostics that
+/// serde silently ignores here (the struct has no `deny_unknown_fields`).
 #[derive(Debug, serde::Deserialize)]
 struct QedMetaRecovered {
     /// LOGICAL arm-entry PC (decoded-array index — the same space as the
     /// walker and `.pcs` traces, NOT a raw slot).
     arm_entry_pc: usize,
-    #[allow(dead_code)] #[serde(default)] dispatch_load_pc: Option<usize>,
-    #[allow(dead_code)] #[serde(default)] dispatch_jeq_pc: Option<usize>,
 }
 
 fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
@@ -172,7 +170,6 @@ struct IdlInstruction {
 
 #[derive(Debug, serde::Deserialize)]
 struct IdlToml {
-    #[allow(dead_code)] schema_version: u32,
     instruction: Vec<IdlInstructionToml>,
 }
 
@@ -1908,7 +1905,6 @@ struct BranchHyp {
     /// hypothesis: jeq-taken means `vDst = toU64 imm`; jeq-not-taken
     /// means `vDst ≠ toU64 imm`. jne is symmetric.
     taken: bool,
-    #[allow(dead_code)] target_pc: usize,
 }
 
 impl BranchHyp {
@@ -2869,11 +2865,9 @@ fn spec_call_for(
 /// records the walker's branch decision so the path hypothesis is
 /// the right shape (taken vs fall-through).
 fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
-        branch_taken: Option<bool>, jump_target: Option<i64>) -> Result<bool, String> {
+        branch_taken: Option<bool>) -> Result<bool, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
-    // Logical jump target for path-hypothesis bookkeeping.
-    let jt = || jump_target.unwrap_or((pc.unwrap_or(0) as i64) + 1 + off) as usize;
     match insn.opc {
         LD_B_REG => {
             let raw = state.read_mem(src, off, Width::Byte);
@@ -3127,65 +3121,49 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JeqImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JNE64_IMM | JNE32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JGT64_IMM | JGT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JgtImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSGT64_IMM | JSGT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsgtImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSLE64_IMM | JSLE32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JLT64_IMM | JLT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JltImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JLE64_IMM | JLE32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JleImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSLT64_IMM | JSLT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsltImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JGE64_IMM | JGE32_IMM | JSGE64_IMM | JSGE32_IMM | JSET64_IMM | JSET32_IMM => {
             let r = state.read_reg(dst);
@@ -3197,45 +3175,35 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.branch_hyps.push(BranchHyp {
                 kind, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JEQ64_REG | JEQ32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JeqReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JNE64_REG | JNE32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JLT64_REG | JLT32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JltReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSLE64_REG | JSLE32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JGT64_REG | JGT32_REG | JLE64_REG | JLE32_REG | JSGE64_REG | JSGE32_REG
         | JGE64_REG | JGE32_REG | JSGT64_REG | JSGT32_REG | JSLT64_REG | JSLT32_REG
@@ -3254,9 +3222,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.branch_hyps.push(BranchHyp {
                 kind, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
         // call_local target: pushes a frame, bumps r10 by 0x1000,
@@ -4197,7 +4163,7 @@ fn emit_sol_memset(
     let (root, lo) = canon_addr(&r1v, 0);
     // Register the blob for split planning (H8 Phase C): a later
     // dword read at its 8-byte tail re-walks with a split plan.
-    let fill_const = const_of_expr(&r2v).map(|f| (f as u8));
+    let fill_const = const_of_expr(&r2v).map(|f| f as u8);
     if const_of_expr(&r3v).is_some() {
         state.blobs.push((root.clone(), lo, blob_len, fill_const));
     }
@@ -6639,7 +6605,7 @@ fn lift_one(
                                             branch_hyp_for_call, branch_taken, Some(jtgt)) {
                 spec_calls.push(sc);
             }
-            step(&mut state, ins, Some(pc_iter), branch_taken, Some(jtgt))?;
+            step(&mut state, ins, Some(pc_iter), branch_taken)?;
             // Phase A aliasing: surface the address equation for an
             // access that resolved to an existing cell through a
             // different rendering (consumed by the `rw [h_alias_<pc>]`
