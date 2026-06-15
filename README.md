@@ -96,7 +96,7 @@ Crate-level docs (differential testing, consuming qedsvm downstream, the `solana
 | End-to-end proofs over compiler-emitted bytecode | ✅ 76 / 76 CU on p-token Transfer, exitCode = 0 |
 | Bytecode → proof lift (`qedlift`) | ✅ `.so` → `sorry`-free Lean triple + CU bound |
 
-See [`ROADMAP.md`](ROADMAP.md) for the phase-by-phase breakdown and current work.
+See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the precise lift/recover coverage boundary and [`docs/PIPELINE.md`](docs/PIPELINE.md) for the `.so` → proof toolchain.
 
 ## Layout
 

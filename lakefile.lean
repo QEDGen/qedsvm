@@ -24,7 +24,7 @@ open Lake DSL System
 --   SVM.Solana.Cpi — invoke_signed envelope, well-known program IDs, discriminators
 --   SVM.SBPF.*  — sBPF interpreter (ISA, Memory, Execute, WP tactic)
 --
--- See README.md and ROADMAP.md for scope.
+-- See README.md for scope.
 package qedsvm
 
 target rustBridge pkg : FilePath := do

@@ -12,9 +12,8 @@
   crate pin + agave-equivalence rationale); `InstructionSpecs.lean`'s
   bookkeeping triples cite them.
 
-  See `docs/deferred-arch-lifts.md` §5 + ROADMAP "Phase H". The two pure-Lean
-  syscalls (`sol_sha256`, `Murmur3`) are NOT covered — they are real
-  verifications, no axiom needed.
+  The two pure-Lean syscalls (`sol_sha256`, `Murmur3`) are NOT covered — they
+  are real verifications, no axiom needed.
 
   ## Crate pins (all from agave master, queried 2026-05-13)
 
