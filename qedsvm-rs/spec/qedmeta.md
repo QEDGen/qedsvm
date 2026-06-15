@@ -100,26 +100,37 @@ Top-level fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `schema_version` | int | Bumped on breaking changes |
-| `spec_version` | string | Human-readable version tag (`"qedmeta/0.1"`) |
+| `schema_version` | int | Bumped on breaking changes. **v2** (issue #41): qedlift now CONSUMES `[instruction.recovered].arm_entry_pc` to seed/cross-check its walk instead of re-deriving the arm. v1 (or unset) sidecars still load — `recovered` is optional and its absence degrades to the disc-guided walk. A sidecar declaring a version newer than the consumer understands is rejected. |
+| `spec_version` | string | Human-readable version tag (`"qedmeta/0.2"`) |
 
-## Extension points reserved in v0.1
+## Sidecar emission (v0.2)
 
-- **Idiom annotations**. The asm-side recogniser (lever 4 in the
-  issue thread) shipped in qedrecover (`idioms.rs`) with a starter
-  vocabulary: `u64_field_{increment,decrement}` (the balance-mutation
-  triple), `error_propagation_check` (call whose r0 result is
-  branch-tested), `read_discriminator` (the dispatch load). Tags are
-  emitted as `idioms` in the recovered Lean metadata today; promoting
-  them into `[[instruction.idiom]]` here is the remaining v0.2 step.
+qedrecover EMITS this sidecar: `qedrecover --qedmeta-out <path>` writes
+`[target]`/`[idl]` (real SHA-256 hash-pins), `[[instruction]]` +
+`[instruction.discriminator]` + `[[instruction.account]]`, the
+`[instruction.recovered]` arm decomposition, and the v0.2 tables below.
+(`[instruction.proofs]` is NOT emitted — it links to a Lean theorem, a
+human/qedgen assertion the recogniser doesn't know.) Pinned by
+`qedmeta_sidecar_emits_recovered_facts`; the recover→lift loop is
+exercised end-to-end (qedlift `--qedmeta` consumes the emitted file).
 
-- **Happy/sad-path tags**. Empty `[[instruction.tag]]` array reserved
-  for execution-trace-driven path classification. Each entry labels
-  a block as `happy` / `error` / `shared` based on a mollusk trace.
+- **Idiom annotations** (`[[instruction.idiom]]`). The asm-side
+  recogniser (`idioms.rs`) vocabulary — `u64_field_{increment,decrement}`
+  (the balance-mutation triple), `error_propagation_check` (call whose r0
+  result is branch-tested), `read_discriminator` (the dispatch load) —
+  is emitted here as `{ pc, pattern, detail }`.
 
-Both are no-ops in v0.1 — readers ignore empty arrays. Schema is
-forward-compatible with future field additions inside `instruction.*`
-tables.
+- **Happy/sad-path tags** (`[[instruction.tag]]`). Execution-trace-driven
+  path classification: with `--trace`, on-trace blocks are emitted as
+  `{ block_start, role = "happy" }`.
+
+- **Constant-exit blocks** (`[[instruction.const_exit]]`). Static
+  `r0 := const; exit` landings: `{ block_start, exit_code, role }`
+  (`role` = `success` for code 0, else `error`).
+
+Readers ignore tables/fields they don't consume (qedlift consumes
+`recovered.arm_entry_pc`); the schema is forward-compatible with future
+field additions inside `instruction.*` tables.
 
 ## Repo placement
 

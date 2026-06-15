@@ -40,6 +40,8 @@ use solana_sbpf::{
     vm::ContextObject,
 };
 
+use qedsvm::analysis::PcMap;
+
 struct NoopCtx;
 impl ContextObject for NoopCtx {
     fn consume(&mut self, _amount: u64) {}
@@ -87,12 +89,22 @@ struct Args {
 }
 
 // -----------------------------------------------------------------------------
-// qedmeta sidecar (subset). Only the fields qedlift needs for targeting;
-// serde ignores the rest (target/idl/account/recovered/blocks).
+// qedmeta sidecar (subset). qedlift reads targeting (name/discriminator/
+// cu_budget) AND, as of schema v2 (issue #41 Phase 4), the qedrecover
+// `[instruction.recovered]` arm decomposition — previously dropped and
+// re-derived via a disc-guided walk. serde ignores undeclared fields
+// (target/idl/account/blocks/proofs), so v0.1 sidecars still parse.
 // -----------------------------------------------------------------------------
+
+/// Newest sidecar schema qedlift understands. v1 = targeting only; v2 =
+/// recovered arm decomposition consumed (this commit). Older sidecars
+/// (no `recovered`) still load — the walk falls back to disc-guided.
+const QEDMETA_SCHEMA_MAX: u32 = 2;
 
 #[derive(Debug, serde::Deserialize)]
 struct QedMeta {
+    #[serde(default)]
+    schema_version: u32,
     #[serde(rename = "instruction")]
     instructions: Vec<QedMetaIx>,
 }
@@ -100,9 +112,14 @@ struct QedMeta {
 #[derive(Debug, serde::Deserialize)]
 struct QedMetaIx {
     name:          String,
-    #[allow(dead_code)] refines: Option<String>,
     cu_budget:     Option<u64>,
     discriminator: QedMetaDisc,
+    /// Recovered facts qedrecover computed over the CFG and serialized
+    /// here. qedlift now CONSUMES `arm_entry_pc` to seed/validate its
+    /// walk instead of re-deriving the arm (the issue's "lossy handoff").
+    /// `None` for v0.1 sidecars that predate this section.
+    #[serde(default)]
+    recovered: Option<QedMetaRecovered>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -110,9 +127,31 @@ struct QedMetaDisc {
     value: i64,
 }
 
+/// The `[instruction.recovered]` sub-table. qedlift consumes only
+/// `arm_entry_pc`; the other keys qedrecover writes (`dispatch_load_pc`/
+/// `dispatch_jeq_pc`, `block_count`/`blocks`/etc.) are diagnostics that
+/// serde silently ignores here (the struct has no `deny_unknown_fields`).
+#[derive(Debug, serde::Deserialize)]
+struct QedMetaRecovered {
+    /// LOGICAL arm-entry PC (decoded-array index — the same space as the
+    /// walker and `.pcs` traces, NOT a raw slot).
+    arm_entry_pc: usize,
+}
+
 fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(path)?;
-    Ok(toml::from_str(&text)?)
+    let meta: QedMeta = toml::from_str(&text)?;
+    // A sidecar declaring a NEWER schema than we understand may carry
+    // semantics we'd silently mis-consume — fail closed. Older (or
+    // unset, == 0) versions are fine: the `recovered` field is optional
+    // and absent fields degrade to the disc-guided fallback.
+    if meta.schema_version > QEDMETA_SCHEMA_MAX {
+        return Err(format!(
+            "--qedmeta {}: schema_version {} is newer than this qedlift \
+             understands (max {})",
+            path.display(), meta.schema_version, QEDMETA_SCHEMA_MAX).into());
+    }
+    Ok(meta)
 }
 
 // -----------------------------------------------------------------------------
@@ -131,7 +170,6 @@ struct IdlInstruction {
 
 #[derive(Debug, serde::Deserialize)]
 struct IdlToml {
-    #[allow(dead_code)] schema_version: u32,
     instruction: Vec<IdlInstructionToml>,
 }
 
@@ -213,167 +251,17 @@ fn load_idl_value(path: &Path) -> Option<serde_json::Value> {
 }
 
 // -----------------------------------------------------------------------------
-// Codama account-data-struct → byte layout.
-//
-// Walks a Codama account's field list, computing each field's byte offset
-// and size from its type node, so the refinement codegen can derive the
-// account layout (which `account_agg` instantiates) from the IDL instead
-// of hardcoding offsets like `+64`/`+36`. The field KIND maps onto the
-// `FieldVal` codec: pubkey → `.pubkey`, u64 → `.u64`, u8/bool → `.byte`,
-// everything else (options, enums, arrays, wide scalars) → opaque `.blob`
-// bytes folded into the account's `rest` region.
+// Codama account-data-struct → byte layout now lives in the shared
+// substrate (`qedsvm::analysis::layout`, issue #41 Phase 2) so qedrecover
+// can consume the same field names/offsets. qedlift's refinement codegen
+// imports the types + `parse_account_layout` below.
 // -----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
-enum FieldKind {
-    Pubkey,      // 32-byte ↦Pubkey (four u64 limbs)
-    U64,         // 8-byte ↦U64
-    Byte,        // 1-byte ↦ₘ  (u8 / bool / single-byte enum tag)
-    Bytes(usize),// opaque region of N bytes (options, arrays, wide scalars)
-}
-
-#[derive(Debug, Clone)]
-struct AccountField {
-    name:   String,
-    offset: usize,
-    kind:   FieldKind, // FieldVal classification, consumed by the vault codegen
-}
-
-#[derive(Debug, Clone)]
-struct AccountLayout {
-    #[allow(dead_code)] name: String,    // metadata; offsets/size are what's consumed
-    fields: Vec<AccountField>,
-    size:   usize,
-}
-
-/// Byte width of a Codama `numberTypeNode` format.
-fn codama_number_size(fmt: &str) -> Option<usize> {
-    match fmt {
-        "u8" | "i8"     => Some(1),
-        "u16" | "i16"   => Some(2),
-        "u32" | "i32"   => Some(4),
-        "u64" | "i64"   => Some(8),
-        "u128" | "i128" => Some(16),
-        _ => None,
-    }
-}
-
-/// Byte size of a Codama type node. `defined` resolves
-/// `definedTypeLinkNode`s (e.g. the `accountState` enum). Returns `None`
-/// for variable-size or unsupported nodes.
-fn codama_type_size(
-    ty: &serde_json::Value,
-    defined: &std::collections::HashMap<String, serde_json::Value>,
-) -> Option<usize> {
-    match ty.get("kind")?.as_str()? {
-        "publicKeyTypeNode" => Some(32),
-        "numberTypeNode"    => codama_number_size(ty.get("format")?.as_str()?),
-        // Solana COption: a fixed prefix (u32 here) + the item bytes.
-        "optionTypeNode" => {
-            let prefix = ty.get("prefix")
-                .and_then(|p| codama_type_size(p, defined)).unwrap_or(4);
-            Some(prefix + codama_type_size(ty.get("item")?, defined)?)
-        }
-        "booleanTypeNode" => ty.get("size")
-            .and_then(|s| codama_type_size(s, defined)).or(Some(1)),
-        "enumTypeNode" => ty.get("size")
-            .and_then(|s| codama_type_size(s, defined)).or(Some(1)),
-        "arrayTypeNode" => {
-            let item = codama_type_size(ty.get("item")?, defined)?;
-            // fixedCountNode { value: N } (older codama uses `count`).
-            let count = ty.get("count")?;
-            let n = count.get("value").or_else(|| count.get("count"))?.as_u64()? as usize;
-            Some(item * n)
-        }
-        "fixedSizeTypeNode" => ty.get("size")?.as_u64().map(|n| n as usize),
-        "definedTypeLinkNode" => {
-            let name = ty.get("name")?.as_str()?;
-            codama_type_size(defined.get(name)?.get("type")?, defined)
-        }
-        _ => None,
-    }
-}
-
-/// Classify a field's type node into a codec `FieldKind`.
-fn codama_field_kind(
-    ty: &serde_json::Value,
-    defined: &std::collections::HashMap<String, serde_json::Value>,
-) -> Option<FieldKind> {
-    let size = codama_type_size(ty, defined)?;
-    Some(match ty.get("kind").and_then(|k| k.as_str()) {
-        Some("publicKeyTypeNode")              => FieldKind::Pubkey,
-        Some("numberTypeNode") if size == 8    => FieldKind::U64,
-        Some("numberTypeNode") if size == 1    => FieldKind::Byte,
-        Some("booleanTypeNode") if size == 1   => FieldKind::Byte,
-        _                                      => FieldKind::Bytes(size),
-    })
-}
-
-/// Parse a Codama account-data struct into a byte layout. `name` is the
-/// account node name (e.g. "token", "mint").
-fn parse_account_layout(
-    root: &serde_json::Value,
-    name: &str,
-) -> Result<AccountLayout, Box<dyn std::error::Error>> {
-    let prog = root.get("program").unwrap_or(root);
-    let defined: std::collections::HashMap<String, serde_json::Value> = prog
-        .get("definedTypes").and_then(|v| v.as_array())
-        .map(|arr| arr.iter()
-            .filter_map(|t| Some((t.get("name")?.as_str()?.to_string(), t.clone())))
-            .collect())
-        .unwrap_or_default();
-    let accts = prog.get("accounts").and_then(|v| v.as_array())
-        .ok_or("codama: /program/accounts missing")?;
-    let acct = accts.iter()
-        .find(|a| a.get("name").and_then(|n| n.as_str()) == Some(name))
-        .ok_or_else(|| format!("codama: account {:?} not found", name))?;
-    let fields_json = acct.pointer("/data/fields").and_then(|v| v.as_array())
-        .ok_or_else(|| format!("codama: account {:?} has no data.fields", name))?;
-
-    let mut offset = 0usize;
-    let mut fields = Vec::new();
-    for f in fields_json {
-        let fname = f.get("name").and_then(|n| n.as_str()).unwrap_or("?").to_string();
-        let ty = f.get("type").ok_or("codama: field has no type")?;
-        let size = codama_type_size(ty, &defined)
-            .ok_or_else(|| format!("codama: field {:?}: unsupported type node", fname))?;
-        let kind = codama_field_kind(ty, &defined)
-            .ok_or_else(|| format!("codama: field {:?}: unclassifiable", fname))?;
-        fields.push(AccountField { name: fname, offset, kind });
-        offset += size;
-    }
-    Ok(AccountLayout { name: name.to_string(), fields, size: offset })
-}
+use qedsvm::analysis::layout::{FieldKind, parse_account_layout};
 
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-
-    fn idl() -> serde_json::Value {
-        let text = std::fs::read_to_string("tests/fixtures/spl_token.codama.json")
-            .expect("read spl_token.codama.json");
-        serde_json::from_str(&text).expect("parse IDL")
-    }
-
-    #[test]
-    fn token_account_layout() {
-        let l = parse_account_layout(&idl(), "token").unwrap();
-        assert_eq!(l.size, 165, "SPL token account is 165 bytes");
-        let by = |n: &str| l.fields.iter().find(|f| f.name == n).unwrap();
-        assert_eq!((by("mint").offset,   by("mint").kind.clone()),   (0,  FieldKind::Pubkey));
-        assert_eq!((by("owner").offset,  by("owner").kind.clone()),  (32, FieldKind::Pubkey));
-        assert_eq!((by("amount").offset, by("amount").kind.clone()), (64, FieldKind::U64));
-        // delegate (option<pubkey>) begins the opaque rest region at 72.
-        assert_eq!(by("delegate").offset, 72);
-    }
-
-    #[test]
-    fn mint_account_layout() {
-        let l = parse_account_layout(&idl(), "mint").unwrap();
-        assert_eq!(l.size, 82, "SPL mint account is 82 bytes");
-        let supply = l.fields.iter().find(|f| f.name == "supply").unwrap();
-        assert_eq!((supply.offset, supply.kind.clone()), (36, FieldKind::U64));
-    }
 
     #[test]
     fn transfer_aggregation_is_mechanically_emitted() {
@@ -412,7 +300,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load counter.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse counter.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("Counter".to_string()),
-            None, Some("counterIncrement"), None).expect("lift counter.so");
+            None, Some("counterIncrement"), None, None).expect("lift counter.so");
 
         let lift_on_disk =
             std::fs::read_to_string("../examples/lean/Generated/CounterTracedLifted.lean")
@@ -443,7 +331,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load vault.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("Vault".to_string()),
-            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault.so");
+            None, Some("VaultIncrement"), Some(&idl), None).expect("lift vault.so");
 
         let lift_on_disk =
             std::fs::read_to_string("../examples/lean/Generated/VaultTracedLifted.lean")
@@ -476,7 +364,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load vault.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("VaultBlob".to_string()),
-            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault.so (blob)");
+            None, Some("VaultIncrement"), Some(&idl), None).expect("lift vault.so (blob)");
 
         let lift_on_disk =
             std::fs::read_to_string("../examples/lean/Generated/VaultBlobTracedLifted.lean")
@@ -509,7 +397,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load vault_split.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_split.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("VaultSplit".to_string()),
-            None, Some("VaultIncrement"), Some(&idl)).expect("lift vault_split.so");
+            None, Some("VaultIncrement"), Some(&idl), None).expect("lift vault_split.so");
 
         let lift_path = "../examples/lean/Generated/VaultSplitTracedLifted.lean";
         let refine_path = "../examples/lean/Generated/VaultSplitRefinement.lean";
@@ -536,7 +424,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load heap_alloc.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse heap_alloc.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("HeapAlloc".to_string()),
-            None, None, None).expect("lift heap_alloc.so");
+            None, None, None, None).expect("lift heap_alloc.so");
 
         let on_disk =
             std::fs::read_to_string("../examples/lean/Generated/HeapAllocLifted.lean")
@@ -554,7 +442,7 @@ mod layout_tests {
         let ctx = load_binary(so).expect("load halfword_store.so");
         let analysis = Analysis::from_executable(&ctx.executable).expect("analyse halfword_store.so");
         let result = lift_one(so, &ctx, &analysis, None, Some("HalfwordStore".to_string()),
-            None, None, None).expect("lift halfword_store.so");
+            None, None, None, None).expect("lift halfword_store.so");
 
         let on_disk =
             std::fs::read_to_string("../examples/lean/Generated/HalfwordStoreLifted.lean")
@@ -562,6 +450,84 @@ mod layout_tests {
         assert_eq!(result.lean, on_disk,
             "HalfwordStoreLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
+    }
+
+    // ── #41 Phase 4: qedlift consumes the recovered arm entry ──────────
+
+    /// The qedmeta deserializer now READS the `[instruction.recovered]`
+    /// arm decomposition it used to drop (issue #41 grievance #2). The
+    /// real p_token sidecar's `arm_entry_pc` must parse as logical 304
+    /// (the post slot/logical-bug value the `transfer_arm_entry_spaces`
+    /// pin establishes).
+    #[test]
+    fn qedmeta_recovered_arm_is_parsed() {
+        let meta = load_qedmeta(std::path::Path::new("tests/fixtures/p_token.qedmeta.toml"))
+            .expect("load p_token.qedmeta.toml");
+        let transfer = meta.instructions.iter().find(|i| i.name == "transfer")
+            .expect("transfer instruction present in sidecar");
+        let rec = transfer.recovered.as_ref()
+            .expect("transfer carries [instruction.recovered] (dropped pre-#41)");
+        assert_eq!(rec.arm_entry_pc, 304, "recovered arm entry must be logical 304");
+    }
+
+    /// Feeding the recovered arm entry (304) into a trace-guided transfer
+    /// lift CROSS-CHECKS the trace reaches it AND leaves the emitted Lean
+    /// byte-identical to the trace-only path — the sidecar value is
+    /// consumed without perturbing output. Run on the real p_token binary.
+    #[test]
+    fn qedmeta_arm_entry_trace_lift_is_byte_identical() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer.pcs"))
+            .expect("load transfer trace");
+        let result = lift_one(so, &ctx, &analysis, None,
+            Some("PTokenTransfer".to_string()), Some(&trace), Some("Transfer"),
+            None, Some(304)).expect("lift transfer with recovered arm");
+        let on_disk = std::fs::read_to_string(
+            "../examples/lean/Generated/PTokenTransferTracedLifted.lean")
+            .expect("read PTokenTransferTracedLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "consuming arm_entry perturbed the trace-guided transfer lift");
+    }
+
+    /// The cross-check fires: a recovered arm entry that is NOT on the
+    /// execution trace is a sidecar/binary/trace mismatch and must be
+    /// rejected, not silently lifted against the wrong arm.
+    #[test]
+    fn qedmeta_arm_entry_off_trace_is_rejected() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer.pcs"))
+            .expect("load transfer trace");
+        let err = lift_one(so, &ctx, &analysis, None,
+            Some("PTokenTransfer".to_string()), Some(&trace), Some("Transfer"),
+            None, Some(999_999));
+        assert!(err.is_err(),
+            "an off-trace recovered arm_entry must be rejected by the cross-check");
+    }
+
+    /// No-trace seed mechanism: supplying the recovered arm entry SEEDS
+    /// the static walk's start PC (replacing the disc-guided cascade
+    /// navigation). Seeding it at the natural entrypoint must therefore
+    /// reproduce the unseeded walk byte-for-byte — pinning that the seed
+    /// consumes the supplied value and that `unwrap_or(entry_pc)` is the
+    /// faithful fallback. (A non-entrypoint seed can't be pinned on
+    /// p_token: its arm has `call_local`s the no-trace walk can't resolve
+    /// without trace guidance, a pre-existing limitation.)
+    #[test]
+    fn qedmeta_arm_entry_seed_at_entrypoint_is_noop() {
+        let so = std::path::Path::new("tests/fixtures/heap_alloc.so");
+        let ctx = load_binary(so).expect("load heap_alloc.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse heap_alloc.so");
+        let entry = ctx.executable.get_entrypoint_instruction_offset();
+        let base = lift_one(so, &ctx, &analysis, None, Some("HeapAlloc".to_string()),
+            None, None, None, None).expect("base lift");
+        let seeded = lift_one(so, &ctx, &analysis, None, Some("HeapAlloc".to_string()),
+            None, None, None, Some(entry)).expect("seeded lift");
+        assert_eq!(base.lean, seeded.lean,
+            "seeding the walk at the entrypoint must equal the unseeded walk");
     }
 
     /// Re-emit one p_token trace-guided arm and diff the lift (and,
@@ -579,7 +545,7 @@ mod layout_tests {
             .expect("analyse p_token.so");
         let trace = load_trace(std::path::Path::new(pcs)).expect("load trace");
         let result = lift_one(so, &ctx, &analysis, None,
-            Some(module.to_string()), Some(&trace), arm, None)
+            Some(module.to_string()), Some(&trace), arm, None, None)
             .expect("lift p_token arm");
 
         // Set QEDLIFT_BLESS=1 to rewrite the pinned artifacts from the
@@ -906,10 +872,8 @@ fn resolve_call_target_logical(
     ctx: &BinaryCtx, analysis: &Analysis, insn: &ebpf::Insn,
 ) -> Option<usize> {
     let slot = resolve_call_target(analysis, insn)?;
-    match ctx.slot_to_logical.get(slot) {
-        Some(Some(logical)) => Some(*logical),
-        _ => Some(slot), // out of range / mid-lddw: fall back (fail loudly downstream)
-    }
+    // out of range / mid-lddw: fall back to the slot (fail loudly downstream).
+    Some(ctx.pc_map.slot_to_logical(slot).unwrap_or(slot))
 }
 
 /// Render a symbolic call stack as a Lean `List CallFrame` literal,
@@ -1941,7 +1905,6 @@ struct BranchHyp {
     /// hypothesis: jeq-taken means `vDst = toU64 imm`; jeq-not-taken
     /// means `vDst ≠ toU64 imm`. jne is symmetric.
     taken: bool,
-    #[allow(dead_code)] target_pc: usize,
 }
 
 impl BranchHyp {
@@ -2902,11 +2865,9 @@ fn spec_call_for(
 /// records the walker's branch decision so the path hypothesis is
 /// the right shape (taken vs fall-through).
 fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
-        branch_taken: Option<bool>, jump_target: Option<i64>) -> Result<bool, String> {
+        branch_taken: Option<bool>) -> Result<bool, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
-    // Logical jump target for path-hypothesis bookkeeping.
-    let jt = || jump_target.unwrap_or((pc.unwrap_or(0) as i64) + 1 + off) as usize;
     match insn.opc {
         LD_B_REG => {
             let raw = state.read_mem(src, off, Width::Byte);
@@ -3160,65 +3121,49 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JeqImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JNE64_IMM | JNE32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JGT64_IMM | JGT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JgtImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSGT64_IMM | JSGT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsgtImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSLE64_IMM | JSLE32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JLT64_IMM | JLT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JltImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JLE64_IMM | JLE32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JleImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSLT64_IMM | JSLT32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsltImm, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JGE64_IMM | JGE32_IMM | JSGE64_IMM | JSGE32_IMM | JSET64_IMM | JSET32_IMM => {
             let r = state.read_reg(dst);
@@ -3230,45 +3175,35 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.branch_hyps.push(BranchHyp {
                 kind, dst_value: r, src_value: None, imm,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JEQ64_REG | JEQ32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JeqReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JNE64_REG | JNE32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JneReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JLT64_REG | JLT32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JltReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JSLE64_REG | JSLE32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
             state.branch_hyps.push(BranchHyp {
                 kind: BranchKind::JsleReg, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JGT64_REG | JGT32_REG | JLE64_REG | JLE32_REG | JSGE64_REG | JSGE32_REG
         | JGE64_REG | JGE32_REG | JSGT64_REG | JSGT32_REG | JSLT64_REG | JSLT32_REG
@@ -3287,9 +3222,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.branch_hyps.push(BranchHyp {
                 kind, dst_value: rd, src_value: Some(rs), imm: 0,
-                taken: branch_taken.unwrap_or(false),
-                target_pc: jt(),
-            });
+                taken: branch_taken.unwrap_or(false),            });
         }
         JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
         // call_local target: pushes a frame, bumps r10 by 0x1000,
@@ -4230,7 +4163,7 @@ fn emit_sol_memset(
     let (root, lo) = canon_addr(&r1v, 0);
     // Register the blob for split planning (H8 Phase C): a later
     // dword read at its 8-byte tail re-walks with a split plan.
-    let fill_const = const_of_expr(&r2v).map(|f| (f as u8));
+    let fill_const = const_of_expr(&r2v).map(|f| f as u8);
     if const_of_expr(&r3v).is_some() {
         state.blobs.push((root.clone(), lo, blob_len, fill_const));
     }
@@ -4729,17 +4662,11 @@ struct BinaryCtx {
     text_offset: u64,
     text_bytes:  Vec<u8>,
     insns:       Vec<ebpf::Insn>,
-    /// `logical_to_slot[i]` = the 8-byte slot index where logical
-    /// instruction `insns[i]` begins. lddw occupies 2 slots, so the
-    /// logical index and slot index diverge once any lddw appears.
-    logical_to_slot: Vec<usize>,
-    /// `slot_to_logical[s]` = the logical index of the instruction
-    /// occupying slot `s` (both slots of an lddw map to its logical
-    /// index). `None` for slots past the end. Mirror of the slotMap
-    /// in `SVM/SBPF/Decode.lean` pass 1 — needed because jump `off`
-    /// fields are slot-relative but our `insns`/CodeReq PCs are
-    /// logical indices.
-    slot_to_logical: Vec<Option<usize>>,
+    /// Slot<->logical PC converter (shared with qedrecover via
+    /// `qedsvm::analysis::PcMap`). Needed because jump `off` fields are
+    /// slot-relative but our `insns`/CodeReq PCs are logical indices;
+    /// mirrors the slot map in `SVM/SBPF/Decode.lean` pass 1.
+    pc_map:      PcMap,
 }
 
 /// Resolve a slot-relative jump from logical PC `logical_pc` with raw
@@ -4749,21 +4676,7 @@ struct BinaryCtx {
 /// to `logical_pc + 1 + off` when the maps don't cover the PC (e.g.
 /// the synthetic two_op fixture has no lddw, so slot == logical).
 fn resolve_jump_target(ctx: &BinaryCtx, logical_pc: usize, off: i64) -> i64 {
-    match ctx.logical_to_slot.get(logical_pc) {
-        Some(&slot) => {
-            let target_slot = slot as i64 + 1 + off;
-            if target_slot < 0 {
-                return target_slot; // out of range; render as-is to fail loudly
-            }
-            match ctx.slot_to_logical.get(target_slot as usize) {
-                Some(Some(logical)) => *logical as i64,
-                // Target slot is past the end (e.g. exit fall-off) or the
-                // middle of an lddw (malformed) — fall back to the raw sum.
-                _ => target_slot,
-            }
-        }
-        None => logical_pc as i64 + 1 + off,
-    }
+    ctx.pc_map.resolve_jump_target(logical_pc, off)
 }
 
 /// The V0 function registry (murmur3 key → target SLOT index) that
@@ -4828,8 +4741,6 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
         (o, b.to_vec())
     };
     let mut insns = Vec::new();
-    let mut logical_to_slot = Vec::new();
-    let mut slot_to_logical: Vec<Option<usize>> = Vec::new();
     let mut pc = 0;
     while pc * ebpf::INSN_SIZE < text_bytes.len() {
         let mut insn = ebpf::get_insn(&text_bytes, pc);
@@ -4840,18 +4751,14 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
         if opc == ebpf::LD_DW_IMM {
             ebpf::augment_lddw_unchecked(&text_bytes, &mut insn);
         }
-        let logical = insns.len();
-        logical_to_slot.push(pc);
         let span = if opc == ebpf::LD_DW_IMM { 2 } else { 1 };
-        // Map every slot this instruction occupies back to its logical index.
-        for s in pc..pc + span {
-            while slot_to_logical.len() <= s { slot_to_logical.push(None); }
-            slot_to_logical[s] = Some(logical);
-        }
         insns.push(insn);
         pc += span;
     }
-    Ok(BinaryCtx { executable, text_offset, text_bytes, insns, logical_to_slot, slot_to_logical })
+    // One slot<->logical converter, derived from the decoded insns
+    // (shared with qedrecover; see `qedsvm::analysis::PcMap`).
+    let pc_map = PcMap::from_insns(&insns);
+    Ok(BinaryCtx { executable, text_offset, text_bytes, insns, pc_map })
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -6239,6 +6146,14 @@ fn lift_one(
     trace:           Option<&[usize]>,
     arm_name:        Option<&str>,
     idl:             Option<&serde_json::Value>,
+    // Recovered LOGICAL arm-entry PC from the qedrecover sidecar
+    // (`[instruction.recovered].arm_entry_pc`), issue #41 Phase 4. When
+    // present it is the authoritative arm head: it SEEDS the no-trace
+    // static walk (replacing the fragile disc-guided cascade navigation)
+    // and CROSS-CHECKS a trace-guided walk (the trace must reach it).
+    // `None` reproduces the prior behaviour exactly (disc-walk / trace
+    // as-is), so every pre-#41 call site stays byte-identical.
+    arm_entry:       Option<usize>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
     let text_offset = ctx.text_offset;
@@ -6466,8 +6381,27 @@ fn lift_one(
         // is the cursor into it and `pc_iter` mirrors `trace[ti]`.
         let mut ti: usize = 0;
         let mut pc_iter: usize = match trace {
-            Some(t) => t[0], // load_trace guarantees non-empty
-            None     => entry_pc,
+            Some(t) => {
+                // #41 Phase 4: when the sidecar supplies the recovered arm
+                // entry, cross-check that the recorded path actually reaches
+                // it — a trace/sidecar/binary mismatch otherwise lifts a
+                // chain the sidecar's claims don't describe. Consumes the
+                // recovered fact without changing the walk (output identical).
+                if let Some(arm) = arm_entry {
+                    if !t.contains(&arm) {
+                        return Err(format!(
+                            "qedmeta/trace mismatch: recovered arm_entry_pc {} \
+                             is not on the execution trace (the sidecar describes \
+                             a different arm than the trace executes)", arm).into());
+                    }
+                }
+                t[0] // load_trace guarantees non-empty
+            }
+            // #41 Phase 4: no trace — seed the static walk from the
+            // recovered arm entry instead of re-deriving it by navigating
+            // the dispatcher cascade from the entrypoint. Falls back to
+            // `entry_pc` (the disc-guided walk) when no arm was supplied.
+            None => arm_entry.unwrap_or(entry_pc),
         };
         // Safety cap on walk length. Without this, an unmodelled
         // back-branch (e.g. a copy loop whose conditional jump we
@@ -6671,7 +6605,7 @@ fn lift_one(
                                             branch_hyp_for_call, branch_taken, Some(jtgt)) {
                 spec_calls.push(sc);
             }
-            step(&mut state, ins, Some(pc_iter), branch_taken, Some(jtgt))?;
+            step(&mut state, ins, Some(pc_iter), branch_taken)?;
             // Phase A aliasing: surface the address equation for an
             // access that resolved to an existing cell through a
             // different rendering (consumed by the `rw [h_alias_<pc>]`
@@ -6826,7 +6760,7 @@ fn lift_one(
                 let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
                 insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
             };
-            let byte_off = ctx.logical_to_slot[pc] * 8;
+            let byte_off = ctx.pc_map.logical_to_slot(pc).expect("logical pc in range") * 8;
             let sz = if insns[pc].opc == 0x18 { 16 } else { 8 };
             pin_offs.push(byte_off.to_string());
             pin_exps.push(format!("some ({}, {})", lean_insn, sz));
@@ -7539,9 +7473,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for ix in selected {
             let arm = pascal_case(&ix.name);
             let module_name = format!("{}{}", so_stem, arm);
+            // #41 Phase 4: consume the recovered arm entry instead of
+            // dropping it — seeds the no-trace walk, cross-checks a trace.
+            let arm_entry = ix.recovered.as_ref().map(|r| r.arm_entry_pc);
             let result = lift_one(&args.so, &ctx, &analysis,
                 Some(ix.discriminator.value), Some(module_name.clone()),
-                trace.as_deref(), Some(&arm), idl_value.as_ref())?;
+                trace.as_deref(), Some(&arm), idl_value.as_ref(), arm_entry)?;
 
             // Cross-check the claimed CU budget against the lifted triple.
             // The budget is an upper bound on the verified CU; the lifted
@@ -7609,7 +7546,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             // opcode (in either the .text renderer or the symbolic
             // executor) is reported and skipped, not fatal. This makes
             // the batch a coverage probe.
-            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value.as_ref()) {
+            match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value.as_ref(), None) {
                 Ok(result) => {
                     let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
                     if let Some(parent) = out_path.parent() {
@@ -7640,7 +7577,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Single-instruction mode (unchanged behaviour).
     let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone(),
-                          trace.as_deref(), args.arm_name.as_deref(), idl_value.as_ref())?;
+                          trace.as_deref(), args.arm_name.as_deref(), idl_value.as_ref(), None)?;
     match args.output {
         Some(path) => {
             if let Some(parent) = path.parent() {

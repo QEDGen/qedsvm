@@ -96,6 +96,10 @@ solana-sbpf = { version = "0.14.4", default-features = false, optional = true }
 serde       = { version = "1.0", features = ["derive"], optional = true }
 serde_json  = { version = "1.0", optional = true }
 toml        = { version = "0.8", optional = true }
+# qedrecover dep: SHA-256 hash-pinning the emitted qedmeta sidecar's
+# .so/IDL (issue #37). Unifies with the dev-dep + the transitive
+# solana-sha256-hasher copy already in the tree.
+sha2        = { version = "0.10.8", default-features = false, optional = true }
 
 [dev-dependencies]
 # Round-trip oracle: agave's program-side deserializer (the one BPF
@@ -137,7 +141,7 @@ diff-mollusk = ["dep:mollusk-svm", "dep:mollusk-account", "dep:mollusk-pubkey"]
 
 # qedrecover binary deps. JIT disabled on solana-sbpf — we only
 # analyse, never execute.
-qedrecover = ["dep:solana-sbpf", "dep:serde", "dep:serde_json", "dep:toml"]
+qedrecover = ["dep:solana-sbpf", "dep:serde", "dep:serde_json", "dep:toml", "dep:sha2"]
 
 # Side-by-side demo: runs incrementer + p-token Transfer through both
 # `qedsvm::Svm` and `mollusk_svm::Mollusk`, prints a comparison table.
