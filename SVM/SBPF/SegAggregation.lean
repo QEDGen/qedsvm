@@ -2,17 +2,11 @@
   Generic byte-blob aggregation — the one-time keystone theorem behind
   every account-codec fine⟷coarse reshape.
 
-  The IDL field layout (qedgen) + what the lift owns produce a
-  `List FieldSeg`: each segment is an owned byte, an owned little-endian
-  u64, or a framed opaque blob (gap). `memBytesIs_segs` proves, once and
-  for all, that the coarse `↦Bytes` blob of those segments is equivalent
-  to the separating conjunction of their fine cells. The hand-written
-  per-account lemmas (`src_account_eq`, `mint_account_eq`, …) are then
-  just instances — they pick a segment list; this lemma does the proof.
-
-  Pure separation logic: no codegen, no domain knowledge. A new program's
-  account aggregation is `memBytesIs_segs` applied to the segment list its
-  IDL layout + lift induce.
+  IDL field layout + lift ownership yield a `List FieldSeg` (owned byte /
+  owned LE u64 / framed opaque gap). `memBytesIs_segs` proves once and for
+  all that the coarse `↦Bytes` blob equals the separating conjunction of
+  the fine cells; the per-account lemmas are instances picking a segment
+  list. Pure separation logic, no codegen or domain knowledge.
 -/
 
 import SVM.SBPF.SepLogic
@@ -23,9 +17,9 @@ open PartialState
 
 /-! ## Unit laws used to massage `segs` output into bespoke shapes -/
 
-/-- Assertion-level right unit: `P ** emp = P`. The `funext` form (vs the
+/-- Assertion-level right unit `P ** emp = P`. The `funext` form (vs
     pointwise `sepConj_emp_right`) lets `simp` strip a trailing `emp`
-    anywhere in a sep-conj chain — needed because `segsSL` ends in `emp`. -/
+    anywhere in a chain — needed since `segsSL` ends in `emp`. -/
 theorem sepConj_emp_right_eq (P : Assertion) : (P ** emp) = P := by
   funext h; exact propext (sepConj_emp_right h)
 
@@ -135,10 +129,9 @@ theorem memBytesIs_segs (base : Nat) (segs : List FieldSeg)
 
 /-! ## Validation — bespoke splits are one-line instances
 
-The hand-written `preAuth_split` (`MintAggregation`, ~30 lines: an owned
-COption tag byte, a 3-byte gap, and a 32-byte authority pubkey as four
-`↦U64` dwords) is the segment list `[byte, gap, u64, u64, u64, u64]`.
-With the keystone it is a single application. -/
+The hand-written `preAuth_split` (~30 lines: COption tag byte, 3-byte
+gap, 32-byte authority as four dwords) is the segment list
+`[byte, gap, u64, u64, u64, u64]` — one keystone application. -/
 
 example (base b0 p0 p1 p2 p3 : Nat) (gA : ByteArray) (hb0 : b0 < 256) :
     ∀ h, memBytesIs base
@@ -157,18 +150,17 @@ example (base b0 b36 b37 : Nat) (g1 g2 : ByteArray)
 
 /-! ## Byte-granular `↦U64` bridge (qedlift hot regions — H8 Phase B)
 
-When a program accesses overlapping bytes at MIXED widths (e.g.
-pinocchio's entrypoint reads `input[0]` as a byte AND `input[0..8)` as
-a dword), qedlift demotes the region to per-byte atoms and the wide
-access's spec reshapes through this bridge: eight adjacent `↦ₘ` atoms
-are exactly one `↦U64` cell holding their little-endian (Horner)
+When a program touches overlapping bytes at MIXED widths (e.g. pinocchio
+reading `input[0]` as a byte AND `input[0..8)` as a dword), qedlift
+demotes the region to per-byte atoms and the wide access reshapes through
+this bridge: 8 adjacent `↦ₘ` atoms = one `↦U64` of their LE Horner
 combination. -/
 
 set_option maxHeartbeats 1600000 in
-/-- Eight adjacent byte atoms ↔ one `↦U64` cell of their LE Horner
-    combination. Instance of the keystone over `[.byte b0, …, .byte b7]`
-    plus the `u64LE`-of-Horner byte computation. (Heartbeats: the
-    high-byte `omega` extractions carry `256^7`-scale coefficients.) -/
+/-- Eight adjacent byte atoms ↔ one `↦U64` of their LE Horner combination.
+    Keystone instance over `[.byte b0, …, .byte b7]` + the u64LE-of-Horner
+    byte computation. (Heartbeats: high-byte `omega` carries `256^7`
+    coefficients.) -/
 theorem byte_atoms_eq_memU64Is (a b0 b1 b2 b3 b4 b5 b6 b7 : Nat)
     (h0 : b0 < 256) (h1 : b1 < 256) (h2 : b2 < 256) (h3 : b3 < 256)
     (h4 : b4 < 256) (h5 : b5 < 256) (h6 : b6 < 256) (h7 : b7 < 256) :
@@ -184,9 +176,8 @@ theorem byte_atoms_eq_memU64Is (a b0 b1 b2 b3 b4 b5 b6 b7 : Nat)
       [.byte b0, .byte b1, .byte b2, .byte b3,
        .byte b4, .byte b5, .byte b6, .byte b7]
       ⟨h0, h1, h2, h3, h4, h5, h6, h7, trivial⟩ h
-  -- The segment blob is exactly the `u64LE` encoding of the Horner
-  -- combination (each `u64LE` byte-extraction collapses by `omega`
-  -- under the `< 256` bounds).
+  -- The blob is the `u64LE` of the Horner combination (each byte-extraction
+  -- collapses by `omega` under the `< 256` bounds).
   have hba : segsBytes
       [.byte b0, .byte b1, .byte b2, .byte b3,
        .byte b4, .byte b5, .byte b6, .byte b7]
@@ -222,8 +213,8 @@ theorem byte_atoms_eq_memU64Is (a b0 b1 b2 b3 b4 b5 b6 b7 : Nat)
     simp only [PartialState.u64LE, e0, e1, e2, e3, e4, e5, e6, e7]
   rw [hba] at hsegs
   rw [memU64Is_eq_memBytesIs a _ h, hsegs]
-  -- Both sides are now the byte-atom sepConj; the keystone's RHS has
-  -- accumulated `+ 1 + 1 …` addresses and a trailing `** emp`.
+  -- Both sides are now byte-atom sepConjs; the keystone's RHS accumulated
+  -- `+ 1 + 1 …` addresses and a trailing `** emp`.
   show _ ↔ ((a ↦ₘ b0) ** ((a + 1) ↦ₘ b1) ** ((a + 1 + 1) ↦ₘ b2) **
        ((a + 1 + 1 + 1) ↦ₘ b3) ** ((a + 1 + 1 + 1 + 1) ↦ₘ b4) **
        ((a + 1 + 1 + 1 + 1 + 1) ↦ₘ b5) **

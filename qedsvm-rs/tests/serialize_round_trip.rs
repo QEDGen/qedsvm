@@ -1,28 +1,5 @@
-//! Conformance test for the account-buffer serializer.
-//!
-//! Strategy: serialize a known set of accounts + instruction using
-//! `qedsvm::serialize_parameters`, then feed the resulting buffer
-//! to `solana_program_entrypoint::deserialize` — the exact function
-//! BPF programs use on chain to read their inputs. If the recovered
-//! `(program_id, accounts, instruction_data)` matches what we put in,
-//! our layout is at-spec for everything the program-side actually
-//! reads.
-//!
-//! Why this is a strong conformance check (despite not being literal
-//! byte equality with agave's host-side serializer):
-//!
-//! - `deserialize` reads every offset that a real program reads.
-//! - Any deviation in field width, padding placement, byte order, or
-//!   alignment computation either crashes the deserializer or
-//!   produces wrong values.
-//! - The only thing it doesn't catch is padding-byte values where
-//!   neither the deserializer nor the program reads (e.g. if we wrote
-//!   garbage instead of zeros into realloc padding). Our serializer
-//!   uses `iter::repeat_n(0u8, _)` exclusively for padding, so this
-//!   degree of freedom is closed by construction.
-//!
-//! Reference: `anza-xyz/solana-sdk/program-entrypoint/src/lib.rs`
-//! function `deserialize`.
+//! Conformance test: serialize via `qedsvm::serialize_parameters`, deserialize via `solana_program_entrypoint::deserialize`.
+//! Any width/padding/alignment deviation either crashes the deserializer or produces wrong values.
 
 use qedsvm::serialize_parameters;
 use solana_account::{Account, AccountSharedData};
@@ -30,8 +7,7 @@ use solana_account_info::AccountInfo;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
-/// Wrap our serialized output in an 8-byte-aligned buffer so the BPF
-/// deserializer's `*const u64` reads are well-defined.
+/// 8-byte-aligned wrapper so the BPF deserializer's `*const u64` reads are well-defined.
 #[repr(C, align(8))]
 struct AlignedBuf {
     bytes: Vec<u8>,
@@ -49,8 +25,7 @@ fn make_ix(metas: Vec<AccountMeta>, data: Vec<u8>, program_id: Pubkey) -> Instru
     Instruction { program_id, accounts: metas, data }
 }
 
-/// Counter-derived unique pubkey. Tests don't need crypto-strength
-/// uniqueness; this also avoids depending on a `rand`-gated feature.
+/// Counter-derived unique pubkey (avoids the `rand`-gated `new_unique` feature).
 fn unique_pubkey() -> Pubkey {
     use std::sync::atomic::{AtomicU64, Ordering};
     static N: AtomicU64 = AtomicU64::new(1);
@@ -142,10 +117,7 @@ fn multiple_distinct_accounts_round_trip() {
 
 #[test]
 fn duplicate_account_meta_compresses() {
-    // Same pubkey appearing twice in `instruction.accounts` should
-    // emit the dup-marker form for the second occurrence — and the
-    // deserializer should see them as two AccountInfos sharing data.
-    let program_id = unique_pubkey();
+    let program_id = unique_pubkey(); // same pubkey twice → second occurrence emits dup-marker form
     let owner = unique_pubkey();
     let k1 = unique_pubkey();
     let ix = make_ix(
@@ -159,22 +131,13 @@ fn duplicate_account_meta_compresses() {
     let accounts = vec![(k1, shared(42, vec![9, 9, 9], owner, false))];
 
     let bytes = serialize_parameters(&ix, &accounts, &program_id).expect("valid inputs");
-    // Sanity: dup-form is much smaller than full form (8 bytes vs
-    // ~10.4KB). The total should be approximately one full account
-    // record plus 8 bytes (header) + 8 bytes (dup) + trailer.
-    // Spot-check: byte 8 (after num_accounts) is NON_DUP_MARKER for
-    // the first account; the offset where the second account starts
-    // begins with `0x00` (dup pointing at index 0).
     assert_eq!(bytes[0..8], 2u64.to_le_bytes());  // num_accounts = 2
-    assert_eq!(bytes[8], 0xFF);                    // first is non-dup
-    // The first account is exactly 94 + data_len + align_pad + 10240
-    // bytes, plus 8 for rent_epoch. data_len = 3, align_pad = 5.
+    assert_eq!(bytes[8], 0xFF);                    // first is non-dup; data_len=3 align_pad=5
     let first_acct_len = 1 + 1 + 1 + 1 + 4 + 32 + 32 + 8 + 8 + 3 + 5 + 10240 + 8;
     let dup_byte_off = 8 + first_acct_len;
     assert_eq!(bytes[dup_byte_off], 0);  // dup → index 0
     assert_eq!(bytes[dup_byte_off + 1..dup_byte_off + 8], [0u8; 7]);
 
-    // And confirm the deserializer round-trips.
     let mut buf = AlignedBuf { bytes };
     let (_pid, infos, _data) = unsafe { deserialize_via_solana(&mut buf) };
     assert_eq!(infos.len(), 2);
@@ -184,9 +147,7 @@ fn duplicate_account_meta_compresses() {
 
 #[test]
 fn known_offsets_match_spec() {
-    // Exact byte-level spot check on a deterministic input. Catches
-    // padding-position regressions even when the round-trip test
-    // passes (since the deserializer doesn't read padding offsets).
+    // Exact byte-level spot check on deterministic input; catches padding regressions the round-trip test misses.
     let program_id = Pubkey::from([7u8; 32]);
     let key = Pubkey::from([1u8; 32]);
     let owner = Pubkey::from([2u8; 32]);

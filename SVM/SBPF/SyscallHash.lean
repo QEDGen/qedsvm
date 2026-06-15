@@ -1,19 +1,10 @@
 /-
   Syscall name → Murmur3-32 hash → typed `Syscall` lookup.
 
-  Each Solana syscall has a stable 32-bit identifier: the Murmur3-32 hash
-  (seed 0) of its name. The `call` instruction in sBPF bytecode carries
-  this hash in its 32-bit immediate field. To recover the typed `Syscall`
-  variant, we precompute the hash for each name we know and check
-  membership at decode time.
-
-  The hashes are constants (Murmur3 is pure and kernel-reducible), so
-  `fromHash` is a simple if-chain of `Nat` equalities — efficient under
-  both `native_decide` and the regular Lean elaborator.
-
-  Coverage matches the `Syscall` enum in `SVM.SBPF.ISA`. Any `call`
-  whose hash isn't in this table decodes to `Syscall.unknown <hash>` and
-  executes with default semantics.
+  Each syscall's id is the Murmur3-32 (seed 0) hash of its name, carried in the
+  `call` instruction's 32-bit immediate. We precompute the hashes and resolve at
+  decode time; the hashes are kernel-reducible constants so `fromHash` is an
+  if-chain of `Nat` equalities. Any unknown hash decodes to `Syscall.unknown`.
 -/
 
 import SVM.SBPF.Murmur3
@@ -67,12 +58,9 @@ def sol_panic_hash                     : Nat := hashString "sol_panic_"
 -- Allocator
 def sol_alloc_free_hash                : Nat := hashString "sol_alloc_free_"
 
--- Hashing (additions). NOTE: `sol_sha512` is DEFINED in the SDK
--- (`solana-define-syscall`) but is NOT registered by agave's loader (it
--- appears in neither the registry nor any feature-gated registration), so
--- a program that calls it is rejected on-chain. We therefore deliberately
--- do NOT give it a hash entry: an unregistered hash resolves to
--- `.unknown` in `fromHash` and fails closed, matching agave.
+-- NOTE: `sol_sha512` is DEFINED in the SDK but NOT registered by agave's
+-- loader, so a program calling it is rejected on-chain. We deliberately omit
+-- its hash entry: it resolves to `.unknown` and fails closed, matching agave.
 def sol_poseidon_hash                  : Nat := hashString "sol_poseidon"
 
 -- Sysvar additions

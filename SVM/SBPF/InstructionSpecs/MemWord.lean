@@ -5,9 +5,9 @@ namespace SVM.SBPF
 
 open Memory
 
-/-! ## Memory loads/stores — word width
+/-! ## Memory loads/stores — word width (`u32`)
 
-4 bytes (`u32`); mem compat case-analysis is 5-way (4 in-range + outside). -/
+Mem compat case-analysis is 5-way (4 in-range + outside). -/
 
 /-- `ldx .word dst src off`: load 32-bit value at `[src + off]` into `dst`. -/
 theorem ldxw_spec
@@ -710,16 +710,12 @@ theorem stxw_spec
 
 /-! ## Memory stores from immediates — word-width helper + `st .word`
 
-Two-resource pattern: owns one base register and one `↦U32` cell.
-Mirror of `cuTripleWithinMem_store_imm_byte_via_reg_addr` at word
-width — the `↦U32` atom decomposes into 4 byte cells, so the mem
-frame is 5-way (4 in-range + outside) like `stxw_spec`. No value
-register (the value is the instruction's immediate field). -/
+Owns one base register and one `↦U32` cell; no value register. The
+`↦U32` atom decomposes into 4 byte cells, so the mem frame is 5-way. -/
 
-/-- Generic word-store triple from an immediate value. The new value's
-    low 4 bytes overwrite `[baseReg + off .. +3]`; everything else is
-    framed. No `< 2^32` hypothesis is needed: `writeU32` and
-    `singletonMemU32` both truncate to the same 4 little-endian bytes. -/
+/-- Generic word-store triple from an immediate value: low 4 bytes overwrite
+    `[baseReg + off .. +3]`, rest framed. No `< 2^32` hypothesis: `writeU32`
+    and `singletonMemU32` truncate to the same 4 little-endian bytes. -/
 theorem cuTripleWithinMem_store_imm_word_via_reg_addr
     (baseReg : Reg) (off : Int)
     (baseAddr oldWordVal newWordVal : Nat) (pc : Nat) (insn : Insn)
@@ -961,10 +957,9 @@ theorem cuTripleWithinMem_store_imm_word_via_reg_addr
       · left; exact PartialState.singletonReg_mem a
       · left; exact PartialState.singletonReg_pc
 
-/-- `st .word baseReg off imm`: store word `(imm & 0xffffffff)` at
-    `[baseReg + off]`. The stored value is `toU64 imm` truncated to
-    32 bits (`% 2^(4*8)`), matching the machine's `writeByWidth`.
-    Derived from the immediate-store helper. -/
+/-- `st .word baseReg off imm`: store `toU64 imm % 2^(4*8)` at
+    `[baseReg + off]` (matching `writeByWidth`). Derived from the
+    immediate-store helper. -/
 theorem stw_spec
     (baseReg : Reg) (off : Int) (imm : Int)
     (baseAddr oldWordVal : Nat) (pc : Nat) :
@@ -982,13 +977,11 @@ theorem stw_spec
 
 /-! ## Word store over BYTE-granular memory (qedlift hot regions)
 
-The compiler's tail-zeroing idiom (`stw [r10-4] 0; stw [r10-7] 0`)
-overlaps two word stores; qedlift demotes the union span to per-byte
-atoms (H8 Phase B-2, `docs/QEDLIFT_ALIASING_DESIGN.md`). Each word
-store's spec is `stw_spec` reshaped through `byte_atoms_eq_memU32Is`:
-the pre owns the 4 byte atoms; the post holds the immediate's LE
-bytes, supplied as parameters `c0..c3` with defining hypotheses the
-emitter discharges by `decide`. -/
+The compiler's tail-zeroing idiom (`stw [r10-4] 0; stw [r10-7] 0`) overlaps
+two word stores; qedlift demotes the union span to per-byte atoms (H8 Phase
+B-2, `docs/QEDLIFT_ALIASING_DESIGN.md`). `stw_spec` reshaped through
+`byte_atoms_eq_memU32Is`: post bytes `c0..c3` are emitter-supplied params
+with `decide`-discharged defining hyps. -/
 
 set_option maxHeartbeats 400000 in
 /-- `st .word baseReg off imm` over four byte atoms `[addr, addr+4)`. -/
@@ -1001,7 +994,7 @@ theorem stw_bytes_spec
     (hc1 : c1 = toU64 imm % 2 ^ (4 * 8) / 0x100 % 256)
     (hc2 : c2 = toU64 imm % 2 ^ (4 * 8) / 0x10000 % 256)
     (hc3 : c3 = toU64 imm % 2 ^ (4 * 8) / 0x1000000 % 256)
-    -- Slot addresses as parameters (see `ldxdw_bytes_spec`).
+    -- Slot addresses as params (see `ldxdw_bytes_spec`).
     (ha0 : a0 = effectiveAddr baseAddr off)
     (ha1 : a1 = effectiveAddr baseAddr off + 1)
     (ha2 : a2 = effectiveAddr baseAddr off + 2)

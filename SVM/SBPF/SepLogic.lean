@@ -1,19 +1,13 @@
 /-
-  Separation logic over sBPF machine state.
+  Separation logic over sBPF machine state (after Kennedy et al. 2013 / the
+  EvmAsm.Rv64.SepLogic adaptation).
 
-  Following Kennedy et al. (2013) and the EvmAsm.Rv64.SepLogic adaptation
-  in Verified-zkEVM/evm-asm: registers, memory bytes, and the program
-  counter are separable resources. An `Assertion` is a predicate on a
-  `PartialState` (a partial heap that owns some subset of those resources).
-  The separating conjunction `P ** Q` holds when the partial state splits
-  into two disjoint pieces, with `P` holding on one and `Q` on the other.
-
-  The bridge to the executable `State` from `SVM.SBPF.Execute` is
-  `Assertion.holdsFor`: an assertion holds for a full machine state when
-  some partial state compatible with the full state satisfies it.
-
-  Memory is byte-level. Multi-byte (u64) assertions are built from byte
-  points-to via `**`.
+  Registers, memory bytes, and the PC are separable resources; an `Assertion`
+  is a predicate on a `PartialState` (partial heap owning a subset). `P ** Q`
+  holds when the state splits into two disjoint pieces satisfying `P` and `Q`.
+  The bridge to the executable `State` is `Assertion.holdsFor` (some compatible
+  partial state satisfies it). Memory is byte-level; multi-byte assertions are
+  built from byte points-to via `**`.
 -/
 
 import SVM.SBPF.Execute
@@ -22,30 +16,23 @@ namespace SVM.SBPF
 
 /-! ## PartialState — partial ownership of registers, memory, PC
 
-Extending `PartialState` with a new resource field (e.g., the future
-`returnData : Option ByteArray` of deferred lift #2):
+To extend `PartialState` with a new resource field:
 
-1. Add the field to `PartialState` below.
-2. Add a `singletonX` builder + projection lemmas (mirror the existing
-   `singletonPC` pattern — defaults the new field to `none` on the
-   other singletons via `@[simp]` lemmas).
-3. Add one clause to `Disjoint` and one to `CompatibleWith` for the
-   new field.
-4. Extend `union` (and its `union_X_of_left_*` / `union_X_eq_none_iff`
-   field helpers). `union_empty_left`/`union_empty_right`/`union_assoc`
-   pick up the new field automatically once the `match` is added.
+1. Add the field below.
+2. Add a `singletonX` builder + projection lemmas (mirror `singletonPC`;
+   default the field to `none` on the other singletons via `@[simp]`).
+3. Add one clause to `Disjoint` and `CompatibleWith`.
+4. Extend `union` (and its `union_X_of_left_*` / `union_X_eq_none_iff` helpers);
+   `union_empty_*`/`union_assoc` pick up the field once the `match` is added.
 
-Destructure sites are stable: `hd.regs` / `hd.mem` / `hd.pc` continue
-to work after a new field appears at the bottom of either structure.
-Only construction sites that build `Disjoint` or `CompatibleWith`
-directly need the new field — they're locatable by `lake build`.
+Destructure sites (`hd.regs`/`hd.mem`/`hd.pc`) stay stable; only
+`Disjoint`/`CompatibleWith` construction sites need the new field (found by
+`lake build`).
 -/
 
-/-- A partial view of an sBPF machine state. `some v` means we own the
-    resource and assert its value is `v`; `none` means we don't own it.
-
-    `returnData` and `callStack` default to `none` so singleton builders
-    that use record-construction syntax pick up the defaults automatically. -/
+/-- A partial view of an sBPF machine state: `some v` owns the resource at value
+    `v`, `none` doesn't own it. `returnData`/`callStack` default to `none` so
+    record-syntax singleton builders pick them up automatically. -/
 structure PartialState where
   regs : Reg → Option Nat
   mem  : Nat → Option Nat
@@ -92,13 +79,8 @@ def singletonCallStack (cs : List CallFrame) : PartialState :=
     pc   := none
     callStack := some cs }
 
-/-- Two partial states are disjoint if they never both own the same resource.
-
-    Field-wise structure: each field of `PartialState` contributes one
-    disjointness clause. Adding a new field to `PartialState` adds one
-    clause here — call sites that access `hd.regs` / `hd.mem` / `hd.pc`
-    keep working unchanged; only construction sites need to provide the
-    new field. -/
+/-- Two partial states are disjoint if they never both own the same resource
+    (one clause per `PartialState` field). -/
 structure Disjoint (h1 h2 : PartialState) : Prop where
   regs : ∀ r, h1.regs r = none ∨ h2.regs r = none
   mem  : ∀ a, h1.mem  a = none ∨ h2.mem  a = none
@@ -114,11 +96,8 @@ def union (h1 h2 : PartialState) : PartialState where
   returnData := match h1.returnData with | some v => some v | none => h2.returnData
   callStack := match h1.callStack with | some v => some v | none => h2.callStack
 
-/-- A partial state is compatible with a full machine state if every
-    owned resource agrees with the full state.
-
-    Mirrors `Disjoint` — field-wise structure, one clause per
-    `PartialState` field. -/
+/-- A partial state is compatible with a full machine state if every owned
+    resource agrees with it (one clause per `PartialState` field). -/
 structure CompatibleWith (h : PartialState) (s : State) : Prop where
   regs : ∀ r v, h.regs r = some v → s.regs.get r = v
   mem  : ∀ a v, h.mem  a = some v → s.mem a = v
@@ -225,9 +204,8 @@ theorem Disjoint.symm {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
 
 /-! ### singletonMemU64 — 8 consecutive bytes encoding a u64 value
 
-The partial state owns 8 bytes starting at `addr`, whose little-endian
-decode is `v % 2^64`. Used as the building block for the `↦U64`
-assertion that ldxdw/stxdw specs need. -/
+Owns 8 bytes at `addr` with LE decode `v % 2^64`; the building block for `↦U64`
+(ldxdw/stxdw). -/
 
 /-- Partial state owning 8 consecutive memory bytes whose little-endian
     decode equals `v % 2^64`. -/
@@ -368,8 +346,8 @@ theorem singletonMemU64_mem_7 (addr v : Nat) :
 
 /-! ### singletonMemU16 / singletonMemU32 — narrower-width variants
 
-Same shape as `singletonMemU64` but for 2-byte (`u16`) and 4-byte
-(`u32`) ownership. Used by `ldxh`/`stxh` and `ldxw`/`stxw`. -/
+Same shape as `singletonMemU64` for 2-byte / 4-byte ownership (`ldxh`/`stxh`,
+`ldxw`/`stxw`). -/
 
 /-- Partial state owning 2 consecutive memory bytes whose little-endian
     decode equals `v % 2^16`. -/
@@ -491,29 +469,19 @@ theorem singletonMemU32_mem_outside (addr v : Nat) (a : Nat)
 
 /-! ### singletonMem32Bytes — 32 consecutive bytes from a `ByteArray`
 
-The partial state owns 32 bytes starting at `addr`, where byte `i ∈
-[0, 32)` equals `(bs.get! i).toNat`. Used as the building block for
-the `↦Bytes32` assertion that PDA / hash-family syscall specs need.
+Owns 32 bytes at `addr` where byte `i ∈ [0, 32)` = `(bs.get! i).toNat`; the
+building block for `↦Bytes32` (PDA / hash syscalls). Carries an opaque
+`ByteArray` payload (indexed, not integer-decoded).
 
-Unlike the `U16`/`U32`/`U64` atoms (which carry a Nat decoded LE),
-this atom carries an opaque `ByteArray` payload — bytes are indexed,
-not integer-decoded.
+CALLER OBLIGATION (L4): owns 32 bytes unconditionally, so faithful only when
+`bs.size = 32`. A SHORTER `bs` STRENGTHENS the assertion with phantom zero bytes
+(via `get!`'s default); a LONGER `bs`'s tail is ignored. Every current use is a
+hash/PDA output whose 32-byte length is guaranteed by the crypto SIZE axioms
+(pinned Rust-side, L7). Any NEW use over a variable-length array must establish
+`bs.size = 32` first. -/
 
-CALLER OBLIGATION (L4): this atom unconditionally owns 32 bytes, so it
-is only faithful when `bs.size = 32`. A SHORTER `bs` silently claims
-zero in the `[bs.size, 32)` tail (via `bs.get!`'s default) — i.e. it
-STRENGTHENS the assertion with phantom zero bytes a caller may not
-intend; a LONGER `bs` has its tail ignored. Every current use is a
-hash- or PDA-family output whose 32-byte length is guaranteed by the
-crypto SIZE axioms (`CryptoTrust.lean`), themselves now pinned Rust-side
-in `qedsvm-rs/tests/crypto_size_pins.rs` (L7) — so the invariant holds
-for all shipped specs. Any NEW use over a variable-length array must
-establish `bs.size = 32` at the spec entry point before relying on the
-tail. -/
-
-/-- Partial state owning 32 consecutive memory bytes whose contents are
-    `bs`. A single conditional, not 32 unrolled `if`s — keeps both the
-    definition and the byte-extraction proof linear in size. -/
+/-- Partial state owning 32 consecutive bytes = `bs`. A single conditional, not
+    32 unrolled `if`s — keeps definition and proof linear. -/
 def singletonMem32Bytes (addr : Nat) (bs : ByteArray) : PartialState :=
   { regs := fun _ => none
     mem := fun a =>
@@ -533,8 +501,8 @@ def singletonMem32Bytes (addr : Nat) (bs : ByteArray) : PartialState :=
 @[simp] theorem singletonMem32Bytes_callStack {addr : Nat} {bs : ByteArray} :
     (singletonMem32Bytes addr bs).callStack = none := rfl
 
-/-- Byte at offset `i ∈ [0, 32)` equals `(bs.get! i).toNat`. The single
-    parameterized lemma replaces 32 unrolled `_mem_i` lemmas. -/
+/-- Byte at offset `i ∈ [0, 32)` = `(bs.get! i).toNat` (one parameterized lemma
+    replacing 32 unrolled `_mem_i`). -/
 theorem singletonMem32Bytes_mem_at (addr : Nat) (bs : ByteArray) (i : Nat)
     (hi : i < 32) :
     (singletonMem32Bytes addr bs).mem (addr + i) = some (bs.get! i).toNat := by
@@ -557,17 +525,12 @@ theorem singletonMem32Bytes_mem_outside (addr : Nat) (bs : ByteArray) (a : Nat)
 
 /-! ### singletonMemBytes — variable-length byte blob from a `ByteArray`
 
-Generalization of `singletonMem32Bytes` to arbitrary lengths. The
-partial state owns `bs.size` bytes starting at `addr`, where byte
-`i ∈ [0, bs.size)` equals `(bs.get! i).toNat`. Used by syscall
-specs that read variable-length data (PDA seeds, hash inputs, etc.).
+`singletonMem32Bytes` generalized to arbitrary length: owns `bs.size` bytes at
+`addr` (byte `i` = `(bs.get! i).toNat`), for variable-length syscall reads (PDA
+seeds, hash inputs). `bs.size = 0` owns nothing. -/
 
-For `bs.size = 0` the atom owns nothing — equivalent to `empty`
-on the mem side. -/
-
-/-- Partial state owning `bs.size` consecutive memory bytes whose
-    contents are `bs`. Single-conditional `mem` field, same shape
-    as `singletonMem32Bytes` but parametric in length. -/
+/-- Partial state owning `bs.size` consecutive bytes = `bs`; `singletonMem32Bytes`
+    parametric in length. -/
 def singletonMemBytes (addr : Nat) (bs : ByteArray) : PartialState :=
   { regs := fun _ => none
     mem := fun a =>
@@ -611,10 +574,9 @@ theorem singletonMemBytes_mem_outside (addr : Nat) (bs : ByteArray) (a : Nat)
 
 /-! ### `_mem_isSome` helpers — used by range-disjointness derivations
 
-For each memory atom, "address in range ⇒ atom owns it" packaged as an
-`∃ v, mem a = some v` witness. The range-disjointness pattern picks a
-sentinel address in one atom's range and uses these helpers together
-with SL disjointness to conclude the other atom doesn't own it. -/
+Per memory atom, "address in range ⇒ atom owns it" as an `∃ v, mem a = some v`
+witness. Range-disjointness picks a sentinel in one atom's range and uses SL
+disjointness to conclude the other doesn't own it. -/
 
 theorem singletonMemU64_mem_isSome (addr v : Nat) (a : Nat)
     (h : addr ≤ a ∧ a < addr + 8) :
@@ -711,9 +673,8 @@ theorem Disjoint_empty_right {h : PartialState} : h.Disjoint empty :=
 
 /-! ## Field-projection helpers for `union`.
 
-These extract the value of each field of `union h1 h2` under known
-field-level conditions, sidestepping the need to reduce a `match` by
-hand in larger proofs. -/
+Extract each field of `union h1 h2` under known field conditions, avoiding a
+hand `match` reduction in larger proofs. -/
 
 theorem union_regs_of_left_none {h1 h2 : PartialState} {r : Reg}
     (h : h1.regs r = none) : (h1.union h2).regs r = h2.regs r := by
@@ -757,19 +718,16 @@ theorem union_returnData_of_left_some {h1 h2 : PartialState} {v : ByteArray}
        some v
   rw [h]
 
-/-- Simp-friendly form: if both halves have `returnData = none`, so does
-    the union. The two side conditions are discharged by the per-atom
-    `singletonX_returnData = none` `@[simp]` lemmas, so this enables
-    `by simp` to close arbitrarily-deep `(unions).returnData = none`
-    goals built from non-returnData atoms. -/
+/-- If both halves have `returnData = none` so does the union. Side conditions
+    discharged by the per-atom `@[simp]` lemmas, so `by simp` closes
+    arbitrarily-deep `(unions).returnData = none` goals. -/
 @[simp] theorem union_returnData_eq_none_of_both {h1 h2 : PartialState}
     (h1_rd : h1.returnData = none) (h2_rd : h2.returnData = none) :
     (h1.union h2).returnData = none := by
   rw [union_returnData_of_left_none h1_rd]; exact h2_rd
 
-/-- Equational version of the `union_returnData_eq_none_iff` lemma —
-    `@[simp]` so that simp can recursively reduce `(unions).returnData`
-    to a chain of singleton-returnData lookups. -/
+/-- Equational form of `union_returnData_eq_none_iff`; `@[simp]` so simp reduces
+    `(unions).returnData` to a chain of singleton lookups. -/
 @[simp] theorem union_returnData_eq_match (h1 h2 : PartialState) :
     (h1.union h2).returnData =
       (match h1.returnData with | some v => some v | none => h2.returnData) :=
@@ -986,10 +944,9 @@ theorem Disjoint_symm_of_union_right {h1 h2 h3 : PartialState}
 
 /-! ## Byte-blob split/join — fine↔coarse field aggregation
 
-These relate a single `singletonMemBytes` blob to the union of two
-adjacent blobs, the foundation for reshaping a lift's scattered
-byte/dword cells into the coarse `↦Bytes`/`↦Pubkey` account-field
-atoms a `tokenAcctBalance` refinement needs. -/
+Relate a single `singletonMemBytes` blob to the union of two adjacent blobs —
+the foundation for reshaping a lift's scattered cells into the coarse
+`↦Bytes`/`↦Pubkey` account-field atoms a `tokenAcctBalance` refinement needs. -/
 
 /-- `get!` agrees with the bounds-checked `getElem` in range. -/
 private theorem ba_get!_eq (a : ByteArray) (i : Nat) (h : i < a.size) :
@@ -1061,8 +1018,8 @@ theorem singletonMemBytes_union_adj (addr : Nat) (bs1 bs2 : ByteArray) :
       · rw [singletonMemBytes_mem_outside (addr + bs1.size) bs2 a (by omega),
             singletonMemBytes_mem_outside addr (bs1 ++ bs2) a (by omega)]
 
-/-- The 8-byte little-endian encoding of `v`'s low 64 bits. Byte `k` is
-    `v / 256^k % 256`, matching `singletonMemU64`'s layout. -/
+/-- The 8-byte LE encoding of `v`'s low 64 bits (byte `k` = `v / 256^k % 256`,
+    matching `singletonMemU64`). -/
 def u64LE (v : Nat) : ByteArray :=
   ⟨#[(v % 256).toUInt8, (v / 0x100 % 256).toUInt8, (v / 0x10000 % 256).toUInt8,
       (v / 0x1000000 % 256).toUInt8, (v / 0x100000000 % 256).toUInt8,
@@ -1071,9 +1028,8 @@ def u64LE (v : Nat) : ByteArray :=
 
 @[simp] theorem u64LE_size (v : Nat) : (u64LE v).size = 8 := rfl
 
-/-- A `singletonMemU64` cell is the byte-blob of its 8-byte LE encoding.
-    The state-level core of the `↦U64`↔`↦Bytes` bridge: lets a
-    dword-load cell fold into a coarse field via the blob split/join. -/
+/-- A `singletonMemU64` cell is the byte-blob of its 8-byte LE encoding — the
+    state-level core of the `↦U64`↔`↦Bytes` bridge. -/
 theorem singletonMemU64_eq_bytes (a v : Nat) :
     singletonMemU64 a v = singletonMemBytes a (u64LE v) := by
   show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
@@ -1115,18 +1071,17 @@ theorem singletonMemU64_eq_bytes (a v : Nat) :
     rw [singletonMemU64_mem_outside a v x (by omega),
         singletonMemBytes_mem_outside a (u64LE v) x (by rw [u64LE_size]; omega)]
 
-/-- The 4-byte little-endian encoding of `v`'s low 32 bits. Byte `k` is
-    `v / 256^k % 256`, matching `singletonMemU32`'s layout. -/
+/-- The 4-byte LE encoding of `v`'s low 32 bits (byte `k` = `v / 256^k % 256`,
+    matching `singletonMemU32`). -/
 def u32LE (v : Nat) : ByteArray :=
   ⟨#[(v % 256).toUInt8, (v / 0x100 % 256).toUInt8,
       (v / 0x10000 % 256).toUInt8, (v / 0x1000000 % 256).toUInt8]⟩
 
 @[simp] theorem u32LE_size (v : Nat) : (u32LE v).size = 4 := rfl
 
-/-- A `singletonMemU32` cell is the byte-blob of its 4-byte LE encoding.
-    The state-level core of the `↦U32`↔`↦Bytes` bridge (the word-width
-    sibling of `singletonMemU64_eq_bytes`; H8 Phase B-2 byte demotion
-    of `stw`/`ldxw` accesses needs it). -/
+/-- A `singletonMemU32` cell is the byte-blob of its 4-byte LE encoding — the
+    word-width sibling of `singletonMemU64_eq_bytes` (H8 Phase B-2 byte demotion
+    of `stw`/`ldxw`). -/
 theorem singletonMemU32_eq_bytes (a v : Nat) :
     singletonMemU32 a v = singletonMemBytes a (u32LE v) := by
   show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
@@ -1161,8 +1116,8 @@ def byteBA (v : Nat) : ByteArray := ⟨#[v.toUInt8]⟩
 
 @[simp] theorem byteBA_size (v : Nat) : (byteBA v).size = 1 := rfl
 
-/-- A single byte cell (value `< 256`) is the one-byte blob. The leaf
-    for folding a lift's `ldxb`-read cells into a coarse field. -/
+/-- A single byte cell (`< 256`) is the one-byte blob — the leaf for folding a
+    lift's `ldxb`-read cells into a coarse field. -/
 theorem singletonMem_eq_bytes (a v : Nat) (hv : v < 256) :
     singletonMem a v = singletonMemBytes a (byteBA v) := by
   show PartialState.mk _ _ _ _ _ = PartialState.mk _ _ _ _ _
@@ -1204,14 +1159,11 @@ def regIs (r : Reg) (v : Nat) : Assertion :=
 
 @[inherit_doc] notation:50 r " ↦ᵣ " v => regIs r v
 
-/-- Memory byte at `a` holds value `v`, and that's all we own. NOTE (L3):
-    `singletonMem` stores `v` RAW (not reduced mod 256), so this atom is
-    faithful to a real 8-bit cell only when `v < 256`. Every `step` byte
-    store writes a truncated value (`_ % 256`), so the well-formed range
-    is what is ever produced; `v ≥ 256` is representable but never
-    reached. Decode-equality specs carry the `v < 256` guard explicitly.
-    (Canonicalising the definition to `v % 256` is deferred — it would
-    ripple through `singletonMem_mem` and every byte-level spec for a
+/-- Memory byte at `a` holds `v`. NOTE (L3): `singletonMem` stores `v` RAW (not
+    mod 256), so faithful to an 8-bit cell only when `v < 256`. Every `step`
+    byte store writes `_ % 256`, so the WF range is all that's ever produced;
+    decode-equality specs carry the `v < 256` guard explicitly. (Canonicalizing
+    to `v % 256` deferred — ripples through every byte-level spec for a
     not-unsound LOW finding.) -/
 def memByteIs (a v : Nat) : Assertion :=
   fun h => h = PartialState.singletonMem a v
@@ -1239,19 +1191,15 @@ def memU64Is (addr v : Nat) : Assertion :=
 
 @[inherit_doc] notation:50 a " ↦U64 " v => memU64Is a v
 
-/-- 32 consecutive memory bytes at `addr` whose contents are the
-    `ByteArray` `bs`. Byte `i ∈ [0, 32)` holds `(bs.get! i).toNat`.
-    Used by PDA / hash syscall specs that pass opaque 32-byte blobs
-    (pubkeys, hash outputs) where a single-Nat decode isn't useful. -/
+/-- 32 consecutive bytes at `addr` = `bs` (byte `i` = `(bs.get! i).toNat`), for
+    PDA / hash syscalls passing opaque 32-byte blobs (pubkeys, hash outputs). -/
 def memBytes32Is (addr : Nat) (bs : ByteArray) : Assertion :=
   fun h => h = PartialState.singletonMem32Bytes addr bs
 
 @[inherit_doc] notation:50 a " ↦Bytes32 " bs => memBytes32Is a bs
 
-/-- `bs.size` consecutive memory bytes at `addr` whose contents are
-    the `ByteArray` `bs`. Variable-length sibling of `memBytes32Is`,
-    used by syscall specs that read variable-length data (PDA seeds,
-    hash inputs). -/
+/-- `bs.size` consecutive bytes at `addr` = `bs`. Variable-length sibling of
+    `memBytes32Is` (PDA seeds, hash inputs). -/
 def memBytesIs (addr : Nat) (bs : ByteArray) : Assertion :=
   fun h => h = PartialState.singletonMemBytes addr bs
 
@@ -1328,9 +1276,8 @@ theorem sepConj_assoc {P Q R : Assertion} :
     refine ⟨h_P.union h_Q, h_R, hd_PQ_R, ?_, ⟨h_P, h_Q, hd_PQ, rfl, hP, hQ⟩, hR⟩
     rw [← PartialState.union_assoc, hu_QR]; exact hu_P_QR
 
-/-- Swap the first two atoms of a 3-fold separating conjunction.
-    Useful when composing specs whose natural assertion orders differ
-    (e.g. `ldxb` produces `dst ** src ** mem` while `stxb` consumes
+/-- Swap the first two atoms of a 3-fold sepConj, for composing specs whose
+    assertion orders differ (`ldxb` gives `dst ** src ** mem`, `stxb` wants
     `baseReg ** valReg ** mem`). Chain: assoc-back, comm inner, assoc-forward. -/
 theorem sepConj_swap_first_two {P Q R : Assertion} :
     ∀ h, (P ** Q ** R) h ↔ (Q ** P ** R) h := by
@@ -1349,11 +1296,9 @@ theorem sepConj_swap_first_two {P Q R : Assertion} :
 
 /-! ## Pointwise-iff combinators for sepConj
 
-These are the building blocks the elab-level permutation builder in
-`Tactic/SL.lean` uses to assemble an arbitrary-permutation iff between
-two right-folded sepConjs over the same multiset of atoms. The chain
-is `Iff.refl` / `Iff.trans` lifted pointwise, plus a frame-on-the-left
-combinator for descending into the tail of a sepConj. -/
+Building blocks for `Tactic/SL.lean`'s permutation builder, which assembles an
+arbitrary-permutation iff between two right-folded sepConjs over the same atom
+multiset: pointwise `Iff.refl`/`Iff.trans` plus a frame-on-the-left combinator. -/
 
 theorem sepConj_iff_refl (P : Assertion) : ∀ h, P h ↔ P h :=
   fun _ => Iff.rfl
@@ -1367,9 +1312,8 @@ theorem sepConj_iff_symm_pw {P Q : Assertion} (h : ∀ x, P x ↔ Q x) :
     ∀ x, Q x ↔ P x :=
   fun x => (h x).symm
 
-/-- Reshape the right operand of a sepConj. Pointwise iff over the
-    tail lifts to a pointwise iff over `(P ** _)`. Used by the
-    permutation builder to descend through a sepConj's right spine. -/
+/-- Reshape the right operand of a sepConj (pointwise iff over the tail lifts to
+    `(P ** _)`); descends through the right spine. -/
 theorem sepConj_iff_congr_right (P : Assertion) {Q Q' : Assertion}
     (hQQ' : ∀ h, Q h ↔ Q' h) :
     ∀ h, (P ** Q) h ↔ (P ** Q') h := by
@@ -1391,20 +1335,14 @@ theorem sepConj_iff_congr_left (Q : Assertion) {P P' : Assertion}
 
 /-! ## List-fold sepConj + permutation iff
 
-`foldSepConj` collapses a `List Assertion` into a right-folded
-sepConj with `emp` at the trailing position. This shape (vs the
-"no trailing emp" form `rebuildSepConj` produces in tactic land)
-admits a uniform `cons` case in proofs, making the
-permutation-invariance theorem `foldSepConj_perm` a clean induction
-on `List.Perm`.
+`foldSepConj` collapses a `List Assertion` into a right-folded sepConj with
+trailing `emp`. This shape admits a uniform `cons` case, making the
+permutation-invariance theorem `foldSepConj_perm` a clean `List.Perm` induction.
 
-The point of these lemmas is that `sl_block_iter`'s tactic
-machinery can then build a permutation iff in **constant** Expr
-size (one application of `foldSepConj_perm`), instead of the
-previous O(N²) chain of adjacent-swap applications. This dropped
-the bridge step from being super-linear in atom count to linear
-(plus a `bridge` lemma below to/from the trailing-emp form,
-which is O(N) per side). -/
+The payoff: `sl_block_iter` builds a permutation iff in **constant** Expr size
+(one `foldSepConj_perm`) instead of an O(N²) adjacent-swap chain — linear, not
+super-linear, in atom count (plus the O(N) `bridge` to/from the trailing-emp
+form). -/
 
 /-- Right-folded sepConj with trailing `emp`. For `[a, b, c]`:
     `a ** (b ** (c ** emp))`. Always defined (empty list = `emp`). -/
@@ -1417,11 +1355,9 @@ def foldSepConj : List Assertion → Assertion
 @[simp] theorem foldSepConj_cons (a : Assertion) (rest : List Assertion) :
     foldSepConj (a :: rest) = (a ** foldSepConj rest) := rfl
 
-/-- The permutation-invariance theorem: any List-permutation of the
-    atoms preserves the `foldSepConj` assertion's truth-set.
-    Induction on `List.Perm` decomposes into `cons`/`swap`/`trans`,
-    each handled by an existing structural sepConj lemma
-    (`congr_right` / `swap_first_two` / `Iff.trans`). -/
+/-- Permutation-invariance: any List-permutation of the atoms preserves
+    `foldSepConj`'s truth-set. `List.Perm` induction's `cons`/`swap`/`trans`
+    cases map to `congr_right` / `swap_first_two` / `Iff.trans`. -/
 theorem foldSepConj_perm {l1 l2 : List Assertion} (h : l1.Perm l2) :
     ∀ s, foldSepConj l1 s ↔ foldSepConj l2 s := by
   induction h with
@@ -1444,9 +1380,9 @@ theorem foldSepConj_perm {l1 l2 : List Assertion} (h : l1.Perm l2) :
   | trans _ _ ih1 ih2 =>
     intro s; exact (ih1 s).trans (ih2 s)
 
-/-- Swap adjacent elements at position `k` in a list. Structural recursion
-    on the list's spine — needs no `Inhabited` instance (no out-of-range
-    lookup), and the perm proof falls out by the same induction. -/
+/-- Swap adjacent elements at position `k`. Structural recursion on the spine —
+    no `Inhabited` needed (no out-of-range lookup), and the perm proof follows
+    by the same induction. -/
 def swapAt {α} : List α → Nat → List α
   | [], _ => []
   | [a], _ => [a]
@@ -1471,17 +1407,14 @@ theorem applySwaps_perm {α} (l : List α) (swaps : List Nat) :
     show l.Perm (applySwaps (swapAt l k) rest)
     exact (swapAt_perm l k).trans (ih (swapAt l k))
 
-/-- Convenience: the perm-iff between two `foldSepConj`s where the
-    second is the result of applying a swap sequence to the first.
-    This is the "single application" the sl_block_iter tactic needs to
-    replace its O(N²) iff chain. -/
+/-- Perm-iff between a `foldSepConj` and the result of applying a swap sequence —
+    the single application replacing sl_block_iter's O(N²) iff chain. -/
 theorem foldSepConj_applySwaps_iff (atoms : List Assertion) (swaps : List Nat) :
     ∀ s, foldSepConj atoms s ↔ foldSepConj (applySwaps atoms swaps) s :=
   foldSepConj_perm (applySwaps_perm atoms swaps)
 
-/-- `(P ** emp) h ↔ P h` flipped. The bridge from a "no trailing emp"
-    sepConj (`rebuildSepConj`'s output) to a "trailing emp" form
-    (`foldSepConj`'s output) at the singleton-list base case. -/
+/-- `(P ** emp) h ↔ P h` flipped — the bridge from a no-trailing-emp sepConj to
+    the trailing-emp form at the singleton-list base case. -/
 theorem sepConj_emp_right_symm {P : Assertion} : ∀ h, P h ↔ (P ** emp) h :=
   fun h => (sepConj_emp_right h).symm
 
@@ -1517,9 +1450,8 @@ theorem holdsFor_sepConj_comm {P Q : Assertion} {s : State} :
 
 /-! ## pcFree — assertion does not own the PC -/
 
-/-- An assertion is *pc-free* when no satisfying partial state owns the PC.
-    This is the side-condition used as a frame in `cuTripleWithin` so that
-    incrementing the PC doesn't invalidate the frame. -/
+/-- An assertion is *pc-free* when no satisfying partial state owns the PC — the
+    frame side-condition in `cuTripleWithin` so a PC bump doesn't invalidate it. -/
 def Assertion.pcFree (P : Assertion) : Prop :=
   ∀ h, P h → h.pc = none
 
@@ -1559,10 +1491,9 @@ theorem pcFree_sepConj {P Q : Assertion} (hP : P.pcFree) (hQ : Q.pcFree) :
   rw [← hu, PartialState.union_pc_of_left_none (hP _ hP1)]
   exact hQ _ hQ2
 
-/-- SL-level split/join for the byte-blob atom: a `↦Bytes` over a
-    concatenation separates into the two adjacent sub-blobs. The
-    reusable bridge from a lift's fine-grained cells to the coarse
-    `↦Bytes`/`↦Pubkey` account-field atoms of `tokenAcctBalance`. -/
+/-- SL split/join for the byte-blob atom: `↦Bytes` over a concatenation
+    separates into two adjacent sub-blobs — the reusable bridge from a lift's
+    fine cells to coarse `↦Bytes`/`↦Pubkey` account-field atoms. -/
 theorem memBytesIs_append (addr : Nat) (bs1 bs2 : ByteArray) :
     ∀ h, memBytesIs addr (bs1 ++ bs2) h ↔
          (memBytesIs addr bs1 ** memBytesIs (addr + bs1.size) bs2) h := by
@@ -1577,10 +1508,9 @@ theorem memBytesIs_append (addr : Nat) (bs1 bs2 : ByteArray) :
     show h = PartialState.singletonMemBytes addr (bs1 ++ bs2)
     rw [← hu, h1eq, h2eq, PartialState.singletonMemBytes_union_adj]
 
-/-- SL-level bridge: a `↦U64` cell equals the `↦Bytes` blob of its
-    8-byte little-endian encoding. Composed with `memBytesIs_append`,
-    this folds a lift's dword-load cells into a coarse `↦Bytes`/`↦Pubkey`
-    account field. -/
+/-- SL bridge: a `↦U64` cell equals the `↦Bytes` blob of its 8-byte LE encoding.
+    With `memBytesIs_append`, folds dword-load cells into a coarse account
+    field. -/
 theorem memU64Is_eq_memBytesIs (a v : Nat) :
     ∀ h, memU64Is a v h ↔ memBytesIs a (PartialState.u64LE v) h := by
   intro h
@@ -1589,9 +1519,8 @@ theorem memU64Is_eq_memBytesIs (a v : Nat) :
          = (h = PartialState.singletonMemBytes a (PartialState.u64LE v)) from rfl,
       PartialState.singletonMemU64_eq_bytes]
 
-/-- SL-level bridge: a `↦U32` cell equals the `↦Bytes` blob of its
-    4-byte little-endian encoding (word-width sibling of
-    `memU64Is_eq_memBytesIs`). -/
+/-- SL bridge: a `↦U32` cell equals the `↦Bytes` blob of its 4-byte LE encoding
+    (word-width sibling of `memU64Is_eq_memBytesIs`). -/
 theorem memU32Is_eq_memBytesIs (a v : Nat) :
     ∀ h, memU32Is a v h ↔ memBytesIs a (PartialState.u32LE v) h := by
   intro h
@@ -1600,10 +1529,8 @@ theorem memU32Is_eq_memBytesIs (a v : Nat) :
          = (h = PartialState.singletonMemBytes a (PartialState.u32LE v)) from rfl,
       PartialState.singletonMemU32_eq_bytes]
 
-/-- SL-level bridge: a single byte cell `↦ₘ` (value `< 256`) equals the
-    `↦Bytes` blob of its one-byte encoding. Composed with
-    `memBytesIs_append`, folds a lift's `ldxb`-read byte cells into a
-    coarse `↦Bytes` field. -/
+/-- SL bridge: a single byte cell `↦ₘ` (`< 256`) equals the one-byte `↦Bytes`
+    blob. With `memBytesIs_append`, folds `ldxb`-read cells into a coarse field. -/
 theorem memByteIs_eq_memBytesIs (a v : Nat) (hv : v < 256) :
     ∀ h, memByteIs a v h ↔ memBytesIs a (PartialState.byteBA v) h := by
   intro h
@@ -1612,11 +1539,10 @@ theorem memByteIs_eq_memBytesIs (a v : Nat) (hv : v < 256) :
          = (h = PartialState.singletonMemBytes a (PartialState.byteBA v)) from rfl,
       PartialState.singletonMem_eq_bytes a v hv]
 
-/-- Peel one byte off the front of a byte blob: `↦Bytes (byteBA v ++ rest)`
-    separates into the byte cell `a ↦ₘ v` (value `< 256`) and the tail
-    blob at `a + 1`. The workhorse for assembling a coarse `↦Bytes` field
-    from a lift's `ldxb`-read cells interleaved with framed gaps —
-    iterate it (+ `memBytesIs_append` for known-size gaps). -/
+/-- Peel one byte off a blob's front: `↦Bytes (byteBA v ++ rest)` separates into
+    the cell `a ↦ₘ v` (`< 256`) and the tail blob at `a + 1`. The workhorse for
+    assembling a coarse `↦Bytes` field from `ldxb`-read cells interleaved with
+    framed gaps (iterate + `memBytesIs_append` for known-size gaps). -/
 theorem memBytesIs_cons_byte (a v : Nat) (rest : ByteArray) (hv : v < 256) :
     ∀ h, memBytesIs a (PartialState.byteBA v ++ rest) h ↔
          (memByteIs a v ** memBytesIs (a + 1) rest) h := by

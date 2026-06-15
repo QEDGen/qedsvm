@@ -6,13 +6,8 @@ open Memory
 
 /-! ## Generic 1-register write spec
 
-The pattern of "instruction reads dst (current value `vOld`), writes
-`vNew`, increments PC, takes 1 step" covers every register-only ALU
-instruction with an immediate source: `mov64 dst (.imm _)`, `add64 dst
-(.imm _)`, `sub64 dst (.imm _)`, `neg64 dst`, `and64/or64/xor64/lsh64/
-rsh64 dst (.imm _)`, and their 32-bit variants. Capturing the proof
-shape once collapses each such per-instruction spec to a two-line
-characterization of how `step` behaves on that opcode. -/
+Covers every reg-only ALU op with an imm source (reads `dst`, writes `vNew`,
+bumps PC, 1 step); per-instruction specs reduce to `step` on that opcode. -/
 
 theorem cuTripleWithin_1reg_write
     (dst : Reg) (vOld vNew : Nat) (pc : Nat) (insn : Insn)
@@ -129,9 +124,8 @@ theorem cuTripleWithin_1reg_write
 
 /-! ## `mov64 dst (.imm imm)` — load immediate
 
-The simplest possible triple: writes a constant to a destination register,
-overwriting whatever was there. Excludes the read-only frame pointer
-(r10), whose writes are silently dropped by the runtime. -/
+Writes a constant to `dst`. Excludes r10 (frame pointer) — the runtime silently
+drops r10 writes. -/
 
 theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
@@ -139,31 +133,25 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
       (dst ↦ᵣ vOld)
       (dst ↦ᵣ toU64 imm) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- 1. Destructure (dst ↦ᵣ vOld) ** R for state s.
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hreg, hRsat⟩ := hPR
-  -- hreg : h1 = singletonReg dst vOld  →  rewrite h1 throughout.
   rw [hreg] at hu hd
   clear hreg h1
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
   have hd_regs := hd.regs
-  -- 2. Fetch resolves to the mov64 instruction at PC.
   have hfetch : fetch s.pc = some (.mov64 dst (.imm imm)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  -- 3. Single-step executeFn (in budget, so the H5 halt doesn't fire).
+  -- in budget → the H5 halt doesn't fire
   have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
   have hexec : executeFn fetch s 1 =
       chargeCu { s with regs := s.regs.set dst (toU64 imm), pc := s.pc + 1 } := by
     simp [executeFn, step, hex, hfetch, hnb]
-  -- 4. hR doesn't own dst.
   have hR_no_dst : hR.regs dst = none := by
     rcases hd_regs dst with h | h
     · rw [PartialState.singletonReg_regs_self] at h
       simp at h
     · exact h
-  -- 5. hR.pc = none (R is pc-free).
   have hR_no_pc : hR.pc = none := hRfree _ hRsat
-  -- 6. hp's projections in terms of hR (with dst as the only special address).
   have hp_regs_dst : hp.regs dst = some vOld := by
     rw [← hu]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -176,24 +164,17 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     intro a
     rw [← hu]
     exact PartialState.union_mem_of_left_none (PartialState.singletonReg_mem a)
-  -- 7. Build the witness for the post.
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
-  · -- s'.pc = pc + 1
-    rw [hexec]
+  · rw [hexec]
     show s.pc + 1 = pc + 1
     rw [hpc]
-  · -- s'.exitCode = none
-    rw [hexec]; exact hex
-  · -- (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + 0
-    rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
-  · -- ((dst ↦ᵣ toU64 imm) ** R).holdsFor s'
-    rw [hexec]
+  · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
+  · rw [hexec]
     refine ⟨(PartialState.singletonReg dst (toU64 imm)).union hR, ?_,
             PartialState.singletonReg dst (toU64 imm), hR, ?_, rfl, rfl, hRsat⟩
-    · -- Compatibility of the new partial state with s'.
-      refine ⟨?_, ?_, ?_, ?_, ?_⟩
-      · -- regs
-        intro r v hvr
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r v hvr
         by_cases hr : r = dst
         · rw [hr] at hvr
           rw [PartialState.union_regs_of_left_some
@@ -207,14 +188,12 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
           show (s.regs.set dst (toU64 imm)).get r = v
           rw [RegFile.get_set_diff _ _ _ _ hr]
           exact hcr_regs r v ((hp_regs_other r hr).symm ▸ hvr)
-      · -- mem
-        intro a v hva
+      · intro a v hva
         rw [PartialState.union_mem_of_left_none
             (PartialState.singletonReg_mem _)] at hva
         show s.mem a = v
         exact hcm_mem a v ((hp_mem a).symm ▸ hva)
-      · -- pc
-        intro v hvp
+      · intro v hvp
         rw [PartialState.union_pc_of_left_none
             PartialState.singletonReg_pc] at hvp
         rw [hR_no_pc] at hvp
@@ -253,8 +232,7 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
                  exact hva))
         | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
            exact hcompat.callStack cs (by rw [← hu]; exact hva))
-    · -- Disjointness: singletonReg dst (toU64 imm) is disjoint from hR.
-      refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hr : r = dst
         · rw [hr]; right; exact hR_no_dst
@@ -264,14 +242,9 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 
 /-! ## `mov64 dst (.reg src)` — register copy (manual proof of pattern)
 
-Two-atom precondition: we own both registers. After the step, the
-source's value lives in both. `dst ≠ src` falls out of the sepConj
-disjointness in the precondition (no extra hypothesis needed).
-
-This was the original first-principles proof — kept in-tree as a
-methodology exemplar showing what `cuTripleWithin_2reg_write`
-expands to. The concise derived form lives below as
-`mov64_reg_spec`; the manual form here is `mov64_reg_spec_manual`. -/
+`dst ≠ src` falls out of the precondition's sepConj disjointness. Kept as a
+methodology exemplar of what `cuTripleWithin_2reg_write` expands to; the derived
+form is `mov64_reg_spec`. -/
 
 theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
@@ -279,7 +252,6 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
       ((dst ↦ᵣ vOld) ** (src ↦ᵣ v))
       ((dst ↦ᵣ v) ** (src ↦ᵣ v)) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- 1. Destructure the precondition layers.
   obtain ⟨hp, hcompat, hPQ, hR, hd_PQR, hu_PQR, hPQ_pred, hR_sat⟩ := hPR
   obtain ⟨h_dst, h_src, hd_dst_src, hu_PQ, h_dst_eq, h_src_eq⟩ := hPQ_pred
   rw [h_dst_eq] at hu_PQ hd_dst_src
@@ -288,18 +260,15 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
   have hd_PQR_regs := hd_PQR.regs
-  -- 2. dst ≠ src from inner disjointness.
-  have hne_dst_src : dst ≠ src := by
+  have hne_dst_src : dst ≠ src := by  -- from inner disjointness
     have hd_inner_regs := hd_dst_src.regs
     intro habs
     rcases hd_inner_regs dst with h | h
     · rw [PartialState.singletonReg_regs_self] at h; nomatch h
     · rw [habs, PartialState.singletonReg_regs_self] at h; nomatch h
-  -- 3. Reshape hu_PQ to get explicit hp decomposition.
   have hp_eq : ((PartialState.singletonReg dst vOld).union
                 (PartialState.singletonReg src v)).union hR = hp := by
     rw [hu_PQ]; exact hu_PQR
-  -- 4. Extract register values from compat.
   have hp_regs_dst : hp.regs dst = some vOld := by
     rw [← hp_eq]
     apply PartialState.union_regs_of_left_some
@@ -311,7 +280,6 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
         (PartialState.singletonReg_regs_other hne_dst_src.symm)]
     exact PartialState.singletonReg_regs_self
   have hs_regs_src : s.regs.get src = v := hcr_regs src v hp_regs_src
-  -- 5. hR doesn't own dst, src, or pc.
   have hR_no_dst : hR.regs dst = none := by
     rcases hd_PQR_regs dst with h | h
     · rw [← hu_PQ] at h
@@ -327,7 +295,6 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
       nomatch h
     · exact h
   have hR_no_pc : hR.pc = none := hRfree _ hR_sat
-  -- 6. Fetch and step.
   have hfetch : fetch s.pc = some (.mov64 dst (.reg src)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
@@ -337,13 +304,11 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
         chargeCu { s with regs := s.regs.set dst (s.regs.get src), pc := s.pc + 1 } := by
       simp [executeFn, step, hex, hfetch, hnb]
     rw [h0, hs_regs_src]
-  -- 7. hp's mem = hR's mem (neither singletonReg owns memory).
   have hp_mem : ∀ a, hp.mem a = hR.mem a := by
     intro a
     rw [← hp_eq]
     rw [PartialState.union_mem_of_left_none
         (PartialState.union_mem_of_left_none (PartialState.singletonReg_mem a))]
-  -- 8. Build the post.
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
   · rw [hexec]; exact hex
@@ -357,12 +322,10 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
             ⟨PartialState.singletonReg dst v, PartialState.singletonReg src v,
              ?_, rfl, rfl, rfl⟩,
             hR_sat⟩
-    · -- Compatibility.
-      refine ⟨?_, ?_, ?_, ?_, ?_⟩
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · intro r vr hvr
         by_cases hrdst : r = dst
-        · -- r = dst: inner union picks (singletonReg dst v).regs dst = some v.
-          have hinner_dst :
+        · have hinner_dst :
               ((PartialState.singletonReg dst v).union
                 (PartialState.singletonReg src v)).regs dst = some v :=
             PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -373,8 +336,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
           show (s.regs.set dst v).get dst = v
           exact RegFile.get_set_self _ _ _ hne
         · by_cases hrsrc : r = src
-          · -- r = src: inner union falls through to (singletonReg src v).regs src = some v.
-            have hinner_src :
+          · have hinner_src :
                 ((PartialState.singletonReg dst v).union
                   (PartialState.singletonReg src v)).regs src = some v := by
               rw [PartialState.union_regs_of_left_none
@@ -387,8 +349,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
             show (s.regs.set dst v).get src = v
             rw [RegFile.get_set_diff _ _ _ _ hne_dst_src.symm]
             exact hs_regs_src
-          · -- r owned by hR (or none): both inner singletons return none, outer falls through.
-            have hinner_none_new :
+          · have hinner_none_new :
                 ((PartialState.singletonReg dst v).union
                   (PartialState.singletonReg src v)).regs r = none := by
               rw [PartialState.union_regs_of_left_none
@@ -457,8 +418,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
                  exact hva))
         | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
            exact hcompat.callStack cs (by rw [← hu_PQR]; exact hva))
-    · -- (singletonReg dst v ⊎ singletonReg src v).Disjoint hR
-      refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact hR_no_dst
@@ -475,8 +435,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
       · left
         rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
         exact PartialState.singletonReg_pc
-    · -- (singletonReg dst v).Disjoint (singletonReg src v)
-      refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
+    · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
         · rw [hrdst]; right; exact PartialState.singletonReg_regs_other hne_dst_src
@@ -484,10 +443,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
       · intro a; left; exact PartialState.singletonReg_mem _
       · left; exact PartialState.singletonReg_pc
 
-/-! ## ALU-with-immediate ops via the 1-reg-write helper
-
-These are each two lines: the spec statement and a `simp [step, hdst]`
-proof that `step` produces the expected state given the precondition. -/
+/-! ## ALU-with-immediate ops via the 1-reg-write helper -/
 
 /-- `add64 dst, imm`: wrapping 64-bit add with immediate. -/
 theorem add64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
@@ -578,9 +534,8 @@ theorem rsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (.rsh64 dst (.imm imm)) hne
     (fun _ hdst => by simp only [step, resolveSrc, hdst])
 
-/-- `lddw dst, imm`: load 64-bit immediate. Semantically identical to
-    `mov64 dst (.imm imm)` in our model (the binary encoding occupies two
-    instruction slots; we abstract that away). -/
+/-- `lddw dst, imm`: load 64-bit immediate. Identical to `mov64 dst (.imm imm)`
+    in our model (the two-slot binary encoding is abstracted away). -/
 theorem lddw_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
     cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.lddw dst imm))
@@ -591,13 +546,8 @@ theorem lddw_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 
 /-! ## Generic 2-register-read, 1-register-write spec
 
-The reg-source analogue of `cuTripleWithin_1reg_write`: instruction
-reads `dst` (current value `vOld`) and `src` (value `v`), writes
-`vNew` to `dst`, leaves `src` and memory unchanged, increments PC,
-takes one step. Covers every register-source ALU instruction:
-`add64/sub64/mul64/and64/or64/xor64/lsh64/rsh64/arsh64 dst (.reg src)`
-and their 32-bit variants. `dst ≠ src` falls out of the precondition's
-inner disjointness — no extra hypothesis required. -/
+Reg-source analogue of `cuTripleWithin_1reg_write`. `dst ≠ src` falls out
+of the precondition's inner disjointness, so no extra hypothesis. -/
 
 theorem cuTripleWithin_2reg_write
     (dst src : Reg) (vOld v vNew : Nat) (pc : Nat) (insn : Insn)
@@ -798,17 +748,9 @@ theorem cuTripleWithin_2reg_write
       · intro a; left; exact PartialState.singletonReg_mem _
       · left; exact PartialState.singletonReg_pc
 
-/-! ## 64-bit ALU reg-source specs via the 2-reg-write helper
+/-! ## 64-bit ALU reg-source specs via the 2-reg-write helper -/
 
-Reg-source counterparts of the `*_imm_spec` family above. Each is a
-single-line `cuTripleWithin_2reg_write` invocation whose only payload
-is showing `step` reduces to the expected `set dst vNew` form.
-
-`mov64_reg_spec` leads the section because it's the simplest reg-source
-spec — it ignores `vOld` entirely and just copies `v` into `dst`. -/
-
-/-- `mov64 dst, src`: register copy. Derived form of
-    `mov64_reg_spec_manual`. -/
+/-- `mov64 dst, src`: register copy (derived form of `mov64_reg_spec_manual`). -/
 theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :
     cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.mov64 dst (.reg src)))
@@ -899,11 +841,8 @@ theorem rsh64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 
 /-! ## arsh64 — arithmetic right shift
 
-Sign-extending right shift: if the high bit of `vOld` is set
-(`vOld ≥ U64_MODULUS / 2`), the shifted-out bits are filled with 1s
-in the new high bits. The post-value is exactly what `step .arsh64`
-computes — packaged into a `let` so the spec reads with the
-expression close to the definition site. -/
+Sign-extending: when `vOld`'s high bit is set (`vOld ≥ U64_MODULUS / 2`) the
+shifted-out bits fill with 1s. Post-value is exactly `step .arsh64`. -/
 
 /-- `arsh64 dst, imm`: arithmetic right shift by (imm mod 64). -/
 theorem arsh64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
@@ -935,8 +874,7 @@ theorem arsh64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 
 /-! ## 32-bit ALU ops via the 1-reg-write helper
 
-Same pattern, but the new value is computed mod `U32_MODULUS` (the 32-bit
-result is zero-extended to 64 bits). -/
+New value mod `U32_MODULUS` (32-bit result zero-extended to 64 bits). -/
 
 /-- `mov32 dst, imm`: load 32-bit immediate (zero-extended to 64 bits). -/
 theorem mov32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
@@ -1019,9 +957,8 @@ theorem xor32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
 
 /-! ## 32-bit shifts via the 1-reg-write helper
 
-Same pattern as the 64-bit shifts. `lsh32` and `rsh32` mask the
-distance to 5 bits (mod 32); `rsh32` also masks the source to its
-low 32 bits before shifting (matching `step`). -/
+`lsh32`/`rsh32` mask the distance mod 32; `rsh32` also masks the source to
+its low 32 bits before shifting (matching `step`). -/
 
 /-- `lsh32 dst, imm`: 32-bit left shift by (imm mod 32). -/
 theorem lsh32_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
@@ -1168,12 +1105,9 @@ theorem arsh32_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
 
 /-! ## div / mod (64-bit and 32-bit)
 
-Both `div` and `mod` short-circuit to `ERR_DIVIDE_BY_ZERO` when the
-resolved divisor is zero. The triple captures the success branch:
-each spec takes a `hnz : ... ≠ 0` hypothesis so the if-then-else in
-`step` reduces to the else arm. 32-bit variants charge `b` after
-masking to its low 32 bits (matching `step .div32`/`step .mod32`),
-so the non-zero hypothesis is on `... % U32_MODULUS`. -/
+`div`/`mod` short-circuit to `ERR_DIVIDE_BY_ZERO` on zero divisor; the `hnz`
+hypothesis selects the success (else) arm. 32-bit variants mask the divisor
+to low 32 bits first (matching `step`), so `hnz` is on `... % U32_MODULUS`. -/
 
 /-- `div64 dst, imm`: 64-bit unsigned division (success path). -/
 theorem div64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)

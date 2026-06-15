@@ -1,19 +1,12 @@
 /-
-  The SPL Token *mint* account as a layout-general `FieldVal` field list —
-  the mint-side convergence of the bespoke codec onto the `account_agg`
-  route (QEDGen/qedsvm#25, "converge the abstract-coupled codecs"). Sibling
-  of `TokenFieldCodec.lean`, for the MintTo / Burn intrinsics.
+  The SPL mint account as a layout-general `FieldVal` field list: the mint-side
+  convergence onto the `account_agg` route (QEDGen/qedsvm#25). For MintTo / Burn.
 
-  `mintAcctSupply` (the byte-level SPL mint predicate: mint_authority@0,
-  supply@36, rest@44) is shown equal to the coarse codec of its field list.
-  So a mint obligation is a field-list obligation, and the discharge
-  accessor projection (`u64FieldAt`) reads the `supply` field directly — the
-  same route the layout-general vault/counter lifts use, with no bespoke
-  `Mint` record on the path.
-
-  Unlike a per-program account, the SPL layout is fixed, so the discharge
-  `ensures` for the `supply` field is a single library fact rather than a
-  per-lift emission.
+  `mintAcctSupply` (mint_authority@0, supply@36, rest@44) is shown equal to the
+  coarse codec of its field list, so a mint obligation is a field-list obligation
+  and `u64FieldAt` reads `supply` directly — no bespoke `Mint` record on the path.
+  SPL layout is fixed, so the `supply` discharge `ensures` is a library fact, not
+  a per-lift emission.
 -/
 
 import SVM.SBPF.Tactic.Discharge
@@ -23,18 +16,16 @@ namespace SVM.Solana
 
 open SVM.SBPF
 
-/-- The SPL mint account as a `FieldVal` field list: the `COption<Pubkey>`
-    mint_authority as an opaque `.blob` at 0, the `supply` `.u64` at 36, and
-    the decimals / is_initialized / freeze_authority tail as a `.blob` at 44.
-    `supply` is mid-struct (offset 36), so unlike the token `amount` it is
-    not a trailing field — the field-list route handles it uniformly. -/
+/-- The SPL mint as a `FieldVal` field list: mint_authority `.blob`@0,
+    supply `.u64`@36, decimals/is_init/freeze tail `.blob`@44. `supply` is
+    mid-struct, not trailing — the field-list route handles it uniformly. -/
 def mintFields (preAuth : ByteArray) (supply : Nat) (rest : ByteArray) :
     List (Nat × FieldVal) :=
   [(0, .blob [.gap preAuth]), (36, .u64 supply), (44, .blob [.gap rest])]
 
-/-- **Convergence keystone.** The byte-level mint predicate is the coarse
-    codec of its field list. So `AsmRefinesTokenMintTo` / `AsmRefinesTokenBurn`
-    are field-list obligations, and the accessor projection applies. -/
+/-- **Convergence keystone.** The byte-level mint predicate is the coarse codec
+    of its field list, so `AsmRefinesTokenMintTo`/`AsmRefinesTokenBurn` are
+    field-list obligations and the accessor projection applies. -/
 theorem mintSupply_codec (base : Nat) (preAuth : ByteArray) (supply : Nat) (rest : ByteArray) :
     mintAcctSupply base preAuth supply rest
       = codecCoarse base (mintFields preAuth supply rest) := by
@@ -47,15 +38,13 @@ theorem mintSupply_codec (base : Nat) (preAuth : ByteArray) (supply : Nat) (rest
     u64FieldAt 36 (mintFields preAuth supply rest) = supply := by
   simp [u64FieldAt, mintFields]
 
-/-- qedgen `ensures`: a credit of the `supply` field
-    (`supply post = supply pre + amount`) — the MintTo case, discharged. -/
+/-- qedgen `ensures`: `supply` credit (post = pre + amount), MintTo. -/
 theorem mint_ensures_credit (preAuth : ByteArray) (supply amount : Nat) (rest : ByteArray) :
     u64FieldAt 36 (mintFields preAuth (supply + amount) rest)
       = u64FieldAt 36 (mintFields preAuth supply rest) + amount := by
   qedsvm_discharge
 
-/-- qedgen `ensures`: a debit of the `supply` field
-    (`supply post = supply pre - amount`) — the Burn case, discharged. -/
+/-- qedgen `ensures`: `supply` debit (post = pre - amount), Burn. -/
 theorem mint_ensures_debit (preAuth : ByteArray) (supply amount : Nat) (rest : ByteArray) :
     u64FieldAt 36 (mintFields preAuth (supply - amount) rest)
       = u64FieldAt 36 (mintFields preAuth supply rest) - amount := by

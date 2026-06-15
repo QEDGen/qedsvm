@@ -1,20 +1,5 @@
-//! Parse the post-execution input buffer back into modified accounts.
-//!
-//! Inverse of `serialize::serialize_parameters`. After the program
-//! halts, the input region holds the same layout it had at entry,
-//! except that the program may have written to:
-//!   - the `lamports` slot (offset 64 within an account record)
-//!   - the `owner` slot (offset 32 within an account record)
-//!   - the `data` bytes
-//!
-//! Modern releases also let programs grow `data` up to
-//! `MAX_PERMITTED_DATA_INCREASE` extra bytes by writing the new length
-//! into the `data_len` slot. We honor that.
-//!
-//! Each entry in `instruction.accounts` produces one
-//! `(Pubkey, AccountSharedData)` in the output, matching Mollusk's
-//! `resulting_accounts` convention. Duplicate `AccountMeta`s map to
-//! the same first-occurrence record (they share buffer memory).
+//! Parse the post-execution input buffer into modified accounts (inverse of `serialize_parameters`).
+//! One `(Pubkey, AccountSharedData)` per `AccountMeta`; duplicates map to the first-occurrence record.
 
 use solana_account::AccountSharedData;
 use solana_account::WritableAccount;
@@ -22,16 +7,8 @@ use solana_instruction::Instruction;
 use solana_program_entrypoint::MAX_PERMITTED_DATA_INCREASE;
 use solana_pubkey::Pubkey;
 
-/// Walk `buffer` (the post-execution `INPUT_START` region) and produce
-/// one `(Pubkey, AccountSharedData)` per `AccountMeta` in `instruction`.
-///
-/// `pre_accounts` is the set of accounts the user passed in. Each
-/// non-duplicate account's lamports / owner / data are overwritten
-/// with whatever lives in `buffer`; everything else (rent_epoch, the
-/// account's *executable* bit, the *owner* on read-only accounts —
-/// real agave allows owner mutation only on writable owned accounts
-/// but we don't enforce that here) is inherited from the pre-state.
-///
+/// Walk `buffer` (post-execution `INPUT_START` region), overwriting each non-dup account's
+/// lamports/owner/data from `buffer`; executable and rent_epoch inherited from `pre_accounts`.
 /// Returns `Err` on malformed buffer.
 pub fn deserialize_account_writes(
     buffer: &[u8],
@@ -49,19 +26,10 @@ pub fn deserialize_account_writes(
     }
 
     // Walk the buffer once, collecting per-first-occurrence updates.
-    // Subsequent dup entries share that update.
-    //
-    // We *do not* read `dup_info` from the buffer to decide non-dup vs
-    // dup, because programs that use pinocchio's RefCell-style borrow
-    // tracking (`solana-account-view`) overlay a mutable `borrow_state`
-    // field on that exact byte and can leave it at any value 0..=255
-    // on return. Trusting the byte then produces spurious
-    // `InvalidDupIndex` errors on perfectly valid Pinocchio handlers
-    // (issue #2), and could in adversarial shapes silently alias slots.
-    // The dup *structure* is fully determined by `instruction.accounts`
-    // — it has to be, because the serializer derives it from there —
-    // so we recompute it the same way the serializer does and skip
-    // 8 bytes for any record we identify as a dup.
+    // We do NOT read `dup_info` from the buffer: Pinocchio's borrow-tracking (`solana-account-view`)
+    // overlays `borrow_state` on that byte and can leave any 0..=255 value there (issue #2).
+    // Dup structure is fully determined by `instruction.accounts` — same as the serializer — so
+    // we recompute it from there and skip 8 bytes for each detected dup.
     let mut by_first_occurrence: Vec<Option<AccountSharedData>> = vec![None; num_accounts];
     for i in 0..num_accounts {
         let first = (0..i).find(|j| instruction.accounts[*j].pubkey == instruction.accounts[i].pubkey);
@@ -76,15 +44,11 @@ pub fn deserialize_account_writes(
         }
     }
 
-    // Trailer: instruction_data_len + instruction_data + program_id.
-    // We don't care about these (we already have them from `instruction`),
-    // but parse them anyway to validate the buffer's structure.
+    // Trailer: instruction_data_len + instruction_data + program_id — parse to validate buffer structure.
     let ix_data_len = r.read_u64()? as usize;
     r.skip(ix_data_len)?;
     r.skip(32)?;  // program_id
 
-    // Build the result list: one entry per AccountMeta, in order,
-    // looking up the first-occurrence update.
     let mut result = Vec::with_capacity(num_accounts);
     for (i, meta) in instruction.accounts.iter().enumerate() {
         let first = (0..=i)
@@ -103,10 +67,7 @@ fn parse_non_dup_record(
     meta_key: &Pubkey,
     pre_accounts: &[(Pubkey, AccountSharedData)],
 ) -> Result<AccountSharedData, DeserializeError> {
-    // 1B is_signer + 1B is_writable + 1B is_executable + 4B padding —
-    // none of these are modifiable from inside the program (executable
-    // becomes immutable once set; signer/writable are runtime-only
-    // flags). Skip 'em.
+    // 1B is_signer + 1B is_writable + 1B is_executable + 4B padding — all runtime-only, skip.
     r.skip(7)?;
     let mut key_bytes = [0u8; 32];
     r.read_into(&mut key_bytes)?;
@@ -131,14 +92,8 @@ fn parse_non_dup_record(
         return Err(DeserializeError::DataLengthOverflow(data_len));
     }
     let data = r.read_bytes(data_len)?.to_vec();
-    // The serializer reserved a fixed-size block per account:
-    //   data_len_pre + align_pad_pre + MAX_PERMITTED_DATA_INCREASE
-    // bytes for the [data | align | realloc-reserve] region. When the
-    // program grows the data, it consumes some of the realloc reserve
-    // — so the *remaining* pad after the new data + new align is
-    //   pre_data_len + pre_align - data_len_post - align_post
-    //   + MAX_PERMITTED_DATA_INCREASE.
-    // (Equivalently: 10240 - growth + alignment delta.)
+    // Skip the reserved realloc-room: pre_data_len + pre_align + MAX_PERMITTED_DATA_INCREASE
+    // bytes total; remaining = pre_data_len + pre_align - post_data_len - post_align + 10240.
     let pre_data_len = pre_accounts
         .iter()
         .find(|(k, _)| *k == *meta_key)
@@ -152,11 +107,8 @@ fn parse_non_dup_record(
     r.skip(post_align_pad + remaining_pad)?;
     r.skip(8)?;  // rent_epoch
 
-    // Build the post-execution account. `executable` and `rent_epoch`
-    // are *always* inherited from pre-state — the program can't mutate
-    // either (executable is immutable once set; rent_epoch is runtime-
-    // owned). This is load-bearing: `validate_post_state` relies on it
-    // and does not re-check these fields.
+    // `executable` and `rent_epoch` are always inherited from pre-state (immutable to programs).
+    // Load-bearing: `validate_post_state` does not re-check these fields.
     let pre = pre_accounts
         .iter()
         .find(|(k, _)| *k == *meta_key)

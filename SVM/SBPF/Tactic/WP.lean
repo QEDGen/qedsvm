@@ -1,7 +1,5 @@
--- WP tactics for sBPF proof automation
---
--- wp_exec: one-shot tactic for sBPF property proofs
--- wp_step: single instruction step (for manual proofs)
+-- WP tactics for sBPF proof automation: wp_exec (one-shot), wp_step
+-- (single instruction, for manual proofs).
 
 import SVM.SBPF.Execute
 
@@ -9,21 +7,11 @@ namespace SVM.SBPF
 
 /-! ## wp_exec — one-shot sBPF verification
 
-Proves properties of the form:
-  (executeFn progAt (initState inputAddr mem) FUEL).exitCode = some CODE
-
-Usage:
-  wp_exec [progAt, progAt_0, progAt_1] [ea_0, ea_88]
-
-First bracket: fetch function + chunk defs (passed to dsimp for instruction decode).
-Second bracket: effectiveAddr lemmas + extras (passed to simp for branch resolution).
-
-The tactic:
-1. Applies executeFn_eq_execSegment to switch to monadic execution
-2. Iteratively unfolds execSegment one step at a time (O(1) kernel depth)
-3. Uses dsimp to evaluate instruction fetch via kernel reduction
-4. Uses simp with hypotheses to resolve branch conditions
-5. Closes the halted-state residual via rfl
+Proves `(executeFn progAt (initState inputAddr mem) FUEL).exitCode = some CODE`.
+First bracket: fetch fn + chunk defs (→ dsimp for decode). Second bracket:
+effectiveAddr lemmas + extras (→ simp for branch resolution). It switches to
+monadic execution, unfolds execSegment one step at a time (O(1) kernel
+depth), dsimps the fetch, simps branches, and rfls the halted residual.
 
 Example:
   theorem rejects_bad_input ... := by
@@ -49,9 +37,9 @@ macro_rules
 
 /-! ## wp_step — single instruction step (for manual proofs)
 
-Unfolds one level of execSegment, evaluates the instruction via dsimp,
-and simplifies with hypotheses. Use when wp_exec needs manual guidance
-(e.g., memory disjointness lemmas between steps). -/
+Unfolds one execSegment level, dsimps the instruction, simps with
+hypotheses. Use when wp_exec needs manual guidance between steps
+(e.g. memory disjointness lemmas). -/
 
 open Lean.Parser.Tactic in
 syntax "wp_step" "[" simpLemma,* "]" "[" simpLemma,* "]" : tactic
@@ -68,20 +56,16 @@ macro_rules
 
 /-! ## strip_writes — automatic memory write stripping
 
-Strips nested write layers from read expressions by proving address disjointness
-via omega. Pre-unfolds STACK_START so omega sees pure numerals.
+Strips nested write layers from reads by proving address disjointness via
+omega. Pre-unfolds STACK_START so omega sees pure numerals. Handles both
+cross-region (input read through stack write) and within-stack reads.
 
-Works for both cross-region (input reads through stack writes) and
-within-stack (stack reads at different offsets from stack writes).
-
-Usage (after a wp_step that left read-through-write patterns in the goal):
+Usage (after a wp_step left read-through-write patterns):
   wp_step [progAt, progAt_0, progAt_1, writeByWidth] [ea_offsets...]
   strip_writes
   simp [h_read_hypothesis, *]
 
-For hypotheses containing wrapAdd/toU64, normalize them first:
-  simp [wrapAdd, toU64] at h_addr
-  strip_writes
+Normalize wrapAdd/toU64 in hypotheses first (`simp [wrapAdd, toU64] at h_addr`).
 -/
 
 open SVM.SBPF.Memory in
@@ -100,9 +84,8 @@ macro_rules
 
 /-! ## strip_writes_goal — goal-only variant for large contexts
 
-Like strip_writes but only unfolds STACK_START in the goal, not hypotheses.
-Use this when the context has many hypotheses (e.g., after 20+ wp_step calls)
-and `unfold STACK_START at *` causes timeout. -/
+Like strip_writes but unfolds STACK_START in the goal only, not hypotheses.
+Use when many hypotheses (20+ wp_step calls) make `unfold … at *` time out. -/
 
 open SVM.SBPF.Memory in
 syntax "strip_writes_goal" : tactic
@@ -120,14 +103,9 @@ macro_rules
 
 /-! ## rewrite_mem — rewrite memory chain + frame
 
-Rewrites with a chain of memory hypotheses, then applies region-based
-frame reasoning to strip write layers from read expressions.
-
-Usage:
-  rewrite_mem [hmem]
-
-is equivalent to:
-  rw [hmem]; mem_frame
+Rewrites with a chain of memory hypotheses, then region-based frame
+reasoning to strip write layers from reads. `rewrite_mem [hmem]` ≡
+`rw [hmem]; mem_frame`.
 -/
 
 open Lean.Parser.Tactic in
@@ -139,26 +117,23 @@ open SVM.SBPF.Memory in
 macro_rules
   | `(tactic| rewrite_mem [$[$ts:rwRule],*]) => `(tactic| (
       rw [$[$ts],*];
-      -- Unfold STACK_START in goal only (not hypotheses — collapsed hmem can be huge)
+      -- Goal only (collapsed hmem can be huge).
       try unfold STACK_START;
       repeat (first
-        -- Frame: read below stack, write above stack (most common in sBPF)
+        -- Frame: read below stack, write above (the common sBPF case).
         | rw [readU64_writeU64_frame _ _ _ _ (by omega) (by omega)]
         | rw [readU8_writeU64_frame _ _ _ _ (by omega) (by omega)]
-        -- Disjointness fallback (within same region or mixed widths)
+        -- Disjointness fallback (same region or mixed widths).
         | rw [readU64_writeU64_disjoint _ _ _ _ (by omega)]
         | rw [readU8_writeU64_outside _ _ _ _ (by omega)]
         | rw [readU64_writeU8_disjoint _ _ _ _ (by omega)]
-        -- Same-address round-trip
+        -- Same-address round-trip.
         | rw [readU64_writeU64_same _ _ _ (by first | simp | omega)])))
 
 /-! ## solve_read — one-shot memory read resolution
 
-Rewrites with a chain of memory hypotheses, applies frame reasoning
-to strip write layers, then closes the goal with `exact`.
-
-Usage:
-  solve_read [hmem] h_val
+`rewrite_mem` to strip write layers, then close with `exact`.
+Usage: `solve_read [hmem] h_val`.
 -/
 
 open Lean.Parser.Tactic in
@@ -174,13 +149,11 @@ macro_rules
 
 /-! ## region_covers — discharge concrete region-coverage checks (#32 item 2)
 
-With a *symbolic* region table, coverage closes by hypothesis rewrite
-(the `Patterns.lean` idiom). With a *concrete* table (a list literal,
-e.g. `runtimeRegions n` after unfolding) plus address bounds in
-context, the check is mechanical: unfold the table fold, turn the
-boolean disjunction into propositions, and let `omega` pick the
-covering region. The optional bracket takes the defs that reveal the
-table (the table def itself plus address-space constants).
+A *symbolic* table closes by hypothesis rewrite (the `Patterns.lean`
+idiom). A *concrete* table (list literal, e.g. unfolded `runtimeRegions n`)
+plus address bounds is mechanical: unfold the fold, bool-disjunction →
+props, `omega` picks the covering region. The optional bracket takes the
+defs revealing the table (table def + address-space constants).
 
 Usage:
   region_covers                          -- table already a literal
@@ -206,22 +179,15 @@ macro_rules
 
 /-! ## wp_exec_from — phase-window split (#32 item 3)
 
-The phased / skeleton-first proof discipline splits a long run into
-windows: prove each phase as its own lemma, compose with
-`executeFn_compose`. Unrolling `wp_step` N times to *reach* step N
-blows kernel depth; the compose rewrite is O(1). This is the tactic
-wrapper that was previously hand-written at every phase boundary.
-
-`wp_exec_from k m` rewrites a goal about `executeFn fetch s (k + m)`
-(the fuel literal is matched up to defeq, so `76` matches `36 + 40`)
-into one about `executeFn fetch (executeFn fetch s k) m`. The `using h`
-form additionally rewrites the inner window with the phase lemma
-`h : executeFn fetch s k = s'`.
+Splits a long run into phase windows composed with `executeFn_compose`:
+unrolling `wp_step` N times to *reach* step N blows kernel depth, but the
+compose rewrite is O(1). `wp_exec_from k m` rewrites
+`executeFn fetch s (k + m)` (fuel matched up to defeq, so `76` matches
+`36 + 40`) into `executeFn fetch (executeFn fetch s k) m`; the `using h`
+form also rewrites the inner window with `h : executeFn fetch s k = s'`.
 
 Usage:
-  wp_exec_from 36 40 using hphase1
-  -- goal is now about `executeFn fetch s' 40`; continue with wp_exec
-  -- or the next phase.
+  wp_exec_from 36 40 using hphase1   -- goal now `executeFn fetch s' 40`
 -/
 
 syntax "wp_exec_from" term:max term:max ("using" term)? : tactic
@@ -235,15 +201,12 @@ macro_rules
 
 /-! ## Regression: `wp_exec` must reduce `Width.bytes` itself
 
-The region check at every `ldx`/`st`/`stx` step compares against
-`w.bytes`. `Width.bytes` is a plain def, so unless the macro's dsimp
-list reduces it, `Width.dword.bytes` never becomes `8`, a coverage
-hypothesis like `rt.containsRange addr 8 = true` never matches, the
-`if` never resolves, and the trailing `rfl` whnf-explodes into a
-heartbeat timeout (QEDGen/solana-skills#86, #32). This theorem proves a
-load through a *symbolic* region table without `Width.bytes` in the
-extras list; the low heartbeat budget makes a regression fail fast
-instead of hanging CI. -/
+The region check at every `ldx`/`st`/`stx` compares against `w.bytes`.
+Unless the macro's dsimp list reduces this plain def, `Width.dword.bytes`
+never becomes `8`, the coverage hypothesis never matches, the `if` never
+resolves, and the trailing `rfl` whnf-explodes into a heartbeat timeout
+(QEDGen/solana-skills#86, #32). This proves a load through a *symbolic*
+table without `Width.bytes` in extras; the low budget fails fast in CI. -/
 
 private def widthBytesRegressionProg : Nat → Option Insn
   | 0 => some (.ldx .dword .r2 .r1 0)
@@ -261,9 +224,8 @@ private theorem wp_exec_reduces_width_bytes
 
 /-! ## Regression: `region_covers` on a concrete table
 
-A `runtimeRegions`-shaped literal table (stack + heap + input), a
-symbolic address with bounds: coverage and writable-coverage both
-close mechanically. -/
+A `runtimeRegions`-shaped literal table + a symbolic bounded address:
+coverage and writable-coverage both close mechanically. -/
 
 private def regionCoversTestTable (inputLen : Nat) : Memory.RegionTable :=
   [ { start := Memory.STACK_START, size := 0x1000 * 64, writable := true }
@@ -286,11 +248,9 @@ private theorem region_covers_writable
 
 /-! ## Regression: `wp_exec_from` splits the fuel literal
 
-The fuel literal (`4`) must match `2 + 2` up to defeq for the compose
-rewrite to fire, and the `using` form must rewrite the inner window
-with a phase lemma. The phase lemma here is itself produced by
-`executeFn_step` + `executeFn_zero` (the manual idiom the tactic's
-phased discipline composes with). -/
+The fuel literal `4` must match `2 + 2` up to defeq for the compose
+rewrite, and the `using` form must rewrite the inner window with a phase
+lemma (here built from `executeFn_step` + `executeFn_zero`). -/
 
 private def phaseSplitProg : Nat → Option Insn
   | 0 => some (.mov64 .r2 (.imm 7))

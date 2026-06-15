@@ -6,10 +6,8 @@ open Memory
 
 /-! ## Control flow: unconditional jump
 
-`ja target` reads no resources, writes only the PC. The triple uses
-`emp` as both pre- and postcondition: the spec owns nothing, the
-universally-quantified `R` frame carries every actual resource through
-unchanged. Entry is `pc`; exit is `target`. -/
+`ja target` writes only the PC, so both pre- and post are `emp`: the
+universally-quantified `R` frame carries every actual resource unchanged. -/
 
 /-- `ja target`: unconditional jump. PC moves from `pc` to `target`
     in one step, charging 1 CU. -/
@@ -18,9 +16,7 @@ theorem ja_spec (target pc : Nat) :
       emp emp := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
   obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
-  -- hP1 : h1 = empty (from emp)
   rw [hP1, PartialState.union_empty_left] at hu
-  -- so hp = hR; rewrite for compat reasoning below
   rw [hP1] at hd
   clear hP1 h1
   have hcr_regs := hcompat.regs
@@ -93,18 +89,13 @@ theorem ja_spec (target pc : Nat) :
 
 /-! ## Indirect call: `callx`
 
-`.callx reg` is sBPF's indirect call. Semantically (per `Execute.lean`)
-it is a tail-call / panic-path-style jump: PC moves to `regs[reg]`, no
-`callStack` push, no register writes. The Hoare triple is the closest
-analogue to `ja_spec` but the exit PC is value-dependent (`vReg` rather
-than a literal `target`). The caller must already know the value held
-in `reg` at entry to compose this spec into a chain — that's typical
-for verifying a decompiled program where you've reasoned about `reg`
-upstream.
+Per `Execute.lean`, `.callx reg` is a tail-call/panic-style jump: PC moves
+to `regs[reg]`, no callStack push, no register writes. The exit PC is
+value-dependent (`vReg`), so the caller must know `reg`'s entry value to
+compose this into a chain.
 
-Built by specializing `cuTripleWithin_1reg_cjump` with `cond := True`
-and `target := vReg` — the `if True then vReg else pc + 1` reduces to
-`vReg`, giving the unconditional value-dependent jump shape we want. -/
+Built by specializing `cuTripleWithin_1reg_cjump` with `cond := True`,
+`target := vReg` (so `if True then vReg else pc + 1` reduces to `vReg`). -/
 
 /-- `callx reg`: indirect call. The model fails closed (real sBPF V0
     frame-push + vaddr→PC translation + depth check are not modeled), so

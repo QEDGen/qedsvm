@@ -1,27 +1,22 @@
 /-
-  Refinement obligations — the asm-side shape a compiled program must take
-  to be considered a refinement of an account mutation.
+  Refinement obligations — the asm-side shape a compiled program must take to
+  refine an account mutation.
 
-  For each account mutation this file declares an asm-side obligation
-  predicate (`AsmRefines…`): the shape an asm-level `cuTripleWithinMem` must
-  take. A per-program lift (emitted by qedlift's refinement codegen)
-  discharges the predicate, and the discharge route then reads the mutated
-  field out of the decoded field list via `qedsvm_discharge`
-  (`SVM/SBPF/Tactic/Discharge.lean`) — the convergence keystones
-  (`SVM/Solana/TokenFieldCodec.lean`, `MintFieldCodec.lean`) reshape the
-  bespoke `tokenAcctBalanceOf` / `mintSupplyOf` atoms into the layout-general
+  Each `AsmRefines…` declares the shape of an asm `cuTripleWithinMem`. A
+  per-program lift discharges it via `qedsvm_discharge`
+  (`SVM/SBPF/Tactic/Discharge.lean`); the convergence keystones
+  (`TokenFieldCodec.lean`, `MintFieldCodec.lean`) reshape the bespoke
+  `tokenAcctBalanceOf` / `mintSupplyOf` atoms into the layout-general
   `codecCoarse` field list these obligations carry.
 
-  The SPL token/mint/counter predicates (`AsmRefinesToken*`,
-  `AsmRefinesCounterIncrement`) are record-keyed for historical reasons and
-  remain as the bridging input until qedgen consumes the discharge form
-  directly (QEDGen/solana-skills#86); `AsmRefinesFieldUpdate` is the
-  layout-general form new lifts target.
+  The record-keyed SPL predicates (`AsmRefinesToken*`,
+  `AsmRefinesCounterIncrement`) remain the bridging input until qedgen consumes
+  the discharge form directly (QEDGen/solana-skills#86);
+  `AsmRefinesFieldUpdate` is the layout-general form new lifts target.
 
-  Note on the framing: an asm-side proof produces a triple over byte
-  addresses (`srcAddr dstAddr : Nat`). The bridge does NOT establish that a
-  given layout map `Pubkey → Nat` is correct — that's a per-program
-  obligation handled by the layout's discharge in concrete proofs.
+  Framing: an asm proof produces a triple over byte addresses. The bridge does
+  NOT establish a layout map `Pubkey → Nat` is correct — that's a per-program
+  obligation discharged in concrete proofs.
 -/
 
 import SVM.Solana.TokenAccountCodec
@@ -39,42 +34,32 @@ open SVM.Pubkey
 /-! ## SCOPE of the `AsmRefines*` obligations (H10)
 
   Each `AsmRefines{TokenTransfer,TokenMintTo,TokenBurn}` is a PARTIAL-
-  CORRECTNESS `cuTripleWithinMem` over the HAPPY PATH of the operation,
-  framed over a fixed SMALL SET of accounts (a source/destination pair,
-  or a mint plus one account). They state exactly the balance/supply
-  SHIFT on those atoms and nothing more. They deliberately do NOT claim:
+  CORRECTNESS `cuTripleWithinMem` over the HAPPY PATH, framed over a fixed
+  small account set; it states exactly the balance/supply SHIFT and nothing
+  more. Deliberately NOT claimed:
 
-  * failure-path behaviour (insufficient funds, non-signer, frozen,
-    wrong/mismatched mint, delegate rules) — out of scope, not proven to
-    error-and-preserve;
-  * a global supply invariant over ALL token accounts — only the framed
-    atoms are constrained; `setupPre`/`setupPost` and the residual `rr`
-    are opaque;
-  * total correctness — the post asserts `exitCode = none` within the
-    proven CU window, not whole-transaction termination;
-  * any field of the 93-byte token tail beyond `amount`/`supply` (L11).
+  * failure-path behaviour (insufficient funds, non-signer, frozen, wrong mint,
+    delegate rules) — not proven to error-and-preserve;
+  * a global supply invariant over ALL token accounts — only framed atoms are
+    constrained; `setupPre`/`setupPost`/`rr` are opaque;
+  * total correctness — post asserts `exitCode = none` within the CU window, not
+    whole-transaction termination;
+  * any 93-byte token-tail field beyond `amount`/`supply` (L11).
 
-  The frame rule makes "untouched framed cells preserved" sound for what
-  is framed; it says nothing about cells outside the frame. Read the
-  names as "the balance shift refines", not "the program is correct". -/
+  The frame rule keeps "untouched framed cells preserved" sound only inside the
+  frame. Read the names as "the balance shift refines", not "the program is
+  correct". -/
 
-/-! ## tokenTransfer
+/-! ## tokenTransfer: asm triple whose pre/post mirror the balance shift (src
+`amount` down, dst `amount` up). -/
 
-A bytecode-level refinement of a token transfer is an asm Hoare triple in
-`tokenAcctBalance`-wrapped form whose pre/post mirror the balance shift: the
-source account's `amount` field decreases by `amount`, the destination's
-increases by `amount`. -/
+/-- Asm-side obligation for a `tokenTransfer` refinement: a `cuTripleWithinMem`
+    over `[entry..exit]` of `cr` whose pre owns an opaque `setupPre` frame then
+    two `tokenAcctBalanceOf` atoms (src@`srcAddr`, dst@`dstAddr`), whose post
+    applies the `withAmount` shift, with `rr` unconstrained.
 
-/-- Asm-side obligation for a `tokenTransfer` refinement.
-
-    A `cuTripleWithinMem` over the program region `[entry..exit]` of code
-    `cr` whose pre-state owns an opaque `setupPre` frame followed by two
-    `tokenAcctBalanceOf` atoms (source at byte address `srcAddr`, destination
-    at `dstAddr`); whose post-state has the same atoms with the `withAmount`
-    shift applied; and whose memory obligations (`rr`) are unconstrained.
-
-    Setup atoms (typically register bindings) come FIRST in the chain to
-    match the natural right-folded shape of per-instruction asm specs. -/
+    Setup atoms come FIRST to match the right-folded shape of per-instruction
+    asm specs. -/
 def AsmRefinesTokenTransfer
     (cr : CodeReq) (nSteps nCu entry exit : Nat)
     (rr : Memory.RegionTable → Prop)
@@ -90,12 +75,8 @@ def AsmRefinesTokenTransfer
      tokenAcctBalanceOf dstAddr (tDst.withAmount (tDst.amount + amount)))
     rr
 
-/-! ## tokenMintTo
-
-A bytecode-level refinement of `tokenMintTo` is an asm Hoare triple whose
-pre/post own a `mintSupplyOf` atom (the mint, supply mutated) and a
-`tokenAcctBalanceOf` atom (the destination, amount mutated), each shifted up
-by `amount`. -/
+/-! ## tokenMintTo: asm triple shifting both the `mintSupplyOf` and dst
+`tokenAcctBalanceOf` atoms up by `amount`. -/
 
 /-- Asm-side obligation for a `tokenMintTo` refinement. -/
 def AsmRefinesTokenMintTo
@@ -113,10 +94,7 @@ def AsmRefinesTokenMintTo
      tokenAcctBalanceOf destAddr (tDest.withAmount (tDest.amount + amount)))
     rr
 
-/-! ## tokenBurn
-
-A bytecode-level refinement of `tokenBurn`: the source token account's
-`amount` and the mint's `supply` each decrease by `amount`. -/
+/-! ## tokenBurn: src `amount` and mint `supply` each decrease by `amount`. -/
 
 /-- Asm-side obligation for a `tokenBurn` refinement. -/
 def AsmRefinesTokenBurn
@@ -134,14 +112,9 @@ def AsmRefinesTokenBurn
      mintSupplyOf mintAddr (m.withSupply (m.supply - amount)))
     rr
 
-/-! ## counterIncrement
-
-A bytecode-level refinement of `counterIncrement` is an asm Hoare triple
-whose pre/post own a single `counterValOf` atom (the counter, value
-mutated), shifted up by one. The first NON-token refinement: no mint /
-owner / amount, no `rest` blob, no codec aggregation (a single `u64` field
-is coarse = fine). It validates that the refinement bridge is
-layout-general. -/
+/-! ## counterIncrement: asm triple shifting a single `counterValOf` atom up by
+one. First NON-token refinement (no codec aggregation: one `u64` is coarse =
+fine), validating the bridge is layout-general. -/
 
 /-- Asm-side obligation for a `counterIncrement` refinement. The delta is
     the constant `1`, so there is no `amount` parameter. -/
@@ -155,19 +128,13 @@ def AsmRefinesCounterIncrement
     (setupPost ** counterValOf addr (c.withCounter (c.counter + 1)))
     rr
 
-/-! ## fieldUpdate — layout-general NON-token codec refinement
+/-! ## fieldUpdate — layout-general NON-token codec refinement.
 
-The asm obligation for a single-field update on an account described by a
-`FieldVal` layout (the Codama IDL's account struct). `preFields` and
-`postFields` differ only at the mutated field; the untouched fields flow
-through. Unlike the SPL `AsmRefinesToken*` predicates this is NOT tied to
-a fixed record — the layout is a parameter, so ONE predicate covers any
-account shape. The realizing proof reshapes both coarse codecs to their
-fine (scattered) form via `account_agg`/`codecCoarse_eq_fine` and frames
-the untouched fine atoms; for a multi-field non-token account (e.g.
-`{owner:Pubkey@0, total:u64@32, bump:u8@40}`) it mechanically frames the
-pubkey + byte fields and owns the updated `u64`. This is the layout-driven
-codec aggregation, emitted off the token domain. -/
+Single-field update on an account given by a `FieldVal` layout (Codama IDL
+struct). `preFields`/`postFields` differ only at the mutated field; the layout
+is a parameter, so ONE predicate covers any account shape. The realizing proof
+reshapes both coarse codecs to fine (scattered) form via
+`account_agg`/`codecCoarse_eq_fine` and frames the untouched fine atoms. -/
 
 def AsmRefinesFieldUpdate
     (cr : CodeReq) (nSteps nCu entry exit : Nat)

@@ -1,14 +1,10 @@
 /-
   Murmur3-32 hash function (Austin Appleby, standard variant).
 
-  Solana uses the standard 32-bit Murmur3 with seed 0 to derive syscall
-  identifiers from their names: the 32-bit immediate of a `call`
-  instruction is `Murmur3::hash32(b"sol_log_", 0)` (for example).
-
-  This implementation is a pure Lean function — kernel-reducible, so
-  `native_decide` evaluates it during proof checking. Each hash is
-  precomputed once and stored as a `def` so the decoder doesn't pay
-  the hash cost per `call` it sees.
+  Solana derives syscall ids by 32-bit Murmur3 (seed 0) of the name (a `call`'s
+  immediate is e.g. `Murmur3::hash32(b"sol_log_", 0)`). Pure Lean,
+  kernel-reducible so `native_decide` evaluates it; each hash is precomputed
+  into a `def`.
 -/
 
 namespace SVM.SBPF

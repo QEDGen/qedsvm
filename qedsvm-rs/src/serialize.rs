@@ -1,47 +1,8 @@
-//! Account-buffer serialization, agave-conformant.
-//!
-//! Produces the byte layout that real Solana programs deserialize via
-//! `solana_program_entrypoint::deserialize` (the BPF program-side
-//! entry point macro). This is the byte sequence written at
-//! `MM_INPUT_START` (= 0x4_0000_0000) before a program is invoked.
-//!
-//! Cross-referenced against agave master:
-//!   - `program-runtime/src/serialization.rs::serialize_parameters_for_abiv1`
-//!     (host-side serializer, the "what we emulate")
-//!   - `sdk/program-entrypoint/src/lib.rs::deserialize`
-//!     (program-side deserializer, our round-trip oracle in tests)
-//!
-//! Constants exposed by `solana-program-entrypoint`:
-//!   - `MAX_PERMITTED_DATA_INCREASE = 10240`
-//!   - `BPF_ALIGN_OF_U128 = 8`  (the BPF target's align_of::<u128>())
-//!   - `NON_DUP_MARKER = 0xFF`
-//!
-//! Layout per non-duplicate account:
-//!   u8  0xFF (NON_DUP_MARKER)
-//!   u8  is_signer
-//!   u8  is_writable
-//!   u8  is_executable
-//!   u32 padding (zeros; program-side patches this in-place with
-//!                data_len during deserialize as `original_data_len`)
-//!   [32] key
-//!   [32] owner
-//!   u64 lamports (LE)
-//!   u64 data_len (LE)
-//!   [data_len] data
-//!   [(8 - data_len % 8) % 8] zero padding   ┐ together: realloc room
-//!   [MAX_PERMITTED_DATA_INCREASE] zero      ┘  ends 8-aligned
-//!   u64 rent_epoch (LE, u64::MAX in modern releases)
-//!
-//! Per duplicate account:
-//!   u8  position (index of original)
-//!   [7] zero padding (→ 8-byte alignment)
-//!
-//! Header / trailer:
-//!   u64 num_accounts (LE)               ┐ before account list
-//!   ...accounts...
-//!   u64 instruction_data_len (LE)       ┐ after account list
-//!   [instruction_data_len] instruction_data
-//!   [32] program_id
+//! Account-buffer serialization conforming to `serialize_parameters_for_abiv1` (agave).
+//! Produces the byte layout written at `MM_INPUT_START` (0x4_0000_0000) before BPF program invocation.
+//! Non-dup account record: 0xFF, is_signer, is_writable, is_executable, u32 pad, [32] key, [32] owner,
+//! u64 lamports, u64 data_len, [data], align_pad+MAX_PERMITTED_DATA_INCREASE zeros, u64 rent_epoch.
+//! Dup: u8 original_index + 7B pad. Header: u64 num_accounts. Trailer: u64+[data] ix_data, [32] program_id.
 
 use solana_account::{AccountSharedData, ReadableAccount};
 use solana_instruction::Instruction;
@@ -50,17 +11,12 @@ use solana_program_entrypoint::{
 };
 use solana_pubkey::Pubkey;
 
-/// Errors `serialize_parameters` can surface. These are all
-/// caller-input issues — programmer errors at the harness level, not
-/// dynamic failures inside the program.
+/// Errors from `serialize_parameters` — caller-input issues, not dynamic program failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SerializeError {
-    /// An `AccountMeta` in `instruction.accounts` references a
-    /// pubkey that doesn't appear in the supplied `accounts` list.
+    /// An `AccountMeta` references a pubkey absent from `accounts`.
     MissingAccount(Pubkey),
-    /// `instruction.accounts` exceeds the protocol cap (256 — the
-    /// dup marker is a `u8`, and 0xFF is `NON_DUP_MARKER`, so the
-    /// addressable range is 0..=254 first occurrences).
+    /// Account count exceeds 255 (0xFF is reserved as `NON_DUP_MARKER`).
     TooManyAccounts(usize),
 }
 
@@ -81,34 +37,23 @@ impl std::fmt::Display for SerializeError {
 
 impl std::error::Error for SerializeError {}
 
-/// Serialize an instruction + its accounts + program_id into the
-/// agave-conformant input buffer for BPF program invocation.
-///
-/// `accounts` are looked up by pubkey from `instruction.accounts`'s
-/// `AccountMeta` entries. The order of accounts in the resulting
-/// buffer matches `instruction.accounts` (which is what programs see).
-/// Duplicate `AccountMeta`s (same pubkey appearing more than once in
-/// the instruction's metadata) are compressed to the dup-marker form.
-///
-/// `rent_epoch` is hardcoded to `u64::MAX` to match modern agave; the
-/// runtime has been masking out the real value for several releases.
+/// Serialize an instruction + accounts + program_id into the agave-conformant BPF input buffer.
+/// Duplicate `AccountMeta`s (same pubkey) are compressed to the dup-marker form.
+/// `rent_epoch` is hardcoded to `u64::MAX` (modern agave masks the real value).
 pub fn serialize_parameters(
     instruction: &Instruction,
     accounts: &[(Pubkey, AccountSharedData)],
     program_id: &Pubkey,
 ) -> Result<Vec<u8>, SerializeError> {
     let n = instruction.accounts.len();
-    // 255 is the largest valid first-occurrence index; 0xFF is the
-    // dup-marker sentinel and would collide.
-    if n > 255 {
+    if n > 255 { // 0xFF = NON_DUP_MARKER sentinel; 255 is the max valid index
         return Err(SerializeError::TooManyAccounts(n));
     }
 
     let mut buf = Vec::new();
     write_u64(&mut buf, n as u64);
 
-    // First-occurrence index, for dup detection.
-    let mut seen: Vec<Option<usize>> = vec![None; n];
+    let mut seen: Vec<Option<usize>> = vec![None; n]; // first-occurrence index per slot, for dup detection
     for (i, meta) in instruction.accounts.iter().enumerate() {
         let first = (0..i).find(|j| instruction.accounts[*j].pubkey == meta.pubkey);
         if let Some(j) = first {
@@ -151,8 +96,7 @@ pub fn serialize_parameters(
     Ok(buf)
 }
 
-/// Look up an account by pubkey. Linear scan — fine for the typical
-/// instruction account counts (≤ 64).
+/// Look up an account by pubkey; linear scan is fine for typical account counts (≤ 64).
 fn find_account<'a>(
     key: Pubkey,
     accounts: &'a [(Pubkey, AccountSharedData)],
@@ -165,10 +109,7 @@ fn write_u64(buf: &mut Vec<u8>, v: u64) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
-/// Bytes to add after `data_len` to reach a `BPF_ALIGN_OF_U128`
-/// (=8) boundary. Matches `(data_len as *const u8).align_offset(8)`
-/// from agave's serializer — since `align_offset` on raw bytes is
-/// equivalent to `(8 - data_len % 8) % 8`.
+/// Padding bytes to align `data_len` to `BPF_ALIGN_OF_U128` (8). Equivalent to `(8 - data_len % 8) % 8`.
 #[inline]
 const fn align_offset_to_bpf_u128(data_len: usize) -> usize {
     let rem = data_len % BPF_ALIGN_OF_U128;

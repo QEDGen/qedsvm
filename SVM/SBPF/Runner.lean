@@ -1,24 +1,16 @@
 /-
-  sBPF runner — the production entrypoint for executing arbitrary sBPF
+  sBPF runner — the production entrypoint executing arbitrary sBPF
   bytecode under the Lean semantics.
-
-  Decoupled from any demo or test fixture. The runner is the public
-  interface a downstream consumer wires up:
 
       SVM.SBPF.Runner.run : ByteArray → RunConfig → Option State
 
-  Given a bytecode blob and a configuration (input bytes, CU budget),
-  returns the final machine state. The caller inspects `state.exitCode`
-  to determine the outcome:
-
-  - `none` → the CU budget was exhausted before the program halted
+  Returns the final machine state; `state.exitCode`:
+  - `none` → CU budget exhausted before halt
   - `some Memory.ERR_INVALID_PC` → execution fell off the program
-  - `some n` → the program executed `exit` with `r0 = n`
+  - `some n` → program executed `exit` with `r0 = n`
 
-  Real Solana programs receive their input via `r1` pointing to a
-  serialized buffer in the input region. The runner populates this for
-  you: bytes in `cfg.input` are written to memory at `INPUT_START`, and
-  the initial `r1` is set to `INPUT_START`.
+  Input is delivered Solana-style: `cfg.input` bytes are written at
+  `INPUT_START` and the initial `r1` points there.
 -/
 
 import SVM.SBPF.Decode
@@ -31,28 +23,18 @@ namespace Runner
 
 open Memory
 
-/-- One-off debug knob: when `true`, every step emits a one-line `STEP`
-    trace to stderr via `dbg_trace`, including pc + r0..r10. Lean's
-    if-then-else short-circuits, so when this is `false` (production)
-    the dbg_trace and its s!"…" string interpolation never run.
-
-    Flip to `true`, rebuild Lean, run a single fixture with
-    `cargo test … -- --nocapture 2>trace.txt`, then flip back. Used to
-    bisect cross-engine CU drift against mollusk's
-    `SBF_TRACE_DIR` / `SBF_TRACE_DISASSEMBLE` output.
-
-    For plain PC traces (the `.pcs` files qedlift/qedrecover consume)
-    do NOT flip this — use the runtime hook below
-    (`QEDSVM_TRACE_OUT=<path>`), which needs no rebuild. -/
+/-- One-off debug knob: when `true`, every step `dbg_trace`s pc + r0..r10
+    to stderr. `false` (production) short-circuits, so the interpolation
+    never runs. Flip + rebuild to bisect cross-engine CU drift against
+    mollusk's `SBF_TRACE_DIR`/`SBF_TRACE_DISASSEMBLE`. For plain PC traces
+    (`.pcs` files) do NOT flip this — use the rebuild-free runtime hook
+    `QEDSVM_TRACE_OUT` below. -/
 def TRACE_STEPS : Bool := false
 
-/-- Runtime PC-trace hook, the automated path for capturing `.pcs`
-    files. Same shape as `dbgTrace` (identity on the thunk), so it is
-    proof-transparent: `traceStep pc f = f ()` by definition. The
-    extern implementation (`qedsvm-rs/lean-bridge/`) appends one
-    decimal PC per line to the file named by `QEDSVM_TRACE_OUT` when
-    that env var is set, and is a no-op otherwise. See
-    `scripts/capture_trace.sh` for the one-command capture flow. -/
+/-- Runtime PC-trace hook (the automated `.pcs` capture path). Identity on
+    the thunk, so proof-transparent: `traceStep pc f = f ()` by definition.
+    The extern impl appends one decimal PC/line to `QEDSVM_TRACE_OUT` when
+    set, else no-op. See `scripts/capture_trace.sh`. -/
 @[never_extract, extern "lean_qedsvm_trace_step"]
 def traceStep (_pc : USize) (f : Unit → α) : α := f ()
 
@@ -66,12 +48,8 @@ private def hex (n width : Nat) : String :=
 /-- Empty memory: every byte is zero. -/
 def emptyMem : Mem := {}
 
-/-- Overlay a ByteArray onto memory starting at `baseAddr`. Outside the
-    overlaid range the underlying memory is preserved.
-
-    Bytes are written into the `Mem` overlay one at a time (was a
-    function-form closure in the old `abbrev Mem` world; each byte
-    used to walk the entire chain on read). -/
+/-- Overlay a ByteArray onto memory at `baseAddr`; bytes outside the
+    overlaid range are preserved. -/
 def loadBytesAt (mem : Mem) (bytes : ByteArray) (baseAddr : Nat) : Mem :=
   (List.range bytes.size).foldl
     (fun m i => Memory.writeU8 m (baseAddr + i) (bytes.get! i).toNat) mem
@@ -86,18 +64,11 @@ def fetchFromArray (insns : Array Insn) : Nat → Option Insn :=
 
 /-! ## Region table construction
 
-The `step` function consults `s.regions` on every `.ldx`/`.st`/`.stx`
-and traps a miss to `ERR_ACCESS_VIOLATION`. The Runner is the one
-place we have enough information (ELF sections + runtime memory
-layout) to build a faithful region table.
-
-Sizes mirror agave with `FeatureSet::all_enabled()` (mollusk's
-default):
-- Stack: `MAX_CALL_DEPTH (64) × stack_frame_size (0x1000) = 0x40000`
-  (`enable_stack_frame_gaps = false` under
-  `virtual_address_space_adjustments`).
-- Heap: default 32 KiB. Programs may request up to 256 KiB via
-  ComputeBudget; we don't model the request, so the default applies. -/
+`step` consults `s.regions` on every `.ldx`/`.st`/`.stx` and traps a
+miss to `ERR_ACCESS_VIOLATION`. The Runner has the ELF sections +
+runtime layout to build a faithful table. Sizes mirror agave with
+`FeatureSet::all_enabled()` (mollusk's default): stack `64 × 0x1000`
+(no frame gaps), heap default 32 KiB (ComputeBudget request unmodeled). -/
 
 /-- Total stack region size (256 KiB). -/
 def STACK_SIZE : Nat := 0x40000
@@ -106,26 +77,19 @@ def STACK_SIZE : Nat := 0x40000
     `compute_budget::DEFAULT_HEAP_COST`-paired allocation. -/
 def DEFAULT_HEAP_SIZE : Nat := 0x8000
 
-/-- The fixed runtime regions (stack + heap + input) WITHOUT
-    per-account writable subdivision. Used when the caller doesn't
-    supply an account-formatted input (bare bytecode demos), or as a
-    fallback when input parsing fails. Stack/heap stay writable,
-    input is one big writable region.
-
-    Prefer `runtimeRegionsForInput` for ELF-driven and CPI paths —
-    it splits the input into per-account regions so writes past
-    `MAX_PERMITTED_DATA_INCREASE` boundaries and writes to
-    read-only accounts trap to `ERR_ACCESS_VIOLATION` (Tier-2 #9 +
-    read-only enforcement). -/
+/-- Fixed runtime regions (stack + heap + input, all writable) WITHOUT
+    per-account writable subdivision. Used for bare-bytecode demos or as
+    an input-parse-failure fallback. ELF/CPI paths enforce per-account
+    write boundaries + read-only as post-instruction validation in the
+    Rust harness instead. -/
 def runtimeRegions (inputLen : Nat) : Memory.RegionTable :=
   [ { start := STACK_START, size := STACK_SIZE,        writable := true }
   , { start := HEAP_START,  size := DEFAULT_HEAP_SIZE, writable := true }
   , { start := INPUT_START, size := inputLen,          writable := true } ]
 
-/-- The read-only program region for an ELF: spans `MM_REGION_SIZE` up
-    to the end of the highest loaded section (text / rodata /
-    data.rel.ro). Matches agave's single contiguous program region
-    in `solana-sbpf`. -/
+/-- Read-only program region for an ELF: `MM_REGION_SIZE` to the end of
+    the highest loaded section (text/rodata/data.rel.ro). Matches agave's
+    single contiguous program region in `solana-sbpf`. -/
 def programRegionElf (elfBytes : ByteArray) (header : Elf.Header)
     (textSec : Elf.SectionHeader) : Memory.Region :=
   let textEnd := Elf.relocateSecAddr textSec.addr + textSec.size
@@ -140,36 +104,24 @@ def programRegionElf (elfBytes : ByteArray) (header : Elf.Header)
   { start := MM_REGION_SIZE, size := programSize, writable := false }
 
 /-- Full region table for an ELF-loaded run. One big writable input
-    region — per-account write boundaries (Tier-2 #9) and read-only
-    write detection are enforced as *post-instruction* validation in
-    the Rust harness, not via memory-region traps. Agave does the
-    same: programs can write anywhere in the serialized input during
-    execution; the runtime validates pre/post invariants at
-    instruction exit (data_len ≤ pre + 10240, read-only accounts
-    unchanged, etc.). -/
+    region; per-account write boundaries (Tier-2 #9) and read-only
+    detection are *post-instruction* validation in the Rust harness, not
+    region traps. Agave does the same: programs write anywhere in the
+    serialized input, runtime checks pre/post invariants at instruction
+    exit (data_len ≤ pre + 10240, read-only unchanged, etc.). -/
 def elfRegions (elfBytes : ByteArray) (header : Elf.Header)
     (textSec : Elf.SectionHeader) (inputLen : Nat) : Memory.RegionTable :=
   programRegionElf elfBytes header textSec :: runtimeRegions inputLen
 
 /-! ## CPI sub-input construction
 
-When a program issues `sol_invoke_signed{,_c}`, the callee expects its
-input buffer at `INPUT_START` to be a *fresh* `serialize_parameters`-
-shaped layout for the CPI's target — not the caller's input. We build
-this in Lean (mirroring `qedsvm-rs/src/serialize.rs`) so the
-callee deserializes the callee-specific accounts + ix_data, not the
-caller's.
-
-Current support: zero-account CPIs only (Phase 3-minimal). Programs
-that pass accounts will fall back to running against the caller's
-memory (the previous semantics) — this is wrong for any callee that
-actually reads its accounts, but matches what we shipped before.
+On `sol_invoke_signed{,_c}` the callee expects a *fresh*
+`serialize_parameters`-shaped buffer at `INPUT_START` for the CPI target,
+not the caller's input. Built in Lean mirroring `qedsvm-rs/src/serialize.rs`.
 -/
 
-/-- Read `len` bytes from `mem` starting at `addr`. Mirrors
-    `Machine.readBytes` but lives here so the Runner doesn't pull in
-    `Machine` (which depends on `Memory` already; this keeps the
-    dependency graph clean). -/
+/-- Read `len` bytes from `mem` at `addr`. Local copy of `Machine.readBytes`
+    so the Runner doesn't pull in `Machine` (keeps the dep graph clean). -/
 private def readMemBytes (mem : Mem) (addr len : Nat) : ByteArray :=
   ⟨(List.range len).foldl
     (fun acc i => acc.push ((mem (addr + i)) % 256).toUInt8) #[]⟩
@@ -189,14 +141,12 @@ def buildCpiSubInputNoAccounts (programId ixData : ByteArray) : ByteArray :=
 
 /-! ### One-account CPI marshaling (Phase 3-full)
 
-The AccountInfo struct passed via `r2` carries indirections through
-`Rc<RefCell<…>>` to bytes that live in the *caller's* input region.
-For CPI, we (a) read those bytes, (b) emit a fresh per-account block
-in the sub-input, (c) run the callee, then (d) write the callee's
-modifications back through the same pointers — so the caller's
-input region (and thus the harness's post-state) reflects them.
+The AccountInfo passed via `r2` indirects through `Rc<RefCell<…>>` to
+bytes in the *caller's* input region. CPI flow: (a) read those bytes,
+(b) emit a fresh per-account block in the sub-input, (c) run the callee,
+(d) write modifications back through the same pointers so the caller's
+input region (the harness's post-state) reflects them.
 
-`MAX_PERMITTED_DATA_INCREASE` matches agave's serializer (10240).
 The per-account block layout is fixed:
 ```
 0..1   dup_marker = 0xFF
@@ -215,9 +165,8 @@ The per-account block layout is fixed:
 Then the trailer: `u64 ix_data_len`, `ix_data`, `u8;32 program_id`.
 -/
 
-/-- Parsed `solana_program::AccountInfo`. Captures the values needed
-    for sub-input emission, plus the caller-memory addresses needed
-    for write-back. Default Rust layout assumed (see comments in
+/-- Parsed `solana_program::AccountInfo`: values for sub-input emission
+    plus caller-memory write-back addresses. Default Rust layout (see
     `parseAccountInfo`). -/
 structure ParsedAcct where
   key             : ByteArray  -- 32 B
@@ -235,9 +184,8 @@ structure ParsedAcct where
   dataPtr         : Nat  -- where `data` bytes live in caller mem
   dataLenRefAddr  : Nat  -- where the data slice's `len` u64 lives in caller mem
 
-/-- Parse one `AccountInfo` struct at `addr` in `mem`, following the
-    `Rc<RefCell<…>>` chains to the underlying bytes. Layout assumed
-    (default Rust, 64-bit BPF target):
+/-- Parse one `AccountInfo` at `addr`, following the `Rc<RefCell<…>>`
+    chains to the underlying bytes. Layout (default Rust, 64-bit BPF):
     ```
     +0   key: *const Pubkey   (u64 ptr)
     +8   lamports: Rc<RefCell<&mut u64>>  (u64 ptr to RcBox)
@@ -275,9 +223,8 @@ def parseAccountInfo (mem : Mem) (addr : Nat) : ParsedAcct :=
     isSigner, isWritable, executable, rentEpoch,
     ownerPtr, lamportsRefAddr, dataPtr, dataLenRefAddr }
 
-/-- `MAX_PERMITTED_DATA_INCREASE` from the Solana ABI. Number of zero
-    bytes the serializer reserves after each account's data so the
-    program may grow the buffer in place. -/
+/-- Solana ABI: zero bytes the serializer reserves after each account's
+    data so the program may grow the buffer in place. -/
 def MAX_PERMITTED_DATA_INCREASE : Nat := 10240
 
 /-- Repeat a byte `n` times into a ByteArray. -/
@@ -316,29 +263,21 @@ def CPI_DATA_OFFSET     : Nat := 8 + 88                 -- = 96
 
 /-! ### N-account CPI marshaling (Phase 3-N)
 
-Generalizes `buildCpiSubInputOneAccount` to an arbitrary list of
-parsed accounts. Two complications vs. N=1:
+Generalizes `buildCpiSubInputOneAccount` to an account list. Two
+complications vs. N=1:
 
-- **Duplicate accounts** (same pubkey at indices i < j in
-  `ix.accounts`) compress: the j-th slot emits a 1-byte position
-  index of `i` followed by 7 zero pad bytes, instead of a full
-  block. The callee's deserializer collapses both AccountInfos
-  onto the same underlying RefCell, so any mutation through the
-  dup slot in the callee writes to the canonical slot's bytes —
-  we only write back through the canonical slot's pointers. This
-  mirrors `qedsvm-rs/src/serialize.rs`'s `seen[]` loop.
-- **Per-slot cumulative offset** into the sub-input. Each
-  non-dup block has stride `88 + dataLen + align_pad + 10240 + 8`
-  (different per account if data sizes differ). Dups are stride 8.
-  The block offset feeds into write-back so we know where each
-  slot's modifiable region lives in the sub-input. -/
+- **Duplicate accounts** (same pubkey at i < j) compress: slot j emits a
+  1-byte position index `i` + 7 pad, not a full block. The callee
+  collapses both AccountInfos onto the same RefCell, so we only write
+  back through the canonical slot's pointers (mirrors `serialize.rs`'s
+  `seen[]` loop).
+- **Per-slot cumulative offset** into the sub-input. Non-dup stride is
+  `88 + dataLen + align_pad + 10240 + 8` (per-account); dup stride 8.
+  Feeds write-back so we know where each slot's modifiable region lives. -/
 
-/-- One slot in the laid-out CPI sub-input. `parsed` carries the
-    pre-call account data + write-back pointers; `dupOf?` is
-    `some j` if this slot is a duplicate of an earlier slot (emit
-    only the 8-byte dup marker, no own block); `blockOff` is the
-    offset in the sub-input where this slot's bytes begin (used
-    for write-back). -/
+/-- One slot in the laid-out CPI sub-input. `dupOf? = some j` means a
+    duplicate of slot j (emit only the 8-byte marker); `blockOff` is the
+    sub-input offset where this slot's bytes begin (for write-back). -/
 structure AcctSlot where
   parsed   : ParsedAcct
   dupOf?   : Option Nat
@@ -351,12 +290,12 @@ structure AcctSlot where
 private def nonDupBlockSize (dataLen : Nat) : Nat :=
   88 + dataLen + ((8 - dataLen % 8) % 8) + MAX_PERMITTED_DATA_INCREASE + 8
 
-/-- Build the slot table from a list of pre-parsed accounts. Linear
-    pass: for each slot, scan earlier slots for a key match. -/
+/-- Build the slot table from pre-parsed accounts. Linear pass: for each
+    slot, scan earlier slots for a key match. -/
 def buildAcctSlots (parsed : List ParsedAcct) : List AcctSlot :=
   let n := parsed.length
   let parsedArr : Array ParsedAcct := parsed.toArray
-  -- Fold over indices; carry the running block offset.
+  -- Fold over indices carrying the running block offset.
   -- Sentinel default for out-of-bounds reads (unreachable for `i < n`).
   let dflt : ParsedAcct :=
     { key := ByteArray.empty, owner := ByteArray.empty, lamports := 0,
@@ -385,9 +324,9 @@ def buildAcctSlots (parsed : List ParsedAcct) : List AcctSlot :=
 def parseAccountInfos (mem : Mem) (baseAddr count : Nat) : List ParsedAcct :=
   (List.range count).map (fun i => parseAccountInfo mem (baseAddr + i * 48))
 
-/-- Parse one `CpiAccount` struct at `addr` in `mem`. This is the
-    C-shaped variant `sol_invoke_signed_c` callers (Pinocchio,
-    `solana-instruction-view`) pass instead of `AccountInfo`.
+/-- Parse one `CpiAccount` at `addr`: the C-shaped variant
+    `sol_invoke_signed_c` callers (Pinocchio, `solana-instruction-view`)
+    pass instead of `AccountInfo`.
 
     Layout (`#[repr(C)]` from `solana-instruction-view/src/cpi.rs`):
     ```
@@ -413,22 +352,16 @@ def parseAccountInfos (mem : Mem) (baseAddr count : Nat) : List ParsedAcct :=
       `Rc<RefCell<&mut [u8]>>` length slot
     - flag bytes sit at `+48..+51` rather than `+40..+43`
 
-    For write-back, the harness needs caller-memory addresses where
-    each mutable field lives:
-    - `lamportsRefAddr` = the value of the `lamports` pointer
-      (CpiAccount stores a direct ptr; the u64 lives at that address
-      in the caller's input buffer).
-    - `dataLenRefAddr` = `addr + 16` (inline slot in the CpiAccount
-      itself). Note: pinocchio's `AccountView` reads `data_len` out
-      of the **input buffer** at `dataPtr - 8`, so the second
-      `writeU64 _ (dataPtr - 8) _` in `execCreateAccount` /
-      `execAllocate` is what the program actually sees post-CPI.
-      The `dataLenRefAddr` write keeps the CpiAccount struct in sync
-      for any code that re-reads it.
-    - `dataPtr` = the value of the `data` pointer (points into the
-      input buffer's data region for that account).
-    - `ownerPtr` = the value of the `owner` pointer (32 bytes at
-      that caller address — the same slot CreateAccount overwrites). -/
+    Write-back caller-memory addresses:
+    - `lamportsRefAddr` = value of the `lamports` ptr (the u64 lives there).
+    - `dataLenRefAddr` = `addr + 16` (inline slot). NOTE: pinocchio's
+      `AccountView` reads `data_len` from the **input buffer** at
+      `dataPtr - 8`, so the second `writeU64 _ (dataPtr - 8) _` in
+      `execCreateAccount`/`execAllocate` is what the program sees post-CPI;
+      the `dataLenRefAddr` write just keeps the struct in sync.
+    - `dataPtr` = value of the `data` ptr (into the input data region).
+    - `ownerPtr` = value of the `owner` ptr (the slot CreateAccount
+      overwrites). -/
 def parseCpiAccount (mem : Mem) (addr : Nat) : ParsedAcct :=
   let keyPtr          := Memory.readU64 mem addr
   let lamportsRefAddr := Memory.readU64 mem (addr + 8)
@@ -517,35 +450,22 @@ structure RunConfig where
 
 /-! ## CPI-aware execution
 
-`executeFnCpi` is a CPI-handling wrapper around `step`. For every
-instruction *except* `sol_invoke_signed` / `sol_invoke_signed_c` it
-delegates to `step` (so the existing single-step semantics and all the
-proofs about them still apply unchanged). For CPI it consults
-`programRegistry`, decodes the callee, builds a fresh sub-state, runs
-the callee recursively under the same registry, and writes the callee's
-exit code into the caller's `r0`.
-
-v1 simplifications (tracked in `docs/next-session-plan.md`):
-- `r1` is read as the program-id directly (not a `*const SolInstruction`).
-  A future revision will read a full `SolInstruction` C struct from
-  memory at `r1` and use its `program_id` field.
-- The callee starts with an empty input buffer (no serialized account
-  metadata). Real callees expect a `solana-program/src/entrypoint.rs`
-  layout at `INPUT_START`.
-- No account write-back to the caller's memory.
-- PDA signer seeds (`r4` / `r5`) are ignored.
-- The full caller CU budget is passed to the callee (no proportional
-  split). Re-entrant CPI is supported transparently by the recursion. -/
+`executeFnCpi` wraps `step`: every instruction *except*
+`sol_invoke_signed{,_c}` delegates to `step` (so single-step semantics +
+all proofs apply unchanged). CPI consults `programRegistry`, decodes the
+callee, builds a fresh sub-state, runs it recursively under the same
+registry, and writes the callee's exit code into the caller's `r0`. The
+full caller CU budget is passed down (no proportional split); re-entrant
+CPI works transparently via the recursion. -/
 /-! ## PDA signer-seed promotion
 
-`invoke_signed` lets a caller act as a Program Derived Address: the
-caller supplies (signer_seeds : &[&[&[u8]]]) at r4/r5, agave derives a
-PDA from each inner seed-array using the caller's program-id, and any
-AccountInfo whose pubkey matches a derived PDA is promoted to
-is_signer=true on the callee side. Without this, callees can't
-distinguish a PDA invocation from a non-signer.
+`invoke_signed` lets a caller act as a PDA: it supplies
+`signer_seeds : &[&[&[u8]]]` at r4/r5, agave derives a PDA per inner
+seed-array using the caller's program-id, and any AccountInfo whose
+pubkey matches is promoted to is_signer=true callee-side. Without this,
+callees can't distinguish a PDA invocation from a non-signer.
 
-Wire format at the syscall boundary (Rust slice fat pointers throughout):
+Wire format (Rust slice fat pointers throughout):
   r4: ptr to array of signer entries  (each entry 16B: ptr@+0, len@+8)
   r5: number of signer entries
   signer_entries[i]:  16B (ptr to inner seed array, len of inner array)
@@ -570,9 +490,8 @@ def deriveSignerPdas (mem : Mem) (seedsAddr seedsLen : Nat)
     let seeds := readSignerSeeds mem (seedsAddr + i * 16)
     Pda.createProgramAddress seeds callerPid)
 
-/-- Promote parsed account-infos: any account whose key matches a
-    derived PDA gets is_signer = true. Agave's seed-derived signer
-    promotion in `invoke_signed`. -/
+/-- Agave's seed-derived signer promotion: any account whose key matches
+    a derived PDA gets is_signer = true. -/
 def promoteSigners (parsedAccts : List ParsedAcct)
     (derivedPdas : List ByteArray) : List ParsedAcct :=
   parsedAccts.map (fun p =>
@@ -594,9 +513,8 @@ where
     match remaining with
     | 0 => acc.reverse
     | r + 1 =>
-      -- Stop if a (non-dup) block would run past the buffer — guards
-      -- against a malformed / non-account input (e.g. a bare-bytecode
-      -- demo), so the walk is total and never reads past EOF.
+      -- Stop if a (non-dup) block would run past the buffer — keeps the
+      -- walk total on malformed/non-account input (e.g. bare bytecode).
       if off + 88 > input.size then acc.reverse
       else if Decode.readU8 input off = 0xFF then
         let signer   := Decode.readU8 input (off + 1) ≠ 0
@@ -623,28 +541,18 @@ def clampCpiPrivileges (parsed : List ParsedAcct) (derivedPdas : List ByteArray)
     { p with isSigner   := isPda || (p.isSigner && origS),
              isWritable := p.isWritable && origW })
 
-/-- Compute the next state for one of the two CPI-call syscalls
-    (`sol_invoke_signed` / `sol_invoke_signed_c`). Non-recursive — the
-    recursive sub-VM invocation is supplied as the `runCallee` closure
-    by `executeFnCpiWithFuel`. Factored out so the per-instruction match
-    inside `executeFnCpiWithFuel` has compact arms (helps proofs that
-    case-split on the instruction without elaborating this whole body
-    in every Syscall arm). -/
+/-- Next state for a CPI-call syscall (`sol_invoke_signed{,_c}`).
+    Non-recursive — the sub-VM call is the `runCallee` closure supplied by
+    `executeFnCpiWithFuel`. Factored out to keep the per-instruction match
+    arms compact (helps proofs that case-split on the instruction). -/
 def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
     (sc : Syscall) (fuel' : Nat)
     (runCallee : ByteArray → Option (State × Mem × Nat)) : State :=
-  -- CPI v2: r1 is a *pointer* into caller memory at which
-  -- the Instruction descriptor lives. Two ABIs:
-  --
-  -- - `sol_invoke_signed` (Rust ABI from
-  --   `solana_program::invoke`): r1 → `&Instruction`. With
-  --   default Rust layout the high-alignment fields (Vec)
-  --   come first, so `program_id` sits at offset 48 (after
-  --   accounts:Vec=24B and data:Vec=24B). The 32-byte pubkey
-  --   is inline.
-  -- - `sol_invoke_signed_c` (C ABI): r1 → `SolInstruction`.
-  --   First field is `SolPubkey *program_id` (a u64 pointer
-  --   to the actual pubkey bytes); deref to get the 32B.
+  -- r1 → Instruction descriptor in caller memory. Two ABIs:
+  -- - `sol_invoke_signed` (Rust): r1 → `&Instruction`; Rust reorders the
+  --   Vec fields first, so `program_id` (inline 32B) sits at +48.
+  -- - `sol_invoke_signed_c` (C): r1 → `SolInstruction`; first field is a
+  --   `SolPubkey *program_id` ptr — deref for the 32B.
   let pubkeyAddr : Nat := match sc with
     | .sol_invoke_signed   => s.regs.r1 + 48      -- inline @ +48
     | .sol_invoke_signed_c =>                     -- pointer @ +0
@@ -653,27 +561,17 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
   let pid := (List.range 32).foldl
     (fun acc i => acc + (s.mem (pubkeyAddr + i) % 256) * 256^i) 0
   let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-  -- Account-info struct layout differs between the two CPI ABIs:
-  --   - `sol_invoke_signed` (Rust ABI): 48-byte `AccountInfo` with
-  --     `Rc<RefCell<&mut u64>>` for lamports and
-  --     `Rc<RefCell<&mut [u8]>>` for data. `parseAccountInfo` chases
-  --     the Rc/RefCell chain to reach the underlying bytes.
-  --   - `sol_invoke_signed_c` (C ABI): 56-byte `CpiAccount` with
-  --     direct `*const u64` / `*const u8` pointers and an inline
-  --     `data_len: u64`. Pinocchio + `solana-instruction-view`
-  --     callers use this. `parseCpiAccount` reads it directly.
-  -- Parsing the wrong layout silently produces garbage `lamports`,
-  -- `data`, and `is_signer` values — which is what caused #10
-  -- (Pinocchio's PDA-target `CreateAccount` saw `is_signer=false`
-  -- because the dispatcher read the CpiAccount's flag byte from
-  -- the wrong offset and aborted before promotion).
+  -- Account-info layout differs by ABI: Rust = 48B `AccountInfo` with
+  -- Rc/RefCell-chained lamports/data (`parseAccountInfo` chases it); C =
+  -- 56B `CpiAccount` with direct ptrs + inline data_len (`parseCpiAccount`).
+  -- Parsing the wrong layout yields garbage flags — the #10 bug
+  -- (CpiAccount flag byte read at the wrong offset → is_signer=false,
+  -- abort before promotion).
   let parsedAcctsRaw : List ParsedAcct :=
     match sc with
     | .sol_invoke_signed_c => parseCpiAccounts   s.mem s.regs.r2 accountCount
     | _                    => parseAccountInfos  s.mem s.regs.r2 accountCount
-  -- PDA signer-seed promotion: derive PDAs from r4/r5 using the
-  -- currently-running program's id (`s.progIdBytes`) and flip
-  -- is_signer=true on any parsed account whose key matches.
+  -- PDA signer-seed promotion (r4/r5 under `s.progIdBytes`).
   let derivedPdas : List ByteArray :=
     deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
   let parsedAccts : List ParsedAcct :=
@@ -711,9 +609,8 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
       lamportsRefAddr := p.lamportsRefAddr,
       ownerPtr := p.ownerPtr, dataPtr := p.dataPtr,
       dataLenRefAddr := p.dataLenRefAddr })
-  -- M6 invoke-depth limit: agave caps the instruction stack height at 5
-  -- (top level = height 1, so at most 4 nested CPIs); a fifth-level
-  -- invoke fails with `CallDepth` before dispatch. Counts builtins too.
+  -- M6 invoke-depth limit: agave caps stack height at 5 (top = 1, so ≤4
+  -- nested CPIs); the 5th-level invoke fails `CallDepth` before dispatch.
   if s.invokeDepth + 1 > 4 then
     { s with regs := s.regs.set .r0 1
              pc   := s.pc + 1
@@ -743,12 +640,10 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
                pc := s.pc + 1
                cuConsumed := s.cuConsumed + Cpi.cu }
     | some (subFinal, newMem, subFuelRemaining) =>
-      -- H5 total metering: `subFinal.cuConsumed` is now the callee's
-      -- TOTAL spend (per-step baselines charged by chargeCu inside the
-      -- callee's own loop + its syscall surcharges), so the caller
-      -- absorbs exactly `Cpi.cu + subFinal.cuConsumed`. The old
-      -- `+ (fuel' - subFuelRemaining)` step-count proxy would now
-      -- double-count the callee's baselines.
+      -- H5: `subFinal.cuConsumed` is the callee's TOTAL spend (its own
+      -- per-step baselines + syscall surcharges), so the caller absorbs
+      -- exactly `Cpi.cu + subFinal.cuConsumed`. The old step-count proxy
+      -- `+ (fuel' - subFuelRemaining)` would double-count those baselines.
       { s with regs       := s.regs.set .r0 (subFinal.exitCode.getD 1)
                mem        := newMem
                pc         := s.pc + 1
@@ -758,17 +653,14 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
                cuConsumed := s.cuConsumed + Cpi.cu
                                           + subFinal.cuConsumed }
 
-/-- The pre-invocation half of a CPI sub-VM launch (M1 / H2 / M2): parse the
+/-- Pre-invocation half of a CPI sub-VM launch (M1/H2/M2): parse the
     callee ELF (or fall back to raw text), fail closed on unresolvable
-    relocations / function-registry collisions / decode failure, then build the
-    callee's decoded instruction stream, its fresh sub-state `subS` (constant
-    entry regs, `loadInput` + section-loaded memory, `cuBudget := fuel'`,
-    `invokeDepth+1`, transaction-wide return-data inherited from the caller),
-    and the account slots. Extracted from `executeFnCpiWithFuel`'s `runCallee`
-    closure so the recursive sub-VM call stays the ONLY thing inline (keeping
-    termination structural on `fuel`) and this build is reasoned about by name
-    (the Stage-B boundedness proof, BoundedCpi.lean). Pure factoring — `do`
-    desugaring is identical to the original inline body. -/
+    relocations / registry collisions / decode failure, then build the
+    callee's instruction stream, fresh sub-state `subS`, and account slots.
+    Extracted from `runCallee` so the recursive sub-VM call stays the ONLY
+    thing inline (termination structural on `fuel`) and this build is
+    named for the Stage-B boundedness proof (BoundedCpi.lean). Pure
+    factoring — `do` desugaring identical to the old inline body. -/
 def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
     (parsedAcctsIn : List ParsedAcct) (ixDataIn : ByteArray)
     (calleeBytes : ByteArray) : Option (Array Insn × State × List AcctSlot) :=
@@ -781,11 +673,10 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
     let fnReg := Elf.buildFnRegistry calleeBytes h textSec.addr rawText
     some (textBytes, h, textSec, fnReg)
   do
-    -- M1 + H2: an ELF callee whose relocations cannot resolve their symbols
-    -- (agave: `UnknownSymbol`) or whose function registry has a key collision
-    -- (agave: `SymbolHashCollision`) fails the CPI load OUTRIGHT — it must NOT
-    -- fall through to the raw-text branch, which would reinterpret the ELF
-    -- bytes as code.
+    -- M1 + H2: an ELF callee with unresolvable relocations (agave
+    -- `UnknownSymbol`) or a registry key collision (`SymbolHashCollision`)
+    -- fails the CPI load OUTRIGHT — must NOT fall through to the raw-text
+    -- branch, which would reinterpret ELF bytes as code.
     if let some h := Elf.parseHeader calleeBytes then do
       guard (Elf.relocationsResolvable calleeBytes h)
       if let some textSec := Elf.findSection calleeBytes h Elf.textName then
@@ -854,16 +745,14 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
         invokeDepth := s.invokeDepth + 1 }
     some (calleeInsns, subS, slots)
 
-/-- The post-invocation half of a CPI sub-VM launch: M6 read-only re-verify
-    (a non-writable account modified by the callee fails the whole call), M6r
+/-- Post-invocation half of a CPI sub-VM launch: M6 read-only re-verify (a
+    non-writable account the callee modified fails the call), M6r
     realloc-bound check (a writable account grown past
-    `original_data_len + MAX_PERMITTED_DATA_INCREASE` fails), and the
-    writable-account write-back (harvest the callee's POST-CPI `data_len` at
-    block offset 80, dual-write both caller length slots). A realloc or
-    read-only violation rolls every account back (`callerMem`) and surfaces the
-    typed fault in the callee's exitCode; the honest path commits
-    `newCallerMem`. Extracted from `runCallee` (was inline, reading the
-    caller's `s.mem` — now the `callerMem` parameter). -/
+    `original_data_len + MAX_PERMITTED_DATA_INCREASE` fails), and
+    writable-account write-back (harvest POST-CPI `data_len` at block
+    offset 80, dual-write both caller length slots). A violation rolls
+    every account back (`callerMem`) + surfaces the typed fault in
+    exitCode; the honest path commits `newCallerMem`. -/
 def commitCallee (callerMem : Mem) (slots : List AcctSlot) (subFinal : State)
     (subFuelRemaining : Nat) : State × Mem × Nat :=
   let roViolated : Bool := slots.any (fun slot =>
@@ -925,17 +814,12 @@ def commitCallee (callerMem : Mem) (slots : List AcctSlot) (subFinal : State)
   else
     (subFinal, newCallerMem, subFuelRemaining)
 
-/-- CU-accounting variant of `executeFnCpi`. Returns the final state
-    plus the remaining fuel — `cuConsumed = initial_fuel - returned_fuel`.
-
-    Each step (including a CPI invocation) consumes one unit of the
-    caller's fuel. CPI dispatch is delegated to `cpiCallNextState` for
-    proof-friendliness; this function is responsible only for fuel
-    management, fetch, and the per-instruction match.
-
-    The early-exit arms (`some _` already-exited, `ERR_INVALID_PC`
-    on decode failure) preserve the remaining fuel at the moment of
-    exit, so the consumed count correctly excludes the no-op tail. -/
+/-- CU-accounting variant of `executeFnCpi`, returning final state + fuel
+    remaining (`cuConsumed = initial - returned`). Each step (incl. a CPI)
+    burns one caller fuel unit; CPI dispatch is delegated to
+    `cpiCallNextState`, so this handles only fuel/fetch/the instruction
+    match. The early-exit arms preserve fuel at exit, so the consumed
+    count excludes the no-op tail. -/
 def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
     (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State × Nat :=
   match fuel with
@@ -944,22 +828,17 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
     match s.exitCode with
     | some _ => (s, fuel)
     | none =>
-      -- H5 budget halt — mirrors `executeFn` exactly so the
-      -- RunnerBridge equality stays a structural induction. An
-      -- over-budget running state halts with `exitCode = none`
-      -- (surfaced as OutOfBudget on the wire).
+      -- H5 budget halt — mirrors `executeFn` exactly so the RunnerBridge
+      -- equality stays a structural induction. Over-budget halts with
+      -- `exitCode = none` (OutOfBudget on the wire).
       if s.cuConsumed > s.cuBudget then (s, fuel)
       else
       match fetch s.pc with
       | none => ({ s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }, fuel')
       | some insn =>
-        -- The runCallee closure captures `s`, `parsedAccts`/`pidBytes`
-        -- (recomputed inside cpiCallNextState — see comment there), and
-        -- the recursive `executeFnCpiWithFuel` invocation at `fuel'`
-        -- (strictly smaller, so termination on `fuel` still holds).
-        -- `runCallee` keeps ONLY the recursive sub-VM invocation inline (so
-        -- termination stays structural on `fuel`); the pre-build and the
-        -- post-commit are the top-level `buildCalleeVM` / `commitCallee`.
+        -- `runCallee` keeps ONLY the recursive sub-VM invocation inline (at
+        -- `fuel'`, strictly smaller → termination structural on `fuel`);
+        -- pre-build/post-commit are `buildCalleeVM`/`commitCallee`.
         let runCallee (pidBytesIn : ByteArray) (parsedAcctsIn : List ParsedAcct)
             (ixDataIn : ByteArray) (calleeBytes : ByteArray)
             : Option (State × Mem × Nat) := do
@@ -974,14 +853,12 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             let pubkeyAddr := s.regs.r1 + 48
             let pidBytes := readMemBytes s.mem pubkeyAddr 32
             let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            -- Promote seed-derived PDAs to is_signer=true so the
-            -- callee's sub-input matches what cpiCallNextState
-            -- internally computes for Native/aliasing checks.
+            -- Promote seed-derived PDAs so the callee's sub-input matches
+            -- what cpiCallNextState computes for Native/aliasing checks.
             let parsedAcctsRaw := parseAccountInfos s.mem s.regs.r2 accountCount
             let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
             let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
-            -- Rust ABI Instruction: data:Vec at offset 24, layout
-            -- { ptr@+24, cap@+32, len@+40 }.
+            -- Rust ABI Instruction: data:Vec { ptr@+24, cap@+32, len@+40 }.
             let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
             let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 40)
             let ixData    := readMemBytes s.mem ixDataPtr ixDataLen
@@ -991,11 +868,9 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             let pubkeyAddr := Memory.readU64 s.mem s.regs.r1
             let pidBytes := readMemBytes s.mem pubkeyAddr 32
             let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            -- C ABI passes `CpiAccount` structs (56-byte stride, direct
-            -- pointers, inline data_len) instead of `AccountInfo`.
-            -- Must use `parseCpiAccounts`, not `parseAccountInfos`,
-            -- or `is_signer` lands at the wrong offset and the PDA
-            -- promotion below picks up the wrong account (issue #10).
+            -- C ABI: `CpiAccount` (56B stride, direct ptrs, inline data_len).
+            -- Must use `parseCpiAccounts`, not `parseAccountInfos`, or
+            -- is_signer lands at the wrong offset → wrong PDA promotion (#10).
             let parsedAcctsRaw := parseCpiAccounts s.mem s.regs.r2 accountCount
             let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
             let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
@@ -1013,19 +888,17 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
           else
             executeFnCpiWithFuel registry fetch (chargeCu s') fuel'
 
-/-- Original signature, preserved for existing callers (demos +
-    `Runner.run` / `Runner.runElf`). A thin wrapper around
-    `executeFnCpiWithFuel` that discards the fuel-remaining
-    component. -/
+/-- Thin wrapper around `executeFnCpiWithFuel` discarding the fuel
+    remainder; preserved for existing callers (demos + `run`/`runElf`). -/
 def executeFnCpi (registry : Nat → Option ByteArray)
     (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
   (executeFnCpiWithFuel registry fetch s fuel).1
 
 /-! ## Entrypoints -/
 
-/-- Initial machine state for `Runner.run`. Extracted from the inline
-    let-binding so end-to-end soundness theorems (`RunnerBridge.lean`)
-    can refer to it by name and reason about its fields. -/
+/-- Initial machine state for `Runner.run`. Named (not inline) so
+    end-to-end soundness theorems (`RunnerBridge.lean`) can reason about
+    its fields. -/
 def initialState (cfg : RunConfig) : State :=
   { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
     mem         := loadInput emptyMem cfg.input
@@ -1050,16 +923,12 @@ def initialState (cfg : RunConfig) : State :=
 @[simp] theorem initialState_cuBudget (cfg : RunConfig) :
     (initialState cfg).cuBudget = cfg.cuBudget := rfl
 
-/-- Decode `bytes` and run for up to `cfg.cuBudget` compute units. Returns
-    the final machine state, or `none` if decoding fails.
-
-    Inspect `state.exitCode`:
-    - `none` → out of CU budget
-    - `some Memory.ERR_INVALID_PC` → invalid PC (fell off program)
-    - `some n` → clean exit with return code `n` -/
+/-- Decode `bytes` and run for up to `cfg.cuBudget` CU. `none` on decode
+    failure. `state.exitCode`: `none` = out of budget,
+    `some ERR_INVALID_PC` = fell off program, `some n` = clean exit. -/
 def run (bytes : ByteArray) (cfg : RunConfig := {}) : Option State := do
-  -- Raw text (no ELF wrapper): registry = entrypoint at slot 0,
-  -- mirroring solana-sbpf's `new_from_text_bytes`.
+  -- Raw text (no ELF): registry = entrypoint at slot 0, mirroring
+  -- solana-sbpf's `new_from_text_bytes`.
   let insns ← Decode.decodeProgram bytes [(Elf.entrypointHash, 0)]
   return executeFnCpi cfg.programRegistry (fetchFromArray insns) (initialState cfg) cfg.cuBudget
 
@@ -1072,13 +941,10 @@ def runForExit (bytes : ByteArray) (cfg : RunConfig := {}) : Option Nat :=
 Real Solana programs ship as ELF64 binaries. These entrypoints parse the
 ELF wrapper, extract the `.text` bytecode, and feed it to `run`. -/
 
-/-- Decode and run an sBPF ELF64 binary. Returns the final state, or
-    `none` if the ELF is malformed or contains no `.text` section.
-
-    `.rodata` (if present) is mapped into memory at its `sh_addr` so that
-    `lddw`/`ldx` pointer dereferences against rodata addresses resolve
-    correctly. This matches the universal pattern across Anchor,
-    Pinocchio, native-Rust, and Quasar binaries. -/
+/-- Decode and run an sBPF ELF64 binary. `none` if malformed or no `.text`.
+    `.rodata` (if present) is mapped at its `sh_addr` so `lddw`/`ldx`
+    derefs against rodata resolve — the universal Anchor/Pinocchio/
+    native-Rust/Quasar pattern. -/
 def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
   match Elf.parseHeader elfBytes with
   | none => none
@@ -1086,29 +952,24 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
     match Elf.findSection elfBytes header Elf.textName with
     | none => none
     | some textSec =>
-      -- M1: fail closed when a relocation references a missing `.dynsym`
-      -- or an out-of-range symbol index (agave: `UnknownSymbol` at load,
-      -- solana-sbpf elf.rs:969-973). `applyRelocations` would otherwise
-      -- 0-fill the bad symbol read and patch a wrong address.
+      -- M1: fail closed on a relocation to a missing `.dynsym`/out-of-range
+      -- symbol (agave `UnknownSymbol` at load); else `applyRelocations`
+      -- 0-fills the bad read and patches a wrong address.
       if !Elf.relocationsResolvable elfBytes header then none else
       let rawText   := Elf.extractSection elfBytes textSec
-      -- Patch R_BPF_64_64 relocations (lddw → .rodata-relative pointers).
-      -- A no-op when the ELF has no .dynsym/.rel.dyn sections.
+      -- Patch R_BPF_64_64 (lddw → .rodata-relative); no-op without .rel.dyn.
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
       let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
       -- H2 residual: a registry key collision is agave's load-time
-      -- `SymbolHashCollision` — fail closed instead of silently resolving
-      -- by first-match.
+      -- `SymbolHashCollision` — fail closed, not first-match.
       if !Elf.registryCollisionFree fnReg then none else
       match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
-        -- Load the (relocated) .text into the program region so an `ldx`
-        -- into it reads the real bytecode, not a fabricated 0 (M2). Real
-        -- programs read .text only for adjacent constants/jump tables;
-        -- valid fixtures are unaffected (they don't read .text), and this
-        -- now matches agave, which maps .text into the program region.
+        -- M2: load (relocated) .text into the program region so an `ldx`
+        -- into it reads real bytecode, not a fabricated 0 (matches agave).
+        -- Valid fixtures don't read .text, so are unaffected.
         let memText := loadBytesAt baseMem textBytes (Elf.relocateSecAddr textSec.addr)
         let mem₁ := match Elf.findSection elfBytes header Elf.rodataName with
           | some sec => loadBytesAt memText (Elf.extractSection elfBytes sec)
@@ -1120,9 +981,8 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
             let relocated := Elf.applyDataRelocations elfBytes header sec.addr raw
             loadBytesAt mem₁ relocated (Elf.relocateSecAddr sec.addr)
           | none => mem₁
-        -- Start at the ELF entrypoint (L8): map `e_entry` to a logical PC
-        -- via the slot map (mirrors `runElfWithFuel`). For fixtures whose
-        -- entry is at slot 0 this is exactly the old `pc := 0`.
+        -- L8: map `e_entry` to a logical PC via the slot map. Slot-0 entry
+        -- fixtures reduce to the old `pc := 0`.
         let entryPc :=
           let slotMap := Decode.buildSlotMap textBytes
           let byteOff := if header.entry ≥ textSec.addr
@@ -1144,20 +1004,13 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
 def runElfForExit (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option Nat :=
   (runElf elfBytes cfg).bind (·.exitCode)
 
-/-- ELF entrypoint that also surfaces remaining fuel, for CU accounting
-    in downstream consumers (e.g. the Rust harness in `qedsvm-rs`).
-
-    Returns `none` on ELF parse / decode failure, `some (state, remaining)`
-    otherwise. The caller computes `cuConsumed = cfg.cuBudget - remaining`.
-    Note: on out-of-budget, `state.exitCode = none` and `remaining = 0`.
-    On clean exit, `remaining` is whatever fuel was unspent at the
-    moment `exit` ran.
-
-    Honors the ELF's `e_entry` field: execution starts at the
-    instruction index `(e_entry - .text.sh_addr) / 8`. For hand-
-    assembled fixtures with `e_entry = 0` we start at PC=0. For real
-    `cargo-build-sbf` output we start wherever the linker placed the
-    Rust `entrypoint` symbol — typically not at the front of `.text`. -/
+/-- ELF entrypoint also surfacing remaining fuel, for CU accounting in
+    downstream consumers (the `qedsvm-rs` harness). `none` on parse/decode
+    failure, else `some (state, remaining)` with
+    `cuConsumed = cfg.cuBudget - remaining`. Out-of-budget: exitCode none,
+    remaining 0. Honors `e_entry`: starts at `(e_entry - .text.sh_addr)/8`
+    (0 for hand-assembled fixtures; the linker's `entrypoint` slot for real
+    `cargo-build-sbf` output). -/
 def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
     Option (State × Nat) :=
   match Elf.parseHeader elfBytes with
@@ -1171,45 +1024,35 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
       let rawText   := Elf.extractSection elfBytes textSec
       let textBytes := Elf.applyRelocations elfBytes header textSec.addr rawText
       let fnReg := Elf.buildFnRegistry elfBytes header textSec.addr rawText
-      -- H2 residual: a registry key collision is agave's load-time
-      -- `SymbolHashCollision` — fail closed instead of silently resolving
-      -- by first-match.
+      -- H2 residual: registry key collision = agave `SymbolHashCollision`,
+      -- fail closed not first-match.
       if !Elf.registryCollisionFree fnReg then none else
       match Decode.decodeProgram textBytes fnReg with
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
-        -- Load the (relocated) .text into the program region so an `ldx`
-        -- into it reads the real bytecode, not a fabricated 0 (M2). Real
-        -- programs read .text only for adjacent constants/jump tables;
-        -- valid fixtures are unaffected (they don't read .text), and this
-        -- now matches agave, which maps .text into the program region.
+        -- M2: load (relocated) .text into the program region so an `ldx`
+        -- into it reads real bytecode, not a fabricated 0 (matches agave).
         let memText := loadBytesAt baseMem textBytes (Elf.relocateSecAddr textSec.addr)
         let mem₁ := match Elf.findSection elfBytes header Elf.rodataName with
           | some sec => loadBytesAt memText (Elf.extractSection elfBytes sec)
               (Elf.relocateSecAddr sec.addr)
           | none => memText
-        -- Map `.data.rel.ro` (read-only-after-relocation) if present.
-        -- This is where the linker parks static structures whose fields
-        -- include pointers — jump tables, `&'static` references, vtables.
-        -- Each pointer field carries a RELATIVE reloc; applying them
-        -- moves the address from the upper 32 bits of the u64 word to
-        -- the lower 32. Programs with enum-dispatch (SPL Token, Anchor,
-        -- Pinocchio-style match arms) crash without this.
+        -- Map `.data.rel.ro` if present: the linker parks pointer-bearing
+        -- static structures here (jump tables, `&'static`, vtables). Each
+        -- field carries a RELATIVE reloc moving the address from the upper
+        -- to the lower 32 bits. Enum-dispatch programs (SPL Token, Anchor,
+        -- Pinocchio match arms) crash without this.
         let mem := match Elf.findSection elfBytes header Elf.dataRelRoName with
           | some sec =>
             let raw       := Elf.extractSection elfBytes sec
             let relocated := Elf.applyDataRelocations elfBytes header sec.addr raw
             loadBytesAt mem₁ relocated (Elf.relocateSecAddr sec.addr)
           | none => mem₁
-        -- Convert `e_entry` (virtual address) to logical PC. The
-        -- byte offset within `.text` is `e_entry - textSec.addr`;
-        -- divided by 8 gives the *byte-slot index*. Each `lddw`
-        -- consumes two byte slots but is one logical instruction, so
-        -- we must consult `buildSlotMap` to translate slot → logical
-        -- PC. (Programs with no lddw before `e_entry` happen to have
-        -- slotMap[i] = i, which is why earlier fixtures worked
-        -- without this step.)
+        -- `e_entry` (VA) → logical PC: byte offset `e_entry - textSec.addr`
+        -- /8 is the byte-slot index, but a `lddw` is 2 slots / 1 logical
+        -- insn, so `buildSlotMap` translates slot → PC. (No-lddw-before-
+        -- entry programs have slotMap[i]=i, hence earlier fixtures worked.)
         let slotMap := Decode.buildSlotMap textBytes
         let entryByteOff := if header.entry ≥ textSec.addr
                            then header.entry - textSec.addr

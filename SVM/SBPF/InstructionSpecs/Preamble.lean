@@ -1,15 +1,10 @@
 /-
-  Per-instruction separation-logic Hoare triples for sBPF.
+  Per-instruction separation-logic Hoare triples for sBPF + shared helpers.
 
   Each spec is `cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn) P Q`:
-  one compute unit per instruction (in this layer — true CU pricing will
-  scale this in a later phase), code requirement pinning the instruction at
-  `pc`, and a separation-logic pre/post over the resources the instruction
-  reads and writes.
-
-  This file currently proves only the simplest cases — pure-ALU 64-bit moves
-  — from first principles, as a methodology proof-of-concept. The pattern
-  generalizes via to-be-built `generic_*_spec` helpers (Phase A / B).
+  one CU per instruction (this layer; true CU pricing scales later), a CodeReq
+  pinning the instruction at `pc`, and an SL pre/post over the read/written
+  resources.
 -/
 
 import SVM.SBPF.CPSSpec
@@ -18,9 +13,7 @@ namespace SVM.SBPF
 
 open Memory
 
-/-! ## Helpers shared across syscall specs.
-
-Hoisted to the top of the file so they're in scope for every spec below. -/
+/-! ## Helpers shared across syscall specs -/
 
 /-- `ByteArray` of `N` zero bytes. -/
 def zerosByteArray (N : Nat) : ByteArray :=
@@ -37,11 +30,10 @@ theorem zerosByteArray_get! (N i : Nat) (hi : i < N) :
   rw [getElem!_pos _ _ (by rw [Array.size_replicate]; exact hi)]
   exact Array.getElem_replicate _
 
-/-- Bridge lemma: `Mem.read` on a coerced bare `Nat → Nat` function
-    equals the function applied. The closure-style memory writes in
-    `Sysvar.zeroFillR1` / `ReturnData.execGet` produce a `Mem` of the
-    form `↑(fun a => ...)`, so reads fall through `default` (the
-    HashMap overlay is empty). -/
+/-- `Mem.read` on a coerced bare `Nat → Nat` equals the function applied:
+    closure-style writes (`Sysvar.zeroFillR1` / `ReturnData.execGet`) make a
+    `Mem` of form `↑(fun a => ...)` whose reads fall through `default` (empty
+    overlay). -/
 theorem Mem_read_default (f : Nat → Nat) (a : Nat) :
     ({ default := f } : Memory.Mem).read a = f a := by
   unfold Memory.Mem.read

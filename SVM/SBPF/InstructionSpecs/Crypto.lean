@@ -6,28 +6,23 @@ open Memory
 
 /-! ## Tier-1 crypto syscall bookkeeping triples
 
-The trust statements for the 10 FFI-bridged crypto syscalls live in
-`SVM/SBPF/CryptoTrust.lean` — one axiom per syscall, each pinning
-down the output size (or boolean totality) of the opaque `@[extern]`
-function. Consumer-facing Hoare triples mostly need richer SL
-infrastructure than this stale worktree provides (the PDA n=0 proof
-template is ~400 lines of byte-region disjointness reasoning, which
-each crypto syscall would mirror). See `CryptoTrust.lean`'s closing
-docstring and `docs/deferred-arch-lifts.md` §5 for the deferral
-rationale.
+Trust statements for the 10 FFI-bridged crypto syscalls live in
+`SVM/SBPF/CryptoTrust.lean` (one axiom per syscall, pinning output size
+or boolean totality of the opaque `@[extern]` function). Consumer-facing
+Hoare triples mostly need richer SL infrastructure than this worktree
+provides; see `CryptoTrust.lean`'s closing docstring and
+`docs/deferred-arch-lifts.md` §5 for the deferral rationale.
 
-The one crypto syscall that fits the existing `writes_r0_only`
-helper template is `sol_curve_validate_point`: its body
-(`Curve25519.execValidate`) is a pure regs update — `r0 := errCode`
-— with `s.mem` untouched. Below: a generalized `r0`-only helper
-that pins `r1` to a known value (so the output errCode is computable
-at proof time), plus the unsupported-curveId triple. -/
+`sol_curve_validate_point` is the one that fits `writes_r0_only`: its body
+(`Curve25519.execValidate`) is a pure regs update (`r0 := errCode`,
+`s.mem` untouched). Below: an `r0`-only helper that pins `r1` (so the
+output errCode is computable at proof time), plus the unsupported-curveId
+triple. -/
 
-/-- `writes_r0_only` extended with a single extra pinned register
-`r ↦ᵣ rV` in the precondition. Postcondition keeps `r ↦ᵣ rV` and
-updates `r0 := vNew`. Used by syscalls whose r0 output depends on
-one fixed input register's value (e.g. `sol_curve_validate_point`'s
-errCode dispatch on the curve_id in r1). -/
+/-- `writes_r0_only` plus a pinned register `r ↦ᵣ rV` (kept in the post);
+updates `r0 := vNew`. For syscalls whose r0 output depends on one fixed
+input register (e.g. `sol_curve_validate_point`'s errCode dispatch on the
+curve_id in r1). -/
 theorem cuTripleWithin_syscall_writes_r0_only_pinned
     (sc : Syscall) (r : Reg) (rV vNew : Nat) (pc : Nat) (nCu : Nat)
     (hr_ne : r ≠ .r0)
@@ -37,8 +32,7 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
         (step (.call sc) s).mem = s.mem)
     (h_step_pc   : ∀ s : State, (step (.call sc) s).pc = s.pc + 1)
     -- Pinned on `r = rV` (H4/M9): syscalls that fail closed for *some*
-    -- inputs (e.g. `sol_curve_multiscalar_mul` with n > 512) still
-    -- preserve `exitCode = none` on the pinned input the spec is about.
+    -- inputs still preserve `exitCode = none` on the pinned input.
     (h_step_exit : ∀ s : State, s.regs.get r = rV → s.exitCode = none →
         (step (.call sc) s).exitCode = none)
     (h_step_returnData :
@@ -52,7 +46,6 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
       ((.r0 ↦ᵣ r0Old) ** (r ↦ᵣ rV))
       ((.r0 ↦ᵣ vNew) ** (r ↦ᵣ rV)) := by
   intro r0Old R hRfree fetch hcr s hPR hpc hex hbud
-  -- Destructure ((.r0 ↦ᵣ r0Old) ** (r ↦ᵣ rV)) ** R.
   obtain ⟨hp, hcompat, hP, hR, hd_PR, hu_PR, hPsat, hRsat⟩ := hPR
   obtain ⟨h_r0, h_r, hd_r0_r, hu_r0_r, h_r0_pred, h_r_pred⟩ := hPsat
   rw [h_r0_pred] at hu_r0_r hd_r0_r
@@ -62,7 +55,6 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
   have hcm_mem := hcompat.mem
   have hd_PR_regs := hd_PR.regs
   have hd_PR_mem := hd_PR.mem
-  -- hP.regs at r0 and r.
   have hP_regs_r0 : hP.regs .r0 = some r0Old := by
     rw [← hu_r0_r]; exact PartialState.union_regs_of_left_some
       PartialState.singletonReg_regs_self
@@ -85,13 +77,11 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     rw [← hu_r0_r,
         PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
     exact PartialState.singletonReg_pc
-  -- Climb to hp / s.
   have hp_regs_r0 : hp.regs .r0 = some r0Old := by
     rw [← hu_PR]; exact PartialState.union_regs_of_left_some hP_regs_r0
   have hp_regs_r : hp.regs r = some rV := by
     rw [← hu_PR]; exact PartialState.union_regs_of_left_some hP_regs_r
   have hs_regs_r : s.regs.get r = rV := hcr_regs r rV hp_regs_r
-  -- R doesn't own r0 or r.
   have hR_no_r0 : hR.regs .r0 = none := by
     rcases hd_PR_regs .r0 with hl | hr_'
     · rw [hP_regs_r0] at hl; nomatch hl
@@ -101,7 +91,6 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     · rw [hP_regs_r] at hl; nomatch hl
     · exact hr_'
   have hR_no_pc : hR.pc = none := hRfree _ hRsat
-  -- Execute one step.
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
@@ -120,11 +109,9 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     rw [hstep_eq]
     show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := h_step_cu s; omega
-  -- Assemble Q ** R.
   let h_r0_new : PartialState := PartialState.singletonReg .r0 vNew
   let h_r_new : PartialState := PartialState.singletonReg r rV
   let h_P_new : PartialState := h_r0_new.union h_r_new
-  -- Disjointness h_r0_new ⊥ h_r_new (r0 ≠ r).
   have hd_r0_r_new : h_r0_new.Disjoint h_r_new := by
     refine ⟨fun r' => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases hr' : r' = .r0
@@ -134,7 +121,6 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
       · left; exact PartialState.singletonReg_regs_other hr'
     · left; exact PartialState.singletonReg_mem a
     · left; exact PartialState.singletonReg_pc
-  -- h_P_new owns regs.
   have h_P_new_regs_r0 : h_P_new.regs .r0 = some vNew :=
     PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
   have h_P_new_regs_r : h_P_new.regs r = some rV := by
@@ -156,7 +142,6 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
     show ((PartialState.singletonReg .r0 vNew).union h_r_new).pc = none
     rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
     exact PartialState.singletonReg_pc
-  -- Outer disjointness h_P_new ⊥ hR.
   have hd_PnewR : h_P_new.Disjoint hR := by
     refine ⟨fun r' => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r' = .r0
@@ -171,9 +156,7 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
   · exact hexec_exit
   · exact hexec_cu
   · refine ⟨h_P_new.union hR, ?_, h_P_new, hR, hd_PnewR, rfl, ?_, hRsat⟩
-    -- Compatibility.
     · refine ⟨?_, ?_, ?_, ?_, ?_⟩
-      -- regs
       · intro r' v hvr
         rw [hexec_regs]
         by_cases h0 : r' = .r0
@@ -197,7 +180,6 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
                   PartialState.union_regs_of_left_none h_P_old_none]
               exact hvr
             exact hcr_regs r' v hp_eq
-      -- mem
       · intro a v hva
         rw [PartialState.union_mem_of_left_none (h_P_new_mem_none a)] at hva
         rw [hexec_mem]
@@ -206,7 +188,6 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
           rw [← hu_PR, PartialState.union_mem_of_left_none h_P_old_none]
           exact hva
         exact hcm_mem a v hp_eq
-      -- pc
       · intro v hvp
         rw [PartialState.union_pc_of_left_none h_P_new_pc_none] at hvp
         rw [hR_no_pc] at hvp
@@ -235,40 +216,37 @@ theorem cuTripleWithin_syscall_writes_r0_only_pinned
           rw [hstep_eq]; exact h_step_callStack s
         rw [hexec_cs]
         exact hcompat.callStack cs hp_cs
-    -- Witness for Q.
     · refine ⟨h_r0_new, h_r_new, hd_r0_r_new, rfl, rfl, rfl⟩
 
 /-! ## `sol_curve_validate_point` (unsupported curve_id) — fails closed
 
 For an unsupported curve_id (≠ EDWARDS=0, ≠ RISTRETTO=1) `execValidate`
-now aborts with `ERR_INVALID_ATTRIBUTE`, matching agave when
-`abort_on_invalid_curve` is active (it is, under `FeatureSet::all_enabled`
-— agave-syscalls lib.rs:999). The former "writes r0 := 2" triple was
-removed: it was provable over a behaviour the chain rejects (M7). A
-`cuTripleAbortsWithin` spec for this arm can be added on demand by
-mirroring `call_abort_aborts_spec`. -/
+aborts with `ERR_INVALID_ATTRIBUTE`, matching agave when
+`abort_on_invalid_curve` is active (it is, under `FeatureSet::all_enabled`,
+agave-syscalls lib.rs:999). The former "writes r0 := 2" triple was removed:
+it was provable over a behaviour the chain rejects (M7). A
+`cuTripleAbortsWithin` spec can be added on demand by mirroring
+`call_abort_aborts_spec`. -/
 
 /-! ## H6 — crypto short-circuit bookkeeping triples retired
 
-The four short-circuit bookkeeping triples that used to live here
+Four short-circuit triples that used to live here
 (`call_sol_secp256k1_recover_invalid_recid_spec`,
 `call_sol_curve_multiscalar_mul_zero_n_spec`,
 `call_sol_curve_decompress_unsupported_spec`,
 `call_sol_curve_pairing_map_unsupported_spec`) pinned the no-FFI error
 paths (recovery_id > 3, n = 0, unsupported BLS curve_id) to
-`r0 := errCode, mem unchanged`. Under H6 those paths now sit behind the
-syscall's input/output region guards (`State.guardRead` / `guardWrite`),
-so the unconditional "mem unchanged" claim no longer holds for an
-out-of-region buffer — agave traps there too. The triples were
-UNCONSUMED (cited only by name in `CryptoTrust.lean`'s prose, never
-composed in a proof), so rather than thread region requirements through
-the old PartialState proofs they are retired in favour of the
-model-side fault-direction lemmas `*_faults_oob` in
-`SVM/Syscalls/{Curve25519,Bls12_381,AltBn128,BigModExp,Secp256k1}.lean`,
-which characterize the honest H6 behaviour (out-of-region access =>
-typed `accessViolation`). The generic `writes_r0_only_pinned` helper
-above is kept (a valid r0-only template for any future unguarded
-syscall). See docs/SOUNDNESS_AUDIT_* (H6).
+`r0 := errCode, mem unchanged`. Under H6 those paths sit behind the
+syscall's region guards (`State.guardRead`/`guardWrite`), so "mem unchanged"
+no longer holds for an out-of-region buffer — agave traps there too. The
+triples were UNCONSUMED (cited only by name in `CryptoTrust.lean`'s prose,
+never composed), so rather than thread region requirements through the old
+PartialState proofs they are retired in favour of the model-side
+`*_faults_oob` lemmas in
+`SVM/Syscalls/{Curve25519,Bls12_381,AltBn128,BigModExp,Secp256k1}.lean`
+(out-of-region access => typed `accessViolation`). The generic
+`writes_r0_only_pinned` helper above is kept for any future unguarded
+syscall. See docs/SOUNDNESS_AUDIT_* (H6).
 -/
 
 end SVM.SBPF

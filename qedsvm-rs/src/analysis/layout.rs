@@ -1,18 +1,7 @@
 //! Codama account-data-struct → byte layout (issue #41, Phase 2).
-//!
-//! Walks a Codama account's field list, computing each field's byte
-//! offset and size from its type node, so the refinement codegen can
-//! derive the account layout (which `account_agg` instantiates) from the
-//! IDL instead of hardcoding offsets like `+64`/`+36`. The field KIND
-//! maps onto the `FieldVal` codec: pubkey → `.pubkey`, u64 → `.u64`,
-//! u8/bool → `.byte`, everything else (options, enums, arrays, wide
-//! scalars) → opaque `.blob` bytes folded into the account's `rest`
-//! region.
-//!
-//! Previously qedlift-only; relocated to the shared substrate so
-//! qedrecover can surface field names in its idioms too (the issue's
-//! "tool-specific but mislocated" row). Pure parsing — no soundness
-//! surface (trusted-input front-end; `docs/TCB.md` §5).
+//! IDL-derived field offsets/kinds feed `account_agg` instantiation in refinement codegen.
+//! Relocated from qedlift-only to shared substrate so qedrecover can consume field names too.
+//! Pure parsing — trusted-input front-end (`docs/TCB.md` §5).
 
 use std::collections::HashMap;
 
@@ -28,17 +17,17 @@ pub enum FieldKind {
 pub struct AccountField {
     pub name:   String,
     pub offset: usize,
-    pub kind:   FieldKind, // FieldVal classification, consumed by the vault codegen
+    pub kind:   FieldKind,
 }
 
 #[derive(Debug, Clone)]
 pub struct AccountLayout {
-    pub name:   String, // metadata; offsets/size are what's consumed
+    pub name:   String,
     pub fields: Vec<AccountField>,
     pub size:   usize,
 }
 
-/// Byte width of a Codama `numberTypeNode` format.
+/// Byte width of a Codama `numberTypeNode` format string.
 fn codama_number_size(fmt: &str) -> Option<usize> {
     match fmt {
         "u8" | "i8"     => Some(1),
@@ -50,9 +39,7 @@ fn codama_number_size(fmt: &str) -> Option<usize> {
     }
 }
 
-/// Byte size of a Codama type node. `defined` resolves
-/// `definedTypeLinkNode`s (e.g. the `accountState` enum). Returns `None`
-/// for variable-size or unsupported nodes.
+/// Byte size of a Codama type node. Resolves `definedTypeLinkNode`s via `defined`. Returns `None` for variable-size or unsupported nodes.
 fn codama_type_size(
     ty: &serde_json::Value,
     defined: &HashMap<String, serde_json::Value>,
@@ -72,7 +59,7 @@ fn codama_type_size(
             .and_then(|s| codama_type_size(s, defined)).or(Some(1)),
         "arrayTypeNode" => {
             let item = codama_type_size(ty.get("item")?, defined)?;
-            // fixedCountNode { value: N } (older codama uses `count`).
+            // `fixedCountNode { value: N }` — older Codama uses `count` key.
             let count = ty.get("count")?;
             let n = count.get("value").or_else(|| count.get("count"))?.as_u64()? as usize;
             Some(item * n)
@@ -86,7 +73,7 @@ fn codama_type_size(
     }
 }
 
-/// Classify a field's type node into a codec `FieldKind`.
+/// Map a Codama type node to its codec `FieldKind`.
 fn codama_field_kind(
     ty: &serde_json::Value,
     defined: &HashMap<String, serde_json::Value>,
@@ -101,9 +88,7 @@ fn codama_field_kind(
     })
 }
 
-/// Parse a Codama account-data struct into a byte layout. `name` is the
-/// account node name (e.g. "token", "mint"). Accepts either a full
-/// Codama root (`{program: {...}}`) or a bare `program` object.
+/// Parse a Codama account-data struct into a byte layout. Accepts a full Codama root or bare `program` object.
 pub fn parse_account_layout(
     root: &serde_json::Value,
     name: &str,
@@ -156,7 +141,7 @@ mod tests {
         assert_eq!((by("mint").offset,   by("mint").kind.clone()),   (0,  FieldKind::Pubkey));
         assert_eq!((by("owner").offset,  by("owner").kind.clone()),  (32, FieldKind::Pubkey));
         assert_eq!((by("amount").offset, by("amount").kind.clone()), (64, FieldKind::U64));
-        // delegate (option<pubkey>) begins the opaque rest region at 72.
+        // delegate (option<pubkey>) starts the opaque rest region at 72.
         assert_eq!(by("delegate").offset, 72);
     }
 

@@ -1,23 +1,14 @@
 /-
-  Abstract Solana state for spec-to-asm refinement.
+  Abstract Solana state for spec-to-asm refinement (Direction-A MIR, qedgen #66).
 
-  Pilot scope (TokenTransfer-only): the abstract heap is a partial map
-  `Pubkey → Option TokenAccount`. No signers, no instruction data, no
-  return data, no CU — those land when the second intrinsic
-  (`RequireSigner`, `Cpi`, ...) demands them, not preemptively.
+  The ABSTRACT side: reasoning over decoded account records, not byte ranges in
+  `SVM.SBPF.Memory.Mem`. The CONCRETE side is the sBPF `PartialState`
+  (`SVM/SBPF/SepLogic.lean`); the bridge is `Abstract/Refinement.lean`, an
+  abstraction relation matching abstract accounts to concrete bytes at a layout
+  offset.
 
-  Two-layer architecture (Direction-A MIR, qedgen issue #66):
-    * This is the ABSTRACT side. Reasoning lives over decoded token
-      accounts, not over byte ranges in `SVM.SBPF.Memory.Mem`.
-    * The CONCRETE side is the existing sBPF `PartialState` in
-      `SVM/SBPF/SepLogic.lean`.
-    * The bridge is `SVM/Solana/Abstract/Refinement.lean` (TBD): an
-      abstraction relation φ that says "this abstract account matches
-      these concrete bytes at this layout offset."
-
-  Extension protocol: add fields here only when a consumer needs them.
-  These records back the byte-level codecs (`TokenAccountCodec`,
-  `MintAccountCodec`, `CounterAccountCodec`) the discharge route reshapes.
+  Extension protocol: add fields only when a consumer needs them. These records
+  back the byte-level codecs the discharge route reshapes.
 -/
 
 import SVM.Pubkey
@@ -26,17 +17,12 @@ namespace SVM.Solana.Abstract
 
 open SVM.Pubkey
 
-/-! ## TokenAccount — decoded SPL Token v4 account
+/-! ## TokenAccount — decoded SPL Token v4 account.
 
-The byte-level Pack codec lives in `SVM.Solana.TokenAccount` as the
-predicate `tokenAcctBalance`; this record is the abstract-side
-counterpart. Refinement obligation (Task 8): bytes at the layout-given
-offset decode to this record.
-
-`rest` carries the opaque 93-byte tail (delegate / state / is_native /
-delegated_amount / close_authority) as a single flow-through field.
-The mint / owner / amount triple is what Transfer-class theorems
-mutate; everything else passes through unchanged. -/
+Abstract-side counterpart of the byte-level Pack codec `tokenAcctBalance`
+(`SVM.Solana.TokenAccount`). `rest` carries the opaque 93-byte tail (delegate /
+state / is_native / delegated_amount / close_authority) as one flow-through
+field; the mint/owner/amount triple is what Transfer-class theorems mutate. -/
 
 structure TokenAccount where
   mint   : Pubkey
@@ -62,15 +48,13 @@ def withAmount (t : TokenAccount) (a : Nat) : TokenAccount :=
 
 end TokenAccount
 
-/-! ## Mint — decoded SPL Token mint account
+/-! ## Mint — decoded SPL Token mint account.
 
-The byte-level codec lives in `SVM.Solana.MintAccountCodec` as
-`mintAcctSupply`; this record is the abstract-side counterpart. Only
-`supply` is mutated by MintTo/Burn; `preAuth` (the 36-byte
-`COption<Pubkey>` mint_authority) and `rest` (the 38-byte
-decimals/is_initialized/freeze_authority tail) flow through opaque.
-`supply` sits at byte offset 36, after `preAuth`, so it can't be a
-single trailing field the way `TokenAccount.rest` is. -/
+Abstract-side counterpart of `mintAcctSupply` (`SVM.Solana.MintAccountCodec`).
+Only `supply` is mutated by MintTo/Burn; `preAuth` (36-byte `COption<Pubkey>`
+mint_authority) and `rest` (38-byte decimals/is_initialized/freeze_authority
+tail) flow through opaque. `supply` sits at offset 36 (after `preAuth`), so it
+can't be a single trailing field the way `TokenAccount.rest` is. -/
 
 structure Mint where
   preAuth : ByteArray
@@ -93,13 +77,11 @@ def withSupply (m : Mint) (s : Nat) : Mint :=
 
 end Mint
 
-/-! ## CounterAccount — a decoded single-field counter account
+/-! ## CounterAccount — decoded single-field counter account.
 
-The byte-level counterpart is the bare `u64` at the account-data
-offset (codec `counterValOf` in `SVM.Solana.CounterAccountCodec`). This
-is the abstract-side record for a NON-token program: it owns no mint /
-owner / pubkey scaffolding, just a `counter`. It validates that the
-refinement machinery is layout-general, not SPL-token-shaped. -/
+Abstract-side record for a NON-token program (codec `counterValOf` in
+`CounterAccountCodec` is the bare `u64` at the account-data offset). Validates
+the refinement machinery is layout-general, not SPL-token-shaped. -/
 
 structure CounterAccount where
   counter : Nat
@@ -116,12 +98,10 @@ def withCounter (c : CounterAccount) (n : Nat) : CounterAccount :=
 
 end CounterAccount
 
-/-! ## AbstractState — the partial heap of decoded accounts
+/-! ## AbstractState — partial heap of decoded accounts.
 
-Three resource maps today: `accounts` (token accounts), `mints` (mint
-accounts), and `counters` (single-field counter accounts). Grows as
-later pilots demand new resources (`signers`, `ixData`, `returnData`,
-`cuRemaining`, `cpiLog`). -/
+Three resource maps: `accounts`, `mints`, `counters`. Grows as later pilots
+demand new resources (`signers`, `ixData`, `returnData`, `cuRemaining`, ...). -/
 
 structure AbstractState where
   accounts : Pubkey → Option TokenAccount
@@ -144,8 +124,8 @@ def empty : AbstractState :=
 @[simp] theorem empty_counters (k : Pubkey) :
     empty.counters k = none := rfl
 
-/-- Read the account at `key`, if any. Definitionally equal to
-    `s.accounts key`; the named accessor is useful for `simp` rewriting. -/
+/-- Read the account at `key`. Defeq `s.accounts key`; named accessor aids
+    `simp` rewriting. -/
 @[inline] def get (s : AbstractState) (key : Pubkey) : Option TokenAccount :=
   s.accounts key
 
@@ -162,8 +142,8 @@ def set (s : AbstractState) (key : Pubkey) (t : TokenAccount) : AbstractState :=
     (s.set key t).get key' = s.get key' := by
   unfold set get; simp [h]
 
-/-- Field-level `.accounts` variant of `set_get_eq`, useful when proofs
-    pattern-match on the raw field rather than going through `.get`. -/
+/-- Field-level `.accounts` variant of `set_get_eq`, for proofs that
+    pattern-match on the raw field rather than `.get`. -/
 @[simp] theorem set_accounts_eq (s : AbstractState) (key : Pubkey) (t : TokenAccount) :
     (s.set key t).accounts key = some t := by
   unfold set; simp
@@ -173,9 +153,8 @@ def set (s : AbstractState) (key : Pubkey) (t : TokenAccount) : AbstractState :=
     (s.set key t).accounts key' = s.accounts key' := by
   unfold set; simp [h]
 
-/-- Apply `f` to the account at `key`, if it exists. No-op if absent.
-    The Transfer balance shift lands here:
-    `s.update from (·.withAmount (preA - x))`. -/
+/-- Apply `f` to the account at `key`; no-op if absent. The Transfer balance
+    shift lands here: `s.update from (·.withAmount (preA - x))`. -/
 def update (s : AbstractState) (key : Pubkey) (f : TokenAccount → TokenAccount) :
     AbstractState :=
   match s.get key with
@@ -209,8 +188,8 @@ def update (s : AbstractState) (key : Pubkey) (f : TokenAccount → TokenAccount
 @[inline] def getMint (s : AbstractState) (key : Pubkey) : Option Mint :=
   s.mints key
 
-/-- Install mint `m` at `key`, leaving every other key (and all token
-    accounts) unchanged. -/
+/-- Install mint `m` at `key`, leaving other keys and all token accounts
+    unchanged. -/
 def setMint (s : AbstractState) (key : Pubkey) (m : Mint) : AbstractState :=
   { s with mints := fun k => if k = key then some m else s.mints k }
 
@@ -266,8 +245,8 @@ def updateMint (s : AbstractState) (key : Pubkey) (f : Mint → Mint) :
 @[inline] def getCounter (s : AbstractState) (key : Pubkey) : Option CounterAccount :=
   s.counters key
 
-/-- Install counter `c` at `key`, leaving every other key (and all token
-    accounts / mints) unchanged. -/
+/-- Install counter `c` at `key`, leaving other keys and all token accounts /
+    mints unchanged. -/
 def setCounter (s : AbstractState) (key : Pubkey) (c : CounterAccount) : AbstractState :=
   { s with counters := fun k => if k = key then some c else s.counters k }
 

@@ -1,34 +1,9 @@
 /-
-  Layer 3b artifact (happy-path chain, H3b): Hoare triple over the
-  next 6 instructions of the p-token Transfer main body at bytes
-  0x8708-0x8730 of `qedsvm-rs/tests/fixtures/p_token.so`.
+  L3b H3b: 6-insn index-bound check (bytes 0x8708-0x8730, p-token@v1.0.0-rc.1).
 
-  Continues H3a. H3a left r3 = `alignedAmount amount` and r4 = amount;
-  H3b uses r3 as an index into the input buffer to load two layout
-  markers and validates them with two `not-taken` conditional jumps.
-
-  The 6 instructions:
-
-  ```
-  8708: bf 12 00 00 ...     mov64 r2, r1
-  8710: 0f 32 00 00 ...     add64 r2, r3           ← r2 := input + alignedAmount
-  8718: 79 23 78 7a ...     ldxdw r3, [r2 + 0x7a78]
-  8720: a5 03 97 f0 09 ..   jlt r3, 0x9, -0xf69    ← NOT taken: cell ≥ 9
-  8728: 71 23 80 7a ...     ldxb r3, [r2 + 0x7a80]
-  8730: 55 03 95 f0 03 ..   jne r3, 0x3, -0xf6b    ← NOT taken: cell byte = 3
-  ```
-
-  Trace values for amount=250 (alignedAmount=256): r2 = initR1+256,
-  layout cell at r2+0x7a78 = 9, layout byte at r2+0x7a80 = 3. Both
-  cond exits stay on the happy path under those hypotheses.
-
-  Spec: 6 CU advancing PC 0 → 6. Post:
-  - r2 := wrapAdd initR1 (alignedAmount amount)  (input + index)
-  - r3 := 3                                       (loaded layout byte, mod 256)
-  - r1 unchanged.
-
-  Two if-collapses (jlt-not-taken via `cell ≥ 9`; jne-not-taken via
-  `cellByte % 256 = 3`) — same pattern as `PTokenValidationPrelude`.
+  Continues H3a (r3=alignedAmount, r4=amount). Computes r2 = input+alignedAmount,
+  loads layout markers at +0x7a78/+0x7a80, validates via two not-taken jumps (cell≥9, byte=3).
+  6 CU, pc → 6. Two if-collapses: jlt-NT (layoutBound≥9), jne-NT (layoutTag%256=3).
 -/
 
 import PToken.TransferArm.H3aAmountAlign
@@ -42,10 +17,7 @@ open SVM.SBPF
 open Memory
 open Examples.PTokenTransferArmH3aAmountAlign (alignedAmount)
 
-/-- CodeReq for H3b's 6 instructions. The jlt and jne targets are
-    far-away error PCs; pick any non-clashing synthetic value (here
-    100). The if-collapses make these targets irrelevant at the
-    proof level. -/
+/-- H3b CodeReq; error-PC targets are synthetic (if-collapses make them irrelevant). -/
 def h3bErrPc : Nat := 100
 
 def h3bCr (base : Nat) : CodeReq :=
@@ -78,25 +50,19 @@ theorem p_token_transfer_arm_h3b_spec
         rt.containsRange (effectiveAddr baseAddr 0x7a78) 8 = true ∧
         rt.containsRange (effectiveAddr baseAddr 0x7a80) 1 = true) := by
   intro baseAddr
-  -- h0: mov64 r2, r1 → r2 := initR1.
   have h0 := mov64_reg_spec .r2 .r1 initR2 initR1 (base + 0) (by decide)
-  -- h1: add64 r2, r3 → r2 := wrapAdd initR1 (alignedAmount amount) = baseAddr.
   have h1 := add64_reg_spec .r2 .r3 initR1 (alignedAmount amount) (base + 1) (by decide)
-  -- h2: ldxdw r3, [r2 + 0x7a78] → r3 := layoutBound.
   have h2 := ldxdw_spec .r3 .r2 0x7a78 (alignedAmount amount) baseAddr
                         layoutBound (base + 2) (by decide) h_bound_lt
-  -- h3: jlt r3, 9 → NOT taken under layoutBound ≥ 9.
   have h3 := jlt_imm_spec .r3 9 layoutBound (base + 3) h3bErrPc
-  -- h4: ldxb r3, [r2 + 0x7a80] → r3 := layoutTag % 256.
   have h4 := ldxb_spec .r3 .r2 0x7a80 layoutBound baseAddr layoutTag (base + 4) (by decide)
-  -- h5: jne r3, 3 → NOT taken under layoutTag % 256 = 3.
   have h5 := jne_imm_spec .r3 3 (layoutTag % 256) (base + 5) h3bErrPc
-  -- Collapse the jlt: layoutBound ≥ 9 ⟹ ¬ (layoutBound < 9).
+  -- Collapse jlt (layoutBound ≥ 9).
   rw [show (if layoutBound < toU64 9 then h3bErrPc else (base + 3) + 1) = base + 4 from by
         have hno : ¬ (layoutBound < toU64 9) := by
           show ¬ (layoutBound < 9); omega
         rw [if_neg hno]] at h3
-  -- Collapse the jne: layoutTag % 256 = toU64 3 ⟹ ¬ (≠).
+  -- Collapse jne (layoutTag % 256 = 3).
   rw [show (if (layoutTag % 256) ≠ toU64 3 then h3bErrPc else (base + 5) + 1) = base + 6 from by
         rw [h_tag]; simp] at h5
   unfold h3bCr

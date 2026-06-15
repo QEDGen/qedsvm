@@ -1,5 +1,5 @@
--- Per-instruction-class spec files. Split from the original 14k-line
--- monolith for readability. Linear chain: each file imports the previous.
+-- Per-instruction-class spec files (linear import chain, each file imports the
+-- previous). Split from the original 14k-line monolith.
 
 import SVM.SBPF.InstructionSpecs.Preamble
 import SVM.SBPF.InstructionSpecs.Alu

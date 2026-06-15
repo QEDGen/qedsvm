@@ -6,20 +6,14 @@ open Memory
 
 /-! ## Generic fixed-payload-write helper: `cuTripleWithin_syscall_writesR1Bytes`
 
-The 6 fixed-payload sysvars (4 zero-fill: `sol_get_last_restart_slot`,
-`sol_get_fees_sysvar`, `sol_get_clock_sysvar`, `sol_get_epoch_rewards_sysvar`
-+ 2 non-zero-fill: `sol_get_rent_sysvar`, `sol_get_epoch_schedule_sysvar`)
-all share the same Hoare-triple shape: write a fixed `ByteArray` payload
-of size `N` at `*r1`, set `r0 := 0`. This helper captures that pattern
-parametrically in `(sc, bsNew)`, using the generic `↦Bytes` atom so the
-proof scales to 17B / 40B / 81B without per-byte case ladders.
+The 6 fixed-payload sysvars (rent/last_restart_slot/fees/clock/epoch_rewards/
+epoch_schedule) share one Hoare shape: write a fixed `ByteArray` of size `N` at
+`*r1`, set `r0 := 0`. Parametric in `(sc, bsNew)` via the generic `↦Bytes` atom,
+so the proof scales to 17B / 40B / 81B without per-byte case ladders. Zero-fill
+case is `bsNew := zerosByteArray N`. -/
 
-The zero-fill case is the special instantiation `bsNew := zerosByteArray N`
-(defined at the top of this file). -/
-
-/-- `ByteArray` of `n` copies of byte `b`. Generalizes `zerosByteArray`
-    to an arbitrary fill byte. Used as the post-state payload for
-    `sol_memset_` Hoare triples. -/
+/-- `ByteArray` of `n` copies of byte `b` (generalizes `zerosByteArray`).
+    Post-state payload for `sol_memset_` Hoare triples. -/
 def replicateByte (b : UInt8) (n : Nat) : ByteArray :=
   ⟨Array.replicate n b⟩
 
@@ -34,26 +28,18 @@ theorem replicateByte_get! (b : UInt8) (n i : Nat) (hi : i < n) :
   rw [getElem!_pos _ _ (by rw [Array.size_replicate]; exact hi)]
   exact Array.getElem_replicate _
 
--- `Mem_read_default` is hoisted to the top of the file (used by both
--- sysvar specs and `call_sol_get_return_data_spec`).
+-- `Mem_read_default` is hoisted to the top of the file (shared by sysvar specs).
 
-/-- For any syscall `sc` whose `step` semantics:
-    • writes 0 to register r0,
-    • writes the bytes of `bsNew` at `[s.regs.r1, s.regs.r1 + bsNew.size)`,
-    • leaves all other memory untouched,
-    • advances pc by 1,
-    • preserves the (none) exit code,
-    the Hoare triple
+/-- For any syscall `sc` whose `step` writes 0 to r0, writes `bsNew` at
+    `[r1, r1+bsNew.size)`, leaves other mem/exit untouched, and advances pc, the
+    Hoare triple
 
       `(r0 ↦ᵣ r0Old) ** (r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsOld)`
       ↓
       `(r0 ↦ᵣ 0)     ** (r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsNew)`
 
-    holds for any precondition byte payload `bsOld` of the same size as `bsNew`.
-
-    Concrete sysvar specs supply the step-projection lemmas via
-    `simp [step, execSyscall, Sysvar.execX]`. The zero-fill case
-    is just `bsNew := zerosByteArray N`. -/
+    holds for any `bsOld` of `bsNew`'s size. Concrete sysvar specs supply the
+    step-projection lemmas via `simp [step, execSyscall, Sysvar.execX]`. -/
 theorem cuTripleWithin_syscall_writesR1Bytes
     (sc : Syscall) (bsNew : ByteArray) (pc : Nat) (nCu : Nat)
     (h_step_regs : ∀ s : State, (step (.call sc) s).regs = s.regs.set .r0 0)
@@ -78,7 +64,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes
         ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (r1V ↦Bytes bsNew)) := by
   intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud
   let N : Nat := bsNew.size
-  -- ==== Phase 1: destructure the 3-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r1, h_b, hd_r1_b, hu_r1_b, h_r1_pred, h_b_pred⟩ := h_T1_sat
@@ -88,7 +73,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes
   clear h_r0_pred h_r1_pred h_b_pred h_r0 h_r1 h_b
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
-  -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   have h_T1_regs_r1 : h_T1.regs .r1 = some r1V := by
     rw [← hu_r1_b]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -113,7 +97,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes
   have hs_regs_r0 : s.regs.get .r0 = r0Old := hcr_regs .r0 r0Old hp_regs_r0
   have hs_regs_r1 : s.regs.get .r1 = r1V := hcr_regs .r1 r1V hp_regs_r1
   have hs_r1_field : s.regs.r1 = r1V := hs_regs_r1
-  -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
@@ -136,7 +119,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes
       (executeFn fetch s 1).mem a = s.mem a := by
     rw [hstep_eq]; apply h_step_mem_out s a
     rw [hs_r1_field]; exact h
-  -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
   have hd_PR_regs := hd_PR.regs
   have hd_PR_mem := hd_PR.mem
   have hd_PR_pc := hd_PR.pc
@@ -157,7 +139,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes
     rcases hd_PR_mem (r1V + i) with hl | hr
     · rw [h_P_some] at hl; nomatch hl
     · exact hr
-  -- ==== Phase 5: build the new post partial state. ====
   let h_r0_new : PartialState := PartialState.singletonReg .r0 0
   let h_r1_new : PartialState := PartialState.singletonReg .r1 r1V
   let h_b_new  : PartialState := PartialState.singletonMemBytes r1V bsNew
@@ -224,7 +205,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes
     show ((PartialState.singletonReg .r1 r1V).union h_b_new).pc = none
     rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
     exact PartialState.singletonMemBytes_pc
-  -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
     refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
@@ -246,7 +226,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes
           · exact absurd ⟨h, h'⟩ ha
           · right; exact h'
     · left; exact h_P_new_pc
-  -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
@@ -340,16 +319,11 @@ theorem cuTripleWithin_syscall_writesR1Bytes
       exact hcompat.callStack cs hp_cs
 /-! ## 5-atom mem-write helper: `cuTripleWithin_syscall_writesR1Bytes_r2r3`
 
-Generalization of `cuTripleWithin_syscall_writesR1Bytes` for syscalls
-whose mem-write payload depends on register values `r2V` and `r3V`
-(memset, memcpy, memmove, memcmp). The precondition adds `r2 ↦ᵣ r2V`
-and `r3 ↦ᵣ r3V` atoms so the proof body can extract those values and
-feed them to the step-projection hypotheses (which are conditional
-on `s.regs.r2 = r2V` and `s.regs.r3 = r3V`).
-
-`bsNew` is the fixed post-state payload (computed from `r2V`, `r3V`
-at theorem-instantiation time, e.g. `replicateByte (r2V % 256) r3V`
-for memset). -/
+Generalizes the fixed-payload helper for syscalls whose mem-write payload
+depends on `r2V`/`r3V` (memset, memcpy, memmove, memcmp). The precondition adds
+`r2 ↦ᵣ r2V` + `r3 ↦ᵣ r3V` so the body extracts those values for the
+register-pinned step-projection hyps. `bsNew` is the post payload computed from
+`r2V`/`r3V` (e.g. `replicateByte (r2V % 256) r3V` for memset). -/
 
 theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     (sc : Syscall) (bsNew : ByteArray) (pc : Nat) (nCu : Nat) (r2V r3V : Nat)
@@ -375,9 +349,8 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     (h_step_cu : ∀ s : State,
         (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
     ∀ r0Old r1V (bsOld : ByteArray), bsOld.size = bsNew.size →
-      -- H6: the `[r1V, r1V + r3V)` destination slice must be in a writable
-      -- region (`guardWrite` in `MemOps.execSet`); the spec carries that as
-      -- its `rr` region requirement, discharged by the projection bullets.
+      -- H6: dest slice `[r1V, r1V+r3V)` must be writable (`guardWrite` in
+      -- `execSet`); carried as the `rr` requirement, discharged by the bullets.
       cuTripleWithinMem 1 nCu pc (pc + 1)
         (CodeReq.singleton pc (.call sc))
         ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V)
@@ -387,7 +360,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
         (fun rt => rt.containsWritable r1V r3V = true) := by
   intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud h_region
   let N : Nat := bsNew.size
-  -- ==== Phase 1: destructure the 5-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r1, h_T2, hd_r1_T2, hu_r1_T2, h_r1_pred, h_T2_sat⟩ := h_T1_sat
@@ -402,7 +374,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
         h_r0 h_r1 h_r2 h_r3 h_b
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
-  -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   have h_T3_regs_r3 : h_T3.regs .r3 = some r3V := by
     rw [← hu_r3_b]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -470,11 +441,9 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
   have hs_r1_field : s.regs.r1 = r1V := hs_regs_r1
   have hs_r2_field : s.regs.r2 = r2V := hs_regs_r2
   have hs_r3_field : s.regs.r3 = r3V := hs_regs_r3
-  -- The `rr` region requirement, specialised to this state's registers:
-  -- the `guardWrite` inside `step (.call sc)` collapses under it.
+  -- `rr` specialised to this state's regs, collapsing `guardWrite` in step.
   have hreg : s.regions.containsWritable s.regs.r1 s.regs.r3 = true := by
     rw [hs_r1_field, hs_r3_field]; exact h_region
-  -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
@@ -499,7 +468,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     rw [hstep_eq]
     apply h_step_mem_out s hs_r3_field hreg a
     rw [hs_r1_field]; exact h
-  -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
   have hd_PR_regs := hd_PR.regs
   have hd_PR_mem := hd_PR.mem
   have hd_PR_pc := hd_PR.pc
@@ -528,7 +496,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     rcases hd_PR_mem (r1V + i) with hl | hr
     · rw [h_P_some] at hl; nomatch hl
     · exact hr
-  -- ==== Phase 5: build the new post partial state. ====
   let h_r0_new : PartialState := PartialState.singletonReg .r0 0
   let h_r1_new : PartialState := PartialState.singletonReg .r1 r1V
   let h_r2_new : PartialState := PartialState.singletonReg .r2 r2V
@@ -679,7 +646,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
     show ((PartialState.singletonReg .r3 r3V).union h_b_new).pc = none
     rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
     exact PartialState.singletonMemBytes_pc
-  -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
     refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
@@ -705,7 +671,6 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
           · exact absurd ⟨h, h'⟩ ha
           · right; exact h'
     · left; exact h_P_new_pc
-  -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
@@ -815,11 +780,9 @@ theorem cuTripleWithin_syscall_writesR1Bytes_r2r3
       exact hcompat.callStack cs hp_cs
 /-! ## Syscall: `sol_memset_`
 
-`sol_memset_(dst, val, n)`: write the low byte of `r2` (`r2 % 256`)
-into `n = r3` bytes starting at `dst = r1`. Sets `r0 := 0`. First
-state-dependent payload syscall in the SL track — uses the 5-atom
-helper `cuTripleWithin_syscall_writesR1Bytes_r2r3` because the
-bytes written depend on the register values `r2V` and `r3V`. -/
+`sol_memset_(dst, val, n)`: write `r2 % 256` into `n = r3` bytes at `dst = r1`,
+set `r0 := 0`. First state-dependent payload syscall, so it uses the 5-atom
+helper (bytes written depend on `r2V`/`r3V`). -/
 
 theorem call_sol_memset_spec
     (r0Old r1V r2V r3V pc nCu : Nat) (bsOld : ByteArray) (hbs : bsOld.size = r3V)
@@ -847,7 +810,6 @@ theorem call_sol_memset_spec
     rw [if_pos ⟨Nat.le_add_right _ _, by rw [hr3]; omega⟩]
     rw [replicateByte_get! _ _ _ hi]
     rw [hr2]
-    -- Goal: r2V % 256 = ((r2V % 256).toUInt8).toNat
     show r2V % 256 = (UInt8.ofNat (r2V % 256)).toNat
     unfold UInt8.ofNat UInt8.toNat
     simp
@@ -879,22 +841,12 @@ theorem call_sol_memset_spec
 
 /-! ## 6-atom mem-copy helper: `cuTripleWithin_syscall_copiesR2ToR1`
 
-Generalization of the 5-atom helper for syscalls that copy bytes
-from `[r2, r2 + r3)` to `[r1, r1 + r3)` (`sol_memcpy_`, `sol_memmove_`).
-Adds a read-only source-bytes atom at `r2V` to the 5-atom precondition;
-the post-state has the same source-bytes atom (read but unmodified)
-plus the dst-bytes atom rewritten to `srcBytes`.
-
-`h_step_mem_in` is conditional on `s.regs.r2 = r2V` and `s.regs.r3 = r3V`
-(register pinning) and produces the dst-write in terms of `s.mem (r2V + i)`;
-the proof body extracts `s.mem (r2V + i) = (srcBytes.get! i).toNat` from
-the source-bytes atom in the precondition. The `% 256` in the actual
-`execCopy` semantics is a no-op for byte values since
-`(UInt8.toNat _) < 256`, so the post value matches `srcBytes` directly.
-
-Separation logic implies the source and destination ranges are
-disjoint — this matches the C-level "memcpy with overlap is UB"
-assumption. Overlapping memmove would need a different spec. -/
+Generalizes the 5-atom helper for syscalls copying `[r2, r2+r3)` → `[r1, r1+r3)`
+(`sol_memcpy_`, `sol_memmove_`). Adds a read-only source-bytes atom at `r2V`; the
+post keeps it and rewrites the dst-bytes atom to `srcBytes`. `execCopy`'s `% 256`
+is a no-op on bytes (`UInt8.toNat _ < 256`), so the post matches `srcBytes`.
+Separation logic forces source/dest disjoint (memcpy overlap is UB; overlapping
+memmove would need a different spec). -/
 
 theorem cuTripleWithin_syscall_copiesR2ToR1
     (sc : Syscall) (pc : Nat) (nCu : Nat) (r2V r3V : Nat) (srcBytes : ByteArray)
@@ -936,7 +888,6 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
         (fun rt => rt.containsRange r2V r3V = true ∧
                    rt.containsWritable r1V r3V = true) := by
   intro r0Old r1V bsOld hbsSize R hRfree fetch hcr s hPR hpc hex hbud h_region
-  -- ==== Phase 1: destructure the 6-atom (P ** R) split. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r1, h_T2, hd_r1_T2, hu_r1_T2, h_r1_pred, h_T2_sat⟩ := h_T1_sat
@@ -953,7 +904,6 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
         h_r0 h_r1 h_r2 h_r3 h_src h_b
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
-  -- ==== Phase 2: climb regs / mem from atoms through hp to s. ====
   -- Source-bytes mem facts:
   have h_T4_mem_src (j : Nat) (hj : j < r3V) :
       h_T4.mem (r2V + j) = some (srcBytes.get! j).toNat := by
@@ -1024,9 +974,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
         PartialState.union_regs_of_left_none
           (PartialState.singletonReg_regs_other (by decide : Reg.r3 ≠ Reg.r0))]
     exact h_T1_regs_r3
-  -- Dest-bytes mem fact: h_P.mem matches bsOld over [r1V, r1V+r3V), via h_b.
-  -- The src atom owns [r2V, r2V+r3V); these ranges are disjoint by hd_src_b.
-  -- For positions in the dst range, h_b is the carrier.
+  -- Over dst range [r1V, r1V+r3V), h_b carries h_P.mem (src range disjoint).
   have h_P_mem_dst (i : Nat) (hi : i < r3V) :
       h_P.mem (r1V + i) = some (bsOld.get! i).toNat := by
     rw [← hu_r0_T1,
@@ -1042,21 +990,14 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     have h_b_some : (PartialState.singletonMemBytes r1V bsOld).mem (r1V + i) =
         some (bsOld.get! i).toNat :=
       PartialState.singletonMemBytes_mem_at r1V bsOld i hbs_lt
-    -- src atom owns [r2V, r2V+r3V); to use h_b's value, src.mem at r1V+i must be none.
-    -- That follows from hd_src_b applied at r1V+i, given src.mem isSome at r1V+i iff
-    -- r1V+i ∈ [r2V, r2V+r3V). We don't need that direction: union picks h_b if src is none.
-    -- We DO need src.mem (r1V + i) = none.
+    -- src doesn't own r1V+i (b does), so union takes h_b's value.
     have h_src_none : (PartialState.singletonMemBytes r2V srcBytes).mem (r1V + i) = none := by
-      -- By disjointness hd_src_b: at any address, either src or b owns it, not both.
-      -- Pick the side: b owns (r1V + i) (just shown via singletonMemBytes_mem_at on bsOld).
-      -- So src must not own it.
       have hd_mem := hd_src_b.mem
       rcases hd_mem (r1V + i) with hl | hr
       · exact hl
       · rw [hr] at h_b_some; nomatch h_b_some
     rw [PartialState.union_mem_of_left_none h_src_none]
     exact h_b_some
-  -- Source-bytes regs are empty (sanity): not used directly, but helps later.
   have hp_regs_r0 : hp.regs .r0 = some r0Old := by
     rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r0
   have hp_regs_r1 : hp.regs .r1 = some r1V := by
@@ -1077,13 +1018,11 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   have hs_r3_field : s.regs.r3 = r3V := hs_regs_r3
   have hs_mem_src (j : Nat) (hj : j < r3V) :
       s.mem (r2V + j) = (srcBytes.get! j).toNat := hcm_mem _ _ (hp_mem_src j hj)
-  -- The `rr` region requirements, specialised to this state's registers:
-  -- the nested `guardRead`/`guardWrite` in `step (.call sc)` collapse.
+  -- `rr` specialised to this state's regs, collapsing the nested guardRead/Write.
   have hRd : s.regions.containsRange s.regs.r2 s.regs.r3 = true := by
     rw [hs_r2_field, hs_r3_field]; exact h_region.1
   have hWr : s.regions.containsWritable s.regs.r1 s.regs.r3 = true := by
     rw [hs_r1_field, hs_r3_field]; exact h_region.2
-  -- ==== Phase 3: fetch + per-field facts about (executeFn fetch s 1). ====
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
@@ -1115,7 +1054,6 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     rw [hstep_eq]
     apply h_step_mem_out s hs_r3_field hRd hWr a
     rw [hs_r1_field]; exact h
-  -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
   have hd_PR_regs := hd_PR.regs
   have hd_PR_mem := hd_PR.mem
   have hd_PR_pc := hd_PR.pc
@@ -1146,7 +1084,6 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     rcases hd_PR_mem (r2V + j) with hl | hr
     · rw [h_P_mem_src j hj] at hl; nomatch hl
     · exact hr
-  -- ==== Phase 5: build the new post partial state. ====
   let h_r0_new : PartialState := PartialState.singletonReg .r0 0
   let h_r1_new : PartialState := PartialState.singletonReg .r1 r1V
   let h_r2_new : PartialState := PartialState.singletonReg .r2 r2V
@@ -1158,11 +1095,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   let h_T2_new : PartialState := h_r2_new.union h_T3_new
   let h_T1_new : PartialState := h_r1_new.union h_T2_new
   let h_P_new  : PartialState := h_r0_new.union h_T1_new
-  -- Disjointness src ⊥ b at the post: same address ranges as pre since both
-  -- atoms preserve size (bsOld.size = srcBytes.size = r3V). Derived pointwise
-  -- from hd_src_b: at each address, hd_src_b gives "src none OR dst none";
-  -- src.mem none transfers directly (same ByteArray); dst.mem none transfers
-  -- because bsOld and srcBytes share the same address-range condition.
+  -- Post src ⊥ b: same ranges as pre (sizes equal r3V), transferred from hd_src_b.
   have hd_src_b_new : h_src_new.Disjoint h_b_new := by
     refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
             fun a => ?_,
@@ -1369,7 +1302,6 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     show ((PartialState.singletonMemBytes r2V srcBytes).union h_b_new).pc = none
     rw [PartialState.union_pc_of_left_none PartialState.singletonMemBytes_pc]
     exact PartialState.singletonMemBytes_pc
-  -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
     refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
@@ -1406,7 +1338,6 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
             · exact absurd ⟨h, h'⟩ h_src
             · right; exact h'
     · left; exact h_P_new_pc
-  -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
@@ -1479,8 +1410,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
             (h_P_new_mem_src _ h_lt)] at hvm
         have hvmEq : vm = (srcBytes.get! (a - r2V)).toNat :=
           (Option.some.inj hvm).symm
-        -- Position r2V + (a-r2V) is in the src range, NOT dst (assuming
-        -- disjointness). Use hexec_mem_out + hs_mem_src.
+        -- r2V+(a-r2V) is in src, not dst: use hexec_mem_out + hs_mem_src.
         have h_not_dst : (r2V + (a - r2V)) < r1V ∨ (r2V + (a - r2V)) ≥ r1V + r3V := by
           have h_eq' : r2V + (a - r2V) = a := by omega
           rw [h_eq']
@@ -1544,14 +1474,10 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
       exact hcompat.callStack cs hp_cs
 /-! ## Syscall: `sol_memcpy` / `sol_memmove`
 
-`sol_memcpy(dst, src, n)` and `sol_memmove(dst, src, n)` share
-semantics in our model via `MemOps.execCopy` (no overlap-handling
-distinction). Both copy `n = r3` bytes from `src = r2` to `dst = r1`
-and set `r0 := 0`. Separation logic implies the source and
-destination ranges are disjoint — overlap is undefined behavior at
-the C level for memcpy, and memmove's overlap support isn't reachable
-from the SL spec (the precondition's two `↦Bytes` atoms force
-disjointness). -/
+Both share `MemOps.execCopy` semantics (no overlap-handling distinction): copy
+`n = r3` bytes from `src = r2` to `dst = r1`, set `r0 := 0`. The two `↦Bytes`
+atoms force src/dest disjoint, so memcpy's UB-on-overlap and memmove's
+overlap support are both off the SL spec. -/
 
 theorem call_sol_memcpy_spec
     (r0Old r1V r2V r3V pc nCu : Nat) (srcBytes bsOld : ByteArray)
@@ -1661,24 +1587,15 @@ theorem call_sol_memmove_spec
 
 /-! ## Syscall: `sol_memcmp`
 
-`sol_memcmp(p1, p2, n, out)`: lexicographically compare `n = r3` bytes
-at `[r1, r1+n)` and `[r2, r2+n)`, write the i32 result (encoded as u32:
-0, 0xFFFFFFFF for -1, or 1) to `*r4`. Sets `r0 := 0`.
+`sol_memcmp(p1, p2, n, out)`: lexicographically compare `n = r3` bytes at
+`[r1, r1+n)` / `[r2, r2+n)`, write the u32-encoded i32 result to `*r4`, set
+`r0 := 0`. The most complex mem-op spec: 8 atoms (r0..r4, two ↦Bytes inputs, one
+↦U32 output at r4V); the post pins the written value via `memcmpResultU32`. The
+proof needs `execCmp_fold_eq` relating the `s.mem` fold to the ByteArray
+`memcmpFold` under the `↦Bytes` coherence hyps. -/
 
-Most complex mem-op spec — 8 atoms total: 5 reg atoms (r0..r4),
-2 read-only ↦Bytes atoms (p1Bytes, p2Bytes), 1 write-only ↦U32 atom
-at r4V. The post-state characterizes the written value via
-`memcmpResultU32`, a pure function of the input ByteArrays.
-
-The proof requires a fold-equality lemma (`execCmp_fold_eq`) that
-relates the `s.mem`-based fold in `MemOps.execCmp` to the
-ByteArray-based fold in `memcmpFold`, under the coherence hypotheses
-provided by the `↦Bytes` atoms in the precondition. -/
-
-/-- ByteArray-based comparison fold. Mirrors the `s.mem`-based fold
-    inside `MemOps.execCmp`, but reads bytes from a `ByteArray` instead
-    of `State.mem`. Returns the i32 difference `a - b` of the first
-    differing byte pair (in `[-255,255]`), or 0 if equal. -/
+/-- ByteArray analogue of the `s.mem`-based fold in `MemOps.execCmp`. Returns
+    the i32 difference of the first differing byte pair (`[-255,255]`), or 0. -/
 def memcmpFold (p1 p2 : ByteArray) (n : Nat) : Int :=
   (List.range n).foldl (fun acc i =>
     if acc ≠ 0 then acc
@@ -1694,11 +1611,9 @@ def memcmpResultU32 (p1 p2 : ByteArray) (n : Nat) : Nat :=
   let cmp := memcmpFold p1 p2 n
   if cmp ≥ 0 then cmp.toNat else U32_MODULUS - (-cmp).toNat
 
-/-- Under coherence (`s.mem (pV + i) = (pBytes.get! i).toNat` for both
-    p1 and p2), the `s.mem`-based fold in `execCmp` equals the
-    ByteArray-based `memcmpFold`. Proved by induction on `n` using
-    the fact that `(UInt8.toNat _) < 256`, so the `% 256` in the
-    `s.mem`-side cancels. -/
+/-- Under coherence (`s.mem (pV + i) = (pBytes.get! i).toNat`), the `execCmp`
+    fold equals `memcmpFold`. Induction on `n`; `UInt8.toNat _ < 256` cancels
+    the `s.mem`-side `% 256`. -/
 @[simp]
 private theorem execCmp_fold_eq (s : State) (p1V p2V n : Nat)
     (p1Bytes p2Bytes : ByteArray)
@@ -1726,11 +1641,10 @@ private theorem execCmp_fold_eq (s : State) (p1V p2V n : Nat)
     have h2lt : (p2Bytes.get! k).toNat < 256 := (p2Bytes.get! k).toNat_lt
     rw [hpv1, hpv2, Nat.mod_eq_of_lt h1lt, Nat.mod_eq_of_lt h2lt]
 
-/-- `sol_memcmp(p1, p2, n, out)` Hoare triple. Reads `n = r3` bytes
-    at `[r1, r1+n)` and `[r2, r2+n)` (both preserved), writes the u32
-    comparison result `memcmpResultU32 p1Bytes p2Bytes r3V` to `*r4`.
-    Sets `r0 := 0`. Separation logic implies the three memory regions
-    (p1 at r1V, p2 at r2V, output u32 at r4V) are pairwise disjoint. -/
+/-- `sol_memcmp(p1, p2, n, out)` triple. Reads `n = r3` bytes at `[r1, r1+n)` /
+    `[r2, r2+n)` (preserved), writes `memcmpResultU32 p1Bytes p2Bytes r3V` to
+    `*r4`, sets `r0 := 0`. The three mem regions (p1, p2, output) are pairwise
+    disjoint by separation logic. -/
 theorem call_sol_memcmp_spec
     (r0Old r1V r2V r3V r4V outOld pc nCu : Nat)
     (p1Bytes p2Bytes : ByteArray)
@@ -1750,7 +1664,6 @@ theorem call_sol_memcmp_spec
                  rt.containsWritable r4V 4 = true) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   let cmpResult := memcmpResultU32 p1Bytes p2Bytes r3V
-  -- ==== Phase 1: 8-atom destructure. ====
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r1, h_T2, hd_r1_T2, hu_r1_T2, h_r1_pred, h_T2_sat⟩ := h_T1_sat
@@ -1771,7 +1684,6 @@ theorem call_sol_memcmp_spec
         h_r0 h_r1 h_r2 h_r3 h_r4 h_p1 h_p2 h_out
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
-  -- ==== Phase 2: reg climbs (r4 through r0) ====
   have h_T4_regs_r4 : h_T4.regs .r4 = some r4V := by
     rw [← hu_r4_T5]
     exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
@@ -1864,7 +1776,6 @@ theorem call_sol_memcmp_spec
     rw [hs_r2_field, hs_r3_field]; exact h_region.2.1
   have hWr : s.regions.containsWritable s.regs.r4 4 = true := by
     rw [hs_r4_field]; exact h_region.2.2
-  -- ==== Phase 2 (cont'd): mem facts for p1, p2, out ====
   -- p1 at r1V (sits at h_T5 layer).
   have h_T5_mem_p1 (i : Nat) (hi : i < r3V) :
       h_T5.mem (r1V + i) = some (p1Bytes.get! i).toNat := by
@@ -1955,7 +1866,6 @@ theorem call_sol_memcmp_spec
       s.mem (r1V + i) = (p1Bytes.get! i).toNat := hcm_mem _ _ (hp_mem_p1 i hi)
   have hs_mem_p2 (j : Nat) (hj : j < r3V) :
       s.mem (r2V + j) = (p2Bytes.get! j).toNat := hcm_mem _ _ (hp_mem_p2 j hj)
-  -- ==== Phase 3: fetch + step projections ====
   have hfetch : fetch s.pc = some (.call .sol_memcmp) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
@@ -1966,8 +1876,7 @@ theorem call_sol_memcmp_spec
     rw [hstep_eq]
     show (step (.call .sol_memcmp) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := hCu s; omega
-  -- Compute (step .sol_memcmp s) symbolically using execCmp_fold_eq.
-  -- The mem' is writeU32 s.mem r4V cmpResult; the regs.r0 := 0.
+  -- step writes writeU32 s.mem r4V cmpResult and r0 := 0.
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
@@ -1979,10 +1888,8 @@ theorem call_sol_memcmp_spec
     rw [hstep_eq]
     simp only [step, execSyscall, MemOps.execCmp, chargeCu, State.guardRead, State.guardWrite]
     rw [if_pos (Or.inr hRd1), if_pos (Or.inr hRd2), if_pos (Or.inr hWr)]
-  -- The mem after step equals writeU32 s.mem s.regs.r4 cmpResult, where cmpResult
-  -- is the i32-encoded comparison value derived from execCmp's fold. The fold
-  -- equality lemma (execCmp_fold_eq) converts the s.mem-based fold to memcmpFold
-  -- under coherence; this gives us memcmpResultU32 at the end.
+  -- execCmp_fold_eq converts the s.mem-based fold to memcmpFold under coherence,
+  -- yielding memcmpResultU32.
   have hexec_mem_eq :
       (executeFn fetch s 1).mem =
         Memory.writeU32 s.mem r4V cmpResult := by
@@ -1993,7 +1900,6 @@ theorem call_sol_memcmp_spec
     rw [hs_r4_field, hs_r1_field, hs_r2_field, hs_r3_field]
     show Memory.writeU32 s.mem r4V _ = Memory.writeU32 s.mem r4V cmpResult
     congr 1
-    -- Goal: <s.mem-based cmpU32> = cmpResult
     show _ = memcmpResultU32 p1Bytes p2Bytes r3V
     unfold memcmpResultU32
     rw [execCmp_fold_eq s r1V r2V r3V p1Bytes p2Bytes hs_mem_p1 hs_mem_p2]
@@ -2027,7 +1933,6 @@ theorem call_sol_memcmp_spec
     have h2 : a ≠ r4V + 2 := by rcases h with hl | hr <;> omega
     have h3 : a ≠ r4V + 3 := by rcases h with hl | hr <;> omega
     rw [if_neg h0, if_neg h1, if_neg h2, if_neg h3]
-  -- ==== Phase 4: facts about h_R from outer disjointness with h_P. ====
   have hd_PR_regs := hd_PR.regs
   have hd_PR_mem := hd_PR.mem
   have hd_PR_pc := hd_PR.pc
@@ -2130,7 +2035,6 @@ theorem call_sol_memcmp_spec
     rcases hd_PR_mem (r4V + k) with hl | hr
     · rw [hv] at hl; nomatch hl
     · exact hr
-  -- ==== Phase 5: build the new post partial state. ====
   let h_r0_new : PartialState := PartialState.singletonReg .r0 0
   let h_r1_new : PartialState := PartialState.singletonReg .r1 r1V
   let h_r2_new : PartialState := PartialState.singletonReg .r2 r2V
@@ -2151,14 +2055,12 @@ theorem call_sol_memcmp_spec
     refine ⟨fun r => Or.inl (PartialState.singletonMemBytes_regs r),
             fun a => ?_,
             Or.inl PartialState.singletonMemBytes_pc, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
-    -- Pointwise mem disjointness derived from hd_p2_out (pre): same ranges since
-    -- p2_new is p2Bytes (same as pre) and out_new is U32 at r4V (same range).
+    -- From hd_p2_out: same ranges (p2_new = p2Bytes, out_new = U32 at r4V).
     have hd_pre_mem := hd_p2_out.mem
     rcases hd_pre_mem a with hl | hr
     · left; exact hl
     · right
-      -- (singletonMemU32 r4V outOld).mem a = none → (singletonMemU32 r4V cmpResult).mem a = none
-      -- Both atoms have same range [r4V, r4V+4); none-ness is range-based.
+      -- none-ness is range-based, so out_old none → out_new none ([r4V, r4V+4)).
       by_cases h : r4V ≤ a ∧ a < r4V + 4
       · exfalso
         obtain ⟨h1, h2⟩ := h
@@ -2187,12 +2089,8 @@ theorem call_sol_memcmp_spec
       rcases hd_pre_mem a with hl | hr
       · left; exact hl
       · right
-        -- T6_pre.mem a = none → T6_new.mem a = none
-        -- T6_pre = p2 ∪ out_pre; T6_new = p2 ∪ out_new (same p2, same out range).
-        -- T6_pre.mem a = none means both p2 and out_pre are none at a.
-        -- T6_new.mem a = union of p2 and out_new. Both atoms same range conditions.
+        -- T6_pre.mem a = none → T6_new.mem a = none (same p2, same out range).
         show (h_p2_new.union h_out_new).mem a = none
-        -- Reduce T6_pre.mem a = none to "p2.mem a = none ∧ out_pre.mem a = none".
         have h_p2_none : (PartialState.singletonMemBytes r2V p2Bytes).mem a = none := by
           rw [← hu_p2_out] at hr
           have hp2 := PartialState.union_mem_eq_none_iff.mp hr
@@ -2486,7 +2384,6 @@ theorem call_sol_memcmp_spec
     show ((PartialState.singletonMemBytes r2V p2Bytes).union h_out_new).pc = none
     rw [PartialState.union_pc_of_left_none PartialState.singletonMemBytes_pc]
     exact PartialState.singletonMemU32_pc
-  -- ==== Phase 6: outer disjointness h_P_new ⊥ h_R. ====
   have hd_PnewR : h_P_new.Disjoint h_R := by
     refine ⟨fun r => ?_, fun a => ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
     · by_cases h0 : r = .r0
@@ -2536,7 +2433,6 @@ theorem call_sol_memcmp_spec
             · exact absurd ⟨h, h'⟩ h_out
             · right; exact h'
     · left; exact h_P_new_pc
-  -- ==== Phase 7: assemble the witness for (Q ** R).holdsFor. ====
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec_pc, hpc]
   · exact hexec_exit
@@ -2610,9 +2506,7 @@ theorem call_sol_memcmp_spec
           (Option.some.inj hvm).symm
         -- (executeFn ...).mem (r1V + (a - r1V)) is preserved (outside the writeU32 range).
         have h_out_range : (r1V + (a - r1V)) < r4V ∨ (r1V + (a - r1V)) ≥ r4V + 4 := by
-          -- The U32 region at r4V is disjoint from the p1 region at r1V (from pre disjointness).
-          -- Specifically, the p1 atom has (r1V + (a - r1V)) since (a - r1V) < r3V = p1Bytes.size.
-          -- p1 ⊥ T6 ⊇ out. So (r1V + (a - r1V)) is outside the out range.
+          -- r1V+(a-r1V) is in p1, and p1 ⊥ T6 ⊇ out, so it's outside the out range.
           have h_p1_some : (PartialState.singletonMemBytes r1V p1Bytes).mem (r1V + (a - r1V)) =
               some (p1Bytes.get! (a - r1V)).toNat := by
             apply PartialState.singletonMemBytes_mem_at
@@ -2801,14 +2695,11 @@ theorem call_sol_memcmp_spec
 
 /-! ## Memset with a `↦U64` split tail (qedlift blob read-through)
 
-When the program later READS a dword inside the memset-filled region
-(p_token CloseAccount: `ldxdw [acct+88]` inside the 48-byte zeroing at
-`[acct+48, +96)`), the blob post must expose that cell as a `↦U64`
-atom or the read's atom would overlap the blob (an unsatisfiable
-sepConj — soundness audit H8 Phase C,
-`docs/QEDLIFT_ALIASING_DESIGN.md`). This variant splits the written
-blob's LAST 8 bytes off as a `↦U64` cell holding the fill byte
-replicated (`fill * 0x0101010101010101`). -/
+When the program later READS a dword inside the memset-filled region (p_token
+CloseAccount: `ldxdw [acct+88]` inside the zeroing of `[acct+48, +96)`), the
+blob post must expose that cell as a `↦U64` atom, else the read's atom overlaps
+the blob (unsatisfiable sepConj; audit H8 Phase C). This variant splits the
+written blob's last 8 bytes off as a `↦U64` cell of the replicated fill byte. -/
 
 /-- `replicateByte` splits across `+`. -/
 theorem replicateByte_split (b : UInt8) (m k : Nat) :
@@ -2822,10 +2713,9 @@ theorem replicateByte_split (b : UInt8) (m k : Nat) :
     rw [Array.getElem_append]
     split <;> simp only [Array.getElem_replicate]
 
-/-- Eight replicated fill bytes are the `u64LE` encoding of any `w`
-    whose eight LE bytes each equal the fill byte. The byte equations
-    are parameters so the emitter can discharge them by `decide` on a
-    concrete `w` (avoiding big-constant `omega`). -/
+/-- Eight replicated fill bytes are the `u64LE` of any `w` whose eight LE bytes
+    each equal the fill byte. Byte equations are parameters so the emitter
+    discharges them by `decide` on a concrete `w` (avoiding big-constant `omega`). -/
 theorem replicateByte8_eq_u64LE (x w : Nat)
     (h0 : w % 256 = x % 256)
     (h1 : w / 0x100 % 256 = x % 256)
@@ -2883,7 +2773,6 @@ theorem call_sol_memset_split_u64_spec
     exact sepConj_iff_congr_right _ (fun h'' => by
       rw [replicateByte8_eq_u64LE r2V w hw0 hw1 hw2 hw3 hw4 hw5 hw6 hw7]
       exact (memU64Is_eq_memBytesIs (r1V + n) _ h'').symm) h'
-  -- (the `ha` rewrite above moved the split-cell address to `a`)
   refine cuTripleWithinMem_weaken (fun _ x => x) ?_ (fun _ x => x)
     (call_sol_memset_spec r0Old r1V r2V r3V pc nCu bsOld hbs hCu)
   intro h hh

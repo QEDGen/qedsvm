@@ -1,28 +1,21 @@
 -- Baked sysvar-cache buffers for the generic `sol_get_sysvar` syscall.
 --
--- agave's `SyscallGetSysvar` serves slices of the BINCODE-serialized
--- sysvars held in the transaction's sysvar cache
--- (`sysvar_cache.rs::sysvar_id_to_buffer` — exactly seven sysvars:
--- clock, epoch_schedule, epoch_rewards, rent, slot_hashes,
--- stake_history, last_restart_slot; everything else returns the
--- in-band `SYSVAR_NOT_FOUND = 2`). The byte contents baked here are
--- the MOLLUSK DEFAULTS (the diff-test baseline; `mollusk-svm`'s
--- `Sysvars::default()`), pinned byte-for-byte against
--- `bincode::serialize` in `qedsvm-rs/tests/sysvar_buffer_pins.rs` so a
--- mollusk/agave bump that changes a default fails in Rust instead of
--- silently diverging this model from the baseline.
+-- agave's `SyscallGetSysvar` serves slices of the BINCODE-serialized sysvars in
+-- the sysvar cache (exactly seven: clock, epoch_schedule, epoch_rewards, rent,
+-- slot_hashes, stake_history, last_restart_slot; else in-band `SYSVAR_NOT_FOUND`).
+-- Contents are the MOLLUSK DEFAULTS (`Sysvars::default()`), pinned against
+-- `bincode::serialize` in `qedsvm-rs/tests/sysvar_buffer_pins.rs` so a default
+-- bump fails in Rust rather than silently diverging the model.
 --
--- NOTE these are bincode layouts (no padding), NOT the repr(C) layouts
--- the typed getters (`SVM/Syscalls/Sysvar.lean`) write: e.g.
--- EpochSchedule is 33 bytes here vs 40 (padded) there.
+-- NOTE bincode layouts (no padding), NOT the repr(C) layouts the typed getters
+-- write: e.g. EpochSchedule is 33 bytes here vs 40 there.
 
 import SVM.SBPF.Machine
 
 namespace SVM.SBPF
 namespace SysvarData
 
-/-- `n` zero bytes. (Local copy — `zerosByteArray` lives downstream in
-    the InstructionSpecs preamble.) -/
+/-- `n` zero bytes (local copy; `zerosByteArray` lives downstream). -/
 def zeros (n : Nat) : ByteArray := ⟨Array.replicate n 0⟩
 
 /-! ## Sysvar ids (32-byte pubkeys, from `solana_sdk_ids::sysvar`) -/
@@ -81,11 +74,9 @@ def lastRestartSlotId : ByteArray :=
 /-- `Clock::default()`: 5 zero u64/i64 fields = 40 zero bytes. -/
 def clockBuf : ByteArray := zeros 40
 
-/-- `EpochSchedule::without_warmup()`: `slots_per_epoch = 432_000`,
-    `leader_schedule_slot_offset = 432_000`, `warmup = false`,
-    `first_normal_epoch = 0`, `first_normal_slot = 0`. bincode bool is
-    ONE byte (33 total, unlike the typed getter's 40-byte repr(C)).
-    432_000 = 0x69780 → LE `80 97 06 00 00 00 00 00`. -/
+/-- `EpochSchedule::without_warmup()`: slots_per_epoch = leader_schedule_slot_offset
+    = 432_000 (0x69780 → LE `80 97 06 ..`), warmup = false, rest 0. bincode bool is
+    ONE byte (33 total, vs the typed getter's 40-byte repr(C)). -/
 def epochScheduleBuf : ByteArray :=
   ⟨#[0x80, 0x97, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
      0x80, 0x97, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -103,18 +94,15 @@ def rentBuf : ByteArray :=
      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
      0x32]⟩
 
-/-- Mollusk's default `SlotHashes`: 512 entries, every one
-    `(slot 0, Hash::default())`. bincode `Vec`: 8-byte LE length (512 =
-    0x200) + 512 × 40 zero bytes = 20488 bytes — i.e. all zeros except
-    `buf[1] = 0x02`. Built with `setIfInBounds` on `replicate` (NOT
-    `#[..] ++ replicate`, whose whnf model is a quadratic
-    `Array.push`/`List.concat` chain). -/
+/-- Mollusk default `SlotHashes`: 512 × `(slot 0, Hash::default())`. bincode `Vec`:
+    8-byte LE length (0x200) + 512 × 40 zeros = 20488 bytes, all zero except
+    `buf[1] = 0x02`. Built via `setIfInBounds` on `replicate`, NOT `#[..] ++
+    replicate` (whose whnf model is a quadratic `Array.push` chain). -/
 def slotHashesBuf : ByteArray :=
   ⟨(Array.replicate 20488 0).setIfInBounds 1 0x02⟩
 
-/-- Mollusk's default `StakeHistory`: one entry
-    `(epoch 0, StakeHistoryEntry::default())`. bincode `Vec`: 8-byte LE
-    length (1) + 32 zero bytes (u64 epoch + 3 × u64 entry) = 40 bytes. -/
+/-- Mollusk default `StakeHistory`: one `(epoch 0, default())`. bincode `Vec`:
+    8-byte LE length (1) + 32 zeros = 40 bytes. -/
 def stakeHistoryBuf : ByteArray :=
   ⟨#[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
     ++ Array.replicate 32 0⟩
@@ -122,9 +110,8 @@ def stakeHistoryBuf : ByteArray :=
 /-- `LastRestartSlot::default()`: one zero u64. -/
 def lastRestartSlotBuf : ByteArray := zeros 8
 
-/-- The sysvar cache: 32-byte id → serialized buffer. Mirrors agave's
-    `sysvar_id_to_buffer` (exactly these seven; anything else is
-    `none` → the syscall returns `SYSVAR_NOT_FOUND = 2` in-band). -/
+/-- Sysvar cache: 32-byte id → serialized buffer (agave's `sysvar_id_to_buffer`).
+    Anything outside these seven is `none` → `SYSVAR_NOT_FOUND = 2` in-band. -/
 def sysvarBuffer (id : ByteArray) : Option ByteArray :=
   if      id == clockId           then some clockBuf
   else if id == epochScheduleId   then some epochScheduleBuf
@@ -137,10 +124,8 @@ def sysvarBuffer (id : ByteArray) : Option ByteArray :=
 
 /-! ## Evaluation lemmas
 
-Proved by `rfl` BEFORE `sysvarBuffer`/`slotHashesBuf` are sealed
-irreducible below (the `rfl`s only force the 32-byte id comparisons,
-never the buffer contents). Call sites (specs/lifts) rewrite with
-these instead of unfolding. -/
+Proved by `rfl` BEFORE the irreducible seal below (the `rfl`s force only the
+32-byte id comparisons, never the buffer contents). Call sites rewrite with these. -/
 
 @[simp] theorem sysvarBuffer_clock :
     sysvarBuffer clockId = some clockBuf := rfl
@@ -157,19 +142,17 @@ these instead of unfolding. -/
 @[simp] theorem sysvarBuffer_lastRestartSlot :
     sysvarBuffer lastRestartSlotId = some lastRestartSlotBuf := rfl
 
-/-- `slotHashesBuf.size` — recorded before sealing (the OOB branch of
-    `execGetSysvar` compares against it). Proven by rewriting, never by
-    evaluation: whnf-ing a 20488-element array blows `maxRecDepth`. -/
+/-- `slotHashesBuf.size`, recorded before sealing (the `execGetSysvar` OOB branch
+    compares against it). By rewriting, not evaluation: whnf of a 20488-element
+    array blows `maxRecDepth`. -/
 @[simp] theorem slotHashesBuf_size : slotHashesBuf.size = 20488 := by
   show ((Array.replicate 20488 (0 : UInt8)).setIfInBounds 1 0x02).size = 20488
   rw [Array.size_setIfInBounds, Array.size_replicate]
 
--- Sealed: `slotHashesBuf`'s logical value is a 20480-element
--- `Array.append`, which whnf evaluates via the QUADRATIC
--- `Array.push`/`List.concat` model (~2×10⁸ steps — it times out any
--- simp/whnf that wanders into a `sysvarBuffer` branch; observed in the
--- `execSyscall_preserves_*` meta-lemmas). The compiled code (runner,
--- native_decide) is unaffected. Use the evaluation lemmas above.
+-- Sealed: `slotHashesBuf`'s logical value whnf-evaluates via the QUADRATIC
+-- `Array.push` model (~2×10⁸ steps), timing out any simp/whnf that wanders into a
+-- `sysvarBuffer` branch (e.g. `execSyscall_preserves_*`). Compiled code
+-- (runner, native_decide) is unaffected. Use the evaluation lemmas above.
 attribute [irreducible] sysvarBuffer slotHashesBuf
 
 end SysvarData

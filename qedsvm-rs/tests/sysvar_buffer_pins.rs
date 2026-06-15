@@ -1,10 +1,5 @@
-//! H7 sysvar-buffer pins: the byte contents `SVM/Syscalls/SysvarData.lean`
-//! bakes for `sol_get_sysvar` must equal the bincode serialization of
-//! mollusk's DEFAULT sysvars (what agave's sysvar cache serves under the
-//! diff harness). A mollusk/agave bump that changes a default or a
-//! serialized layout fails here in Rust instead of silently diverging the
-//! Lean model from the diff baseline.
-//!
+//! H7: pin `SVM/Syscalls/SysvarData.lean` byte contents against mollusk default sysvars.
+//! A mollusk/agave bump that changes a default or layout fails here before silently diverging the Lean model.
 //! Run with: cargo test --features diff-mollusk --test sysvar_buffer_pins
 #![cfg(feature = "diff-mollusk")]
 
@@ -14,9 +9,7 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// Dump every supported sysvar's id + bincode buffer (the exact bytes
-/// `sysvar_id_to_buffer` serves to `sol_get_sysvar`). Used to (re)derive
-/// the Lean constants; the assertions below pin them.
+/// Dump sysvar id + bincode buffer for re-deriving Lean constants; assertions below pin them.
 #[test]
 fn dump_sysvar_buffers() {
     let m = Mollusk::default();
@@ -44,11 +37,7 @@ fn dump_sysvar_buffers() {
     }
 }
 
-/// Pin the exact buffers `SVM/Syscalls/SysvarData.lean` bakes. The
-/// expected values here are constructed the same way the Lean
-/// constants are; if mollusk/agave change a default or a bincode
-/// layout, this fails in Rust before the Lean model silently diverges
-/// from the diff baseline.
+/// Pin exact buffers from `SysvarData.lean`; fails here in Rust on mollusk/agave bumps before Lean diverges.
 #[test]
 fn sysvar_buffers_match_lean_constants() {
     let m = Mollusk::default();
@@ -94,9 +83,7 @@ fn sysvar_buffers_match_lean_constants() {
     assert_eq!(bincode::serialize(&s.last_restart_slot).unwrap(), vec![0u8; 8],
         "lastRestartSlotBuf");
 
-    // The seven ids (SysvarData.{clock,epochSchedule,epochRewards,rent,
-    // slotHashes,stakeHistory,lastRestartSlot}Id).
-    let pin_id = |name: &str, actual: [u8; 32], head: [u8; 8]| {
+    let pin_id = |name: &str, actual: [u8; 32], head: [u8; 8]| { // pin first 8 bytes of each sysvar id
         assert_eq!(&actual[..8], &head, "{name} id head");
     };
     pin_id("clock", solana_sdk_ids::sysvar::clock::id().to_bytes(),

@@ -1,20 +1,6 @@
-//! Decode the wire format `SVM.Ffi.runElfBuffer` produces.
-//!
-//! Layout (see `Svm/Ffi.lean` for the canonical description):
-//!
-//!   u8  status        0 = ELF parse failure (no further bytes)
-//!                     1 = executed
-//!   if status == 1:
-//!     u8  exit_kind   0 = out of CU budget (no further u64)
-//!                     1 = halted (u64 follows)
-//!     u64 exit_code   little-endian, only if exit_kind == 1
-//!     u64 cu_consumed little-endian, always present
-//!     u32 input_len
-//!     [u8] input
-//!     u32 num_logs
-//!       per log: u32 log_len, [u8] log
-//!     u32 rd_len
-//!     [u8] rd
+//! Decode the wire format `SVM.Ffi.runElfBuffer` produces (see `Svm/Ffi.lean` for canonical layout):
+//! `u8 status` (0=ELF fail, 1=executed); if 1: `u8 exit_kind` (0=OOB, 1=halted+u64, 2=faulted+u64),
+//! `u64 cu_consumed`, `u32 input_len + [u8]`, `u32 num_logs + per-log u32+[u8]`, `u32 rd_len + [u8]`.
 
 use std::fmt;
 
@@ -23,30 +9,20 @@ use std::fmt;
 pub enum ExitOutcome {
     /// The CU budget was exhausted before the program halted.
     OutOfBudget,
-    /// The program halted via a clean `exit`. `0` means success. NOTE
-    /// (audit L1): a clean exit can carry ANY r0, including values
-    /// numerically equal to the fault sentinels — `Faulted` is what
-    /// distinguishes a real VM fault.
+    /// Program halted via a clean `exit`. NOTE (audit L1): any r0 is possible; `Faulted` is what
+    /// distinguishes a real VM fault from a numerically identical program-returned exit code.
     Halted(u64),
-    /// The VM faulted (access violation, unsupported instruction,
-    /// divide-by-zero, … — the Lean `State.vmError` channel). The
-    /// payload is the legacy `ERR_*` sentinel for that fault, so the
-    /// downstream mapping is unchanged until the M14 error-code table
-    /// consumes the distinction.
+    /// VM faulted (access violation, div-by-zero, etc. — Lean `State.vmError` channel).
+    /// Payload is the legacy `ERR_*` sentinel; see M14 for the cross-engine mapping.
     Faulted(u64),
 }
 
 #[derive(Clone, Debug)]
 pub struct RawResult {
     pub outcome: ExitOutcome,
-    /// Compute units consumed. CPI sub-calls share the parent's meter:
-    /// the callee runs on the caller's remaining fuel and its
-    /// instructions count toward this total (see Lean's
-    /// `Runner.executeFnCpiWithFuel`).
+    /// CU consumed. CPI callees share the parent's meter (see `Runner.executeFnCpiWithFuel`).
     pub compute_units_consumed: u64,
-    /// The input region after execution (writable account data lives
-    /// here; the deserializer in `mollusk.rs` slices it back into
-    /// modified accounts).
+    /// Input region after execution; `deserialize_account_writes` slices it back into accounts.
     pub modified_input: Vec<u8>,
     pub logs: Vec<Vec<u8>>,
     pub return_data: Vec<u8>,

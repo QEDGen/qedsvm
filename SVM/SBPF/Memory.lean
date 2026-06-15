@@ -1,16 +1,14 @@
--- Flat byte-addressable memory model for sBPF verification
+-- Flat byte-addressable memory model for sBPF verification.
 --
--- sBPF uses a flat address space. The runtime maps these regions; note
--- that NOTHING is mapped below 0x100000000 (the program region base):
+-- Mapped regions (NOTHING below 0x100000000):
 --   0x100000000 : Program region (.text + .rodata + .data.rel.ro)
 --   0x200000000 : Stack
 --   0x300000000 : Heap
 --   0x400000000 : Input buffer (serialized accounts + instruction data)
 --
--- This "no low region" fact is load-bearing: `effectiveAddr` clamps a
--- negative computed address to 0, so a fault there only stays sound as
--- long as address 0 is unmapped (see docs/SOUNDNESS_AUDIT_* M3).
--- Programs receive a pointer to the input buffer in r1 at entry.
+-- "No low region" is load-bearing: `effectiveAddr` clamps a negative address
+-- to 0, so the fault there is only sound while address 0 is unmapped (M3).
+-- Programs receive the input buffer pointer in r1 at entry.
 
 import SVM.SBPF.ISA
 import Std.Data.HashMap
@@ -21,22 +19,12 @@ open SVM.SBPF
 
 /-! ## Memory type
 
-`Mem` was originally `abbrev Mem := Nat → Nat`. Each `writeU*` returned
-`fun a => if a = addr then val else mem a`, so after N writes a read
-walked an N-deep closure chain. For SPL Token (post-execution chain
-~thousands deep, input ~5 KB) that was tens of millions of Nat
-equality tests per `process_instruction`, making `diff_mollusk` take
-~50 minutes (dominated by `encodeRun`'s FFI-return-path
-`readBytes` walk).
-
-The fix is a thin overlay: writes go into a `Std.HashMap Nat UInt8`,
-reads check the overlay first and fall through to the `default`
-function on miss. The `Coe (Nat → Nat) Mem` instance keeps inline
-closure-style constructors (sysvar / Pda / Native syscall bodies)
-type-checking — they land in `default`, which is fine for cold paths
-that get few reads. The `CoeFun Mem (fun _ => Nat → Nat)` instance
-keeps the `mem a` application syntax compiling at every existing call
-site (readU*, readBytes, etc.). -/
+Was `abbrev Mem := Nat → Nat`, where each `writeU*` returned a closure, so a
+read walked an N-deep chain (SPL Token: ~50min `diff_mollusk`). Now a thin
+overlay: writes go into a `Std.HashMap Nat UInt8`, reads check the overlay then
+fall through to `default` on miss. The `Coe (Nat → Nat) Mem` keeps closure-style
+constructors (sysvar/Pda/Native bodies, cold paths) type-checking via `default`;
+the `CoeFun` keeps the `mem a` syntax compiling at every call site. -/
 
 structure Mem where
   default : Nat → Nat := fun _ => 0
@@ -48,36 +36,28 @@ structure Mem where
   | some b => b.toNat
   | none   => m.default a
 
-/-- Insert a single byte into the overlay (mod 256).
+/-- Insert one byte into the overlay (mod 256).
 
-    `irreducible` so the kernel's `whnf` stops here during proof-time
-    defeq checks. With the old `Mem := Nat → Nat`, `writeU*` produced
-    a lambda which was a natural whnf head; the new struct-update
-    chain has no such head and whnf'd recursively into HashMap
-    internals, blowing heartbeat limits in `Region.lean` /
-    `InstructionSpecs.lean`. Keeping `Mem.put` opaque restores the
-    old proof behavior — everything still goes through the axioms /
-    `simp`/`rw` rules, never relying on transparent unfolding. -/
+    `irreducible` so `whnf` stops here: the struct-update chain has no lambda
+    head (unlike the old `Nat → Nat` `writeU*`), so whnf'd recursively into
+    HashMap internals, blowing heartbeats in `Region.lean`/`InstructionSpecs`.
+    Opaque restores the old behavior — everything goes through simp/rw rules. -/
 @[inline, irreducible] def Mem.put (m : Mem) (addr val : Nat) : Mem :=
   { m with overlay := m.overlay.insert addr (val % 256).toUInt8 }
 
 /-- Apply syntax: `mem a` desugars to `Mem.read mem a`. -/
 instance : CoeFun Mem (fun _ => Nat → Nat) := ⟨Mem.read⟩
 
-/-- A plain `Nat → Nat` lifts to a `Mem` whose overlay is empty and
-    whose `default` is the supplied function. Closure-style
-    constructors (`fun a => if cond then v else mem a`) ride this. -/
+/-- Lift a `Nat → Nat` to a `Mem` with empty overlay and `default := f`.
+    Closure-style constructors ride this. -/
 instance : Coe (Nat → Nat) Mem := ⟨fun f => { default := f }⟩
 
 instance : Inhabited Mem := ⟨{}⟩
 
 /-! ## `Mem.put` / `Mem.read` interaction lemmas
 
-These are the semantic API for the overlay model: the rest of the
-code treats `Mem.put` and `Mem.read` as opaque (since `Mem.put` is
-`@[irreducible]`) and reasons via these two lemmas. Marked `@[simp]`
-so existing `unfold Memory.writeU8; simp` patterns in
-`InstructionSpecs.lean` close after the rewrite to `Mem.put`. -/
+Semantic API for the (opaque) overlay model: the rest of the code reasons via
+these. `@[simp]` so `unfold Memory.writeU8; simp` patterns close. -/
 
 @[simp] theorem Mem.read_put_self (m : Mem) (addr val : Nat) :
     (Mem.put m addr val).read addr = val % 256 := by
@@ -89,14 +69,10 @@ so existing `unfold Memory.writeU8; simp` patterns in
   unfold Mem.put Mem.read
   simp [Std.HashMap.getElem?_insert, Ne.symm h]
 
-/-- if-form of `Mem.read (Mem.put ...) ...`. Recovers the shape that
-    the old `writeU8` produced after unfolding (`fun a => if a = addr
-    then val % 256 else mem a`), so existing
-    `unfold Memory.writeU8; show (if ...) = _` patterns in
-    `InstructionSpecs.lean` still match. Marked `@[simp]` so `simp`
-    after `unfold Memory.writeU*` reproduces the pre-refactor goal
-    shape automatically; subsumes `read_put_self` / `read_put_other`
-    in simp contexts (which remain as named lemmas for direct `rw`). -/
+/-- if-form of `Mem.read (Mem.put ...) ...`: recovers the old `writeU8`
+    post-unfold shape so existing `unfold Memory.writeU8; show (if ...)`
+    patterns still match. `@[simp]` reproduces the pre-refactor goal shape;
+    subsumes `read_put_self`/`read_put_other` (kept for direct `rw`). -/
 @[simp] theorem Mem.read_put (m : Mem) (addr val a : Nat) :
     Mem.read (Mem.put m addr val) a =
       if a = addr then val % 256 else Mem.read m a := by
@@ -106,30 +82,26 @@ so existing `unfold Memory.writeU8; simp` patterns in
 
 /-! ## Region base addresses -/
 
--- Unused: `.rodata` is mapped inside the program region (BYTECODE_START),
--- not as a separate region at 0. Kept only for reference; nothing is
--- mapped at address 0 (see the module header, M3).
+-- Unused: `.rodata` lives inside the program region, not at 0; nothing is
+-- mapped at address 0 (M3). Kept for reference.
 def RODATA_START   : Nat := 0x000000000
 def BYTECODE_START : Nat := 0x100000000
 def STACK_START    : Nat := 0x200000000
 def HEAP_START     : Nat := 0x300000000
 def INPUT_START    : Nat := 0x400000000
 
-/-- Size of each sBPF memory region. Same value as the spacing between
-    `BYTECODE_START`/`STACK_START`/`HEAP_START`/`INPUT_START`. Also the
-    threshold below which the ELF loader's `R_BPF_64_Relative` patch
-    bumps an address into the program region (`MM_PROGRAM_START` in
-    agave / solana-sbpf nomenclature). -/
+/-- Size of each sBPF region (= the region spacing). Also the threshold below
+    which the ELF loader's `R_BPF_64_Relative` patch bumps an address into the
+    program region (`MM_PROGRAM_START` in agave). -/
 def MM_REGION_SIZE : Nat := 0x100000000
 
 /-! ## Effective address computation -/
 
-/-- Compute effective address from base register value and signed offset.
+/-- Effective address from base register and signed offset.
 
-    NOTE: Int.toNat clamps negative results to 0. In real sBPF, a negative
-    effective address would be caught by the memory region bounds check
-    (which we do not model). All verified programs use non-negative offsets,
-    so this clamping is unreachable in practice. -/
+    NOTE: `Int.toNat` clamps negative results to 0; real sBPF would trap them on
+    the region bounds check. Unreachable in practice (verified programs use
+    non-negative offsets); sound because address 0 is unmapped (M3). -/
 def effectiveAddr (base : Nat) (off : Int) : Nat :=
   Int.toNat ((↑base : Int) + off)
 
@@ -164,15 +136,10 @@ def readU64 (mem : Mem) (addr : Nat) : Nat :=
 
 /-! ## Write operations (little-endian)
 
-Each write returns a fresh `Mem` whose overlay has been updated with
-the new byte(s). The `default` function is preserved untouched, so any
-read of an address that wasn't overwritten still falls through to it.
-
-These are the only sites that actually take the overlay-fast-path —
-the closure-style constructors elsewhere (`Sysvar`, `Pda`, ...) land
-in `default` via `Coe` and pay the chain-walk cost on read. That's
-fine because they execute O(1) times per program run, whereas
-`writeU*` runs once per store instruction (millions of times). -/
+Each write updates the overlay, leaving `default` untouched. These are the only
+overlay-fast-path sites; closure-style constructors land in `default` and pay
+chain-walk on read, which is fine since they run O(1) times (vs `writeU*` once
+per store, millions of times). -/
 
 /-- Write 1 byte. Inserts `val % 256` at `addr`. -/
 def writeU8 (mem : Mem) (addr val : Nat) : Mem :=
@@ -180,13 +147,9 @@ def writeU8 (mem : Mem) (addr val : Nat) : Mem :=
 
 /-- Write 2 bytes little-endian.
 
-    NOTE: the put-chain is intentionally ordered with the *low* byte
-    outermost (`addr` last). When `simp [Mem.read_put]` peels off
-    layers, it produces the nested-if tree in the same order as the
-    pre-refactor `writeU16` lambda body (`if a = addr then ... else if
-    a = addr + 1 then ... else mem a`), so existing
-    `unfold Memory.writeU16; show (if ...) = _` patterns in
-    `InstructionSpecs.lean` still match without rewriting. -/
+    NOTE: low byte outermost (`addr` last) on purpose, so `simp [Mem.read_put]`
+    peels into the same nested-if order as the pre-refactor lambda body and
+    existing `unfold Memory.writeU16; show (if ...)` patterns still match. -/
 def writeU16 (mem : Mem) (addr val : Nat) : Mem :=
   let m1 := Mem.put mem  (addr + 1)  (val / 0x100 % 0x100)
   Mem.put m1                  addr        (val % 0x100)
@@ -227,16 +190,10 @@ def writeByWidth (mem : Mem) (addr val : Nat) : SVM.SBPF.Width → Mem
 
 /-! ## Per-byte read lemmas for `writeU{8,16,32,64}`
 
-For each write width, `read_at_i` computes the result of reading the
-i-th byte of the just-written value, and `read_other` propagates a
-read at any address outside the write footprint. The round-trip and
-disjoint theorems below are then mechanical: read-after-write is
-`read_at_i` (one per byte of the read), and read-disjoint-from-write
-is `read_other` (one per byte of the read).
-
-All proofs unfold to one or two `Mem.put` layers and discharge via
-`Mem.read_put_self` / `Mem.read_put_other` plus a constant-base
-`omega` for the byte-extraction arithmetic. -/
+Per width: `read_at_i` reads back the i-th written byte, `read_other` propagates
+a read outside the write footprint. The round-trip/disjoint theorems below are
+then mechanical (one per byte). All discharge via `Mem.read_put_{self,other}`
+plus a constant-base `omega`. -/
 
 theorem writeU8_read_at (mem : Mem) (addr val : Nat) :
     (writeU8 mem addr val).read addr = val % 256 := by
@@ -391,10 +348,9 @@ theorem writeU64_read_other (mem : Mem) (addr val a : Nat)
 
 /-! ## Memory coherence theorems (previously axioms; see history)
 
-Little-endian encode/decode is a round-trip for values within range
-(same-address group) and a write doesn't disturb reads outside its
-footprint (disjoint group). Each proof reduces to the per-byte
-lemmas above plus a constant-base `omega` for the LE arithmetic. -/
+LE encode/decode round-trips in range (same-address group); a write doesn't
+disturb reads outside its footprint (disjoint group). Each reduces to the
+per-byte lemmas plus a constant-base `omega`. -/
 
 /-! ### Same-address round-trip -/
 
@@ -614,10 +570,9 @@ theorem readU8_writeU8_disjoint (mem : Mem) (rAddr wAddr val : Nat)
 
 /-! ### Region frame axioms (two-premise: read below STACK_START, write above)
 
-These are derivable from the disjoint axioms (if rAddr + N ≤ STACK_START
-and STACK_START ≤ wAddr then rAddr + N ≤ wAddr). Stated separately because
-omega resolves two simple inequalities faster than one compound disjunction,
-and the `mem_frame` tactic uses them for efficient region-based stripping. -/
+Derivable from the disjoint axioms, but stated separately because `omega`
+resolves two simple inequalities faster than one compound disjunction; the
+`mem_frame` tactic uses them for region-based stripping. -/
 
 /-- Input read survives stack write (U64 × U64) -/
 theorem readU64_writeU64_frame (mem : Mem) (rAddr wAddr val : Nat)
@@ -686,19 +641,11 @@ def belowStack (base bound : Nat) : Prop := base + bound ≤ STACK_START
 
 /-! ## Region table — runtime bounds enforcement
 
-`Mem := Nat → Nat` is a total function, so a stray read/write past a
-program's mapped regions silently succeeds (returns zero / writes
-to nothing). Agave fails such accesses with `AccessViolation`.
-
-We close that gap with a parallel bounds-check layer: a `RegionTable`
-listing the valid `[start, start + size)` intervals plus their
-writability. The Lean `step` consults the table on `.ldx` / `.st` /
-`.stx` and routes a miss to `ERR_ACCESS_VIOLATION`.
-
-Total `Mem` is preserved, so the SepLogic coherence theorems above
-stay sound (they were 13 axioms until 2026-05-23; now proved from
-`Mem.put` / `Mem.read_put_self` / `Mem.read_put_other` via the
-per-byte `writeU*_read_at_i` / `writeU*_read_other` lemmas). -/
+Total `Mem` lets a stray access past mapped regions silently succeed, where
+agave raises `AccessViolation`. Close that with a parallel bounds layer: a
+`RegionTable` of valid `[start, start+size)` intervals + writability, consulted
+by `step` on `.ldx`/`.st`/`.stx`, routing a miss to `ERR_ACCESS_VIOLATION`.
+Total `Mem` is preserved, so the coherence theorems above stay sound. -/
 
 structure Region where
   start    : Nat
@@ -706,12 +653,10 @@ structure Region where
   writable : Bool
   deriving Inhabited, Repr
 
-/-- A region table is just the list of mapped regions. Order is
-    irrelevant for correctness; the check folds over the whole list. -/
+/-- List of mapped regions; order irrelevant, the check folds over the list. -/
 abbrev RegionTable := List Region
 
-/-- Does the half-open access `[addr, addr + len)` lie entirely
-    within this region? -/
+/-- Does `[addr, addr + len)` lie entirely within this region? -/
 def Region.contains (r : Region) (addr len : Nat) : Bool :=
   decide (r.start ≤ addr ∧ addr + len ≤ r.start + r.size)
 
@@ -725,12 +670,11 @@ def RegionTable.containsWritable (rt : RegionTable) (addr len : Nat) : Bool :=
 
 /-! ## Input buffer layout helpers
 
-The Solana runtime serializes accounts into the input buffer with a fixed
-layout per account. Offsets are relative to the start of each account record.
-The exact absolute offsets depend on preceding account data sizes, so programs
-define them as .equ constants. -/
+The runtime serializes accounts into the input buffer with a fixed per-account
+layout; offsets here are relative to each account record's start (absolute
+offsets depend on preceding account data sizes, so programs use .equ). -/
 
-/-- Offsets within a single account record (relative to account start) -/
+/-- Offsets within a single account record (relative to account start). -/
 structure AccountLayout where
   header   : Nat  -- 8 bytes: dup marker, is_signer, is_writable, executable, ...
   key      : Nat  -- 32 bytes: account pubkey

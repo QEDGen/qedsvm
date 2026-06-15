@@ -1,8 +1,5 @@
--- Pubkey memory predicates and frame lemmas for sBPF verification
---
--- sBPF programs compare pubkeys by loading four 8-byte chunks and branching
--- on each pair. This module provides memory predicates and frame lemmas
--- for the unified Pubkey type (defined in SVM.Pubkey).
+-- Pubkey memory predicates and frame lemmas for the unified Pubkey type.
+-- sBPF programs compare pubkeys by loading four 8-byte chunks and branching.
 
 import SVM.Pubkey
 import SVM.SBPF.Memory
@@ -33,14 +30,13 @@ theorem pubkeyAt_iff_readPubkey (mem : Mem) (base : Nat) (pk : Pubkey) :
   · rintro ⟨h0, h1, h2, h3⟩; exact Pubkey.ext' h0 h1 h2 h3
   · rintro h; subst h; exact ⟨rfl, rfl, rfl, rfl⟩
 
-/-- Memory equality preserves pubkeyAt. Use after proving `s'.mem = s.mem`
-    for register-only instruction sections. -/
+/-- Memory equality preserves pubkeyAt (for register-only sections, after
+    `s'.mem = s.mem`). -/
 theorem pubkeyAt_of_mem_eq {mem₁ mem₂ : Mem} {base : Nat} {pk : Pubkey}
     (h_eq : mem₂ = mem₁) (h : pubkeyAt mem₁ base pk) :
     pubkeyAt mem₂ base pk := h_eq ▸ h
 
-/-- pubkeyAt survives a U64 write at a disjoint address.
-    The write must not overlap [base, base+32). -/
+/-- pubkeyAt survives a U64 write disjoint from `[base, base+32)`. -/
 theorem pubkeyAt_writeU64_disjoint {mem : Mem} {base wAddr val : Nat} {pk : Pubkey}
     (h : pubkeyAt mem base pk)
     (hd : wAddr + 8 ≤ base ∨ base + 32 ≤ wAddr) :
@@ -52,8 +48,8 @@ theorem pubkeyAt_writeU64_disjoint {mem : Mem} {base wAddr val : Nat} {pk : Pubk
   · rw [readU64_writeU64_disjoint _ _ _ _ (by omega)]; exact h2
   · rw [readU64_writeU64_disjoint _ _ _ _ (by omega)]; exact h3
 
-/-- pubkeyAt survives a U64 stack write when the pubkey is in the input region.
-    Two-premise version: pubkey below STACK_START, write at or above STACK_START. -/
+/-- pubkeyAt survives a U64 stack write: pubkey below STACK_START, write at or
+    above it. -/
 theorem pubkeyAt_writeU64_frame {mem : Mem} {base wAddr val : Nat} {pk : Pubkey}
     (h : pubkeyAt mem base pk)
     (h_r : base + 32 ≤ STACK_START) (h_w : STACK_START ≤ wAddr) :

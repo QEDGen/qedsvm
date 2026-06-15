@@ -1,17 +1,10 @@
 /-
   alt_bn128 (BN254) elliptic-curve operations.
 
-  Backed by `lean-bridge` calling `solana-bn254 = 3.2.1` — agave's
-  master pin. Used for Ethereum-precompile parity (BN254 group ops
-  and pairing live at Ethereum precompiles 0x06–0x08 since EIP-196 /
-  EIP-197) and for ZK verifiers that target the BN254 curve.
-
-  Operations are identified by a u64 `op_id` that encodes both the
-  operation (ADD/MUL/PAIRING × G1/G2) and the endianness (high bit
-  `0x80` = little-endian). See `LE_FLAG`.
-
-  Wired to `.sol_alt_bn128_group_op` and `.sol_alt_bn128_compression`
-  via `AltBn128.execGroupOp` and `AltBn128.execCompression` below.
+  Backed by `lean-bridge` calling `solana-bn254 = 3.2.1` (agave's master
+  pin). A u64 `op_id` encodes both the operation (ADD/MUL/PAIRING × G1/G2)
+  and the endianness (high bit `0x80` = LE; see `LE_FLAG`). Wired to
+  `.sol_alt_bn128_group_op`/`.sol_alt_bn128_compression`.
 -/
 
 import SVM.SBPF.Machine
@@ -19,10 +12,7 @@ import SVM.SBPF.Machine
 namespace SVM.SBPF
 namespace AltBn128
 
-/-! ## Endianness flag
-
-`op_id | LE_FLAG` selects little-endian; bare `op_id` selects
-big-endian. -/
+/-! ## Endianness flag (`op_id | LE_FLAG` = LE; bare = BE) -/
 def LE_FLAG : Nat := 0x80
 
 /-! ## Group operations (`sol_alt_bn128_group_op`) -/
@@ -47,20 +37,14 @@ def ALT_BN128_G2_COMPRESS_LE   : Nat := 2 ||| LE_FLAG
 def ALT_BN128_G2_DECOMPRESS_BE : Nat := 3
 def ALT_BN128_G2_DECOMPRESS_LE : Nat := 3 ||| LE_FLAG
 
-/-- Perform a BN254 group operation. The `opId` byte selects both the
-    operation (ADD/MUL/PAIRING on G1 or G2) and the endianness.
+/-- Perform a BN254 group operation; `opId` selects op and endianness.
     Input size depends on the op:
     - G1 ADD: 128 bytes  (two 64-byte G1 points)
     - G1 MUL: 96 bytes   (64-byte G1 point + 32-byte scalar)
     - G2 ADD: 256 bytes  (two 128-byte G2 points)
     - G2 MUL: 160 bytes  (128-byte G2 point + 32-byte scalar)
     - PAIRING: 192n bytes (n × (G1, G2) pair, n ≥ 1)
-
-    Output size:
-    - G1 ops: 64 bytes
-    - G2 ops: 128 bytes
-    - PAIRING: 32 bytes (1 = pairing identity, 0 otherwise)
-
+    Output: G1 ops 64, G2 ops 128, PAIRING 32 (1 = identity else 0).
     Returns `none` on invalid op_id, malformed input, off-curve point,
     or any internal error. -/
 @[extern "lean_alt_bn128_group_op"]
@@ -79,9 +63,7 @@ opaque compression (opId : UInt64) (input : @& ByteArray) : Option ByteArray
 
 /-! ## Syscall bindings -/
 
-/-! ## CU charges
-
-Per agave's `SVMTransactionExecutionCost::default()`:
+/-! ## CU charges (agave's `SVMTransactionExecutionCost::default()`)
 
 | op                | cost                                                |
 |-------------------|-----------------------------------------------------|
@@ -93,8 +75,8 @@ Per agave's `SVMTransactionExecutionCost::default()`:
 | G2 COMPRESS       | 86                                                  |
 | G2 DECOMPRESS     | 13_610                                              |
 
-Source: `blueshift/sbpf/crates/runtime/src/config.rs:111-118`. The op_id
-lives in `r1`; pairing's `n` is derived from `r3` (input size / 192). -/
+Source: `blueshift/sbpf/crates/runtime/src/config.rs:111-118`. op_id in
+`r1`; pairing's `n = r3 / 192` (input size / 192). -/
 
 /-- Strip the LE flag so we compare against the bare BE op number. -/
 private def baseOp (opId : Nat) : Nat := opId &&& (LE_FLAG - 1)
@@ -138,8 +120,7 @@ private def baseOp (opId : Nat) : Nat := opId &&& (LE_FLAG - 1)
     ABI: r1 = op_id, r2 = input, r3 = input_size, r4 = out. r0 = 0/1. -/
 @[simp] def execGroupOp (s : State) : State :=
   let opId   := s.regs.r1
-  -- H6: agave translates the caller-sized input (`[r2, r2+r3)`, Load) then
-  -- the op-determined output (`[r4, r4+groupOpOutSize)`, Store).
+  -- H6: input `[r2, r2+r3)` (Load) then output `[r4, r4+groupOpOutSize)` (Store).
   s.guardRead s.regs.r2 s.regs.r3 fun s =>
   s.guardWrite s.regs.r4 (groupOpOutSize opId) fun s =>
     let inputB := readBytes s.mem s.regs.r2 s.regs.r3
@@ -149,17 +130,15 @@ private def baseOp (opId : Nat) : Nat := opId &&& (LE_FLAG - 1)
 /-- Execute `sol_alt_bn128_compression`. Same ABI shape as `execGroupOp`. -/
 @[simp] def execCompression (s : State) : State :=
   let opId   := s.regs.r1
-  -- H6: same envelope as `execGroupOp` — input `[r2, r2+r3)` (Load), output
-  -- `[r4, r4+compressionOutSize)` (Store).
+  -- H6: same envelope as `execGroupOp`, output sized by `compressionOutSize`.
   s.guardRead s.regs.r2 s.regs.r3 fun s =>
   s.guardWrite s.regs.r4 (compressionOutSize opId) fun s =>
     let inputB := readBytes s.mem s.regs.r2 s.regs.r3
     let result := compression opId.toUInt64 inputB
     commitOptional s s.regs.r4 (compressionOutSize opId) result
 
-/-- H6 fault direction: a non-empty out-of-region input `[r2, r2+r3)` traps
-    with a typed access violation (the first guarded slice; the output
-    `[r4, r4+groupOpOutSize)` is the second). -/
+/-- H6: a non-empty out-of-region input `[r2, r2+r3)` traps (first guarded
+    slice, before the output `[r4, r4+groupOpOutSize)`). -/
 theorem execGroupOp_faults_oob (s : State)
     (hn0 : s.regs.r3 ≠ 0)
     (hoob : s.regions.containsRange s.regs.r2 s.regs.r3 = false) :

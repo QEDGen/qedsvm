@@ -1,15 +1,11 @@
--- Region-based memory frame for sBPF verification
+-- Region-based memory frame for sBPF verification.
+-- sBPF memory is partitioned (input < stack < heap); writes to one region don't
+-- affect reads from another. Provides chain frame lemmas (strip N writes at
+-- once) + the `mem_frame` tactic.
 --
--- sBPF memory is partitioned into regions (input < stack < heap).
--- Writes to one region don't affect reads from another.
---
--- This module provides:
---   1. Chain frame lemmas: strip N writes in one shot
---   2. The `mem_frame` tactic: automatic region-based write stripping
---
--- The key optimization over strip_writes: mem_frame pre-unfolds STACK_START
--- once and uses two-premise frame lemmas (h_r + h_w) instead of trying
--- 20+ lemma alternatives with omega for each write layer.
+-- Optimization vs strip_writes: mem_frame pre-unfolds STACK_START once and uses
+-- two-premise frame lemmas (h_r + h_w) instead of 20+ omega-discharged
+-- alternatives per write layer.
 
 import SVM.SBPF.Memory
 
@@ -19,11 +15,11 @@ open SVM.SBPF.Memory
 
 /-! ## Chain frame: strip N writes in one shot
 
-`writeU64Chain mem writes` applies a list of U64 writes to memory.
-Definitionally equal to nested writeU64 calls, so `change` works. -/
+`writeU64Chain mem writes` applies a list of U64 writes — defeq to nested
+writeU64 calls, so `change` works. -/
 
-/-- Apply a list of U64 writes to memory.
-    writeU64Chain mem [(a₁,v₁), (a₂,v₂)] = writeU64 (writeU64 mem a₁ v₁) a₂ v₂ -/
+/-- Apply a list of U64 writes:
+    `writeU64Chain mem [(a₁,v₁), (a₂,v₂)] = writeU64 (writeU64 mem a₁ v₁) a₂ v₂`. -/
 def writeU64Chain (mem : Mem) : List (Nat × Nat) → Mem
   | [] => mem
   | (a, v) :: rest => writeU64Chain (writeU64 mem a v) rest
@@ -31,11 +27,9 @@ def writeU64Chain (mem : Mem) : List (Nat × Nat) → Mem
 @[simp] theorem writeU64Chain_nil (mem : Mem) :
     writeU64Chain mem [] = mem := rfl
 
--- `rfl` is correct here but in the post-Mem-refactor world the
--- definitional check used to time out at whnf because `writeU64` now
--- expands into an 8-deep `Mem.put` chain; the elaborator was reducing
--- the inner expression on both sides. Spell out the iota step
--- manually so whnf stays away from `writeU64`'s body.
+-- `rfl` works but post-Mem-refactor whnf timed out: `writeU64` expands to an
+-- 8-deep `Mem.put` chain the elaborator reduced on both sides. Spell out the
+-- iota step manually so whnf stays out of `writeU64`'s body.
 @[simp] theorem writeU64Chain_cons (mem : Mem) (a v : Nat) (rest : List (Nat × Nat)) :
     writeU64Chain mem ((a, v) :: rest) = writeU64Chain (writeU64 mem a v) rest := by
   show writeU64Chain (writeU64 mem a v) rest = writeU64Chain (writeU64 mem a v) rest
@@ -85,16 +79,13 @@ theorem readU8_writeU64Chain_frame (mem : Mem) (rAddr : Nat) (writes : List (Nat
 
 /-! ## mem_frame tactic
 
-Strips write layers from read expressions using region separation.
+Strips write layers from read expressions via region separation. Two modes:
+1. **Below-above** (common): read below STACK_START, write above — two-premise
+   frame lemmas.
+2. **Within-stack**: read/write both in stack at different offsets — standard
+   disjointness lemmas.
 
-Two modes:
-1. **Below-above** (most common): read from input region (< STACK_START),
-   write to stack (≥ STACK_START). Uses two-premise frame lemmas.
-2. **Within-stack**: read and write both in stack at different offsets.
-   Falls back to standard disjointness lemmas.
-
-Key optimization: unfolds STACK_START once at the start instead of
-per-alternative, then all omega calls work on pure numerals. -/
+Unfolds STACK_START once up front so omega works on pure numerals. -/
 
 syntax "mem_frame" : tactic
 

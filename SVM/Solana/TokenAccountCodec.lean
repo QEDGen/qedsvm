@@ -1,17 +1,11 @@
 /-
-  Bridge between the abstract `TokenAccount` record (decoded form,
-  defined in `SVM/Solana/Abstract/State.lean`) and the byte-level SL
-  predicate `tokenAcctBalance` (defined in `SVM/Solana/TokenAccount.lean`).
+  Bridge between the abstract `TokenAccount` record and the byte-level SL
+  predicate `tokenAcctBalance`.
 
-  No executable encode / decode functions — the refinement bridge
-  (`SVM/Solana/Abstract/Refinement.lean`, Task 7) works at the
-  predicate level, not via bit-level transcoding. This file just lifts
-  the per-field predicate to one keyed on the abstract record, plus
-  rewriting lemmas under field updates.
-
-  Adding a new field-mutating intrinsic later (e.g., a `SetMint`
-  variant for delegate operations) means adding a sibling unfolding
-  lemma here: `tokenAcctBalanceOf ata (t.withMint m') = …`.
+  No executable encode/decode: the refinement bridge works at the predicate
+  level, not via bit-level transcoding. This file lifts the per-field predicate
+  to one keyed on the abstract record, plus rewriting lemmas under field updates.
+  A new field-mutating intrinsic adds a sibling unfolding lemma here.
 -/
 
 import SVM.Solana.TokenAccount
@@ -33,10 +27,9 @@ def tokenAcctBalanceOf (ata : Nat) (t : Abstract.TokenAccount) : Assertion :=
     tokenAcctBalanceOf ata t =
       tokenAcctBalance ata t.mint t.owner t.amount t.rest := rfl
 
-/-- A `withAmount` shift on the abstract record rewrites the SL atom
-    to one with the new amount, mint/owner/rest unchanged. This is the
-    load-bearing lemma the refinement bridge applies to convert the
-    abstract TokenTransfer's post-state to the asm-side predicate. -/
+/-- Load-bearing: a `withAmount` shift rewrites the SL atom to the new amount
+    (mint/owner/rest unchanged); the refinement bridge applies it to convert the
+    abstract TokenTransfer post-state to the asm-side predicate. -/
 @[simp] theorem tokenAcctBalanceOf_withAmount
     (ata : Nat) (t : Abstract.TokenAccount) (a : Nat) :
     tokenAcctBalanceOf ata (t.withAmount a) =

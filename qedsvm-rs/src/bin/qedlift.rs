@@ -1,33 +1,7 @@
-//! qedlift — end-to-end lift demo for a simple Solana program.
-//!
-//! Takes a `.so` whose `.text` is short and straight-line, and emits a
-//! Lean module that:
-//!   1. embeds the `.text` bytes verbatim as a `ByteArray`,
-//!   2. decodes them via `SVM.SBPF.Decode.decodeProgram` and proves the
-//!      decoded form via `native_decide`,
-//!   3. states a `cuTripleWithinMem` Hoare triple over the decoded
-//!      sequence with mvars (`?_`) for the pre/post atoms, and
-//!   4. discharges the proof via `sl_block_auto`.
-//!
-//! For byte_increment.so this reproduces the same theorem
-//! `byte_increment_macro_spec_auto` already proves in `SVM/SBPF/Macros.lean`
-//! — but the *theorem statement* is now generated mechanically from the
-//! `.so`, not hand-typed. That's the load-bearing demonstration: given
-//! the binary, we can produce the Lean proof obligation automatically;
-//! `sl_block_auto` then closes it.
-//!
-//! Phase 2 (this iteration): a symbolic executor walks the decoded
-//! insns left-to-right, maintaining a `SymState` (symbolic regs +
-//! memory atoms), and synthesises the pre/post-condition assertions
-//! that `sl_block_auto` then closes. Supports the byte_increment +
-//! counter instruction set today: ldxb/ldxdw/stxb/stxdw, add64.imm,
-//! sub64.imm, mov64.imm. Extending to more opcodes is mechanical —
-//! one match arm per `ebpf::OPCODE`.
-//!
-//! Usage:
-//!   cargo run --features qedrecover --bin qedlift -- \
-//!     --so tests/fixtures/byte_increment.so \
-//!     --output examples/lean/Generated/ByteIncrementLifted.lean
+//! qedlift — takes a compiled `.so`, symbolically executes the decoded eBPF,
+//! and emits a Lean `cuTripleWithinMem` Hoare triple with pre/post conditions
+//! derived from the execution, discharged by `sl_block_auto`. Also emits
+//! aggregation modules and asm-refines theorems for known program shapes.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -88,17 +62,10 @@ struct Args {
     target_name: Option<String>,
 }
 
-// -----------------------------------------------------------------------------
-// qedmeta sidecar (subset). qedlift reads targeting (name/discriminator/
-// cu_budget) AND, as of schema v2 (issue #41 Phase 4), the qedrecover
-// `[instruction.recovered]` arm decomposition — previously dropped and
-// re-derived via a disc-guided walk. serde ignores undeclared fields
-// (target/idl/account/blocks/proofs), so v0.1 sidecars still parse.
-// -----------------------------------------------------------------------------
+// qedmeta sidecar (#41 Phase 4): v2 adds [instruction.recovered] arm
+// decomposition; serde ignores unknown fields so v0.1 sidecars still parse.
 
-/// Newest sidecar schema qedlift understands. v1 = targeting only; v2 =
-/// recovered arm decomposition consumed (this commit). Older sidecars
-/// (no `recovered`) still load — the walk falls back to disc-guided.
+/// Newest sidecar schema qedlift understands; v1 = targeting only, v2 = recovered arm. Older sidecars fall back to disc-guided walk.
 const QEDMETA_SCHEMA_MAX: u32 = 2;
 
 #[derive(Debug, serde::Deserialize)]
@@ -114,10 +81,7 @@ struct QedMetaIx {
     name:          String,
     cu_budget:     Option<u64>,
     discriminator: QedMetaDisc,
-    /// Recovered facts qedrecover computed over the CFG and serialized
-    /// here. qedlift now CONSUMES `arm_entry_pc` to seed/validate its
-    /// walk instead of re-deriving the arm (the issue's "lossy handoff").
-    /// `None` for v0.1 sidecars that predate this section.
+    /// `[instruction.recovered]` from qedrecover; consumed (#41 "lossy handoff"). `None` for pre-v2 sidecars.
     #[serde(default)]
     recovered: Option<QedMetaRecovered>,
 }
@@ -127,24 +91,17 @@ struct QedMetaDisc {
     value: i64,
 }
 
-/// The `[instruction.recovered]` sub-table. qedlift consumes only
-/// `arm_entry_pc`; the other keys qedrecover writes (`dispatch_load_pc`/
-/// `dispatch_jeq_pc`, `block_count`/`blocks`/etc.) are diagnostics that
-/// serde silently ignores here (the struct has no `deny_unknown_fields`).
+/// Sub-table from qedrecover; only `arm_entry_pc` is consumed, other keys silently ignored.
 #[derive(Debug, serde::Deserialize)]
 struct QedMetaRecovered {
-    /// LOGICAL arm-entry PC (decoded-array index — the same space as the
-    /// walker and `.pcs` traces, NOT a raw slot).
+    /// Logical (decoded-array) arm-entry PC — same space as walker / `.pcs` traces, NOT a raw slot.
     arm_entry_pc: usize,
 }
 
 fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(path)?;
     let meta: QedMeta = toml::from_str(&text)?;
-    // A sidecar declaring a NEWER schema than we understand may carry
-    // semantics we'd silently mis-consume — fail closed. Older (or
-    // unset, == 0) versions are fine: the `recovered` field is optional
-    // and absent fields degrade to the disc-guided fallback.
+    // Newer schema may carry semantics we'd silently mis-consume — fail closed.
     if meta.schema_version > QEDMETA_SCHEMA_MAX {
         return Err(format!(
             "--qedmeta {}: schema_version {} is newer than this qedlift \
@@ -154,13 +111,7 @@ fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
     Ok(meta)
 }
 
-// -----------------------------------------------------------------------------
-// IDL parsing. Two formats are supported, dispatched on file extension:
-//   • .toml  — minimal in-tree schema for fixtures (see two_op.qedidl.toml)
-//   • .json  — Codama IDL (the de-facto format Solana programs ship with;
-//              same JSON qedrecover already consumes)
-// Both flatten to a `Vec<IdlInstruction>` for the batch loop.
-// -----------------------------------------------------------------------------
+// IDL parsing: .toml (minimal in-tree fixture schema) or .json (Codama); both flatten to Vec<IdlInstruction>.
 
 #[derive(Debug)]
 struct IdlInstruction {
@@ -193,13 +144,7 @@ fn load_idl(path: &Path) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Erro
     }
 }
 
-// Codama is a tree of typed nodes. For the batch lift, we only need
-// `(name, discriminator)` per instructionNode. The discriminator value
-// lives in the `arguments[]` entry whose `name` matches the
-// `discriminators[0].name`, under `defaultValue.number`. Only the
-// "u8 at offset 0" shape is handled today — that covers SPL Token,
-// p-token, and our in-tree fixtures. Anchor's 8-byte sighashes need
-// a wider executor and aren't supported yet.
+// Only fieldDiscriminatorNode at offset 0 is handled (covers SPL Token / p-token); Anchor 8-byte sighashes unsupported.
 fn load_codama(text: &str) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Error>> {
     let root: serde_json::Value = serde_json::from_str(text)?;
     let instructions = root.pointer("/program/instructions")
@@ -213,7 +158,6 @@ fn load_codama(text: &str) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Er
             Some(d) if !d.is_empty() => d,
             _ => { skipped.push((name, "no discriminators")); continue; }
         };
-        // Only field-style single-byte discriminators at offset 0.
         let d0 = &discs[0];
         let d_kind   = d0.get("kind").and_then(|v| v.as_str()).unwrap_or("");
         let d_name   = d0.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -241,22 +185,14 @@ fn load_codama(text: &str) -> Result<Vec<IdlInstruction>, Box<dyn std::error::Er
     Ok(out)
 }
 
-/// Load a Codama (`.json`) IDL as a raw `serde_json::Value` for layout
-/// extraction. Returns `None` for the minimal `.toml` IDL format (which
-/// carries no account layout) or on read/parse error.
+/// Load a Codama `.json` IDL as a raw `Value` for layout extraction; returns `None` for `.toml` or parse error.
 fn load_idl_value(path: &Path) -> Option<serde_json::Value> {
     if path.extension().and_then(|e| e.to_str()) != Some("json") { return None; }
     let text = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
 }
 
-// -----------------------------------------------------------------------------
-// Codama account-data-struct → byte layout now lives in the shared
-// substrate (`qedsvm::analysis::layout`, issue #41 Phase 2) so qedrecover
-// can consume the same field names/offsets. qedlift's refinement codegen
-// imports the types + `parse_account_layout` below.
-// -----------------------------------------------------------------------------
-
+// Account layout types live in the shared substrate (#41 Phase 2) so qedrecover shares field names/offsets.
 use qedsvm::analysis::layout::{FieldKind, parse_account_layout};
 
 #[cfg(test)]
@@ -265,7 +201,6 @@ mod layout_tests {
 
     #[test]
     fn transfer_aggregation_is_mechanically_emitted() {
-        // src reads owner + rest bytes 72/108/109; dst frames owner, reads 108.
         let m = render_token_agg_module(
             "Examples.PTokenTransferAggregation",
             &[("src_account_eq", true,  vec![72, 108, 109]),
@@ -280,7 +215,6 @@ mod layout_tests {
 
     #[test]
     fn mint_aggregation_is_mechanically_emitted() {
-        // SPL mint: supply@36, rest@44, size 82; dest token 72/165.
         let m = render_mint_agg_module(
             "Examples.PTokenMintAggregation", 36, 44, 82, 72, 165);
         let on_disk = std::fs::read_to_string("../examples/lean/PToken/MintAggregation.lean")
@@ -290,10 +224,7 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
-    /// The counter lift + the first NON-token refinement
-    /// (`AsmRefinesCounterIncrement`) are mechanically emitted. Re-runs
-    /// the whole emitter (detection + constant-`+1` cleaning + render) on
-    /// `counter.so` and diffs both files, guarding the counter-codec path.
+    /// Diffs the emitter output on `counter.so` against both on-disk artifacts, guarding the counter-codec (non-token) path.
     #[test]
     fn counter_refinement_is_mechanically_emitted() {
         let so = std::path::Path::new("tests/fixtures/counter.so");
@@ -318,10 +249,7 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
-    /// The multi-field NON-token vault refinement (`AsmRefinesFieldUpdate`)
-    /// is mechanically emitted from the Codama IDL account layout. Re-runs
-    /// the emitter on `vault.so` + `vault.codama.json` and diffs both
-    /// files, guarding the layout-general account-codec path.
+    /// Diffs the emitter output on `vault.so` + `vault.codama.json` against both on-disk artifacts, guarding the layout-general account-codec path.
     #[test]
     fn vault_refinement_is_mechanically_emitted() {
         let so = std::path::Path::new("tests/fixtures/vault.so");
@@ -349,12 +277,7 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
-    /// The blob/`account_agg` codegen path: the SAME `vault.so`, but the
-    /// untouched `owner` field is described as a `[u8; 32]` array in the
-    /// IDL, so it is framed as an opaque `.blob [.gap g]` (`↦Bytes`) rather
-    /// than four pubkey dwords. Guards the layout-general blob aggregation
-    /// (`memBytesIs_segs`) the vault codegen now emits. Both files are
-    /// `lake build`-verified (sorry-free) under `Generated.VaultBlob*`.
+    /// `vault.so` with a `[u8;32]` owner field: framed as opaque `.blob [.gap g]` (`↦Bytes`), exercising the `memBytesIs_segs` blob aggregation path.
     #[test]
     fn vault_blob_refinement_is_mechanically_emitted() {
         let so = std::path::Path::new("tests/fixtures/vault.so");
@@ -382,12 +305,7 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
-    /// The SPLIT-blob codegen: `vault_split.so` reads+writes back a byte
-    /// INSIDE the `owner: [u8;32]` blob, so the lift owns `owner[5]` and the
-    /// account-codec aggregation must split the blob into `[.gap, .byte, .gap]`
-    /// (the mechanized multisig-style split) rather than one opaque gap. Both
-    /// the lift and the refinement (with the split FieldSeg list + its `< 256`
-    /// validity) are `lake build`-verified under `Generated.VaultSplit*`.
+    /// `vault_split.so` owns `owner[5]`, forcing the blob to split into `[.gap, .byte, .gap]` — the multisig-style partial-blob path.
     #[test]
     fn vault_split_refinement_is_mechanically_emitted() {
         let so = std::path::Path::new("tests/fixtures/vault_split.so");
@@ -414,10 +332,7 @@ mod layout_tests {
             "VaultSplitRefinement.lean is out of sync with the qedlift emitter");
     }
 
-    /// The heap-allocating lift, including the mechanically-emitted
-    /// `HeapAlloc_allocates` corollary (heap cells folded into
-    /// `heapBumpPtr`/`heapBlockU64`) and the conditional `HeapSL` import,
-    /// is mechanically emitted. Guards the heap-corollary codegen.
+    /// Guards the heap-corollary codegen: `heapBumpPtr`/`heapBlockU64` fold + conditional `HeapSL` import.
     #[test]
     fn heap_alloc_lift_is_mechanically_emitted() {
         let so = std::path::Path::new("tests/fixtures/heap_alloc.so");
@@ -434,8 +349,7 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
-    /// Pins the halfword path on real cargo-build-sbf bytecode: ldxh /
-    /// stxh and the ST_H_IMM dispatch (`sth_spec`) in one straight line.
+    /// Pins ldxh/stxh and ST_H_IMM (`sth_spec`) on real cargo-build-sbf bytecode.
     #[test]
     fn halfword_store_lift_is_mechanically_emitted() {
         let so = std::path::Path::new("tests/fixtures/halfword_store.so");
@@ -452,13 +366,7 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
-    // ── #41 Phase 4: qedlift consumes the recovered arm entry ──────────
-
-    /// The qedmeta deserializer now READS the `[instruction.recovered]`
-    /// arm decomposition it used to drop (issue #41 grievance #2). The
-    /// real p_token sidecar's `arm_entry_pc` must parse as logical 304
-    /// (the post slot/logical-bug value the `transfer_arm_entry_spaces`
-    /// pin establishes).
+    /// The real p_token sidecar's `arm_entry_pc` must parse as logical 304 (#41: the formerly-dropped `[instruction.recovered]` is now consumed).
     #[test]
     fn qedmeta_recovered_arm_is_parsed() {
         let meta = load_qedmeta(std::path::Path::new("tests/fixtures/p_token.qedmeta.toml"))
@@ -470,10 +378,7 @@ mod layout_tests {
         assert_eq!(rec.arm_entry_pc, 304, "recovered arm entry must be logical 304");
     }
 
-    /// Feeding the recovered arm entry (304) into a trace-guided transfer
-    /// lift CROSS-CHECKS the trace reaches it AND leaves the emitted Lean
-    /// byte-identical to the trace-only path — the sidecar value is
-    /// consumed without perturbing output. Run on the real p_token binary.
+    /// Recovered arm_entry_pc cross-checks that the trace reaches it and leaves emitted Lean byte-identical to the trace-only path.
     #[test]
     fn qedmeta_arm_entry_trace_lift_is_byte_identical() {
         let so = std::path::Path::new("tests/fixtures/p_token.so");
@@ -491,9 +396,7 @@ mod layout_tests {
             "consuming arm_entry perturbed the trace-guided transfer lift");
     }
 
-    /// The cross-check fires: a recovered arm entry that is NOT on the
-    /// execution trace is a sidecar/binary/trace mismatch and must be
-    /// rejected, not silently lifted against the wrong arm.
+    /// A recovered arm_entry_pc not on the execution trace must be rejected, not silently lifted against the wrong arm.
     #[test]
     fn qedmeta_arm_entry_off_trace_is_rejected() {
         let so = std::path::Path::new("tests/fixtures/p_token.so");
@@ -508,14 +411,7 @@ mod layout_tests {
             "an off-trace recovered arm_entry must be rejected by the cross-check");
     }
 
-    /// No-trace seed mechanism: supplying the recovered arm entry SEEDS
-    /// the static walk's start PC (replacing the disc-guided cascade
-    /// navigation). Seeding it at the natural entrypoint must therefore
-    /// reproduce the unseeded walk byte-for-byte — pinning that the seed
-    /// consumes the supplied value and that `unwrap_or(entry_pc)` is the
-    /// faithful fallback. (A non-entrypoint seed can't be pinned on
-    /// p_token: its arm has `call_local`s the no-trace walk can't resolve
-    /// without trace guidance, a pre-existing limitation.)
+    /// Seeding the static walk at the natural entrypoint must reproduce the unseeded walk byte-for-byte, pinning `unwrap_or(entry_pc)` fallback.
     #[test]
     fn qedmeta_arm_entry_seed_at_entrypoint_is_noop() {
         let so = std::path::Path::new("tests/fixtures/heap_alloc.so");
@@ -530,11 +426,7 @@ mod layout_tests {
             "seeding the walk at the entrypoint must equal the unseeded walk");
     }
 
-    /// Re-emit one p_token trace-guided arm and diff the lift (and,
-    /// when the registry has an entry, the refinement) against the
-    /// on-disk artifacts. EVERY shipped arm is pinned: the H8
-    /// overlap-vacuity findings shipped unnoticed precisely because
-    /// the p_token arms had no emitter pins.
+    /// Re-emit one p_token arm and diff lift + refinement against on-disk artifacts. Every arm is pinned: H8 vacuity shipped unnoticed without these pins.
     fn pin_p_token_arm(
         pcs: &str, module: &str, arm: Option<&str>,
         lift_path: &str, refine_path: Option<&str>,
@@ -548,9 +440,7 @@ mod layout_tests {
             Some(module.to_string()), Some(&trace), arm, None, None)
             .expect("lift p_token arm");
 
-        // Set QEDLIFT_BLESS=1 to rewrite the pinned artifacts from the
-        // current emitter output (used when an intentional emitter change
-        // — e.g. the H6 memset `rr` clause — regenerates a lift).
+        // QEDLIFT_BLESS=1 re-blesses artifacts after an intentional emitter change.
         if std::env::var("QEDLIFT_BLESS").is_ok() {
             std::fs::write(lift_path, &result.lean).expect("write lift");
             if let (Some(rp), Some((_, rlean))) = (refine_path, result.refinement.as_ref()) {
@@ -586,11 +476,7 @@ mod layout_tests {
             Some("../examples/lean/PToken/TransferCheckedRefinement.lean"));
     }
 
-    /// MintTo/Burn: regenerated 2026-06-12 after the H8 overlap-vacuity
-    /// finding — Phase A canonical aliasing (the r10 pointer spills) +
-    /// Phase B byte demotion (the width-mixed input-header reads,
-    /// `ldxdw_bytes_spec`). These pins keep the restored artifacts in
-    /// lockstep with the walker.
+    /// Regenerated 2026-06-12 after H8: Phase A canonical aliasing (r10 spills) + Phase B byte demotion (`ldxdw_bytes_spec`).
     #[test]
     fn p_token_mint_to_is_mechanically_emitted() {
         pin_p_token_arm("tests/fixtures/p_token_mint_to.pcs",
@@ -599,9 +485,7 @@ mod layout_tests {
             Some("../examples/lean/PToken/MintToRefinement.lean"));
     }
 
-    /// CloseAccount: regenerated 2026-06-12 after the H8 finding —
-    /// Phase C-1 pre-split memset specs (the account dwords read
-    /// before the zeroing become `↦U64` cells; blob never overlaps).
+    /// Regenerated 2026-06-12 after H8 Phase C-1: pre-split memset specs (`↦U64` cells; blob never overlaps).
     #[test]
     fn p_token_close_account_is_mechanically_emitted() {
         pin_p_token_arm("tests/fixtures/p_token_close_account.pcs",
@@ -610,10 +494,7 @@ mod layout_tests {
             None);
     }
 
-    /// InitializeMint2: the full H8 gauntlet — faithful `sol_get_sysvar`
-    /// (cells17), stw tail-zeroing (byte demotion), and a rent dword
-    /// read spanning both (per-slot address parameters). Trace
-    /// re-captured under the H7-faithful VM.
+    /// Full H8 gauntlet: `sol_get_sysvar` (cells17), stw tail-zeroing (byte demotion), rent dword read. Trace re-captured under H7-faithful VM.
     #[test]
     fn p_token_initialize_mint2_is_mechanically_emitted() {
         pin_p_token_arm("tests/fixtures/p_token_initialize_mint2.pcs",
@@ -667,20 +548,12 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-/// Convert a `solana_sbpf::ebpf::Insn` at analysis PC `pc` to the
-/// Lean `Insn` constructor syntax. The cases here cover the
-/// byte_increment / counter / guarded-counter / counter_with_helper
-/// instruction sets; extending it is mechanical (each new opcode
-/// adds one match arm). For conditional jumps `pc` is used to
-/// resolve the target PC; for `call_local`, `call_target` (when
-/// provided) is substituted as the resolved callee PC (because the
-/// raw immediate is a Murmur3 hash, not an offset).
+/// Convert an sBPF `Insn` to Lean constructor syntax. `call_target` provides the resolved callee PC (raw imm is a Murmur3 hash); `jump_target` is the caller-resolved logical target for conditional jumps.
 fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
                      jump_target: Option<i64>) -> Result<String, String> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
-    // Logical jump target (slot→logical resolved by the caller). Falls
-    // back to the raw slot-relative sum for callers that don't resolve.
+    // Caller-resolved logical target; falls back to raw slot-relative sum.
     let jt = || jump_target.unwrap_or((pc as i64) + 1 + off);
     let reg = |n: u8| match n {
         0 => ".r0", 1 => ".r1", 2 => ".r2", 3 => ".r3",
@@ -688,9 +561,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         8 => ".r8", 9 => ".r9", 10 => ".r10",
         _ => "?reg",
     };
-    // Offset rendered for Lean Insn syntax: negative offsets need
-    // parens (`.stx .dword .r10 -2072 .r0` would parse as
-    // `.r10 - 2072`). Same rationale as `lean_off`.
+    // Negative offsets need parens in Lean syntax (`.r10 -2072` parses as subtraction).
     let offl = lean_off(off);
     Ok(match insn.opc {
         LD_B_REG    => format!(".ldx .byte {} {} {}",     reg(dst), reg(src), offl),
@@ -721,9 +592,6 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         RSH64_REG   => format!(".rsh64 {} (.reg {})",     reg(dst), reg(src)),
         MOV64_REG   => format!(".mov64 {} (.reg {})",     reg(dst), reg(src)),
         EXIT        => ".exit".to_string(),
-        // Conditional jumps with immediate operand. Lean syntax is
-        // `.jXX dst (.imm K) target_pc`. We resolve `target_pc` to the
-        // absolute PC the jump lands at (caller-supplied).
         JEQ64_IMM | JEQ32_IMM => {
             let t = jt(); format!(".jeq {} (.imm ({})) {}", reg(dst), imm, t)
         }
@@ -749,7 +617,6 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         DIV64_IMM   => format!(".div64 {} (.imm ({}))",     reg(dst), imm),
         MOD64_IMM   => format!(".mod64 {} (.imm ({}))",     reg(dst), imm),
         NEG64       => format!(".neg64 {}",                 reg(dst)),
-        // 32-bit ALU family.
         ADD32_IMM   => format!(".add32 {} (.imm ({}))",    reg(dst), imm),
         SUB32_IMM   => format!(".sub32 {} (.imm ({}))",    reg(dst), imm),
         MUL32_IMM   => format!(".mul32 {} (.imm ({}))",    reg(dst), imm),
@@ -826,13 +693,7 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
         JSET64_IMM | JSET32_IMM => {
             let t = jt(); format!(".jset {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        // call_local: the immediate is the Solana ABI Murmur3 hash
-        // of the symbol, NOT a relative offset. Resolving the actual
-        // target PC requires `solana_sbpf::Analysis::cfg_nodes`; the
-        // caller pre-resolves it via `?TARGET` substitution before
-        // emitting Lean. Render with a placeholder so any caller that
-        // forgets to substitute fails loudly rather than emitting a
-        // garbage target.
+        // call_local imm is a Murmur3 hash, not an offset; caller must pre-resolve via Analysis::cfg_nodes.
         CALL_IMM    => match call_target {
             Some(t) => format!(".call_local {}", t),
             None    => ".call_local TARGET_PC_NOT_RESOLVED".to_string(),
@@ -841,18 +702,12 @@ fn insn_to_lean_full(insn: &ebpf::Insn, pc: usize, call_target: Option<usize>,
     })
 }
 
-/// Thin wrapper for callers that don't know the resolved call target
-/// (e.g. the raw "decoded insns" listing in the diagnostic dump).
-/// Renders call_local with a placeholder.
+/// Wrapper for callers without a resolved call target; renders call_local with a placeholder.
 fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, String> {
     insn_to_lean_full(insn, pc, None, None)
 }
 
-/// Resolve a CALL_IMM at `pc` to its callee PC. solana-sbpf encodes
-/// the call's immediate field as the Murmur3 hash of the symbol name
-/// (not a relative offset). The function registry — exposed as
-/// `analysis.functions: BTreeMap<usize, (u32, String)>` mapping
-/// function-start-pc → (hash, name) — lets us reverse the lookup.
+/// Resolve CALL_IMM to its callee slot PC by reversing the Murmur3-hash immediate via `analysis.functions`.
 fn resolve_call_target(analysis: &Analysis, insn: &ebpf::Insn) -> Option<usize> {
     if insn.opc != ebpf::CALL_IMM { return None; }
     let target_hash = insn.imm as u32;
@@ -860,27 +715,16 @@ fn resolve_call_target(analysis: &Analysis, insn: &ebpf::Insn) -> Option<usize> 
         .find_map(|(&pc, (h, _name))| if *h == target_hash { Some(pc) } else { None })
 }
 
-/// `resolve_call_target` but mapped from the function registry's
-/// SLOT-based PC to a LOGICAL instruction index. The registry (and the
-/// VM) count `lddw` as two slots, while the lift's PCs / CodeReq /
-/// `call_local_spec` target are all logical indices — so a callee past
-/// any `lddw` would otherwise be off by the lddw count (e.g. p_token's
-/// `call_local` to logical 10836 resolves to slot 11537). Mirrors
-/// `resolve_jump_target`'s slot→logical handling. For lddw-free programs
-/// slot == logical, so this is a no-op (keeps those lifts byte-identical).
+/// Like `resolve_call_target` but converts the slot-based result to a logical index. `lddw` counts as two slots but one logical insn, so a callee past any `lddw` would be off by the lddw count without this (e.g. p_token: logical 10836, slot 11537).
 fn resolve_call_target_logical(
     ctx: &BinaryCtx, analysis: &Analysis, insn: &ebpf::Insn,
 ) -> Option<usize> {
     let slot = resolve_call_target(analysis, insn)?;
-    // out of range / mid-lddw: fall back to the slot (fail loudly downstream).
+    // out of range / mid-lddw: fall back to slot so downstream fails loudly.
     Some(ctx.pc_map.slot_to_logical(slot).unwrap_or(slot))
 }
 
-/// Render a symbolic call stack as a Lean `List CallFrame` literal,
-/// newest-frame first (matching `call_local_spec`'s `frame :: cs` post).
-/// Each frame is `⟨<callpc> + 1, r6, r7, r8, r9, r10⟩` (retPc kept as the
-/// unreduced `pc + 1` the spec pushes, + the call-time saved registers).
-/// Used to thread the rest-of-stack `cs` through nested call/return.
+/// Render call stack as a Lean `List CallFrame` literal, newest-frame first (`frame :: cs` per `call_local_spec`). Each frame: `⟨callpc+1, r6..r10⟩`.
 fn render_callstack(frames: &[(usize, [Expr; 5])]) -> String {
     if frames.is_empty() { return "[]".to_string(); }
     let items: Vec<String> = frames.iter().rev().map(|(cp, regs)| {
@@ -891,77 +735,38 @@ fn render_callstack(frames: &[(usize, [Expr; 5])]) -> String {
     format!("[{}]", items.join(", "))
 }
 
-// -----------------------------------------------------------------------------
-// Symbolic executor — phase 2 of the lift
-// -----------------------------------------------------------------------------
-//
-// Walks a straight-line slice of decoded eBPF insns, maintaining a
-// SymState (symbolic register values + ordered list of pre-condition
-// atoms touched). Emits the Lean SL expressions for the precondition
-// and postcondition. The triple type is `cuTripleWithinMem n 0 0 n cr
-// PRE POST RR` where `n` is the number of insns covered (excluding
-// the trailing exit, if any) — exactly the shape `sl_block_auto`
-// accepts.
+// Symbolic executor: walks decoded eBPF insns, synthesizes pre/post for `cuTripleWithinMem n 0 0 n cr PRE POST RR`, discharged by `sl_block_auto`.
 
-/// Symbolic-algebra expression representing a Nat value during
-/// symbolic execution. Stringified to Lean source via `to_lean`.
+/// Symbolic Nat expression during execution; stringified to Lean source via `to_lean`.
 #[derive(Clone, Debug)]
 enum Expr {
-    /// Initial value of a register at entry (e.g., "initR2", "baseAddr").
     InitReg(String),
-    /// Initial value of a memory cell loaded during execution (e.g., "oldCounter").
     InitMem(String),
-    /// Integer literal.
     Const(i64),
-    /// `toU64 n` — Solana ABI helper for sign-extended Nat literals.
     ToU64(Box<Expr>),
-    /// `e % m` — narrowing modulus from a byte/half/word load.
     Mod(Box<Expr>, u64),
-    /// `wrapAdd a b` — 64-bit wrapping add.
     WrapAdd(Box<Expr>, Box<Expr>),
-    /// `wrapSub a b` — 64-bit wrapping sub.
     WrapSub(Box<Expr>, Box<Expr>),
-    /// `wrapMul a b` — 64-bit wrapping multiply.
     WrapMul(Box<Expr>, Box<Expr>),
-    /// Plain `Nat.add a b`. Used for `call_local_spec`'s `r10 +
-    /// 0x1000` which uses Nat addition rather than `wrapAdd`.
+    /// Plain `Nat.add a b` — `call_local_spec`'s `r10 + 0x1000` uses Nat add, not `wrapAdd`.
     NatAdd(Box<Expr>, Box<Expr>),
-    /// `(a &&& toU64 imm) % U64_MODULUS` — output of `and64_imm_spec`.
-    /// The `imm` arg is the raw immediate; we render `toU64 imm`
-    /// inside `to_lean`.
+    /// `(a &&& toU64 imm) % U64_MODULUS` — output of `and64_imm_spec`; `toU64 imm` rendered inside `to_lean`.
     AndU64Imm(Box<Expr>, i64),
-    /// `(a <<< (toU64 imm % 64)) % U64_MODULUS` — output of
-    /// `lsh64_imm_spec` (logical left shift by immediate, modulo 64,
-    /// truncated to 64 bits).
+    /// `(a <<< (toU64 imm % 64)) % U64_MODULUS` — output of `lsh64_imm_spec`.
     LshU64Imm(Box<Expr>, i64),
-    /// `toU64 imm % 2 ^ (2 * 8)` — the halfword value `st .half`
-    /// writes. Matches `sth_spec`'s post.
+    /// `toU64 imm % 2 ^ (2 * 8)` — matches `sth_spec`'s post.
     StHalfImm(i64),
-    /// `toU64 imm % 2 ^ (4 * 8)` — the word value `st .word` writes.
-    /// Rendered to match `stw_spec`'s post exactly (the machine's
-    /// `writeByWidth` truncates to 32 bits).
+    /// `toU64 imm % 2 ^ (4 * 8)` — matches `stw_spec`'s post (`writeByWidth` truncates to 32 bits).
     StWordImm(i64),
-    /// `toU64 imm % 2 ^ (8 * 8)` — the dword value `st .dword` writes.
-    /// Matches `stdw_spec`'s post.
+    /// `toU64 imm % 2 ^ (8 * 8)` — matches `stdw_spec`'s post.
     StDwordImm(i64),
-    /// `a >>> (toU64 imm % 64)` — output of `rsh64_imm_spec`. No
-    /// `% U64_MODULUS` wrapper (a right shift never grows the value).
+    /// `a >>> (toU64 imm % 64)` — output of `rsh64_imm_spec`; no `% U64_MODULUS` (right shift never grows).
     RshU64Imm(Box<Expr>, i64),
-    /// Render-only: ordinary Nat subtraction `a - b`. Used by the
-    /// balance-correctness corollary to expose a `wrapSub a b` debit in
-    /// clean form (justified by `wrapSub_of_le` under a funds guard).
+    /// Render-only `a - b` (Nat sub): exposes a `wrapSub` debit cleanly in the balance corollary (justified by `wrapSub_of_le`).
     CleanSub(Box<Expr>, Box<Expr>),
-    /// Little-endian Horner combination of 8 byte cells — the value an
-    /// `ldxdw` over a hot (byte-demoted) region loads. Renders exactly
-    /// as `ldxdw_bytes_spec`'s post value:
-    /// `b0 + 256 * (b1 + 256 * (… + 256 * b7))`.
+    /// LE Horner combination of 8 byte cells from `ldxdw` over a hot (byte-demoted) region; matches `ldxdw_bytes_spec`'s post.
     ByteCombo(Vec<Expr>),
-    /// Pre-rendered Lean term for an ALU result whose shape doesn't
-    /// warrant a bespoke variant (the long tail: or/xor/div/mod/neg,
-    /// reg-form shifts, 32-bit ops). The string is exactly what the
-    /// corresponding `*_spec` writes in its post. Opaque to the
-    /// balance-corollary pattern match (which only tracks wrapAdd /
-    /// wrapSub), and always parenthesised as a function argument.
+    /// Pre-rendered Lean term for ALU results without a bespoke variant (or/xor/div/mod/neg, reg shifts, 32-bit ops). Opaque to the balance corollary; always parenthesised as a function argument.
     Raw(String),
 }
 
@@ -978,7 +783,6 @@ impl Expr {
             Expr::WrapMul(a, b) => format!("wrapMul {} {}", a.atom_lean(), b.atom_lean()),
             Expr::NatAdd(a, b) => format!("{} + {}", a.atom_lean(), b.atom_lean()),
             Expr::AndU64Imm(a, imm) => {
-                // Render exactly as `and64_imm_spec` writes its post.
                 let imm_lean = if *imm < 0 { format!("({})", imm) } else { format!("{}", imm) };
                 format!("({} &&& toU64 {}) % U64_MODULUS", a.atom_lean(), imm_lean)
             }
@@ -1004,9 +808,7 @@ impl Expr {
             }
             Expr::CleanSub(a, b) => format!("{} - {}", a.atom_lean(), b.atom_lean()),
             Expr::ByteCombo(bs) => {
-                // Horner fold, innermost pair unparenthesised, exactly
-                // matching `ldxdw_bytes_spec`'s post:
-                // `b0 + 256 * (b1 + … + 256 * (b6 + 256 * b7)…)`.
+                // Horner fold: innermost pair unparenthesised, matching `ldxdw_bytes_spec`'s post.
                 let mut it = bs.iter().rev();
                 let mut s = it.next().map(|e| e.atom_lean()).unwrap_or_default();
                 let mut first = true;
@@ -1022,14 +824,12 @@ impl Expr {
             }
         }
     }
-    /// Lean rendering suitable for use as a function argument
-    /// (parenthesised when the head isn't already atomic).
+    /// Lean rendering as a function argument (parenthesised when not already atomic).
     fn atom_lean(&self) -> String {
         match self {
             Expr::Raw(s) => format!("({})", s),
             Expr::InitReg(_) | Expr::InitMem(_) => self.to_lean(),
-            // Negative constants need parens (`-1` would otherwise
-            // parse as subtraction in `toU64 -1`).
+            // Negative constants need parens: `toU64 -1` parses as subtraction otherwise.
             Expr::Const(n) if *n < 0 => format!("({})", n),
             Expr::Const(_) => self.to_lean(),
             _ => format!("({})", self.to_lean()),
@@ -1037,8 +837,7 @@ impl Expr {
     }
 }
 
-/// Load/store width — used to pick the right Lean memory binding
-/// notation (↦ₘ for byte, ↦U16/32/64 for wider).
+/// Load/store width — determines Lean memory notation (↦ₘ byte, ↦U16/32/64 wider).
 #[derive(Clone, Copy, Debug)]
 enum Width { Byte, Halfword, Word, Dword }
 
@@ -1053,21 +852,12 @@ impl Width {
     }
 }
 
-/// Render a memory offset for `effectiveAddr base off`. Negative
-/// offsets MUST be parenthesised: `effectiveAddr b -8` parses as
-/// `(effectiveAddr b) - 8` (an `HSub (Int → Nat) Nat` type error,
-/// since `effectiveAddr b` is partially applied).
+/// Render a memory offset for `effectiveAddr base off`. Negative offsets MUST be parenthesised: `effectiveAddr b -8` parses as `(effectiveAddr b) - 8` (HSub type error, partial application).
 fn lean_off(off: i64) -> String {
     if off < 0 { format!("({})", off) } else { format!("{}", off) }
 }
 
-/// Render `arsh{32,64}`'s post — the arithmetic-shift-right
-/// `let shift … if sign-bit then logical-shift else fill-high-bits`
-/// expression — as a parenthesised Lean term, matching
-/// `arsh{32,64}_{imm,reg}_spec` exactly (used as an `Expr::Raw`). `vold`
-/// is the dst's prior value (already atom-rendered); `shift_src` is the
-/// shift amount (`toU64 <imm>` or the src reg value). Parens are
-/// included because `↦ᵣ` can't take a bare `let`.
+/// Render `arsh{32,64}`'s post as a parenthesised Lean term matching `arsh{32,64}_{imm,reg}_spec` (used as `Expr::Raw`). Parens required: `↦ᵣ` can't take a bare `let`.
 fn arsh_render(vold: &str, shift_src: &str, bits: u32) -> String {
     let m = if bits == 64 { "U64_MODULUS" } else { "U32_MODULUS" };
     if bits == 64 {
@@ -1086,17 +876,12 @@ fn arsh_render(vold: &str, shift_src: &str, bits: u32) -> String {
     }
 }
 
-/// Contents of a variable-length byte blob (`↦Bytes`). Pre-state is a
-/// fresh symbolic `ByteArray` (`Sym`); a memory syscall rewrites it to
-/// a closed-form payload (`Replicate`, for `sol_memset_`).
+/// Variable-length byte blob (`↦Bytes`). Pre-state is a fresh symbolic `ByteArray`; a memset rewrites it to a `Replicate` payload.
 #[derive(Clone, Debug)]
 enum BytesVal {
-    /// Fresh symbolic byte-array variable name (the unknown pre-state of
-    /// a memset'd region). Its `.size = <r3>` bound is surfaced as a
-    /// theorem hypothesis via `SymState.memset_blobs`, not stored here.
+    /// Fresh symbolic byte-array name; `.size = <r3>` bound surfaced as a hypothesis via `memset_blobs`, not stored here.
     Sym(String),
-    /// `replicateByte (fill % 256).toUInt8 count` — the post-state a
-    /// `sol_memset_(dst, fill, count)` leaves at `dst`.
+    /// `replicateByte (fill % 256).toUInt8 count` — post-state of `sol_memset_(dst, fill, count)`.
     Replicate { fill: Expr, count: Expr },
 }
 
@@ -1112,21 +897,14 @@ impl BytesVal {
     }
 }
 
-/// One precondition atom: a register binding, a fixed-width memory
-/// cell, or a variable-length byte blob (`↦Bytes`, from a memory
-/// syscall such as `sol_memset_`).
+/// One precondition atom: register binding, fixed-width memory cell, or `↦Bytes` blob (from `sol_memset_` etc.).
 #[derive(Clone, Debug)]
 enum Atom {
     Reg(u8, Expr),
     Mem { addr_base: Expr, addr_off: i64, width: Width, value: Expr, delta: i64 },
-    /// A `↦Bytes` atom: `addr ↦Bytes <bytes>`. The address is the raw
-    /// symbolic value of the syscall's `r1` (no `effectiveAddr`
-    /// wrapper — `memBytesIs` takes a bare Nat), matching
-    /// `call_sol_memset_spec`'s precondition shape.
+    /// `addr ↦Bytes <bytes>`. Address is the raw syscall `r1` value (no `effectiveAddr` — `memBytesIs` takes a bare Nat), matching `call_sol_memset_spec`.
     Bytes { addr: Expr, value: BytesVal },
-    /// A `↦Bytes32` atom referencing a NAMED Lean `ByteArray` constant
-    /// (e.g. `SysvarData.rentId` for `sol_get_sysvar`'s id read).
-    /// Identical pre and post (read-only).
+    /// `↦Bytes32` referencing a named Lean `ByteArray` constant (e.g. `SysvarData.rentId` for `sol_get_sysvar`'s id read). Read-only: identical pre and post.
     Bytes32 { addr: Expr, name: String },
 }
 
@@ -1146,28 +924,19 @@ fn reg_initial_name(n: u8) -> String {
     }
 }
 
-/// One memory cell in the symbolic walk. The address is the SYMBOLIC
-/// value of `base_reg` at the access — necessary because the same
-/// `[r1+0]` access at two different walk PCs can refer to different
-/// physical cells if `r1` was modified in between.
+/// One memory cell in the symbolic walk. Address is the SYMBOLIC value of `base_reg` at access time — `[r1+0]` at two different PCs is two distinct cells if `r1` changed.
 #[derive(Clone, Debug)]
 struct MemCell {
     addr_base: Expr,
     addr_off:  i64,
     width:     Width,
     value:     Expr,
-    /// Byte displacement within a hot (byte-demoted) region, RELATIVE
-    /// to `(addr_base, addr_off)`. 0 for ordinary cells. A hot byte
-    /// cell renders as `effectiveAddr base off + delta` — the exact
-    /// address `step` reads (plain Nat add on the resolved address),
-    /// matching `ldxdw_bytes_spec`'s atom shape with no wrap-around
-    /// side conditions. (H8 Phase B, docs/QEDLIFT_ALIASING_DESIGN.md.)
+    /// Byte offset within a hot (byte-demoted) region relative to `(addr_base, addr_off)`. 0 for ordinary cells. Renders as `effectiveAddr base off + delta`, matching `ldxdw_bytes_spec`'s atom shape (H8 Phase B).
     delta:     i64,
 }
 
 impl MemCell {
-    /// Stable key over (rendered address, width) — two cells whose
-    /// addresses render identically refer to the same physical cell.
+    /// Stable key over (rendered address, width) — same rendering = same physical cell.
     fn key(&self) -> (String, i64, i64, u8) {
         (self.addr_base.to_lean(), self.addr_off, self.delta, self.width as u8)
     }
@@ -1182,22 +951,7 @@ fn const_of_expr(e: &Expr) -> Option<i64> {
     }
 }
 
-/// Decompose an effective address `base_expr + off` into a canonical
-/// `(root, displacement)` pair by folding constant `wrapAdd`/`wrapSub`/
-/// `Nat.add` layers (e.g. `r2 = r10 - 24` and a later `[r10 - 16]`
-/// access both canonicalize to root `vR10Old` with displacements −24
-/// and −16). A base the folding can't see through (multiplies, masks,
-/// loads) becomes its own opaque root — same non-aliasing assumption
-/// the cell map already makes for distinct rendered bases.
-///
-/// Soundness role: the walker keys cells by RENDERED address, so two
-/// accesses whose byte footprints overlap under different renderings
-/// produce two separate (overlapping) atoms — and an overlapping
-/// sepConj is UNSATISFIABLE, making the emitted theorem vacuous. The
-/// canonical form lets `note_access` detect that and fail the lift
-/// closed instead. (Soundness audit H8: the shipped InitializeMint2
-/// lift was vacuous via the 7-byte tail-zeroing idiom
-/// `stw [r10-4]; stw [r10-7]`.)
+/// Fold constant `wrapAdd`/`wrapSub`/`NatAdd` layers of an address into a canonical `(root, displacement)` pair. Opaque bases become their own root. Soundness: without canonicalization the walker keys by RENDERED address, so aliased footprints generate two overlapping atoms in one sepConj — UNSATISFIABLE, making the theorem vacuous. Audit H8: InitializeMint2 was vacuous via `stw [r10-4]; stw [r10-7]`.
 fn canon_addr(base: &Expr, off: i64) -> (String, i64) {
     fn go(e: &Expr, acc: i64) -> Option<(String, i64)> {
         match e {
@@ -1226,11 +980,7 @@ fn canon_addr(base: &Expr, off: i64) -> (String, i64) {
     go(base, off).unwrap_or_else(|| (base.to_lean(), off))
 }
 
-/// Walk an address expression to its canonical root, returning the
-/// root SUB-EXPRESSION (None for an absolute/constant root) and the
-/// folded displacement. Mirror of `canon_addr`'s `go` that keeps the
-/// `Expr` instead of its rendering — the satisfiability-witness
-/// builder needs the tree to solve/evaluate it.
+/// Like `canon_addr` but returns the root sub-`Expr` instead of its rendering — the satisfiability-witness builder needs the tree to solve/evaluate.
 fn canon_root_expr<'a>(e: &'a Expr, acc: i64) -> (Option<&'a Expr>, i64) {
     match e {
         Expr::InitReg(_) | Expr::InitMem(_) => (Some(e), acc),
@@ -1256,14 +1006,7 @@ fn canon_root_expr<'a>(e: &'a Expr, acc: i64) -> (Option<&'a Expr>, i64) {
     }
 }
 
-/// Evaluate an `Expr` to a concrete `u64` under a variable assignment,
-/// mirroring the Lean semantics of each rendered form (`wrapAdd` =
-/// wrapping 64-bit add, `toU64 k` = `k` mod 2^64, `&&& imm` mask, …).
-/// `None` when the expression contains an unassigned variable or an
-/// opaque `Raw` rendering. Used by the satisfiability-witness builder;
-/// every evaluation it relies on is re-checked kernel-side by a
-/// `native_decide` guard, so a divergence here fails `lake build`
-/// rather than weakening the witness.
+/// Evaluate an `Expr` to `u64` under a variable assignment, mirroring Lean semantics. `None` for unassigned variables or `Raw`. Used by the satisfiability-witness builder; every result is re-checked kernel-side by `native_decide`, so a divergence fails `lake build` rather than weakening the witness.
 fn eval_expr(e: &Expr, env: &std::collections::BTreeMap<String, u64>) -> Option<u64> {
     match e {
         Expr::InitReg(n) | Expr::InitMem(n) => env.get(n).copied(),
@@ -1276,9 +1019,7 @@ fn eval_expr(e: &Expr, env: &std::collections::BTreeMap<String, u64>) -> Option<
         Expr::WrapAdd(a, b) => Some(eval_expr(a, env)?.wrapping_add(eval_expr(b, env)?)),
         Expr::WrapSub(a, b) => Some(eval_expr(a, env)?.wrapping_sub(eval_expr(b, env)?)),
         Expr::WrapMul(a, b) => Some(eval_expr(a, env)?.wrapping_mul(eval_expr(b, env)?)),
-        // Plain Nat add: witness values stay far below 2^64, where Nat
-        // and wrapping agree; overflow would diverge from Lean's Nat,
-        // so fail closed on it.
+        // Nat add: overflow would diverge from Lean's Nat (where addition is unbounded), so fail closed.
         Expr::NatAdd(a, b) => eval_expr(a, env)?.checked_add(eval_expr(b, env)?),
         Expr::AndU64Imm(a, imm) => Some(eval_expr(a, env)? & (*imm as u64)),
         Expr::LshU64Imm(a, imm) =>
@@ -1300,25 +1041,18 @@ fn eval_expr(e: &Expr, env: &std::collections::BTreeMap<String, u64>) -> Option<
     }
 }
 
-/// Choose an assignment for the (single) unassigned variable inside an
-/// invertible address expression so that it evaluates to `target`.
-/// Handles the chains qedlift's walker produces for derived address
-/// roots: `wrapAdd`/`wrapSub` layers, `toU64`, narrowing `%`, and the
-/// `&&& imm` alignment mask (target must already satisfy the mask).
-/// Returns `false` (fail closed) on shapes it can't invert.
+/// Assign the single unassigned variable in an invertible address expression so it evaluates to `target`. Handles `wrapAdd`/`wrapSub`, `toU64`, `%`, and `&&& imm` mask. Fail-closed on shapes it can't invert.
 fn solve_expr(
     e: &Expr,
     target: u64,
     env: &mut std::collections::BTreeMap<String, u64>,
 ) -> bool {
-    // Already fully evaluable? Then the expression is closed under the
-    // current assignment and can only be checked, not steered.
+    // Fully evaluable under current env: can only check, not steer.
     if let Some(v) = eval_expr(e, env) {
         return v == target;
     }
     match e {
         Expr::InitReg(n) | Expr::InitMem(n) => {
-            // Not in env (eval above failed) — assign it.
             env.insert(n.clone(), target);
             true
         }
@@ -1355,17 +1089,12 @@ fn solve_expr(
             }
         }
         Expr::AndU64Imm(a, imm) => {
-            // `target` must be a fixed point of the mask; then any
-            // pre-image works — use `target` itself.
+            // target must be a fixed point of the mask; then target itself is a valid pre-image.
             if target & (*imm as u64) != target { return false; }
             solve_expr(a, target, env)
         }
         Expr::ByteCombo(bs) => {
-            // Little-endian byte assembly `b0 + 256·b1 + 256²·b2 + …`:
-            // element `i` carries byte `i` of `target` (elements past byte
-            // 8 must be 0). Decompose and solve each element — constants
-            // are checked, variables assigned. Re-evaluate to confirm (a
-            // constant element conflicting with its required byte fails).
+            // LE: element i carries byte i of target (elements past 8 must be 0). Re-evaluate to confirm (a conflicting constant fails).
             for (i, b) in bs.iter().enumerate() {
                 let byte = if i < 8 { (target >> (8 * i)) & 0xff } else { 0 };
                 if !solve_expr(b, byte, env) { return false; }
@@ -1376,145 +1105,58 @@ fn solve_expr(
     }
 }
 
-/// Symbolic state threaded through one walk of the slice.
 #[derive(Default)]
 struct SymState {
-    /// Current symbolic value of each register, if read or written.
-    /// Registers not present are treated as their initial value
-    /// (`InitReg(reg_initial_name(r))`).
+    /// Symbolic register values; absent entries are treated as `InitReg(reg_initial_name(r))`.
     regs: std::collections::BTreeMap<u8, Expr>,
     /// Pre-condition atoms collected in *first-touched* order.
     pre: Vec<Atom>,
-    /// Memory cells the slice touched. Keyed by the rendered Lean
-    /// representation of the effective address `(base, off, width)`,
-    /// where `base` is the SYMBOLIC value of the base register at
-    /// access time — so two reads at `[r1+0]` separated by an
-    /// `add64 r1, 8` correctly resolve to two distinct cells.
-    /// Implementation: linear search over a Vec (small N).
+    /// Memory cells the slice touched; `base` is the SYMBOLIC register value at access time (so `[r1+0]` after `add64 r1,8` is a distinct cell). Linear search; small N.
     mem: Vec<MemCell>,
     /// Fresh-variable counter for memory initials.
     fresh: u32,
-    /// Names of symbolic variables that come from u64-width loads
-    /// (`ldxdw`). The corresponding per-instruction spec carries a
-    /// `< 2^64` side condition that the theorem signature must
-    /// hypothesise so `sl_block_auto <;> assumption` discharges it.
-    /// Loaded mem-cell vars that carry a `< 2^k` bound the spec needs
-    /// surfaced as a hypothesis: `(var, k)` with k ∈ {16,32,64} for
-    /// half/word/dword loads (`ldxh`/`ldxw`/`ldxdw`). `h<var>_lt`.
+    /// `(var, k)` pairs for memory loads with a `< 2^k` side condition (k=16/32/64 for ldxh/ldxw/ldxdw). Emitted as `h<var>_lt` hypotheses in the theorem signature.
     u64_load_vars: Vec<(String, u32)>,
-    /// Conditional jumps encountered on the happy-path walk. Each one
-    /// adds a path hypothesis to the theorem signature.
+    /// Conditional jumps on the happy-path walk; each adds a path hypothesis to the theorem signature.
     branch_hyps: Vec<BranchHyp>,
-    /// Symbolic call stack — `(resume_pc, [r6,r7,r8,r9,r10] at call time)`
-    /// pushed by `call_local`, popped by the corresponding `exit`. The
-    /// full call-time r6..r10 are saved (not just r10) because the
-    /// `exit_pops` spec's `frame` must equal the frame the `call_local`
-    /// pushed — and a callee may clobber r6..r9, so their *current*
-    /// (exit-time) values would mismatch the pushed frame. Empty at the
-    /// start of the walk and empty when it terminates at the top exit.
+    /// `(resume_pc, [r6..r10] at call time)` pushed by `call_local`, popped by `exit`. Full r6..r10 saved because a callee may clobber r6..r9 — `exit_pops` needs the frame from call time, not exit time.
     call_stack: Vec<(usize, [Expr; 5])>,
-    /// True once the walk has seen at least one `call_local`. When
-    /// set, the emission adds `r6..r10` and `callStackIs []` to the
-    /// pre-condition (the atoms `call_local_spec` needs to compose).
+    /// Set on first `call_local`; emission then adds `r6..r10` and `callStackIs []` to the pre-condition.
     saw_call: bool,
-    /// rr clauses in walk order. Each memory load contributes
-    /// `containsRange`; each store contributes `containsWritable`.
-    /// Order matches the chain's left-fold ordering, so the emitted
-    /// goal rr structurally equals what `slBlockIter` produces.
-    /// Entries: (addr_base, off, width, is_writable, memset_override).
-    /// `memset_override = Some((dst, count))` is a variable-length
-    /// `containsWritable dst count` clause (audit H6: `MemOps.execSet`'s
-    /// `guardWrite` carries this as the memset spec's `rr`); the leading
-    /// fixed fields are then ignored and the address is rendered raw
-    /// (no `effectiveAddr`) like the memset's `↦Bytes` atom.
+    /// rr clauses in walk order (load → `containsRange`, store → `containsWritable`), matching `slBlockIter`'s left-fold. `memset_override = Some((dst, count))` is a variable-length `containsWritable` clause (H6: `MemOps.execSet.guardWrite`); fixed fields ignored, address rendered raw without `effectiveAddr`.
     rr_walk: Vec<(Expr, i64, Width, bool, Option<(Expr, Expr)>)>,
-    /// Post-state contents of `↦Bytes` blobs written by memory
-    /// syscalls (`sol_memset_`), keyed by the rendered destination
-    /// address. `post_atoms` reads this to transform the pre `↦Bytes`
-    /// (a fresh `Sym`) into its post form (`Replicate`).
+    /// Post-state of `↦Bytes` blobs written by `sol_memset_`, keyed by rendered address. Read by `post_atoms` to transform pre `Sym` → post `Replicate`.
     byte_blob_post: std::collections::BTreeMap<String, BytesVal>,
-    /// PCs the walk identified as host syscalls, mapped to the Lean
-    /// `Syscall` constructor (e.g. `.sol_memset`). The CodeReq builder
-    /// renders these as `.call <ctor>` rather than `.call_local`.
+    /// PC → Lean `Syscall` constructor for identified host syscalls; CodeReq renders as `.call <ctor>` instead of `.call_local`.
     syscall_pcs: std::collections::BTreeMap<usize, &'static str>,
-    /// One entry per syscall whose CU cost is surfaced as a theorem
-    /// hypothesis: `(nCu_var, hCu_hyp, syscall_ctor)`. The model's
-    /// `syscallCu` is data-dependent (∝ r3 for mem ops), so an honest
-    /// upper bound is an assumption, not something the lift can
-    /// discharge. `syscall_ctor` (e.g. `.sol_memset`) names the
-    /// syscall in the `hCu` hypothesis's `step (.call …)` term.
+    /// `(nCu_var, hCu_hyp, syscall_ctor)` per syscall with surfaced CU cost. `syscallCu` is data-dependent (∝ r3 for mem ops), so the upper bound is an assumption the lift can't discharge.
     syscall_cu_vars: Vec<(String, String, &'static str)>,
-    /// One entry per memset byte-blob: `(bytes_sym, size_rendered)`.
-    /// Surfaced as a `ByteArray` param + a `.size = <count>` hypothesis
-    /// in the theorem signature (the spec's `hbs` obligation).
+    /// `(bytes_sym, size_rendered)` per memset blob; emitted as a `ByteArray` param + `.size = <count>` hypothesis (spec's `hbs` obligation).
     memset_blobs: Vec<(String, String)>,
-    /// Generic surfaced side-condition hypotheses `(hyp_name, prop)` —
-    /// e.g. a divisor's `v ≠ 0` for `div/mod` reg-form (the divisor is
-    /// symbolic, so its non-zeroness is the caller's obligation, like a
-    /// branch hypothesis). Emitted into the theorem signature verbatim.
+    /// `(hyp_name, prop)` side-condition hypotheses emitted verbatim (e.g. divisor `v ≠ 0` for `div/mod` reg-form — symbolic divisor, so caller's obligation).
     side_hyps: Vec<(String, String)>,
-    /// Byte footprints of every materialized atom, in canonical
-    /// `(root, lo, hi_exclusive, cell_key_rendering)` form (see
-    /// `canon_addr`). Consulted on each NEW materialization to detect
-    /// footprint overlap between DISTINCT atoms — which would make the
-    /// emitted sepConj unsatisfiable (a vacuous theorem). Blob entries
-    /// (memset) use the blob's rendered address as the key component.
+    /// Canonical `(root, lo, hi_exclusive, key_render)` footprint of every materialized atom. Consulted on each new materialization to detect overlaps — an overlapping sepConj is unsatisfiable (vacuous theorem, soundness audit H8).
     atom_spans: Vec<(String, i64, i64, String)>,
-    /// Populated when `note_access` detects footprint overlaps; the
-    /// walk surfaces them as one hard error after completing (fail
-    /// closed — never emit a vacuous theorem — but report the FULL
-    /// inventory, which Phase B demotion planning needs).
+    /// Footprint-overlap errors from `note_access`; reported as a hard error after the walk (fail-closed: never emit a vacuous theorem; full inventory aids Phase B planning).
     overlap_errors: Vec<String>,
-    /// Set by `read_mem`/`write_mem` when an access resolved to an
-    /// existing cell through a DIFFERENT rendering (Phase A aliasing,
-    /// docs/QEDLIFT_ALIASING_DESIGN.md): `(lhs, rhs)` are the
-    /// `effectiveAddr …` renderings of this access and of the
-    /// canonical cell. The walk loop drains it into a
-    /// `h_alias_<pc> : lhs = rhs` side hypothesis (consumer-discharged
-    /// by `decide`, like `h_addr*`), which the matching spec-call line
-    /// `rw`s at its own hypothesis so the chain composes on ONE atom
-    /// instead of two overlapping ones.
+    /// `(lhs, rhs)` set when an access resolved to an existing cell under a DIFFERENT rendering (Phase A aliasing). Walk loop drains it into `h_alias_<pc> : lhs = rhs` (discharged by `decide`); the spec-call `rw`s it so the chain composes on one atom.
     pending_alias: Option<(String, String)>,
-    /// Byte-granular ("hot") regions per canonical root — spans the
-    /// program accesses at MIXED widths, kept as per-byte atoms so the
-    /// sepConj stays satisfiable (H8 Phase B). Input to the walk,
-    /// computed by the retry loop in `lift_one`.
+    /// Per-root byte-granular ("hot") regions for mixed-width accesses; kept as per-byte atoms so the sepConj stays satisfiable (H8 Phase B). Computed by the retry loop in `lift_one`.
     hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>>,
-    /// Demotion requests discovered THIS pass (a wide access over
-    /// byte-granular cells outside the current hot set). The retry
-    /// loop merges them into `hot_regions` and re-walks; this pass's
-    /// output is discarded.
+    /// Demotion requests from this pass (wide access over cells outside the current hot set). Merged into `hot_regions` by the retry loop; this pass's output is discarded.
     new_hot: Vec<(String, i64, i64)>,
-    /// Memory-syscall blobs with CONSTANT count (and, when known,
-    /// constant fill), registered by `emit_sol_memset` so later reads
-    /// inside the blob can plan a split (H8 Phase C):
-    /// `(root, lo, len, fill)`.
+    /// `(root, lo, len, fill)` for constant-count memset blobs; registered by `emit_sol_memset` so later reads can plan a tail split (H8 Phase C).
     blobs: Vec<(String, i64, i64, Option<u8>)>,
-    /// Blob TAIL-split plan, keyed `(root, lo)` → split offset `n`
-    /// (the blob's last `len − n = 8` bytes become a `↦U64` cell).
-    /// Input to the walk; grown via `new_blob_splits` + retry.
+    /// `(root, lo)` → split offset `n` plan: blob's last 8 bytes (`[n, n+8)`) become a `↦U64` cell. Input to the walk; grown by `new_blob_splits` + retry.
     blob_splits: std::collections::BTreeMap<(String, i64), i64>,
-    /// Split requests discovered THIS pass (a dword read at a blob's
-    /// 8-byte tail). The retry loop merges and re-walks.
+    /// Tail-split requests from this pass (dword read at a blob's 8-byte tail); merged by the retry loop.
     new_blob_splits: Vec<(String, i64, i64)>,
-    /// Per-SLOT alias equations for the current instruction: a hot
-    /// wide access whose byte slots live under foreign renderings
-    /// (e.g. the sysvar byte cell at `(r2v, 16)` consumed by a dword
-    /// read based at `(r10, -8)`). Each `(lhs, rhs)` becomes a
-    /// `h_alias_<pc>_<i> : lhs = rhs` side hypothesis, and the spec
-    /// call is followed by `rw [h_alias_<pc>_<i>, …] at h_<pc>`.
+    /// Per-slot alias equations for the current instruction (a hot wide access whose byte slots live under foreign renderings). Each `(lhs, rhs)` becomes `h_alias_<pc>_<i> : lhs = rhs`, rewritten into the spec hypothesis.
     pending_slot_aliases: Vec<(String, String)>,
 }
 
 impl SymState {
-    /// Record the byte footprint `[base+off, base+off+len)` of a newly
-    /// materialized atom (cell or blob) and flag any overlap with a
-    /// DIFFERENT existing atom on the same canonical root. Two atoms
-    /// with overlapping byte footprints in one sepConj make the
-    /// precondition unsatisfiable — the emitted theorem would be
-    /// vacuously true, which is worse than no theorem (soundness
-    /// audit H8 / the InitializeMint2 finding). Distinct opaque roots
-    /// keep the walker's existing assumed-disjoint treatment.
+    /// Record the byte footprint of a new atom and flag overlap with any DIFFERENT existing atom on the same root. Overlapping atoms in a sepConj → unsatisfiable precondition → vacuous theorem (soundness audit H8).
     fn note_access(&mut self, base: &Expr, off: i64, len: i64, key_render: String) {
         let (root, lo) = canon_addr(base, off);
         let hi = lo.wrapping_add(len);
@@ -1532,15 +1174,11 @@ impl SymState {
         if let Some(v) = self.regs.get(&r) { return v.clone(); }
         let v = Expr::InitReg(reg_initial_name(r));
         self.regs.insert(r, v.clone());
-        // Register reads from r0/r2..r9 add a pre-atom (we need to
-        // know its initial value); r1 (input ptr) and r10 (frame top)
-        // are conventional and also recorded.
         self.pre.push(Atom::Reg(r, v.clone()));
         v
     }
     fn write_reg(&mut self, r: u8, v: Expr) {
-        // Ensure r has a pre-atom: if it was never read, its initial
-        // value is still "free" — record it before overwriting.
+        // Record pre-atom before first write so the initial value is captured.
         if !self.regs.contains_key(&r) {
             let init = Expr::InitReg(reg_initial_name(r));
             self.regs.insert(r, init.clone());
@@ -1568,11 +1206,7 @@ impl SymState {
             format!("effectiveAddr ({}) ({})", c.addr_base.to_lean(), c.addr_off)
         }
     }
-    /// Shared demotion trigger: if `[lo, lo+wlen)` on `root` conflicts
-    /// with an existing cell (intersecting footprint that is NOT the
-    /// same span+width — that exact case is the aliased lookup's job)
-    /// or straddles a hot edge, push a `new_hot` request covering the
-    /// UNION of the access span and every conflicting cell's span.
+    /// Push a `new_hot` request covering the UNION of `[lo, lo+wlen)` and every conflicting cell's span when footprints conflict or straddle a hot edge (but NOT for same span+width, which is the aliased lookup's job).
     fn request_demotion_on_conflict(&mut self, root: &str, lo: i64, wlen: i64,
         width: Width) {
         let (mut nlo, mut nhi) = (lo, lo + wlen);
@@ -1597,8 +1231,7 @@ impl SymState {
             self.new_hot.push((root.to_string(), nlo, nhi));
         }
     }
-    /// The address rendering the `*_bytes_spec` atoms use for slot `k`
-    /// of an access at `(base, off)`.
+    /// Address rendering `*_bytes_spec` uses for slot `k` of access at `(base, off)`.
     fn slot_expected_render(base: &Expr, off: i64, k: i64) -> String {
         if k == 0 {
             format!("effectiveAddr ({}) ({})", base.to_lean(), off)
@@ -1606,11 +1239,7 @@ impl SymState {
             format!("effectiveAddr ({}) ({}) + {}", base.to_lean(), off, k)
         }
     }
-    /// Resolve (reusing or freshly materializing) the byte cell for
-    /// slot `k` of a hot wide access at `(base, off)`. Returns the
-    /// cell index. A slot under a FOREIGN rendering gets a per-slot
-    /// alias equation (`pending_slot_aliases`) rewriting the spec's
-    /// atom onto the cell's rendering.
+    /// Resolve or materialize the byte cell for slot `k` of a hot wide access. Foreign-rendered slots get a per-slot alias equation in `pending_slot_aliases`.
     fn hot_slot(&mut self, base_expr: &Expr, off: i64, k: i64) -> usize {
         let (root, lo) = canon_addr(base_expr, off);
         let base_lean = base_expr.to_lean();
@@ -1625,14 +1254,12 @@ impl SymState {
                 && ((k == 0 && self.mem[i].delta == 0)
                     || self.mem[i].delta == k);
             if !render_ok {
-                // `haK : <cell render> = <expected slot address>` —
-                // the spec's slot-address parameter equation.
                 self.pending_slot_aliases.push((
                     Self::cell_render(&self.mem[i]),
                     Self::slot_expected_render(base_expr, off, k),
                 ));
             }
-            // Wide-access slots need a `< 256` bound for a bare var.
+            // Bare vars in wide-access byte slots need a `< 256` bound.
             if let Expr::InitMem(name) = &self.mem[i].value {
                 let name = name.clone();
                 if !self.u64_load_vars.iter().any(|(n, _)| *n == name) {
@@ -1657,9 +1284,7 @@ impl SymState {
             format!("{}@{}+{}:HotByte", base_lean, off, k));
         self.mem.len() - 1
     }
-    /// A `st .word imm` whose span is hot: realize the 4 byte cells
-    /// (their PRE values are the spec's `b0..b3`) and overwrite them
-    /// with the immediate's LE bytes (`stw_bytes_spec`'s `c0..c3`).
+    /// Hot `st .word imm`: realize 4 byte cells (pre = spec's `b0..b3`) and overwrite with LE bytes of `imm` (`stw_bytes_spec`'s `c0..c3`).
     fn write_hot_word_imm(&mut self, base_expr: Expr, off: i64, imm: i64) {
         let w = (imm as i64) as u32; // toU64 imm % 2^32
         let bytes = w.to_le_bytes();
@@ -1669,11 +1294,7 @@ impl SymState {
         }
         self.rr_walk.push((base_expr, off, Width::Word, true, None));
     }
-    /// Serve a wide LOAD whose span is hot: the region is byte-granular,
-    /// so reuse/materialize the 8 byte cells and return their Horner
-    /// combination (the value `ldxdw_bytes_spec` loads). Unsupported
-    /// shapes (non-dword widths, slots under foreign renderings) fail
-    /// closed via `overlap_errors`.
+    /// Serve a hot wide LOAD: reuse/materialize 8 byte cells and return their Horner combination (matches `ldxdw_bytes_spec`). Fail-closed for non-dword widths.
     fn read_hot_wide(&mut self, base_expr: Expr, off: i64, width: Width) -> Expr {
         if !matches!(width, Width::Dword) {
             self.overlap_errors.push(format!(
@@ -1690,11 +1311,7 @@ impl SymState {
         self.rr_walk.push((base_expr, off, Width::Dword, false, None));
         Expr::ByteCombo(vals)
     }
-    /// Canon-aware cell lookup: the rendered key first (exact match),
-    /// then the canonical `(root, displacement, width)` — a hit there
-    /// is the SAME physical cell reached through a different rendering
-    /// (e.g. spilled via `[r10-2056]`, reloaded via `addr1+16` with
-    /// `addr1 = r10-2072`). Returns `(index, is_alias)`.
+    /// Exact-rendering lookup first, then canonical `(root, disp, width)` — a canonical hit is the SAME cell under a different rendering (Phase A aliasing). Returns `(index, is_alias)`.
     fn lookup_cell_aliased(&self, base: &Expr, off: i64, width: Width)
         -> Option<(usize, bool)> {
         let key = (base.to_lean(), off, 0i64, width as u8);
@@ -1709,19 +1326,13 @@ impl SymState {
         }).map(|i| (i, true))
     }
     fn read_mem(&mut self, base: u8, off: i64, width: Width) -> Expr {
-        // Compute the effective-address key from the base register's
-        // *current* symbolic value (not just its register number).
         let base_expr = self.read_reg(base);
         let wlen = match width {
             Width::Byte => 1i64, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
         };
         if wlen > 1 {
             let (root, lo) = canon_addr(&base_expr, off);
-            // A dword read at a registered blob's 8-byte TAIL plans a
-            // blob split (the memset emission then exposes that tail
-            // as a `↦U64` cell — H8 Phase C). Discovered this pass →
-            // request + retry; already planned → the cell exists (the
-            // memset registered it), so the aliased lookup below hits.
+            // Dword read at blob's 8-byte tail → plan a tail split (`↦U64` cell, H8 Phase C). New: request + retry; already planned: aliased lookup hits below.
             if matches!(width, Width::Dword) {
                 if let Some((broot, blo, blen, _)) = self.blobs.iter()
                     .find(|(br, bl, bn, _)| *br == root && *bl <= lo
@@ -1732,38 +1343,22 @@ impl SymState {
                         && !self.blob_splits.contains_key(&(broot.clone(), blo)) {
                         self.new_blob_splits.push((broot, blo, rel));
                     }
-                    // Non-tail reads inside a blob fall through to the
-                    // overlap detector (fail closed — a middle split
-                    // needs a 3-way spec, not implemented).
+                    // Non-tail reads fall through to the overlap detector (middle split not implemented).
                 }
             }
-            // Fully inside a hot (byte-demoted) region: serve byte-wise.
             if self.hot_covers(&root, lo, lo + wlen) {
                 return self.read_hot_wide(base_expr, off, width);
             }
-            // A wide access CONFLICTING with existing cells (same root,
-            // intersecting footprint, but not the same span+width —
-            // that case is the cell itself and is handled by the
-            // aliased lookup below), or straddling a hot edge: request
-            // demotion of the union span and retry the walk. Falling
-            // through is fine — this pass's output is discarded.
+            // Footprint conflict or hot-edge straddle: request demotion and retry (this pass's output is discarded).
             self.request_demotion_on_conflict(&root, lo, wlen, width);
         }
         if let Some((i, aliased)) = self.lookup_cell_aliased(&base_expr, off, width) {
             let cell_base = self.mem[i].addr_base.clone();
             let cell_off  = self.mem[i].addr_off;
             let v = self.mem[i].value.clone();
-            // A re-read of an already-cached cell is still a load
-            // instruction: its spec contributes a `containsRange` to the
-            // sl_block_iter chain. Record it here too so the goal rr stays
-            // 1:1 with the walked load instructions (the fresh path below
-            // pushes the same clause). Without this, a cell read twice
-            // makes the chain rr out-count the goal rr.
+            // Every load instruction, even a re-read, contributes `containsRange` to keep the goal rr 1:1 with walked instructions.
             if aliased {
-                // Aliased rendering: the goal-side rr clause (and, via
-                // the emitted `rw [h_alias_<pc>]`, the spec hypothesis)
-                // uses the CANONICAL rendering, keeping ONE atom per
-                // physical cell.
+                // Aliased: rr clause and (via `rw [h_alias_<pc>]`) the spec hypothesis use the CANONICAL rendering — one atom per physical cell.
                 let rhs = Self::cell_render(&self.mem[i]);
                 self.pending_alias = Some((
                     format!("effectiveAddr ({}) ({})", base_expr.to_lean(), off),
@@ -1775,9 +1370,7 @@ impl SymState {
             }
             return v;
         }
-        // Fresh cell: name by (width, sequence index) since the
-        // address expression itself may be complex (`wrapAdd baseAddr
-        // (toU64 8)`) and ill-suited as a Lean identifier.
+        // Name fresh cells by width+index; the address expression itself may be ill-suited as a Lean identifier.
         let idx = self.fresh; self.fresh += 1;
         let name = format!("oldMem{}_{}", w_short(width), idx);
         match width {
@@ -1801,8 +1394,6 @@ impl SymState {
             addr_base: base_expr.clone(), addr_off: off, width, value: v.clone(),
             delta: 0,
         });
-        // rr contribution: every load needs containsRange at the
-        // accessed cell.
         self.rr_walk.push((base_expr, off, width, false, None));
         v
     }
@@ -1814,9 +1405,7 @@ impl SymState {
         if wlen > 1 {
             let (root, lo) = canon_addr(&base_expr, off);
             if self.hot_covers(&root, lo, lo + wlen) {
-                // Word-IMMEDIATE stores are byte-demotable
-                // (`stw_bytes_spec`); other wide stores into hot
-                // regions still fail closed.
+                // Only word-immediate stores are byte-demotable (`stw_bytes_spec`); other wide hot stores fail closed.
                 if matches!(width, Width::Word) {
                     if let Expr::StWordImm(imm) = &value {
                         let imm = *imm;
@@ -1839,28 +1428,16 @@ impl SymState {
                 return;
             }
         }
-        // Make sure the pre-atom exists (a store after no preceding
-        // load still needs the cell to be present in the pre-state).
-        // The lookup is canon-aware: a store through a different
-        // rendering of an existing cell updates THAT cell (Phase A
-        // aliasing) instead of materialising an overlapping twin.
+        // Materialize the pre-atom if missing (store without preceding load). Canon-aware: avoids creating an overlapping twin (Phase A aliasing).
         if self.lookup_cell_aliased(&base_expr, off, width).is_none() {
             let _ = self.read_mem(base, off, width);
-            // `read_mem` materialised the cell AND pushed a
-            // `containsRange` rr_walk entry — but this access is a
-            // STORE. Its region requirement is the `containsWritable`
-            // pushed below (which implies readability), and the chain's
-            // rr has exactly one clause per memory instruction. Drop the
-            // read's spurious entry so the goal rr stays 1:1 with the
-            // walked memory instructions (matching sl_block_iter).
+            // `read_mem` pushed a `containsRange` entry, but this is a STORE: drop it so the goal rr stays 1:1 with memory instructions (containsWritable below implies readability).
             self.rr_walk.pop();
         }
         if let Some((i, aliased)) = self.lookup_cell_aliased(&base_expr, off, width) {
             let cell_base = self.mem[i].addr_base.clone();
             let cell_off  = self.mem[i].addr_off;
             self.mem[i].value = value;
-            // rr contribution: every store needs containsWritable —
-            // through the canonical rendering when aliased.
             if aliased {
                 let rhs = Self::cell_render(&self.mem[i]);
                 self.pending_alias = Some((
@@ -1879,11 +1456,7 @@ fn w_short(w: Width) -> &'static str {
     match w { Width::Byte => "B", Width::Halfword => "H", Width::Word => "W", Width::Dword => "D" }
 }
 
-/// A conditional jump the symbolic executor walked past on its
-/// happy-path traversal. The theorem signature surfaces this as a
-/// hypothesis the user (or a downstream tactic) must invoke when
-/// closing the proof — `sl_block_auto` doesn't currently collapse
-/// these on its own.
+/// Conditional jump kind for a happy-path branch hypothesis; `sl_block_auto` doesn't collapse these, so they surface in the theorem signature.
 #[derive(Clone, Debug)]
 enum BranchKind {
     JeqImm, JneImm, JgtImm, JsgtImm, JsleImm, JltImm, JleImm, JsltImm,
@@ -1896,14 +1469,11 @@ enum BranchKind {
 struct BranchHyp {
     kind: BranchKind,
     dst_value: Expr,
-    /// For reg-form jumps, this is the src register's symbolic value.
-    /// `None` for imm-form jumps (the imm is in `self.imm`).
+    /// Src register's symbolic value for reg-form jumps; `None` for imm-form.
     src_value: Option<Expr>,
     imm: i64,
-    /// `true` if the branch was taken on the walked path; `false`
-    /// if it was the fall-through. Determines the form of the path
-    /// hypothesis: jeq-taken means `vDst = toU64 imm`; jeq-not-taken
-    /// means `vDst ≠ toU64 imm`. jne is symmetric.
+    /// `true` if branch taken; `false` for fall-through. Determines hypothesis form:
+    /// jeq-taken → `vDst = toU64 imm`, jeq-not-taken → `vDst ≠ toU64 imm`; jne symmetric.
     taken: bool,
 }
 
@@ -1911,64 +1481,49 @@ impl BranchHyp {
     fn lean_hyp(&self) -> String {
         let v = self.dst_value.to_lean();
         let s = self.src_value.as_ref().map(|e| e.to_lean()).unwrap_or_default();
-        // Parenthesised forms for use under `toSigned64`, which is a
-        // prefix application and would otherwise grab only the head of
-        // a compound expr (e.g. `toSigned64 wrapAdd a b` misparses as
-        // `(toSigned64 wrapAdd) a b`). Unsigned comparisons don't need
-        // this — infix `<`/`>`/`≤`/`=` bind looser than application.
+        // atom_lean() parenthesises compound exprs for use under `toSigned64` (prefix application
+        // that grabs only the head: `toSigned64 wrapAdd a b` misparses as `(toSigned64 wrapAdd) a b`).
         let va = self.dst_value.atom_lean();
         let sa = self.src_value.as_ref().map(|e| e.atom_lean()).unwrap_or_default();
-        // Immediate, parenthesised when negative: `toU64 -5` would parse
-        // as `(toU64) - 5` (an `Int → Nat` minus `Nat` type error).
+        // Parenthesise negative imm: `toU64 -5` parses as `(toU64) - 5` (Int→Nat type error).
         let im = if self.imm < 0 { format!("({})", self.imm) } else { format!("{}", self.imm) };
         match (self.kind.clone(), self.taken) {
             (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, im),
             (BranchKind::JeqImm, true)  => format!("{} = toU64 {}", v, im),
             (BranchKind::JneImm, false) => format!("{} = toU64 {}", v, im),
             (BranchKind::JneImm, true)  => format!("{} ≠ toU64 {}", v, im),
-            // `jgt` is unsigned >. Taken => vDst > toU64 imm; not-taken
-            // is the strict negation (¬ >). The Lean helper accepts
-            // exactly these via if_pos/if_neg.
+            // `jgt` unsigned >; taken/not-taken accepted by Lean helpers via if_pos/if_neg.
             (BranchKind::JgtImm, false) => format!("¬ {} > toU64 {}", v, im),
             (BranchKind::JgtImm, true)  => format!("{} > toU64 {}", v, im),
-            // `jsgt` is signed >. Lean spec compares
-            // `toSigned64 vDst > toSigned64 (toU64 imm)`.
+            // `jsgt` signed >: compares `toSigned64 vDst > toSigned64 (toU64 imm)`.
             (BranchKind::JsgtImm, false) => format!("¬ toSigned64 {} > toSigned64 (toU64 {})", va, im),
             (BranchKind::JsgtImm, true)  => format!("toSigned64 {} > toSigned64 (toU64 {})", va, im),
-            // `jsle` is signed ≤ (imm form).
             (BranchKind::JsleImm, false) => format!("¬ toSigned64 {} ≤ toSigned64 (toU64 {})", va, im),
             (BranchKind::JsleImm, true)  => format!("toSigned64 {} ≤ toSigned64 (toU64 {})", va, im),
-            // `jlt`/`jle` are unsigned < / ≤ (imm form).
             (BranchKind::JltImm, false) => format!("¬ {} < toU64 {}", v, im),
             (BranchKind::JltImm, true)  => format!("{} < toU64 {}", v, im),
             (BranchKind::JleImm, false) => format!("¬ {} ≤ toU64 {}", v, im),
             (BranchKind::JleImm, true)  => format!("{} ≤ toU64 {}", v, im),
-            // `jslt` is signed < (imm form).
             (BranchKind::JsltImm, false) => format!("¬ toSigned64 {} < toSigned64 (toU64 {})", va, im),
             (BranchKind::JsltImm, true)  => format!("toSigned64 {} < toSigned64 (toU64 {})", va, im),
-            // `jge` unsigned ≥, `jsge` signed ≥, `jset` bit-test (imm form).
             (BranchKind::JgeImm, false) => format!("¬ {} ≥ toU64 {}", v, im),
             (BranchKind::JgeImm, true)  => format!("{} ≥ toU64 {}", v, im),
             (BranchKind::JsgeImm, false) => format!("¬ toSigned64 {} ≥ toSigned64 (toU64 {})", va, im),
             (BranchKind::JsgeImm, true)  => format!("toSigned64 {} ≥ toSigned64 (toU64 {})", va, im),
             (BranchKind::JsetImm, false) => format!("¬ {} &&& toU64 {} ≠ 0", v, im),
             (BranchKind::JsetImm, true)  => format!("{} &&& toU64 {} ≠ 0", v, im),
-            // Register-form jumps compare two registers directly.
             (BranchKind::JeqReg, false) => format!("{} ≠ {}", v, s),
             (BranchKind::JeqReg, true)  => format!("{} = {}", v, s),
             (BranchKind::JneReg, false) => format!("{} = {}", v, s),
             (BranchKind::JneReg, true)  => format!("{} ≠ {}", v, s),
             (BranchKind::JltReg, false) => format!("¬ {} < {}", v, s),
             (BranchKind::JltReg, true)  => format!("{} < {}", v, s),
-            // `jgt`/`jle` are unsigned > / ≤ (reg form).
             (BranchKind::JgtReg, false) => format!("¬ {} > {}", v, s),
             (BranchKind::JgtReg, true)  => format!("{} > {}", v, s),
             (BranchKind::JleReg, false) => format!("¬ {} ≤ {}", v, s),
             (BranchKind::JleReg, true)  => format!("{} ≤ {}", v, s),
-            // `jsge` is signed ≥ (reg form).
             (BranchKind::JsgeReg, false) => format!("¬ toSigned64 {} ≥ toSigned64 {}", va, sa),
             (BranchKind::JsgeReg, true)  => format!("toSigned64 {} ≥ toSigned64 {}", va, sa),
-            // `jge` unsigned ≥, `jsgt`/`jslt` signed, `jset` bit-test (reg form).
             (BranchKind::JgeReg, false) => format!("¬ {} ≥ {}", v, s),
             (BranchKind::JgeReg, true)  => format!("{} ≥ {}", v, s),
             (BranchKind::JsgtReg, false) => format!("¬ toSigned64 {} > toSigned64 {}", va, sa),
@@ -1977,8 +1532,6 @@ impl BranchHyp {
             (BranchKind::JsltReg, true)  => format!("toSigned64 {} < toSigned64 {}", va, sa),
             (BranchKind::JsetReg, false) => format!("¬ {} &&& {} ≠ 0", v, s),
             (BranchKind::JsetReg, true)  => format!("{} &&& {} ≠ 0", v, s),
-            // `jsle` is signed ≤. Lean spec compares
-            // `toSigned64 vDst ≤ toSigned64 vSrc`.
             (BranchKind::JsleReg, false) => format!("¬ toSigned64 {} ≤ toSigned64 {}", va, sa),
             (BranchKind::JsleReg, true)  => format!("toSigned64 {} ≤ toSigned64 {}", va, sa),
         }
@@ -1986,9 +1539,7 @@ impl BranchHyp {
     fn name(&self, idx: usize) -> String { format!("h_branch{}", idx) }
 }
 
-/// A single emitted `have h_<pc> := <spec_name> <args>` line plus the
-/// hypothesis name. Used to build the `sl_block_iter` proof body for
-/// programs containing call_local (where `sl_block_auto` diverges).
+/// One emitted `have h_<pc> := <spec_name> <args>` line; used by `sl_block_iter` proof bodies when `sl_block_auto` diverges (call_local programs).
 #[derive(Clone, Debug)]
 struct SpecCall {
     hyp_name: String,
@@ -2018,14 +1569,11 @@ fn spec_call_for(
     let dst = insn.dst;
     let src = insn.src;
     let off = insn.off as i64;
-    // Offset as a spec argument: parenthesise negatives so
-    // `ldxb_same_spec .r10 -8 …` doesn't parse as `.r10 - 8`.
+    // Parenthesise negatives: `ldxb_same_spec .r10 -8` would parse as `.r10 - 8`.
     let offl = lean_off(off);
-    // Logical jump target (slot→logical resolved by the caller).
+    // slot→logical resolved by caller.
     let jt = jump_target.unwrap_or((pc as i64) + 1 + off);
-    // `imm` is only ever a spec argument here (never arithmetic), so
-    // render it parenthesised-when-negative: `and64_imm_spec .r1 -8`
-    // would otherwise parse as `(and64_imm_spec .r1) - 8`.
+    // Parenthesise negative imm: `and64_imm_spec .r1 -8` would parse as `(and64_imm_spec .r1) - 8`.
     let imm = lean_off(insn.imm);
     let hyp_name = format!("h_{}", pc);
     let reg = |r: u8| -> String {
@@ -2036,27 +1584,20 @@ fn spec_call_for(
             _ => ".r0".into(),
         }
     };
-    // Look up a register's current symbolic value as a Lean string.
-    // If the register hasn't been read yet, fall back to its initial-
-    // name convention (`baseAddr` for r1, `vR<N>Old` otherwise).
+    // Lean string for register r; falls back to initial-name convention (`baseAddr` for r1, `vR<N>Old` otherwise).
     let reg_val_lean = |r: u8| -> String {
         match state.regs.get(&r) {
             Some(e) => e.to_lean(),
             None    => reg_initial_name(r),
         }
     };
-    // Current symbolic value of a register as an `Expr`, for the
-    // canon-aware cell lookups below.
+    // Expr form of register r, for canon-aware cell lookups.
     let reg_val_expr = |r: u8| -> Expr {
         state.regs.get(&r).cloned()
             .unwrap_or_else(|| Expr::InitReg(reg_initial_name(r)))
     };
-    // Phase A aliasing (docs/QEDLIFT_ALIASING_DESIGN.md): when this
-    // access resolves to an existing cell through a DIFFERENT
-    // rendering, follow the `have` with a rewrite onto the canonical
-    // atom via the `h_alias_<pc>` equation step() surfaces for the
-    // same access — the chain then composes on ONE atom per physical
-    // cell instead of two overlapping (unsatisfiable) ones.
+    // Phase A aliasing (QEDLIFT_ALIASING_DESIGN.md): same cell under different rendering
+    // → append a `rw [h_alias_<pc>]` so the chain composes on ONE atom (not two overlapping unsatisfiable ones).
     let alias_suffix = |lookup: &Option<(usize, bool)>| -> String {
         match lookup {
             Some((_, true)) => format!("\n  rw [h_alias_{}] at {}", pc, hyp_name),
@@ -2065,11 +1606,8 @@ fn spec_call_for(
     };
     let have_line = match insn.opc {
         LD_B_REG => {
-            // ldxb_spec dst src off vOldDst baseAddr v pc hne
-            // (no `< 2^64` bound — bytes always fit). On a first access
-            // the loaded byte name is `oldMemB_<fresh>`; on a re-read of
-            // an already-accessed cell, reuse its existing value var
-            // (read_mem returns the same cell). Mirrors SymState::read_mem.
+            // ldxb_spec dst src off vOldDst baseAddr v pc hne (no < 2^64 bound — bytes always fit).
+            // Re-read reuses existing cell value; first access allocates oldMemB_<fresh>.
             let base_addr = reg_val_lean(src);
             let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, Width::Byte);
             let v_name = lookup
@@ -2077,9 +1615,7 @@ fn spec_call_for(
                 .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
             let alias = alias_suffix(&lookup);
             if dst == src {
-                // `ldxb r, [r]`: dst == src. The generic ldxb_spec would
-                // emit two `r ↦ᵣ` atoms (unsatisfiable). The same-register
-                // spec owns one register atom; baseAddr IS the dst's old value.
+                // dst == src: generic ldxb_spec would emit two `r ↦ᵣ` atoms (unsatisfiable); use ldxb_same_spec.
                 format!(
                     "have {} := ldxb_same_spec {} {} ({}) {} {} (by decide){}",
                     hyp_name, reg(dst), offl, base_addr, v_name, pc, alias,
@@ -2096,18 +1632,10 @@ fn spec_call_for(
             }
         }
         LD_DW_REG => {
-            // ldxdw_spec dst src off vOldDst baseAddr v pc hne hv
-            // Spec_call_for runs BEFORE step()'s read_mem; predict
-            // the freshly-created mem variable name as `oldMemD_{N}`
-            // where N is the current `state.fresh` (the next index
-            // read_mem will allocate). The matching `< 2^64`
-            // hypothesis the theorem signature surfaces is named
-            // `h<var>_lt` (i.e., `holdMemD_<N>_lt`).
+            // ldxdw_spec dst src off vOldDst baseAddr v pc hne hv.
+            // Runs BEFORE step()'s read_mem; predicts fresh name `oldMemD_{state.fresh}`, bound `h<var>_lt`.
             let base_addr = reg_val_lean(src);
-            // Hot (byte-demoted) region: `ldxdw_bytes_spec` over the 8
-            // byte atoms; the loaded value is their Horner combination
-            // (H8 Phase B). Predictions mirror `read_hot_wide`'s slot
-            // resolution and fresh-name allocation exactly.
+            // Hot (byte-demoted) region: use `ldxdw_bytes_spec` (H8 Phase B); predictions mirror `read_hot_wide`.
             {
                 let bexpr = reg_val_expr(src);
                 let (root, lo) = canon_addr(&bexpr, off);
@@ -2172,14 +1700,8 @@ fn spec_call_for(
                     });
                 }
             }
-            // Re-read of an already-accessed cell reuses its existing
-            // value (read_mem returns the same cell); only a first access
-            // allocates oldMemD_<fresh>. A fresh / `InitMem`-valued cell
-            // renders bare with its surfaced `h<name>_lt` bound (the
-            // common case — kept byte-identical). A *reloaded compound*
-            // value (a register spilled to the stack then loaded back) is
-            // parenthesised and its `< 2^64` bound surfaced as the side
-            // hyp `hReloadLt_<pc>` that `step` registers.
+            // Re-read: reuse existing cell value. First access allocates oldMemD_<fresh> with h<var>_lt.
+            // Reloaded compound (spilled reg) surfaces `hReloadLt_<pc>` as the hv bound.
             let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, Width::Dword);
             let cell_val = lookup.map(|(i, _)| state.mem[i].value.clone());
             let alias = alias_suffix(&lookup);
@@ -2189,7 +1711,7 @@ fn spec_call_for(
                 None => { let n = format!("oldMemD_{}", state.fresh); (n.clone(), format!("h{}_lt", n)) }
             };
             if dst == src {
-                // `ldxdw r, [r]`: same-register variant (ldxdw_same_spec).
+                // dst == src: use ldxdw_same_spec.
                 format!(
                     "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) {}{}",
                     hyp_name, reg(dst), offl, base_addr, v_arg, pc, hv, alias,
@@ -2231,9 +1753,7 @@ fn spec_call_for(
             )
         }
         ST_B_REG | ST_H_REG | ST_W_REG | ST_DW_REG => {
-            // stx{b,h,w,dw}_spec baseReg valReg off baseAddr vSrc oldV pc
-            // (all four share this arg shape; only the width and old-cell
-            // var prefix differ).
+            // stx{b,h,w,dw}_spec baseReg valReg off baseAddr vSrc oldV pc — all four share this shape.
             let (spec, w, pfx) = match insn.opc {
                 ST_B_REG  => ("stxb_spec",  Width::Byte,     "oldMemB"),
                 ST_H_REG  => ("stxh_spec",  Width::Halfword, "oldMemH"),
@@ -2243,17 +1763,11 @@ fn spec_call_for(
             };
             let base_addr = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            // `atom_lean` parenthesises a compound prior value (e.g. a
-            // `toU64 0` left by an earlier imm store) while leaving a
-            // bare `oldMem*_N` / fresh name unparenthesised (so the common
-            // case stays byte-identical).
+            // atom_lean() parenthesises compound prior values, leaving bare `oldMem*_N` unparenthesised.
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, w);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
-                // Cell not yet in state.mem → this store is the FIRST
-                // access to it. step()'s write_mem will call read_mem,
-                // allocating `oldMem*_{fresh}`. Predict that name (same
-                // as the load specs) instead of an unresolved `?oldV`.
+                // First access: step()'s write_mem allocates `oldMem*_{fresh}`; predict that name.
                 .unwrap_or_else(|| format!("{}_{}", pfx, state.fresh));
             let alias = alias_suffix(&lookup);
             format!(
@@ -2263,7 +1777,6 @@ fn spec_call_for(
             )
         }
         ADD64_IMM => {
-            // add64_imm_spec dst imm vOld pc hne
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := add64_imm_spec {} {} ({}) {} (by decide)",
@@ -2271,7 +1784,6 @@ fn spec_call_for(
             )
         }
         AND64_IMM => {
-            // and64_imm_spec dst imm vOld pc hne — same shape as add64_imm.
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := and64_imm_spec {} {} ({}) {} (by decide)",
@@ -2279,7 +1791,6 @@ fn spec_call_for(
             )
         }
         LSH64_IMM => {
-            // lsh64_imm_spec dst imm vOld pc hne
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := lsh64_imm_spec {} {} ({}) {} (by decide)",
@@ -2287,7 +1798,6 @@ fn spec_call_for(
             )
         }
         RSH64_IMM => {
-            // rsh64_imm_spec dst imm vOld pc hne
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := rsh64_imm_spec {} {} ({}) {} (by decide)",
@@ -2306,9 +1816,7 @@ fn spec_call_for(
                 hyp_name, spec, reg(dst), imm, v_old, pc,
             )
         }
-        // Div/mod imm-form: extra `hnz : toU64 imm ≠ 0` — the immediate is
-        // a concrete literal, so `(by decide)` discharges it (and fails
-        // loudly on a literal `div r, 0`).
+        // Div/mod imm-form: extra `hnz : toU64 imm ≠ 0` discharged by `(by decide)` (fails on literal div-by-zero).
         DIV64_IMM | MOD64_IMM => {
             let v_old = reg_val_lean(dst);
             let spec = if insn.opc == DIV64_IMM { "div64_imm_spec" } else { "mod64_imm_spec" };
@@ -2318,16 +1826,13 @@ fn spec_call_for(
             )
         }
         NEG64 => {
-            // neg64_spec dst vOld pc hne (no operand).
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := neg64_spec {} ({}) {} (by decide)",
                 hyp_name, reg(dst), v_old, pc,
             )
         }
-        // div/mod reg-form: the divisor `v` is symbolic, so the spec's
-        // `hnz : v ≠ 0` (64) / `v % U32_MODULUS ≠ 0` (32) is surfaced as
-        // a theorem hypothesis named `hnz_<pc>` (registered by `step`).
+        // div/mod reg-form: symbolic divisor → spec's `hnz` surfaced as theorem hyp `hnz_<pc>` (registered by step).
         DIV64_REG | MOD64_REG | DIV32_REG | MOD32_REG => {
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
@@ -2411,9 +1916,6 @@ fn spec_call_for(
         ST_B_IMM => {
             // stb_spec baseReg off imm baseAddr oldByteVal pc
             let base_addr = reg_val_lean(dst);
-            // The old byte value lives in state.mem keyed by the
-            // base-address expression + offset + byte width. Same
-            // pattern as ST_DW_REG.
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Byte);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
@@ -2440,10 +1942,7 @@ fn spec_call_for(
         ST_W_IMM => {
             // stw_spec baseReg off imm baseAddr oldWordVal pc
             let base_addr = reg_val_lean(dst);
-            // Hot (byte-demoted) region: `stw_bytes_spec` over the 4
-            // byte atoms — pre = the slots' current values (b0..b3),
-            // post = the immediate's LE bytes (c0..c3, hypotheses by
-            // decide). Predictions mirror `write_hot_word_imm`.
+            // Hot region: `stw_bytes_spec` over 4 byte atoms, LE post bytes by decide; mirrors `write_hot_word_imm`.
             {
                 let bexpr = reg_val_expr(dst);
                 let (root, lo) = canon_addr(&bexpr, off);
@@ -2532,7 +2031,6 @@ fn spec_call_for(
             )
         }
         ADD64_REG => {
-            // add64_reg_spec dst src vOld v pc hne
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
             format!(
@@ -2541,7 +2039,6 @@ fn spec_call_for(
             )
         }
         SUB64_REG => {
-            // sub64_reg_spec dst src vOld v pc hne — same shape as add.
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
             format!(
@@ -2549,8 +2046,7 @@ fn spec_call_for(
                 hyp_name, reg(dst), reg(src), v_old, v_src, pc,
             )
         }
-        // Wrapping/bitwise reg-form ALU ops. All share the spec shape
-        // `<op>_reg_spec dst src vOld v pc hne` (hne : dst ≠ .r10).
+        // Wrapping/bitwise reg-form ALU: `<op>_reg_spec dst src vOld v pc hne` (hne : dst ≠ .r10).
         MUL64_REG | OR64_REG | AND64_REG | XOR64_REG | LSH64_REG | RSH64_REG => {
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
@@ -2566,7 +2062,6 @@ fn spec_call_for(
             )
         }
         MOV64_REG => {
-            // mov64_reg_spec dst src vOld v pc hne — register copy.
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
             format!(
@@ -2591,10 +2086,7 @@ fn spec_call_for(
         }
         CALL_IMM => {
             // call_local_spec target cs r6V r7V r8V r9V r10V pc.
-            // `cs` is the CURRENT call stack (the frames already pushed) —
-            // empty for a top-level call, [outer…] for a nested one. The
-            // push of this frame happens in step(), so `state.call_stack`
-            // here is exactly the pre-call stack = `cs`.
+            // `cs` = pre-call stack (push happens in step(), not here); empty at top-level.
             let target = call_target.unwrap_or(0);
             let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
             let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
@@ -2607,17 +2099,12 @@ fn spec_call_for(
         }
         EXIT => {
             // exit_pops_spec frame cs r6Old r7Old r8Old r9Old r10Old pc.
-            // The explicit `r6Old..r10Old` args are the CURRENT (exit-time)
-            // register values — what the `r ↦ᵣ` atoms hold in the
-            // exit_pops PRE, before it restores them.
+            // r6Old..r10Old are the CURRENT (exit-time) register values in the exit_pops PRE.
             let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
             let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
             let r10 = reg_val_lean(10);
-            // `frame` = the top of the call stack (the frame this exit
-            // pops): retPc = `<callpc> + 1` and savedR6..savedR10 = the
-            // CALL-TIME snapshot (NOT current — a callee may clobber
-            // r6..r9). `cs` = the REST of the stack below it (empty for a
-            // top-level call, [outer…] for a nested one).
+            // `frame`: retPc = `<callpc> + 1`, savedR6..savedR10 = CALL-TIME snapshot (NOT current — callee may clobber).
+            // `cs` = stack below frame (empty at top-level).
             let n = state.call_stack.len();
             let (call_pc, saved) = state.call_stack.last()
                 .map(|(p, s)| (*p, s.clone()))
@@ -2626,9 +2113,7 @@ fn spec_call_for(
                 saved[0].atom_lean(), saved[1].atom_lean(), saved[2].atom_lean(),
                 saved[3].atom_lean(), saved[4].atom_lean());
             let cs = render_callstack(&state.call_stack[..n.saturating_sub(1)]);
-            // exit_pops' post projects `frame.savedR6..savedR10`, which
-            // reduce by iota to the `⟨…⟩` fields — but sl_block_iter's
-            // structural match doesn't run iota, so `dsimp` forces it.
+            // `dsimp` forces iota reduction on `frame.savedR6..savedR10` fields (sl_block_iter doesn't run it).
             format!(
                 "have {0} := exit_pops_spec ⟨{1} + 1, ({2}), ({3}), ({4}), ({5}), ({6})⟩ {7} ({8}) ({9}) ({10}) ({11}) ({12}) {13}\n  \
                  dsimp only at {0}",
@@ -2871,16 +2356,11 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
     match insn.opc {
         LD_B_REG => {
             let raw = state.read_mem(src, off, Width::Byte);
-            // Byte load narrows: r := raw % 256.
             state.write_reg(dst, Expr::Mod(Box::new(raw), 256));
         }
         LD_H_REG => {
-            // `ldxh_spec` post is `dst ↦ᵣ v` (the ↦U16 cell value, raw —
-            // bounded < 2^16 by the surfaced hv). Mirrors ldxdw, not ldxb.
+            // `ldxh_spec` post is raw ↦U16 value (like ldxdw, not ldxb); reloaded compound → `hReloadLt_<pc>` side hyp.
             let raw = state.read_mem(src, off, Width::Halfword);
-            // A reloaded compound halfword surfaces its `< 2^16` bound
-            // as the `hReloadLt_<pc>` side hyp the spec references
-            // (mirrors the dword arm).
             if !matches!(raw, Expr::InitMem(_)) {
                 let pcn = pc.unwrap_or(0);
                 state.side_hyps.push((
@@ -2891,7 +2371,6 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.write_reg(dst, raw);
         }
         LD_W_REG => {
-            // `ldxw_spec` post is `dst ↦ᵣ v` (the ↦U32 cell value, raw).
             let raw = state.read_mem(src, off, Width::Word);
             if !matches!(raw, Expr::InitMem(_)) {
                 let pcn = pc.unwrap_or(0);
@@ -2904,10 +2383,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         }
         LD_DW_REG => {
             let raw = state.read_mem(src, off, Width::Dword);
-            // A reloaded *compound* dword (a spilled register read back) is
-            // not a fresh `oldMemD_N` var, so `read_mem` surfaced no
-            // `< 2^64` bound for it. Register the matching `hReloadLt_<pc>`
-            // side hyp that `spec_call_for` references as the spec's `hv`.
+            // Reloaded compound (not fresh `oldMemD_N`): register `hReloadLt_<pc>` as the spec's `hv`.
             if !matches!(raw, Expr::InitMem(_) | Expr::ByteCombo(_)) {
                 let pcn = pc.unwrap_or(0);
                 state.side_hyps.push((
@@ -2919,17 +2395,13 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
         }
         ST_B_REG => {
             let cur = state.read_reg(src);
-            // Byte store narrows: mem := r % 256.
             state.write_mem(dst, off, Width::Byte, Expr::Mod(Box::new(cur), 256));
         }
         ST_H_REG => {
-            // `stxh_spec` post is `↦U16 vSrc` (the width notation truncates;
-            // the cell value is the raw register value, like stxdw's ↦U64).
             let cur = state.read_reg(src);
             state.write_mem(dst, off, Width::Halfword, cur);
         }
         ST_W_REG => {
-            // `stxw_spec` post is `↦U32 vSrc` (raw value; ↦U32 truncates).
             let cur = state.read_reg(src);
             state.write_mem(dst, off, Width::Word, cur);
         }
@@ -2957,20 +2429,16 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.write_reg(dst, Expr::RshU64Imm(Box::new(cur), imm));
         }
         ST_B_IMM => {
-            // Write a constant byte (toU64 imm % 256) at [dst + off].
             state.write_mem(dst, off, Width::Byte,
                 Expr::Mod(Box::new(Expr::ToU64(Box::new(Expr::Const(imm)))), 256));
         }
         ST_H_IMM => {
-            // Write a constant halfword (toU64 imm % 2^16) at [dst + off].
             state.write_mem(dst, off, Width::Halfword, Expr::StHalfImm(imm));
         }
         ST_W_IMM => {
-            // Write a constant word (toU64 imm % 2^32) at [dst + off].
             state.write_mem(dst, off, Width::Word, Expr::StWordImm(imm));
         }
         ST_DW_IMM => {
-            // Write a constant dword (toU64 imm % 2^64) at [dst + off].
             state.write_mem(dst, off, Width::Dword, Expr::StDwordImm(imm));
         }
         SUB64_IMM => {
@@ -2984,8 +2452,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.write_reg(dst, Expr::ToU64(Box::new(Expr::Const(imm))));
         }
         LD_DW_IMM => {
-            // lddw is semantically mov64-from-immediate (the merged
-            // 64-bit value is already in `imm`).
+            // lddw = mov64-from-immediate (merged 64-bit value already in `imm`).
             state.write_reg(dst, Expr::ToU64(Box::new(Expr::Const(imm))));
         }
         MOV64_REG => {
@@ -3007,8 +2474,6 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let b = state.read_reg(src);
             state.write_reg(dst, Expr::WrapMul(Box::new(a), Box::new(b)));
         }
-        // Bitwise / shift reg-form ALU: render the result exactly as the
-        // matching `*_reg_spec` writes its post (an `Expr::Raw` blob).
         OR64_REG | AND64_REG | XOR64_REG | LSH64_REG | RSH64_REG => {
             let a = state.read_reg(dst).atom_lean();
             let b = state.read_reg(src).atom_lean();
@@ -3022,8 +2487,6 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.write_reg(dst, Expr::Raw(r));
         }
-        // Bitwise/mul/div/mod/neg imm-form ALU — render as the matching
-        // `*_imm_spec` / `neg64_spec` post.
         OR64_IMM | XOR64_IMM | MUL64_IMM | DIV64_IMM | MOD64_IMM | NEG64 => {
             let a = state.read_reg(dst).atom_lean();
             let i = lean_off(imm);
@@ -3038,7 +2501,6 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.write_reg(dst, Expr::Raw(r));
         }
-        // 32-bit imm ALU — render as the matching `*32_imm_spec` post.
         ADD32_IMM | SUB32_IMM | MUL32_IMM | OR32_IMM | AND32_IMM | XOR32_IMM
         | LSH32_IMM | RSH32_IMM | MOV32_IMM | DIV32_IMM | MOD32_IMM | NEG32 => {
             let a = state.read_reg(dst).atom_lean();
@@ -3072,7 +2534,6 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             let bits = if insn.opc == ARSH64_REG { 64 } else { 32 };
             state.write_reg(dst, Expr::Raw(arsh_render(&a, &b, bits)));
         }
-        // 32-bit reg ALU — render as the matching `*32_reg_spec` post.
         ADD32_REG | SUB32_REG | MUL32_REG | OR32_REG | AND32_REG | XOR32_REG
         | LSH32_REG | RSH32_REG | MOV32_REG => {
             let a = state.read_reg(dst).atom_lean();
@@ -3091,9 +2552,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.write_reg(dst, Expr::Raw(r));
         }
-        // div/mod reg-form: surface the divisor's non-zeroness as a
-        // `hnz_<pc>` hypothesis (the divisor `src` is symbolic, read
-        // before the `dst` write so its rendering matches the spec arg).
+        // div/mod reg-form: surface divisor non-zeroness as `hnz_<pc>` hyp; read src before dst write so rendering matches spec arg.
         DIV64_REG | MOD64_REG | DIV32_REG | MOD32_REG => {
             let a = state.read_reg(dst).atom_lean();
             let b = state.read_reg(src).atom_lean();
@@ -3112,11 +2571,7 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             };
             state.write_reg(dst, Expr::Raw(r));
         }
-        // Conditional jumps on an immediate. Modelled as "happy path
-        // = fall-through" by default (the common shape for guard
-        // checks at function start). Records a path hypothesis the
-        // theorem signature will surface; doesn't change reg/mem
-        // state. Caller invents a path-hypothesis variable name.
+        // Conditional jumps: record path hyp (taken or fall-through); no reg/mem change. Default = fall-through (common guard shape).
         JEQ64_IMM | JEQ32_IMM => {
             let r = state.read_reg(dst);
             state.branch_hyps.push(BranchHyp {
@@ -3225,51 +2680,34 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
                 taken: branch_taken.unwrap_or(false),            });
         }
         JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
-        // call_local target: pushes a frame, bumps r10 by 0x1000,
-        // redirects PC to target. The PC redirect happens in the
-        // walker; here we just update the symbolic state per
-        // `call_local_spec` in InstructionSpecs/CallReturn.lean.
+        // call_local: bumps r10 by 0x1000 and pushes frame; PC redirect handled by walker.
         CALL_IMM => {
             state.saw_call = true;
-            // r6..r9 must be in scope (they're framed by call_local_spec).
-            // Snapshot the call-time r6..r10 — this is the exact frame the
-            // `call_local` pushes and the matching `exit_pops` must restore.
+            // Snapshot call-time r6..r10 — the frame call_local pushes and exit_pops must restore.
             let r6 = state.read_reg(6); let r7 = state.read_reg(7);
             let r8 = state.read_reg(8); let r9 = state.read_reg(9);
-            // r10 is bumped by 0x1000 (one Solana V0 stack frame).
-            // Use Nat.add (matching call_local_spec's `r10V + 0x1000`)
-            // rather than wrapAdd, so the chain composes cleanly.
+            // Nat.add (not wrapAdd) to match call_local_spec's `r10V + 0x1000` so chains compose.
             let r10_old = state.read_reg(10);
             state.write_reg(10, Expr::NatAdd(
                 Box::new(r10_old.clone()),
                 Box::new(Expr::Const(0x1000)),
             ));
-            // Store the CALL pc (not pc+1): the frame's retPc renders as
-            // `<callpc> + 1` to match what `call_local_spec` pushes (Lean
-            // keeps it unreduced); the walk's resume PC is callpc + 1.
+            // Frame retPc renders as `<callpc> + 1` (Lean keeps unreduced); resume PC is callpc + 1.
             let call_pc = pc.unwrap_or(0);
             state.call_stack.push((call_pc, [r6, r7, r8, r9, r10_old]));
         }
         EXIT => {
             if state.call_stack.is_empty() {
-                // Top-level termination — caller decides what to do.
                 return Ok(false);
             } else {
-                // Nested exit: pop the frame. Per exit_pops_spec, r6..r10
-                // are restored to their pre-call values. In the symbolic
-                // walk, the callee should not have modified r6..r10 (Solana
-                // ABI). We undo r10's +0x1000 bump from the matching
-                // call_local; if the callee touched r6..r9 in violation
-                // of the ABI, the chain won't compose and the user will
-                // see the failure as a sl_block_iter residual.
+                // Nested exit: pop frame + undo r10's +0x1000 bump. Callee must not touch r6..r9 (Solana ABI);
+                // ABI violation → chain won't compose → sl_block_iter residual.
                 let _ = state.call_stack.pop();
                 let r10_cur = state.read_reg(10);
                 state.write_reg(10, Expr::WrapSub(
                     Box::new(r10_cur),
                     Box::new(Expr::Const(0x1000)),
                 ));
-                // step() returns Ok(true) so the walker continues; the
-                // walker resumes at the popped PC.
             }
         }
         opc => return Err(format!("symbolic executor: opcode 0x{:02x} not yet modelled", opc)),
@@ -3277,10 +2715,8 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
     Ok(true)
 }
 
-/// Concatenate the pre-atom list into a Lean `**`-separated SL
-/// expression. Empty list renders as `emp`. `subst` substitutes
-/// complex address-base expressions (matched on rendered form) with
-/// the abstracted parameter name.
+/// Concatenate atoms into a Lean `**`-separated SL expression (`emp` for empty list).
+/// `subst` replaces rendered address-base expressions with their abstracted parameter name.
 fn atoms_to_lean(
     atoms: &[Atom],
     subst: &std::collections::BTreeMap<String, String>,
@@ -3290,12 +2726,8 @@ fn atoms_to_lean(
     parts.join(" **\n      ")
 }
 
-/// Fold abstraction expressions inside a rendered string, replacing
-/// each abstraction's RHS with its parameter name — including when it
-/// appears as a SUB-expression (e.g. `addr0` inside a discriminator
-/// value `(addr0 <<< …) …`). Longest-first so a parent is folded
-/// before its sub-terms. This mirrors what `sl_rw_abs` does to the
-/// proof chain, so goal atoms and chain atoms stay in the same form.
+/// Fold abstraction RHSes to parameter names inside a rendered string, including sub-expressions
+/// (longest-first so parents fold before sub-terms). Mirrors `sl_rw_abs` so goal and chain atoms match.
 fn fold_abstractions(
     s: String,
     subst: &std::collections::BTreeMap<String, String>,
@@ -3311,12 +2743,8 @@ fn fold_abstractions(
     out
 }
 
-/// Word-boundary-aware string replace: substitutes `needle` with
-/// `repl` only at positions where the surrounding characters aren't
-/// alphanumerics/underscore. Without this, an abstraction whose
-/// rendered form is `toU64 3` would corrupt `toU64 32` into `addr02`.
-/// Lean identifiers and numerals are word-char runs, so a boundary
-/// check is enough to keep replacements at real sub-term edges.
+/// Word-boundary-aware replace: substitutes `needle` only where surrounding bytes aren't
+/// alphanumeric/underscore — without this, `toU64 3` would corrupt `toU64 32` into `addr02`.
 fn replace_token(haystack: &str, needle: &str, repl: &str) -> String {
     if needle.is_empty() { return haystack.to_string(); }
     let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
@@ -3343,15 +2771,11 @@ fn replace_token(haystack: &str, needle: &str, repl: &str) -> String {
     out
 }
 
-/// Render one atom, substituting any matching addr_base expression
-/// with its abstracted parameter name.
 fn atom_to_lean_with_subst(
     atom: &Atom,
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    // Substitute the rendered form of a value-expression, folding any
-    // abstraction (whole OR sub-expression) to its param so the goal
-    // matches the sl_rw_abs-folded chain.
+    // Fold whole OR sub-expression abstractions to param names, matching the sl_rw_abs-rewritten goal.
     let sub = |e: &Expr| -> String {
         fold_abstractions(e.to_lean(), subst)
     };
@@ -3365,9 +2789,7 @@ fn atom_to_lean_with_subst(
                 .map(|p| p.clone())
                 .unwrap_or_else(|| addr_base.atom_lean());
             if *delta != 0 {
-                // Hot byte cell: `effectiveAddr base off + delta ↦ₘ v`
-                // (plain Nat add on the resolved address — the form
-                // `ldxdw_bytes_spec`'s atoms use).
+                // Hot byte cell: `effectiveAddr base off + delta ↦ₘ v` — plain Nat add, the form `ldxdw_bytes_spec` uses.
                 return format!(
                     "(effectiveAddr {} {} + {} {} {})",
                     addr_str,
@@ -3381,15 +2803,9 @@ fn atom_to_lean_with_subst(
             )
         }
         Atom::Bytes { addr, value } => {
-            // `memBytesIs` takes a bare Nat address (no effectiveAddr).
-            // Fold the address through the abstraction map — including
-            // SUB-expressions (e.g. `wrapAdd baseAddr 8` → `addr4`),
-            // exactly as register/mem *values* are folded via `sub`. The
-            // address isn't itself an abstraction (no fixed-width atom
-            // owns it), so a whole-address `subst.get` wouldn't catch the
-            // inner `addrK`; `fold_abstractions` does, keeping the goal
-            // atom in the same shape the sl_rw_abs-rewritten chain (and
-            // the value `generalize`) produces.
+            // `memBytesIs` uses a bare Nat address (no effectiveAddr). Use `fold_abstractions` not
+            // `subst.get` — the blob address may contain sub-expressions like `wrapAdd baseAddr 8`
+            // that `subst.get` (whole-key lookup) misses; `fold_abstractions` matches inner `addrK`.
             format!("({} ↦Bytes {})", sub(addr), value.to_lean())
         }
         Atom::Bytes32 { addr, name } => {
@@ -3398,35 +2814,13 @@ fn atom_to_lean_with_subst(
     }
 }
 
-/// Build the H8 satisfiability-witness section for a lift: a concrete
-/// variable assignment under which the theorem's precondition is
-/// satisfiable, certified kernel-side. Emits
-///
-///   * one `native_decide` guard per address abstraction, pinning the
-///     chosen `addrK` literal to its `h_addrK` defining equation at the
-///     assignment (so the witness addresses really are the
-///     hypothesis-determined ones — a Rust evaluator bug fails
-///     `lake build`), and
-///   * an `example : ∃ s, (pre at the assignment) s :=
-///     SatWitness.sat_witness [reflected atoms] (by native_decide)`,
-///     where the goal is the THEOREM's rendered precondition with each
-///     variable token-substituted by its literal — the elaborator's
-///     defeq check ties the reflected atoms to the real pre.
-///
-/// An UNSATISFIABLE precondition (the H8 overlap-vacuity class) makes
-/// the witness construction fail right here (fail closed), and even a
-/// walker/detector bug that slipped through would fail the emitted
-/// `native_decide` at `lake build` — vacuity is structurally
-/// unshippable. SCOPE: heap satisfiability under the `h_addr` defining
-/// equations; value-level path hypotheses (`h_branch*`) are not
-/// certified consistent (they are outside the overlap-vacuity class).
-///
-/// Assignment strategy: each distinct canonical address ROOT gets a
-/// far-apart 4096-aligned base (0x400000000 + k·0x10000000 — separated
-/// by far more than any walked displacement or blob length); derived
-/// roots (masked pointer reloads) are steered there by solving their
-/// defining expression for its free variable; every remaining variable
-/// is 0.
+/// Build the H8 satisfiability-witness: a concrete variable assignment proving the precondition
+/// is satisfiable, kernel-checked by `native_decide`. One guard pins each `addrK` literal to its
+/// `h_addrK` equation; the `∃ s, pre s` example uses `SatWitness.sat_witness` with reflected
+/// atoms tied to the real pre by defeq. An unsatisfiable pre fails here (fail closed) or fails
+/// `lake build` — vacuity is structurally unshippable. Scope: heap/footprint overlap; value-level
+/// `h_branch*` path hypotheses are outside the overlap-vacuity class. Address strategy: each
+/// canonical root gets a far-apart 0x10000000-spaced base (0x400000000+); remaining vars = 0.
 fn build_sat_witness(
     pre: &[Atom],
     state: &SymState,
@@ -3437,8 +2831,7 @@ fn build_sat_witness(
 ) -> Result<String, String> {
     use std::collections::BTreeMap;
 
-    // Abstraction param → its defining address expression (the
-    // pre-atom `addr_base` whose rendering the abstraction captured).
+    // Abstraction param → the pre-atom addr_base whose rendering it captured.
     let mut param_expr: BTreeMap<String, Expr> = BTreeMap::new();
     for atom in pre {
         if let Atom::Mem { addr_base, .. } = atom {
@@ -3452,7 +2845,6 @@ fn build_sat_witness(
     let mut next_base: u64 = 0x4_0000_0000;
     let mut alloc_base = || { let t = next_base; next_base += 0x1000_0000; t };
 
-    // Atom address expressions, in pre order (Mem bases + blob addrs).
     let addr_exprs: Vec<&Expr> = pre.iter().filter_map(|a| match a {
         Atom::Mem { addr_base, .. } => Some(addr_base),
         Atom::Bytes { addr, .. } => Some(addr),
@@ -3471,9 +2863,7 @@ fn build_sat_witness(
             }
         }
     }
-    // Pass 2: opaque (derived) roots, steered via their free variable.
-    // Atom order is creation order, so an outer root's expression only
-    // references roots already solved.
+    // Pass 2: opaque (derived) roots, steered via their free variable (atom order = creation order).
     let mut solved_roots: std::collections::BTreeSet<String> = Default::default();
     for e in &addr_exprs {
         if let (Some(root), _) = canon_root_expr(e, 0) {
@@ -3493,7 +2883,6 @@ fn build_sat_witness(
         env.entry(v.clone()).or_insert(0);
     }
 
-    // Abstraction parameter values under the assignment.
     let mut param_vals: BTreeMap<String, u64> = BTreeMap::new();
     for (param, _, _) in abstractions {
         let e = param_expr.get(param).ok_or_else(|| format!(
@@ -3511,7 +2900,6 @@ fn build_sat_witness(
         (a + delta as u128) as u64
     };
 
-    // Reflected atoms + footprints, in pre order.
     struct Foot { mem: Option<(u64, u64)>, reg: Option<u8>, cs: bool, desc: String }
     let mut sat_atoms: Vec<String> = Vec::new();
     let mut feet: Vec<Foot> = Vec::new();
@@ -3575,10 +2963,7 @@ fn build_sat_witness(
                          desc: "callStack".to_string() });
     }
 
-    // Rust-side pairwise disjointness (the same check `satCheck` will
-    // re-run kernel-side). Overlap here means the precondition is
-    // unsatisfiable AT THIS ASSIGNMENT — for the H8 class (structural
-    // footprint overlap) that is vacuity; fail the lift.
+    // Rust-side pairwise disjointness (mirrored kernel-side by `satCheck`). Overlap = H8 vacuity; fail.
     for i in 0..feet.len() {
         for j in (i + 1)..feet.len() {
             let (x, y) = (&feet[i], &feet[j]);
@@ -3597,8 +2982,6 @@ fn build_sat_witness(
         }
     }
 
-    // Token-substitution table: theorem variables → literals,
-    // abstraction params → their values, blob names → concrete arrays.
     let mut tokens: Vec<(String, String)> = Vec::new();
     for v in vars {
         tokens.push((v.clone(), env.get(v).copied().unwrap_or(0).to_string()));
@@ -3637,10 +3020,8 @@ fn build_sat_witness(
     }
     if !abstractions.is_empty() { w.push('\n'); }
     let cs = if state.saw_call { " ** callStackIs []" } else { "" };
-    // `have` first so the SatAtom list elaborates CLOSED (with an
-    // expected type of `∃ s, interp [..] s` the unifier postpones the
-    // list elements as metavariables and gets stuck); `exact` then
-    // reduces `interp [..]` against the substituted precondition.
+    // `have` before `exact`: with an expected `∃ s, interp [..] s` type the unifier postpones
+    // list metavariables and gets stuck; `have` elaborates the list closed, then `exact` unifies.
     w.push_str(&format!(
         "open Memory in\nexample : ∃ s,\n    ({}{}) s := by\n  \
          have w := SatWitness.sat_witness\n    [{}]\n    (by native_decide)\n  \
@@ -3651,11 +3032,9 @@ fn build_sat_witness(
     Ok(w)
 }
 
-/// Evaluate a path hypothesis under a concrete variable assignment, with
-/// EXACTLY the Lean semantics of `BranchHyp::lean_hyp` (so a `Some(true)`
-/// here means `native_decide` will accept the substituted hypothesis).
-/// `None` = the branch kind (signed compares) is not modeled — those lifts
-/// get no branch witness (skipped, never failed).
+/// Evaluate a branch hypothesis under a concrete assignment, mirroring EXACTLY `BranchHyp::lean_hyp`
+/// semantics so `Some(true)` guarantees `native_decide` accepts the substituted hypothesis.
+/// `None` = unmodeled kind (signed compares) — those lifts are skipped, never failed.
 fn eval_branch(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
     -> Option<bool> {
     use BranchKind::*;
@@ -3713,11 +3092,9 @@ fn eval_branch(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
     Some(r)
 }
 
-/// Candidate `(dst_target, src_target?)` value pairs that would satisfy the
-/// branch, given the current (partial) assignment. The driver tries each in
-/// order, `solve_expr`-ing the relevant variable(s), and keeps the first that
-/// `eval_branch`-verifies. Empty = unmodeled kind (signed) ⇒ the lift is
-/// skipped.
+/// Candidate `(dst_target, src_target?)` pairs that would satisfy the branch under the current
+/// partial assignment. Driver tries in order, `solve_expr`-ing free variables, keeps first that
+/// `eval_branch`-verifies. Empty = unmodeled kind (signed) => lift is skipped.
 fn branch_candidates(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>)
     -> Vec<(u64, Option<u64>)> {
     use BranchKind::*;
@@ -3834,7 +3211,6 @@ fn branch_candidates(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u6
     }
 }
 
-/// Union-find root with path compression (over variable-name nodes).
 fn uf_find(parent: &mut std::collections::BTreeMap<String, String>, x: &str) -> String {
     let mut root = x.to_string();
     while let Some(p) = parent.get(&root) { if *p == root { break; } root = p.clone(); }
@@ -3847,7 +3223,6 @@ fn uf_find(parent: &mut std::collections::BTreeMap<String, String>, x: &str) -> 
     root
 }
 
-/// Collect the free InitReg/InitMem variable names referenced by an expr.
 fn expr_vars(e: &Expr, out: &mut Vec<String>) {
     match e {
         Expr::InitReg(n) | Expr::InitMem(n) => out.push(n.clone()),
@@ -3861,14 +3236,8 @@ fn expr_vars(e: &Expr, out: &mut Vec<String>) {
     }
 }
 
-/// Steering order, most-constraining first:
-///   0  byte-combo EQUALITIES (`b0 + 256·b1 + … = k`) — pin several cells at
-///      once, so the per-byte `bN % 256 ≠ …` constraints are then free.
-///   1  single-cell / register EQUALITIES — pin one value.
-///   2  INEQUALITIES (define a value RANGE: `≥ 9`, `< 8`, …) — pick a value in
-///      range before a disequality forces an arbitrary one.
-///   3  DISEQUALITIES (`≠ k`) — exclude a single point, the most flexible, so
-///      last: whatever the pins/ranges left almost always already differs.
+/// Steerer priority (0 = most constraining): 0=byte-combo-eq (pins several cells), 1=scalar-eq,
+/// 2=inequality (commits a value in range before a disequality can block it), 3=disequality.
 fn branch_priority(bh: &BranchHyp) -> u8 {
     use BranchKind::*;
     let combo = matches!(&bh.dst_value, Expr::ByteCombo(_));
@@ -3880,19 +3249,11 @@ fn branch_priority(bh: &BranchHyp) -> u8 {
     }
 }
 
-/// Phase 7 sub-item 1: the BRANCH-satisfiability witness, complementing the
-/// H8 footprint witness in `build_sat_witness`. The lift theorem takes its
-/// value-level path hypotheses (`h_branch*`) and load bounds (`h*_lt`) as
-/// UNCERTIFIED parameters; an UNSATISFIABLE conjunction of them makes the
-/// triple vacuously true. This emits a concrete assignment that satisfies
-/// every modeled `h_branch*` (and `h*_lt`) SIMULTANEOUSLY, kernel-checked by
-/// `native_decide` — so the emitted assignment is a machine-checked
-/// certificate that the path constraints are jointly satisfiable.
-///
-/// Conservative: returns `None` (emit nothing — non-breaking) when the
-/// deterministic steerer cannot satisfy every branch (an unmodeled signed
-/// compare, an un-invertible `dst_value`, or a genuinely contradictory
-/// constraint set). It NEVER emits a witness it has not Rust-side verified.
+/// Phase 7 sub-item 1: branch-satisfiability witness (complements the H8 footprint witness).
+/// `h_branch*` and `h*_lt` are uncertified parameters — an unsatisfiable conjunction makes the
+/// triple vacuously true. Emits a concrete assignment satisfying every modeled hypothesis
+/// simultaneously, kernel-checked by `native_decide`. Conservative: returns `None` (non-breaking)
+/// when the steerer cannot satisfy every branch — never emits an unverified witness.
 fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
     use std::collections::BTreeMap;
     if state.branch_hyps.is_empty() { return None; }
@@ -3903,18 +3264,11 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
 
     for &i in &order {
         let bh = &state.branch_hyps[i];
-        // Already satisfied by the committed (partial) assignment — e.g. a
-        // value pinned by an earlier branch already lands on the right side
-        // of this comparison.
+        // Already satisfied by the partial assignment (e.g. pinned by an earlier branch).
         if eval_branch(bh, &env) == Some(true) { continue; }
-        // NON-COMMITTING zero-fill probe — DISEQUALITIES only. Does the `≠`
-        // hold if its still-free cells were 0? (The common case for a
-        // byte-combo `≠ 1` whose discriminant byte is pinned nonzero.) If so,
-        // leave those cells FREE — committing them to 0 here would block a
-        // later `bN ≠ 0` on the same cell. The final zero-fill + verify
-        // confirms it. (Inequalities are NOT probed: they define a value
-        // RANGE, so they must COMMIT a value in range — a free cell, later
-        // pinned by a `≠`, could land outside it.)
+        // Non-committing zero-fill probe (disequalities only): if the `≠` holds with free cells=0,
+        // leave them free — committing 0 here would block a later `bN ≠ 0` on the same cell.
+        // Inequalities are NOT probed: they define a range and must commit a value in range.
         if branch_priority(bh) == 3 {
             let mut bvars = Vec::new();
             expr_vars(&bh.dst_value, &mut bvars);
@@ -3923,10 +3277,7 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
             for v in &bvars { probe.entry(v.clone()).or_insert(0); }
             if eval_branch(bh, &probe) == Some(true) { continue; }
         }
-        // Steer via candidates (assigns the relevant free cells). Try both
-        // solve orders: src-first unlocks a compound dst whose free sub-cell
-        // is the src (`wrapAdd d40 d38 ≥ d40` — pin d40 via src, then d38),
-        // dst-first the symmetric case.
+        // Try both solve orders: src-first unlocks compound dst whose free sub-cell = src.
         let cands = branch_candidates(bh, &env);
         'cand: for (dt, st) in cands {
             for src_first in [false, true] {
@@ -3948,21 +3299,13 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
                 }
             }
         }
-        // If not steered here (its cell was pinned by an earlier constraint it
-        // shares), the equality-class repair pass + final verify below handle
-        // it — no fail-hard.
+        // If not steered (pinned by an earlier shared constraint), the repair pass handles it.
     }
 
-    // Zero-fill remaining theorem variables.
     for v in vars { env.entry(v.clone()).or_insert(0); }
 
-    // Repair pass over EQUALITY CLASSES. The greedy pass satisfies each
-    // constraint in isolation, so it mis-handles (a) a single cell with
-    // several constraints (`≤ 2 ∧ ≠ 2 ∧ ≠ 0` ⇒ must be 1) and (b) a cell
-    // equality `a = b` where `a` is constrained elsewhere (so both need that
-    // value). Union reg-equalities into classes, then brute-force ONE shared
-    // value per class over a small pool, requiring every branch internal to
-    // the class (all its cells in the class) to hold jointly.
+    // Repair pass: the greedy pass mis-handles multi-constraint cells (e.g. `≤2 ∧ ≠2 ∧ ≠0` => must be 1)
+    // and reg-equality classes. Union equalities into UF classes, brute-force one shared value per class.
     {
         use std::collections::{BTreeMap, BTreeSet};
         let mut allvars: Vec<String> = Vec::new();
@@ -4013,7 +3356,6 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
         }
     }
 
-    // Final verification of EVERY branch at the complete assignment.
     for (i, bh) in state.branch_hyps.iter().enumerate() {
         if eval_branch(bh, &env) != Some(true) {
             if std::env::var("QEDLIFT_DEBUG_BRANCH").is_ok() {
@@ -4024,8 +3366,6 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
         }
     }
 
-    // Emit: substitute the assignment into each hypothesis, conjoin, and
-    // discharge by `native_decide`.
     let sub = |s: &str| -> String {
         let mut out = s.to_string();
         for (k, val) in &env {
@@ -4052,9 +3392,8 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
          contradictory path-constraint set cannot ship silently. This\n\
          complements the H8 footprint witness above (disjoint variable\n\
          sets: address roots vs. discriminant/flag cells). -/\n\n");
-    // Split the conjunction (`refine ⟨?_, …⟩`) so each conjunct is decided
-    // individually — a single `native_decide` over a deeply-nested `And`
-    // fails `Decidable`-instance synthesis past ~60 conjuncts.
+    // Split via `refine ⟨?_,…⟩` so each conjunct is decided individually —
+    // a single `native_decide` over deeply-nested `And` fails Decidable-synth past ~60 conjuncts.
     let body = conjuncts.join(" ∧\n      ");
     if conjuncts.len() == 1 {
         w.push_str(&format!("example :\n      {} := by native_decide\n\n", body));
@@ -4071,10 +3410,8 @@ fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
 const HEAP_START_I: i64 = 0x300000000;
 const HEAP_END_I:   i64 = 0x300000000 + 0x8000;
 
-/// If a memory cell's address is a flat heap constant (an `lddw`-loaded
-/// `MM_HEAP_START`-range address with offset `off`), return its absolute
-/// heap address. Used to fold heap cells into the `heapBumpPtr` /
-/// `heapBlockU64` allocator predicates.
+/// If `addr_base` is an `lddw`-loaded constant in `[MM_HEAP_START, MM_HEAP_END)`, return its
+/// absolute address — used to fold heap cells into `heapBumpPtr`/`heapBlockU64` predicates.
 fn heap_cell_addr(addr_base: &Expr, off: i64) -> Option<i64> {
     let k = match addr_base {
         Expr::Const(k) => *k,
@@ -4088,10 +3425,8 @@ fn heap_cell_addr(addr_base: &Expr, off: i64) -> Option<i64> {
     if (HEAP_START_I..HEAP_END_I).contains(&abs) { Some(abs) } else { None }
 }
 
-/// Render an atom for the heap-allocation corollary: a `u64` heap cell at
-/// `MM_HEAP_START` becomes `heapBumpPtr v` (the bump-position slot), any
-/// other heap cell becomes `heapBlockU64 addr v` (an allocated block);
-/// everything else renders as usual.
+/// Render an atom for the heap corollary: the `u64` cell at `MM_HEAP_START` -> `heapBumpPtr v`;
+/// any other heap cell -> `heapBlockU64 addr v`; everything else renders normally.
 fn atom_to_lean_heap(
     atom: &Atom,
     subst: &std::collections::BTreeMap<String, String>,
@@ -4121,32 +3456,23 @@ fn atoms_to_lean_heap(
         .join(" **\n      ")
 }
 
-/// Emit the lift artifacts for a `sol_memset_(dst=r1, fill=r2, count=r3)`
-/// host syscall at logical PC `pc`. Shaped to `call_sol_memset_spec`:
-/// adds a `↦Bytes` precondition atom at `r1`'s current value (a fresh
-/// `ByteArray` of size `r3`), records the post (the region filled with
-/// `r2`'s low byte) and `r0 := 0`. The model's `syscallCu` for memory
-/// ops is data-dependent (∝ r3), so the CU bound (`nCu`) and the blob
-/// size are surfaced as theorem hypotheses and threaded into the spec
-/// call rather than discharged here.
+/// Emit lift artifacts for `sol_memset_(r1, r2, r3)` at logical PC `pc`, shaped to
+/// `call_sol_memset_spec`. Adds a `↦Bytes` pre-atom at r1 (fresh ByteArray, size r3),
+/// records post (region filled with r2%256) and `r0 := 0`. CU is data-dependent (∝r3)
+/// so `nCu`/`hCu` are surfaced as hypotheses rather than discharged here.
 fn emit_sol_memset(
     state: &mut SymState,
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
 ) {
-    // Read the operands at the call (pre-state). `read_reg` records each
-    // in `pre` if not already present, so the chain frames them through
-    // to this step.
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1);
     let r2v = state.read_reg(2);
     let r3v = state.read_reg(3);
 
-    // H6: the memset spec's `rr` requires the `[r1V, r1V + r3V)`
-    // destination to be in a writable region. Record it in walk order so
-    // the goal rr carries the same `containsWritable r1V r3V` clause that
-    // `sl_block_iter` folds in from `call_sol_memset_*_spec`.
+    // H6: record writable rr for [r1V, r1V+r3V) so the goal rr matches the `containsWritable`
+    // clause that `sl_block_iter` folds in from `call_sol_memset_*_spec`.
     state.rr_walk.push((r1v.clone(), 0, Width::Byte, true,
         Some((r1v.clone(), r3v.clone()))));
 
@@ -4156,25 +3482,19 @@ fn emit_sol_memset(
     let ncu_name = format!("nCuMemset{}", idx);
     let hcu_name = format!("hCuMemset{}", idx);
 
-    // Pre atom: `r1V ↦Bytes memsetBs_idx`, size pinned to `r3V` (or to
-    // the prefix length under a pre-split, set below).
+    // Pre atom: `r1V ↦Bytes memsetBs_idx`; size = r3V, or prefix length under a pre-split.
     let mut size_rendered = r3v.atom_lean();
     let blob_len = const_of_expr(&r3v).unwrap_or(1).max(1);
     let (root, lo) = canon_addr(&r1v, 0);
-    // Register the blob for split planning (H8 Phase C): a later
-    // dword read at its 8-byte tail re-walks with a split plan.
+    // Register blob for H8 Phase C split planning (a later dword read at the tail triggers a split).
     let fill_const = const_of_expr(&r2v).map(|f| f as u8);
     if const_of_expr(&r3v).is_some() {
         state.blobs.push((root.clone(), lo, blob_len, fill_const));
     }
     let split_n = state.blob_splits.get(&(root.clone(), lo)).copied();
-    // PRE-SPLIT: the lift ALREADY owns a dword cell at the blob's
-    // 8-byte tail (CloseAccount reads the lamports dword BEFORE the
-    // zeroing memset). The spec then owns prefix-blob + that cell.
-    // Collect TRAILING dword cells the lift already owns inside the
-    // target ([len-8k, len-8(k-1)) for k = 1, 2): the pre-split specs
-    // own prefix-blob + those cells. `tail_cells[0]` is the LAST
-    // 8 bytes.
+    // PRE-SPLIT: lift already owns a dword at the blob tail (CloseAccount reads lamports BEFORE
+    // zeroing). Collect trailing owned dwords at [len-8k, len-8(k-1)) for k=1,2;
+    // `tail_cells[0]` = last 8 bytes. Pre-split specs own prefix-blob + those cells.
     let mut tail_cells: Vec<usize> = Vec::new();
     if const_of_expr(&r3v).is_some() && fill_const.is_some() {
         for k in 1..=2i64 {
@@ -4202,10 +3522,8 @@ fn emit_sol_memset(
     state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_memset"));
     state.syscall_pcs.insert(pc, ".sol_memset");
 
-    // Post effect: `r0 := 0`; the blob becomes `replicateByte (r2V%256) r3V`
-    // — or, under a TAIL SPLIT, `replicateByte … n` plus a `↦U64` cell
-    // holding the fill replicated across all eight lanes
-    // (`call_sol_memset_split_u64_spec`).
+    // Post: r0=0; blob -> `replicateByte (r2V%256) r3V`, or under tail-split: prefix blob +
+    // a `↦U64` cell with fill across all 8 lanes (`call_sol_memset_split_u64_spec`).
     state.write_reg(0, Expr::Const(0));
     let have_line = match (tail_cells.len(), split_n, fill_const) {
         (1, _, Some(fill)) => {
@@ -4214,8 +3532,7 @@ fn emit_sol_memset(
             let w: u64 = u64::from_le_bytes([fill; 8]);
             let a_render = SymState::cell_render(&state.mem[ci]);
             let old_v = state.mem[ci].value.atom_lean();
-            // Post: the cell now holds the fill spread across all
-            // eight lanes; the blob shrinks to the prefix.
+            // Post: cell holds fill across all 8 lanes; blob shrinks to prefix.
             state.mem[ci].value = Expr::Const(w as i64);
             state.note_access(&r1v, 0, n, format!("blob:{}", r1v.to_lean()));
             state.byte_blob_post.insert(
@@ -4284,16 +3601,13 @@ fn emit_sol_memset(
                 r1v.to_lean(),
                 BytesVal::Replicate { fill: r2v.clone(), count: Expr::Const(n) },
             );
-            // The split `↦U64` cell, registered at the blob-base
-            // rendering; later reads at other renderings reach it via
-            // the Phase A aliased lookup + `h_alias` equation.
+            // Split `↦U64` cell registered at blob-base; later aliased reads reach it via `h_alias`.
             let w: u64 = u64::from_le_bytes([fill; 8]);
             state.mem.push(MemCell {
                 addr_base: r1v.clone(), addr_off: n,
                 width: Width::Dword, value: Expr::Const(w as i64), delta: 0,
             });
-            // The split-cell address equation, consumer-discharged
-            // like the h_addr* abstractions.
+            // Split-cell address equation, consumer-discharged like h_addr* abstractions.
             let ha_name = format!("h_msplit_{}", pc);
             state.side_hyps.push((ha_name.clone(), format!(
                 "effectiveAddr ({}) ({}) = {} + {}",
@@ -4313,11 +3627,8 @@ fn emit_sol_memset(
             )
         }
         _ => {
-            // Overlap accounting for the blob's byte footprint. A
-            // symbolic count records a 1-byte footprint at the base
-            // (no split applies).
-            // (catches exact-base collisions; full symbolic-length
-            // support is part of the H8 byte-aliasing work).
+            // Blob overlap accounting (symbolic count => 1-byte footprint at base, no split).
+            // Catches exact-base collisions; full symbolic-length support is part of H8 byte-aliasing.
             state.note_access(&r1v, 0, blob_len, format!("blob:{}", r1v.to_lean()));
             state.byte_blob_post.insert(
                 r1v.to_lean(),
@@ -4346,13 +3657,10 @@ const RENT_ID_BYTES: [u8; 32] = [
     0xe3, 0xdb, 0xd9, 0x8a, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// Emit `sol_get_sysvar` (H8 Phase C-2). Supported shape: the RENT id
-/// (read from the binary's RO region at the constant `r1` address),
-/// offset 0, length 17 — pinocchio's `Rent::get()`. The out region is
-/// owned as TWO `↦U64` cells + one `↦ₘ` byte (pre: fresh; post: the
-/// concrete mollusk-default rent values 3480 / 2.0-bits / 50), shaped
-/// to `call_sol_get_sysvar_cells17_spec`; address-bound and
-/// disjointness side conditions are surfaced as hypotheses.
+/// Emit `sol_get_sysvar` (H8 Phase C-2). Only the RENT id at offset 0, length 17 (pinocchio
+/// `Rent::get()`) is modeled, shaped to `call_sol_get_sysvar_cells17_spec`. Out region owned as
+/// two `↦U64` cells + one `↦ₘ` byte (post: mollusk-default rent 3480/2.0-bits/50); address-bound
+/// and disjointness side conditions surfaced as hypotheses.
 fn emit_sol_get_sysvar(
     state: &mut SymState,
     spec_calls: &mut Vec<SpecCall>,
@@ -4393,14 +3701,11 @@ fn emit_sol_get_sysvar(
     state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_get_sysvar"));
     state.syscall_pcs.insert(pc, ".sol_get_sysvar");
 
-    // The id bytes, as the named Lean constant (read-only, framed).
     state.pre.push(Atom::Bytes32 {
         addr: r1v.clone(), name: "SysvarData.rentId".to_string(),
     });
     state.note_access(&r1v, 0, 32, format!("sysvarId:{}", r1v.to_lean()));
 
-    // The out region as three fresh cells (their PRE values), then
-    // overwritten with the concrete rent bytes (the POST).
     let mut cells: Vec<(i64, Width, u32, i64)> = vec![
         (0, Width::Dword, 64, 3480),
         (8, Width::Dword, 64, 4611686018427387904),
@@ -4430,8 +3735,7 @@ fn emit_sol_get_sysvar(
     }
     state.write_reg(0, Expr::Const(0));
 
-    // Surfaced side conditions (symbolic in the out address — the
-    // consumer discharges them by `decide` at instantiation).
+    // Side conditions (symbolic out address; consumer discharges by `decide`).
     let out = r2v.to_lean();
     let out_atom = r2v.atom_lean();
     let id_atom = r1v.atom_lean();
@@ -4507,11 +3811,8 @@ fn emit_r0_syscall(
     block_pcs.push(pc);
 }
 
-/// `sol_log_(ptr, len)` (audit H6). Like `emit_r0_syscall` but the spec
-/// `call_sol_log_spec` pins `r1`/`r2` (the message slice) and carries an
-/// `rr = containsRange r1 r2` requirement, so the emitter reads those
-/// registers, threads them into the spec call, and records the matching
-/// `containsRange` clause in `rr_walk` (writable = false).
+/// Emit `sol_log_(r1, r2)` (H6). Unlike `emit_r0_syscall`, `call_sol_log_spec` pins r1/r2 and
+/// carries `rr = containsRange r1 r2`, so we read those registers and record the rr clause.
 fn emit_sol_log(
     state: &mut SymState,
     spec_calls: &mut Vec<SpecCall>,
@@ -4539,8 +3840,6 @@ fn emit_sol_log(
     block_pcs.push(pc);
 }
 
-/// Build the postcondition atom list: same shape as pre, but each atom
-/// reflects the symbolic value at the end of the walk.
 fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
     let mut out = Vec::with_capacity(initial_pre.len());
     for atom in initial_pre {
@@ -4551,8 +3850,6 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                 out.push(Atom::Reg(*r, v));
             }
             Atom::Mem { addr_base, addr_off, width, delta, .. } => {
-                // Look up the cell by (rendered-addr, off, delta, width)
-                // key — the same scheme `read_mem`/`write_mem` use.
                 let key = (addr_base.to_lean(), *addr_off, *delta, *width as u8);
                 let v = state.mem.iter()
                     .find(|c| c.key() == key)
@@ -4567,8 +3864,7 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                 });
             }
             Atom::Bytes { addr, value } => {
-                // A memory syscall rewrote this blob: look up its post
-                // contents by rendered address (set in `byte_blob_post`).
+                // Look up post blob contents by rendered address (set by memory syscall emitters).
                 let post_val = state.byte_blob_post.get(&addr.to_lean())
                     .cloned()
                     .unwrap_or_else(|| value.clone());
@@ -4583,25 +3879,17 @@ fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
     out
 }
 
-/// Build the region-requirement clause: for each memory atom in pre,
-/// emit `rt.containsRange addr width = true` (and `containsWritable`
-/// for any atom we mutated).
+/// Build the `rr` clause: `rt.containsRange`/`containsWritable` per walk-order atom.
 fn region_req(
     _pre: &[Atom],
     state: &SymState,
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
     let mut clauses = Vec::new();
-    // Walk-order rr contributions: each load → containsRange; each
-    // store → containsWritable. Order matches what slBlockIter
-    // produces by left-folding per chain step.
+    // Walk-order: load -> containsRange, store -> containsWritable; left-fold order matches slBlockIter.
     for (addr_base, addr_off, width, writable, raw) in &state.rr_walk {
-        // H6 variable-length override (memset dst write / sol_log slice
-        // read): `contains{Writable,Range} addr count` with the address
-        // rendered raw (subst-folded, no `effectiveAddr`) exactly like the
-        // syscall's `↦Bytes`/register atom — so it matches the `rr`
-        // carried by `call_sol_{memset,log}_*_spec` after `sl_rw_abs`.
-        // `writable` picks the predicate (store vs load).
+        // H6 variable-length: `contains{Writable,Range} addr count` with raw (subst-folded, no
+        // `effectiveAddr`) address — matches the rr from `call_sol_{memset,log}_*_spec` after sl_rw_abs.
         if let Some((addr, count)) = raw {
             let addr_str = fold_abstractions(addr.to_lean(), subst);
             let kind = if *writable { "containsWritable" } else { "containsRange" };
@@ -4622,10 +3910,8 @@ fn region_req(
     if clauses.is_empty() {
         "True".to_string()
     } else {
-        // Left-associative: `((A ∧ B) ∧ C) ∧ D`. `sl_block_iter`'s
-        // chain composition produces this shape (each step's rr is
-        // ∧-merged on the left); to keep the goal isDefEq to the
-        // chain, the emitted goal needs the same parenthesisation.
+        // Left-associative `((A ∧ B) ∧ C) ∧ D` — matches sl_block_iter's left-fold shape so the
+        // goal is isDefEq to the chain without extra rewrites.
         let mut out = clauses[0].clone();
         for c in clauses.iter().skip(1) {
             out = format!("({}) ∧\n                  {}", out, c);
@@ -4652,40 +3938,28 @@ struct LiftOutput {
     aggregation: Option<(String, String)>,
 }
 
-// Per-binary context shared across arms in batch mode. Building
-// `Executable` + `Analysis` for a large program (e.g. p_token at
-// ~80KB compiled) is ~10s; reusing the same context for every arm
-// keeps batch runs proportional to the number of arms, not the
-// product of arms × binary size.
+// Per-binary context shared across arms in batch mode: building `Executable` for a large program
+// (~80KB p_token) is ~10s, so sharing it keeps batch cost O(arms) not O(arms × binary).
 struct BinaryCtx {
     executable:  Executable<NoopCtx>,
     text_offset: u64,
     text_bytes:  Vec<u8>,
     insns:       Vec<ebpf::Insn>,
-    /// Slot<->logical PC converter (shared with qedrecover via
-    /// `qedsvm::analysis::PcMap`). Needed because jump `off` fields are
-    /// slot-relative but our `insns`/CodeReq PCs are logical indices;
-    /// mirrors the slot map in `SVM/SBPF/Decode.lean` pass 1.
+    /// Slot<->logical PC converter (shared with qedrecover). Jump `off` fields are slot-relative;
+    /// our `insns`/CodeReq PCs are logical indices. Mirrors `SVM/SBPF/Decode.lean` pass 1.
     pc_map:      PcMap,
 }
 
-/// Resolve a slot-relative jump from logical PC `logical_pc` with raw
-/// offset `off` to the *logical* target PC. Mirrors how
-/// `Decode.decodeProgram` rewrites jump targets, so the rendered
-/// `.jXX ... target` matches what `native_decide` proves. Falls back
-/// to `logical_pc + 1 + off` when the maps don't cover the PC (e.g.
-/// the synthetic two_op fixture has no lddw, so slot == logical).
+/// Resolve a slot-relative jump to its logical target PC, mirroring `Decode.decodeProgram` so the
+/// rendered `.jXX target` matches what `native_decide` proves. Falls back to `logical_pc+1+off`
+/// for synthetic fixtures (no lddw => slot == logical).
 fn resolve_jump_target(ctx: &BinaryCtx, logical_pc: usize, off: i64) -> i64 {
     ctx.pc_map.resolve_jump_target(logical_pc, off)
 }
 
-/// The V0 function registry (murmur3 key → target SLOT index) that
-/// solana-sbpf built at load — the ground truth that the Lean
-/// `Elf.buildFnRegistry` mirrors (audit H2). Returned sorted by key so
-/// the emitted `def` is deterministic. The registry value is the
-/// target instruction SLOT (the same units `Decode.decodeInsn` resolves
-/// through the slot map); the `entrypoint` entry (key for slot 0) is
-/// included exactly as the Lean side carries it.
+/// The V0 function registry (murmur3 key -> target SLOT) built at load — ground truth that Lean's
+/// `Elf.buildFnRegistry` mirrors (audit H2). Sorted by key for deterministic output; slot units
+/// match `Decode.decodeInsn`; `entrypoint` (slot 0) included as the Lean side carries it.
 fn function_registry(ctx: &BinaryCtx) -> Vec<(u32, usize)> {
     let mut v: Vec<(u32, usize)> = ctx.executable
         .get_function_registry()
@@ -4696,9 +3970,6 @@ fn function_registry(ctx: &BinaryCtx) -> Vec<(u32, usize)> {
     v
 }
 
-/// Render the function registry as a Lean `List (Nat × Nat)` literal
-/// (key, slot) — the `fnReg` argument to `Decode.decodeProgram` /
-/// `Decode.decodeInsn`.
 fn function_registry_lean(reg: &[(u32, usize)]) -> String {
     let mut s = String::from("[");
     for (i, (k, slot)) in reg.iter().enumerate() {
@@ -4745,9 +4016,7 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
     while pc * ebpf::INSN_SIZE < text_bytes.len() {
         let mut insn = ebpf::get_insn(&text_bytes, pc);
         let opc  = insn.opc;
-        // lddw spans 2 slots; `get_insn` only reads the low 32 bits of
-        // the immediate. Merge in the high half from the next slot so
-        // the rendered `.lddw dst imm` matches decodeProgram's output.
+        // lddw spans 2 slots; merge the high-half immediate from the next slot to match decodeProgram.
         if opc == ebpf::LD_DW_IMM {
             ebpf::augment_lddw_unchecked(&text_bytes, &mut insn);
         }
@@ -4755,22 +4024,15 @@ fn load_binary(so_path: &Path) -> Result<BinaryCtx, Box<dyn std::error::Error>> 
         insns.push(insn);
         pc += span;
     }
-    // One slot<->logical converter, derived from the decoded insns
-    // (shared with qedrecover; see `qedsvm::analysis::PcMap`).
+    // Shared slot<->logical converter (see `qedsvm::analysis::PcMap`).
     let pc_map = PcMap::from_insns(&insns);
     Ok(BinaryCtx { executable, text_offset, text_bytes, insns, pc_map })
 }
 
 // ════════════════════════════════════════════════════════════════
-// Refinement codegen — emit a per-arm asm-refines-intrinsic theorem
-// alongside the lift, mechanizing the hand recipe used for
-// Transfer / TransferChecked / MintTo / Burn. Given the lift's atoms +
-// the IDL arm name, it detects the mutated account cells, classifies
-// each account's codec fields (token vs mint), picks the matching
-// aggregation lemma, builds the frame, and emits the
-// `AsmRefines…`-obligation theorem. Returns `(module_name, lean)` or
-// `None` for arms not in the intrinsic registry / with an unrecognised
-// account layout.
+// Refinement codegen — mechanically emit the per-arm `AsmRefines…` obligation theorem.
+// Detects mutated cells, classifies codec (token/mint/counter/vault), picks aggregation lemma.
+// Returns `(module_name, lean)` or `None` for unregistered arms / unrecognized layouts.
 // ════════════════════════════════════════════════════════════════
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -4796,18 +4058,14 @@ fn refine_registry(arm: &str) -> Option<RefineSpec> {
             asm_pred: "AsmRefinesTokenBurn",
             accounts: &[("account", CodecKind::Token), ("mint", CodecKind::Mint)],
         }),
-        // First NON-token intrinsic: a single-field counter account whose
-        // codec is one `u64` (coarse = fine, no aggregation). The constant
-        // `+1` delta is handled by the `counterIncrement` clean-up + the
-        // dedicated `emit_counter_refinement` path.
+        // Non-token single-field counter: codec is one u64 (coarse=fine, no aggregation).
+        // Constant +1 delta handled by `counterIncrement` clean-up + `emit_counter_refinement`.
         "counterIncrement" => Some(RefineSpec {
             asm_pred: "AsmRefinesCounterIncrement",
             accounts: &[("counter", CodecKind::Counter)],
         }),
-        // Multi-field NON-token account (e.g. {owner:Pubkey, total:u64,
-        // bump:u8}). The layout-general `AsmRefinesFieldUpdate` obligation
-        // is proved by reshaping the codec via `account_agg` and framing
-        // the untouched fields — `emit_vault_refinement`, IDL-driven.
+        // Multi-field non-token account (IDL-driven). `AsmRefinesFieldUpdate` proved by reshaping
+        // via `account_agg` and framing untouched fields — `emit_vault_refinement`.
         "VaultIncrement" => Some(RefineSpec {
             asm_pred: "AsmRefinesFieldUpdate",
             accounts: &[("vault", CodecKind::Vault)],
@@ -4816,9 +4074,8 @@ fn refine_registry(arm: &str) -> Option<RefineSpec> {
     }
 }
 
-/// Whether `arm` refines a codec with a constant `+1` delta (counter or
-/// vault). Gates the constant-delta balance cleaning so other arms (e.g.
-/// `two_op`'s `+1`) stay byte-identical.
+/// True for arms with a constant `+1` delta (counter/vault). Gates the delta-cleaning so arms
+/// like `two_op`'s `+1` are not mistakenly cleaned.
 fn is_const_delta_arm(arm: Option<&str>) -> bool {
     arm.and_then(refine_registry).map_or(false, |s| {
         s.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Counter | CodecKind::Vault))
@@ -4842,7 +4099,6 @@ fn cell_val<'a>(atoms: &'a [Atom], base_raw: &str, off: i64, byte: bool) -> Opti
 /// A balance/supply cell mutated in the post (`a ± b`, both loaded).
 struct MutCell { base: Expr, base_raw: String, off: i64, a: Expr, b: Expr, is_sub: bool }
 
-/// Output of building one account's aggregation + frame.
 struct AcctBuild {
     base_arg: String,                  // "(addr5 + 88)" — lemma base argument
     record: String,                    // the codec record literal
@@ -4853,16 +4109,11 @@ struct AcctBuild {
     params: Vec<String>,               // new Nat params (framed owner o…)
     barrays: Vec<String>,              // new ByteArray params
     hyps: Vec<String>,                 // size + byte-bound hypotheses
-    // Token-codec aggregation: (lemma_name, owner_owned, rest_pattern).
-    // `Some` for token accounts (drives mechanically emitting the
-    // aggregation module); `None` for mint accounts (hand-written for now).
+    // Token aggregation: (lemma_name, owner_owned, rest_pattern). `None` for mint (hand-written).
     agg: Option<(String, bool, Vec<i64>)>,
-    // Discharge-route field-list atoms: this account's `codecCoarse base
-    // (tokenFields/mintFields …)` in the pre- and post-state. The keystone
-    // (`tokenAcctBalance_codec` / `mintSupply_codec`) shows the bespoke
-    // `tokenAcctBalanceOf` / `mintSupplyOf` atom equals these, so the kept
-    // `AsmRefinesToken*` obligation reshapes to a layout-general field-list
-    // obligation — the `refines_field` corollary the codegen emits.
+    // `codecCoarse base (tokenFields/mintFields …)` atoms for pre and post. The keystone
+    // (`tokenAcctBalance_codec`/`mintSupply_codec`) equates the bespoke atom to these, reshaping
+    // the `AsmRefinesToken*` obligation to the layout-general `refines_field` corollary.
     field_pre: String,
     field_post: String,
 }
@@ -4882,16 +4133,13 @@ fn emit_refinement(
 ) -> Option<(String, String, Option<(String, String)>)> {
     let spec = refine_registry(arm_name)?;
 
-    // Counter codec: a single `u64` field with a constant `+1` delta and
-    // no aggregation (coarse = fine). A dedicated path keeps the token /
-    // mint codegen byte-for-byte unchanged.
+    // Counter codec (single u64, coarse=fine): dedicated path keeps token/mint codegen byte-identical.
     if spec.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Counter)) {
         return emit_counter_refinement(&spec, lift_module, pre, post_clean,
             abs_subst, vars, n_cu, start_pc, exit_pc);
     }
 
-    // Vault codec: a multi-field NON-token account (IDL layout). Owns the
-    // updated `u64` field, frames the rest, reshapes via `account_agg`.
+    // Vault codec (IDL layout, multi-field): owns updated u64, frames the rest, reshapes via `account_agg`.
     if spec.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Vault)) {
         return emit_vault_refinement(&spec, lift_module, pre, post_clean,
             abs_subst, vars, n_cu, start_pc, exit_pc, idl);
@@ -4919,9 +4167,8 @@ fn emit_refinement(
     // The transferred amount `b` is shared across all mutated cells.
     let amount = fold(&muts[0].b);
 
-    // ── Assign each registry account to a mutated cell ──────────────
-    // Token amount cells own a mint dword at off-64; mint supply cells
-    // own the is_initialized byte at off+9 (= base+45).
+    // ── Assign each registry account to a mutated cell ─────────────────────────────────────────
+    // Token amount cells have a mint dword at off-64; mint supply cells have is_initialized at off+9.
     let is_mint_mut = |m: &MutCell| cell_val(pre, &m.base_raw, m.off + 9, true).is_some();
     let is_tok_mut  = |m: &MutCell| cell_val(pre, &m.base_raw, m.off - 64, false).is_some();
     let mut used = vec![false; muts.len()];
@@ -4929,8 +4176,7 @@ fn emit_refinement(
     let mut barray_ctr = 0u32;
     let mut framed_owner = false;
     for (role, codec) in spec.accounts {
-        // Pick an unused mutated cell matching this codec; for two
-        // same-codec token accounts (Transfer), src=sub, dst=add.
+        // Pick unused mutated cell for this codec; for two token accounts (Transfer), src=sub, dst=add.
         let want_sub = *role == "src" || *role == "account";
         let idx = (0..muts.len()).find(|&i| {
             !used[i] && match codec {
@@ -4979,13 +4225,8 @@ fn emit_refinement(
     let lean = render_refinement(&spec, &module, &builds, pre, post_clean,
         &setup_pre, &setup_post, abs_subst, vars, &amount, n_cu, start_pc, exit_pc);
 
-    // Mechanically emit the token-codec aggregation module (the
-    // `*_account_eq` lemmas the refinement imports), from the detected
-    // owned-byte patterns. Token codec uses the shared
-    // `PToken.TransferAggregation`; mint accounts (agg: None) still rely
-    // on the hand-written `PToken.MintAggregation`.
-    // Token account rest-region start + size from the IDL layout (step a);
-    // fall back to SPL token's 72/165. `rest_start` = the byte after `amount`.
+    // Emit aggregation module from detected owned-byte patterns. Token -> `PToken.TransferAggregation`;
+    // mint -> `PToken.MintAggregation`. Rest-region start/size from IDL; fallback = SPL token 72/165.
     let (tok_rest_start, tok_size) = idl
         .and_then(|v| parse_account_layout(v, "token").ok())
         .and_then(|l| {
@@ -4996,9 +4237,7 @@ fn emit_refinement(
 
     let uses_mint = spec.accounts.iter().any(|(_, c)| matches!(c, CodecKind::Mint));
     let aggregation = if uses_mint {
-        // Mint codec → the shared MintAggregation module (union of
-        // mint_account_eq / mint_supply_eq / dest_account_eq). Mint
-        // supply offset + rest offset from the IDL mint layout.
+        // Mint codec: supply/rest offsets from the IDL mint layout; fallback = SPL defaults.
         let (supply_off, rest_off, mint_size) = idl
             .and_then(|v| parse_account_layout(v, "mint").ok())
             .and_then(|l| {
@@ -5011,7 +4250,6 @@ fn emit_refinement(
             tok_rest_start, tok_size);
         Some(("PToken.MintAggregation".to_string(), agg_lean))
     } else {
-        // Token codec → TransferAggregation, from the detected src/dst patterns.
         let token_aggs: Vec<(&str, bool, Vec<i64>)> = builds.iter()
             .filter_map(|b| b.agg.as_ref().map(|(n, oo, p)| (n.as_str(), *oo, p.clone())))
             .collect();
@@ -5038,7 +4276,6 @@ fn build_token(
     let mut hyps = Vec::new();
     let mut frame = Vec::new();
 
-    // mint pubkey: 4 dwords at +0/8/16/24 (always owned).
     let mut mint = Vec::new();
     for i in 0..4 {
         let off = base_off + 8 * i;
@@ -5046,7 +4283,6 @@ fn build_token(
         mint.push(v);
         owned.push((m.base_raw.clone(), off, false));
     }
-    // owner pubkey: owned (read) or framed.
     let owner_owned = cell_val(pre, &m.base_raw, base_off + 32, false).is_some();
     let owner: Vec<String> = if owner_owned {
         (0..4).map(|i| {
@@ -5063,7 +4299,6 @@ fn build_token(
         }
         (0..4).map(|i| format!("o{}", i)).collect()
     };
-    // amount field pre-value (the balance `a`).
     let amt_field = fold(&m.a);
     owned.push((m.base_raw.clone(), base_off + 64, false));
 
@@ -5083,11 +4318,9 @@ fn build_token(
     let g2 = { *barray_ctr += 1; format!("g{}", *barray_ctr) };
     barrays.push(g1.clone()); barrays.push(g2.clone());
 
-    // Per-byte hyp name derived from the byte var (unique across accounts).
     let hb = |v: &str| format!("h_{}", v);
     let g1sz = format!("{}sz", g1);
-    // (lemma, record_rest, rw_args_tail). The tail is the lemma args after
-    // `base mint… owner… amount`: the rest bytes, gaps, and size/bound hyps.
+    // (lemma, rest-record, rw_args_tail) — tail is lemma args after base/mint/owner/amount.
     let (lemma, rest, rest_args): (&str, String, String) = match rest_bytes.as_slice() {
         [72, 108, 109] => {
             let (b72, b108, b109) = (byte_val(72), byte_val(108), byte_val(109));
@@ -5137,8 +4370,7 @@ fn build_token(
     let rw_pre = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, amt_field, rest_args);
     let rw_post = format!("{} {} {} {} {} {}", lemma, base_arg, mint_args, owner_args, post_amt, rest_args);
     let agg = Some((lemma.to_string(), owner_owned, rest_bytes.clone()));
-    // Discharge-route field list (SPL token: mint@0, owner@32, amount@64,
-    // opaque tail@72) — the `tokenAcctBalance_codec` keystone target.
+    // codecCoarse field list (SPL token layout) — `tokenAcctBalance_codec` keystone target.
     let field_pre = format!(
         "codecCoarse {} (SVM.Solana.tokenFields ⟨{}⟩ ⟨{}⟩ {} ({}))",
         base_arg, mint.join(", "), owner.join(", "), amt_field, rest);
@@ -5150,21 +4382,13 @@ fn build_token(
 }
 
 // -----------------------------------------------------------------------------
-// Account-aggregation codegen.
-//
-// Emits the `*_account_eq` aggregation lemmas (today hand-written in
-// PToken/TransferAggregation.lean) from the account layout + the lift's
-// owned-byte pattern. The lemmas are GENERIC in the field values
-// (`b72`/`h72`/`g1`, not lift vars), so they're a pure function of the
-// owned-byte pattern — `rest_segments` generalizes the previously
-// hardcoded `match rest_bytes` arms to any pattern.
+// Account-aggregation codegen: emits `*_account_eq` lemmas from the IDL layout
+// + owned-byte pattern via `rest_segments` (generic, not lift-var-specific).
 // -----------------------------------------------------------------------------
 
-/// A segment of an account's `rest` region.
 enum RestSeg { Byte(i64), Gap { off: i64, len: i64 } }
 
-/// General segmentation of `[start, end)` given sorted owned byte offsets:
-/// owned bytes become `Byte`, the runs between/around them become `Gap`s.
+/// Segment `[start, end)` by sorted owned byte offsets: owned → `Byte`, spans → `Gap`.
 fn rest_segments(owned: &[i64], start: i64, end: i64) -> Vec<RestSeg> {
     let mut segs = Vec::new();
     let mut cur = start;
@@ -5177,16 +4401,13 @@ fn rest_segments(owned: &[i64], start: i64, end: i64) -> Vec<RestSeg> {
     segs
 }
 
-/// Emit one `tokenAcctBalanceOf base record = <fine cells>` aggregation
-/// lemma for a token account whose `rest` region owns `owned` bytes.
-/// `owner_owned` = the lift read the owner (else it's framed via `o0..o3`).
-/// `gap_ctr` threads gap numbering across a module's lemmas.
+/// Emit one `tokenAcctBalanceOf` aggregation lemma for an account owning `owned` rest-bytes.
+/// `owner_owned`: lift read the owner (else framed via `o0..o3`). `gap_ctr`: cross-lemma numbering.
 fn render_token_agg_lemma(
     name: &str, owner_owned: bool, owned: &[i64], rest_start: i64, size: i64,
     gap_ctr: &mut u32,
 ) -> String {
     let segs = rest_segments(owned, rest_start, size);
-    // Assign gap names + collect byte offsets, preserving segment order.
     let mut gap_name: Vec<(usize, String)> = Vec::new(); // (seg idx, gN)
     for (i, s) in segs.iter().enumerate() {
         if let RestSeg::Gap { .. } = s {
@@ -5198,7 +4419,6 @@ fn render_token_agg_lemma(
     let byte_offs: Vec<i64> = segs.iter().filter_map(|s|
         if let RestSeg::Byte(o) = s { Some(*o) } else { None }).collect();
 
-    // Params.
     let byte_vars: Vec<String> = byte_offs.iter().map(|o| format!("b{}", o)).collect();
     let gap_vars: Vec<String> = gap_name.iter().map(|(_, g)| g.clone()).collect();
     let nat_params = {
@@ -5222,7 +4442,6 @@ fn render_token_agg_lemma(
     }
     for o in &byte_offs { hyps.push(format!("(h{} : b{} < 256)", o, o)); }
 
-    // LHS record `rest` (right-folded `++` chain) + RHS fine cells.
     let term = |s: &RestSeg, i: usize| match s {
         RestSeg::Byte(o)  => format!("PartialState.byteBA b{}", o),
         RestSeg::Gap { .. } => gname(i),
@@ -5241,7 +4460,6 @@ fn render_token_agg_lemma(
         RestSeg::Byte(o)        => format!("memByteIs (base + {}) b{}", o, o),
         RestSeg::Gap { off, .. } => format!("memBytesIs (base + {}) {}", off, gname(i)),
     }).collect();
-    // memBytesIs_segs args.
     let seg_list: Vec<String> = segs.iter().enumerate().map(|(i, s)| match s {
         RestSeg::Byte(o)  => format!(".byte b{}", o),
         RestSeg::Gap { .. } => format!(".gap {}", gname(i)),
@@ -5287,8 +4505,7 @@ fn render_token_agg_lemma(
     )
 }
 
-/// Emit the full token-aggregation module (the lemmas a token-codec
-/// refinement imports). `accounts` is `(lemma_name, owner_owned, owned_bytes)`.
+/// Emit the token-aggregation module. `accounts` = `(lemma_name, owner_owned, owned_bytes)`.
 fn render_token_agg_module(
     ns: &str, accounts: &[(&str, bool, Vec<i64>)], rest_start: i64, size: i64,
 ) -> String {
@@ -5320,12 +4537,8 @@ end {ns}
         ns = ns, lemmas = lemmas.join("\n\n"))
 }
 
-/// Emit the full mint-aggregation module (the lemmas a mint-codec
-/// refinement imports: `mint_account_eq` full preAuth, `mint_supply_eq`
-/// opaque preAuth, and the token `dest_account_eq`). Mint structure is the
-/// SPL `COption<Pubkey>` preAuth (tag byte + 3-byte gap + 32-byte pubkey
-/// as four dwords) at [0,36), `supply` u64 at `supply_off`, rest at
-/// `rest_off`. The preAuth/rest splits reuse the `memBytesIs_segs` keystone.
+/// Emit the mint-aggregation module (`mint_account_eq` full preAuth, `mint_supply_eq` opaque
+/// preAuth, `dest_account_eq` token). SPL `COption<Pubkey>` at [0,36), supply at `supply_off`.
 fn render_mint_agg_module(
     ns: &str, supply_off: i64, rest_off: i64, mint_size: i64,
     tok_rest_start: i64, tok_size: i64,
@@ -5430,10 +4643,7 @@ end {ns}
         ns = ns, mint_account_eq = mint_account_eq, mint_supply_eq = mint_supply_eq, dest = dest)
 }
 
-/// Write the mechanically-emitted aggregation module to its canonical
-/// `examples/lean/<module-path>.lean` location (relative to cwd). The
-/// import module name (e.g. `PToken.TransferAggregation`) maps to the
-/// path under the Examples lib `srcDir`. Returns a label for the log.
+/// Write the emitted aggregation module to `examples/lean/<module>.lean`. Returns a log label.
 fn write_aggregation(agg: &Option<(String, String)>) -> std::io::Result<&'static str> {
     if let Some((module, lean)) = agg {
         let path = format!("examples/lean/{}.lean", module.replace('.', "/"));
@@ -5516,7 +4726,6 @@ fn build_mint(
         field_pre, field_post })
 }
 
-/// Render a mint aggregation rw call for a given supply value.
 fn mint_rw(lemma: &str, base_arg: &str, preauth: &str, pre_args: &str,
            supply: &str, b45: &str, barrays: &[String], preauth_owned: bool) -> String {
     if preauth_owned {
@@ -5543,24 +4752,20 @@ fn render_refinement(
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String], amount: &str,
     n_cu: usize, start_pc: usize, exit_pc: usize,
 ) -> String {
-    // params: vars (Nat), framed owners, ByteArrays, hyps.
     let mut nat_params = vars.join(" ");
     for b in builds { for p in &b.params { nat_params.push(' '); nat_params.push_str(p); } }
     let mut barrays: Vec<String> = Vec::new();
     let mut hyps: Vec<String> = Vec::new();
     for b in builds { barrays.extend(b.barrays.iter().cloned()); hyps.extend(b.hyps.iter().cloned()); }
 
-    // AsmRefines account argument order (records), interleaved with addrs.
-    // Build: pred cr nCu 0 entry exit rr <addr args> <record args> amount setupPre setupPost
+    // AsmRefines arg order: pred cr nCu 0 entry exit rr <addrs> <records> amount setupPre setupPost
     let addr_args: Vec<String> = builds.iter().map(|b| b.base_arg.clone()).collect();
     let record_args: Vec<String> = builds.iter().map(|b| format!("\n      {}", b.record)).collect();
 
-    // rw list: pre-aggregations then post-aggregations.
     let mut rw: Vec<String> = Vec::new();
     for b in builds { rw.push(b.rw_pre.clone()); }
     for b in builds { rw.push(b.rw_post.clone()); }
 
-    // frame F (right-folded sep-conj of all accounts' frame atoms).
     let frame_atoms: Vec<String> = builds.iter().flat_map(|b| b.frame.iter().cloned()).collect();
     let frame = frame_atoms.join(" **\n      ");
 
@@ -5572,7 +4777,6 @@ fn render_refinement(
         format!("import Generated.{}TracedLifted", strip_refinement(module)),
     ];
     if uses_mint_codec { imports.push("import SVM.Solana.MintFieldCodec".to_string()); }
-    // aggregation deps
     let uses_transfer_agg = builds.iter().any(|b|
         b.rw_pre.starts_with("src_account_eq") || b.rw_pre.starts_with("dst_account_eq"));
     let uses_mint_agg = builds.iter().any(|b|
@@ -5581,16 +4785,12 @@ fn render_refinement(
     if uses_transfer_agg { imports.push("import PToken.TransferAggregation".to_string()); }
     if uses_mint_agg { imports.push("import PToken.MintAggregation".to_string()); }
 
-    // Discharge-route field-list atoms (builds order matches the obligation's
-    // account-atom order), for the `refines_field` reshape corollary.
+    // Field-list atoms for the `refines_field` corollary; order matches obligation's account order.
     let field_pre_join = builds.iter().map(|b| b.field_pre.clone())
         .collect::<Vec<_>>().join(" **\n      ");
     let field_post_join = builds.iter().map(|b| b.field_post.clone())
         .collect::<Vec<_>>().join(" **\n      ");
-    // Reshape simp set for `refines_field`: the token keystone always (every
-    // arm owns ≥1 token account); the mint keystone only when a mint account
-    // is present, so a token-only arm doesn't reference the unimported
-    // `MintFieldCodec` lemmas.
+    // Simp set: token keystone always; mint keystone only when a mint account is present (#MintFieldCodec guard).
     let mut reshape_simp = vec![
         "SVM.Solana.tokenAcctBalanceOf_eq", "SVM.Solana.tokenAcctBalanceOf_withAmount",
         "SVM.Solana.tokenAcctBalance_codec",
@@ -5692,10 +4892,8 @@ end Examples.{module}
     )
 }
 
-/// Emit a counter-codec refinement: a single owned `u64` cell at the
-/// counter offset, incremented by the constant 1. No aggregation module
-/// (coarse = fine for a `u64`), no frame (the cell is fully owned), no
-/// `amount` argument (the delta is the constant 1).
+/// Emit a counter-codec refinement: single owned `u64` cell, constant +1 delta.
+/// No aggregation (coarse = fine for `u64`), no frame, no `amount` arg.
 fn emit_counter_refinement(
     spec: &RefineSpec, lift_module: &str,
     pre: &[Atom], post_clean: &[Atom],
@@ -5704,8 +4902,7 @@ fn emit_counter_refinement(
 ) -> Option<(String, String, Option<(String, String)>)> {
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
 
-    // Find the incremented counter cell: a `u64` whose post value is the
-    // cleaned `NatAdd(InitMem, Const)` form.
+    // Find the post-state incremented `u64` cell (NatAdd(InitMem, Const) form).
     let mut found: Option<(Expr, i64, Expr, i64)> = None;
     for atom in post_clean {
         if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
@@ -5725,8 +4922,7 @@ fn emit_counter_refinement(
     let counter_pre = fold(&pre_val);
     let record = format!("{{ counter := {} }}", counter_pre);
 
-    // The single owned `u64` cell is excluded from the setup frame; every
-    // other lift atom (registers, etc.) stays in setup.
+    // Owned `u64` cell flows through the codec's fine form; everything else stays in setup.
     let owned_base = base.to_lean();
     let is_owned = |a: &Atom| match a {
         Atom::Mem { addr_base, addr_off, width, .. } =>
@@ -5744,9 +4940,7 @@ fn emit_counter_refinement(
     Some((module, lean, None))
 }
 
-/// Render the counter refinement theorem. The proof is `unfold` +
-/// `simp [counterValOf]` + `sl_exact lift`: no codec aggregation rewrite
-/// (a single `u64` is coarse = fine) and no frame (the cell is owned).
+/// Render the counter refinement theorem. Proof: `unfold` + `simp [counterValOf]` + `sl_exact`.
 fn render_counter_refinement(
     spec: &RefineSpec, module: &str, addr_arg: &str, record: &str,
     pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
@@ -5814,11 +5008,8 @@ end Examples.{module}
     )
 }
 
-/// Emit a multi-field NON-token vault refinement (`AsmRefinesFieldUpdate`).
-/// Owns the updated `u64` field, frames the untouched fields, and reshapes
-/// the account codec via `account_agg`/`codecCoarse_eq_fine`. The field
-/// layout is driven by the Codama IDL account struct — the layout-general
-/// path that makes a new program's refinement free.
+/// Emit a vault (`AsmRefinesFieldUpdate`) refinement: owns the updated `u64`, frames the rest,
+/// reshapes via `codecCoarse_eq_fine`. IDL-driven — new programs cost only a qedspec.
 fn emit_vault_refinement(
     spec: &RefineSpec, lift_module: &str,
     pre: &[Atom], post_clean: &[Atom],
@@ -5829,9 +5020,7 @@ fn emit_vault_refinement(
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
     let layout = parse_account_layout(idl?, "vault").ok()?;
 
-    // The updated field: a `u64` cell whose cleaned post value is
-    // `NatAdd(InitMem, Const)` (the constant `+k` delta).
-    let mut updated: Option<(Expr, i64, Expr, i64)> = None; // base, off, pre_val, delta
+    let mut updated: Option<(Expr, i64, Expr, i64)> = None; // base, off, pre_val, delta (NatAdd(InitMem, Const))
     for atom in post_clean {
         if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
             if matches!(width, Width::Dword) {
@@ -5848,25 +5037,18 @@ fn emit_vault_refinement(
     let base_l = fold(&base);
     let upd_pre_l = fold(&upd_pre);
 
-    // Walk the IDL layout: emit a `FieldVal` per field; own the updated
-    // `u64`, frame every other field (fresh params + fine atoms).
+    // Walk IDL layout: own the updated `u64`, frame every other field.
     let mut fresh = 0u32;
     let mut params: Vec<String> = Vec::new();
     let mut ba_params: Vec<String> = Vec::new();
     let mut pre_fields: Vec<String> = Vec::new();
     let mut post_fields: Vec<String> = Vec::new();
     let mut frame: Vec<String> = Vec::new();
-    // Absolute offsets of blob bytes the lift owns (a SPLIT blob exposes them
-    // as fine `.byte` atoms) — excluded from `setup` below, like the updated
-    // u64. `true` if the split emitted any `.byte` seg (its `< 256` validity
-    // needs `omega` after the codecValid `simp`).
+    // Owned blob bytes (SPLIT blob): excluded from `setup`, need `< 256` hyps for codecValid.
     let mut owned_blob_offs: Vec<i64> = Vec::new();
-    // `< 256` validity hypotheses for the split's owned bytes (raw cell values
-    // are not `% 256`-bounded by the lift, so the codecValid discharge needs
-    // them; `omega` reads them from context).
+    // `< 256` hyps for split blob's owned bytes; `omega` discharges after codecValid simp.
     let mut byte_hyps: Vec<String> = Vec::new();
-    // `(name, "g.size = len")` for gaps preceding an owned byte — pins the
-    // running offset so the split's fine atoms land at the lift's addresses.
+    // Gap-size hyps `(name, "g.size = len")`: pin offsets so fine atoms land at lift's addresses.
     let mut gap_size_hyps: Vec<(String, String)> = Vec::new();
     let base_raw_blob = base.to_lean();
     let mut updated_seen = false;
@@ -5877,7 +5059,6 @@ fn emit_vault_refinement(
                 updated_seen = true;
                 pre_fields.push(format!("({}, .u64 {})", off, upd_pre_l));
                 post_fields.push(format!("({}, .u64 ({} + {}))", off, upd_pre_l, delta));
-                // owned by the lift — not framed.
             }
             FieldKind::Pubkey => {
                 let limbs: Vec<String> = (0..4).map(|_| {
@@ -5902,21 +5083,10 @@ fn emit_vault_refinement(
                 post_fields.push(format!("({}, .byte {})", off, p));
                 frame.push(format!("(effectiveAddr {} {} ↦ₘ {})", base_l, off, p));
             }
-            // A blob field (option / enum / array / wide scalar) the handler
-            // does not touch: frame the whole region as a single opaque `↦Bytes`
-            // gap (`.blob [.gap g]`). `account_agg`/`memBytesIs_segs` reshape
-            // coarse⟷fine generically; the gap carries no `< 256` side
-            // condition. The byte size is not pinned in the obligation (the
-            // gap is a free `ByteArray`), so the theorem holds for any
-            // contents of that region.
+            // Blob field: frame as opaque `↦Bytes` gap unless the lift owns bytes inside it (SPLIT path below).
             FieldKind::Bytes(len) => {
                 let len = *len as i64;
-                // Lift-owned byte cells inside `[off, off+len)` (an array-element
-                // read/write, a sub-field touch). If none, the whole field is one
-                // opaque gap (the prior behaviour); otherwise SPLIT it into an
-                // ordered `[.gap, .byte owned, .gap, …]` segment list so the owned
-                // cells surface as fine atoms the lift's frame matches — the
-                // mechanized multisig-style split.
+                // SPLIT if the lift owns bytes inside [off, off+len); else whole field is one opaque gap.
                 let owned: Vec<(i64, String)> = (0..len).filter_map(|rel| {
                     cell_val(pre, &base_raw_blob, off + rel, true)
                         .map(|v| (rel, fold(v)))
@@ -5931,27 +5101,20 @@ fn emit_vault_refinement(
                     let mut cursor = 0i64;
                     for (rel, val) in &owned {
                         if *rel > cursor {
-                            // A gap PRECEDING an owned byte: its size must be
-                            // pinned (`fg.size = len`) so `segsSL`'s running
-                            // offset places the byte at `base + rel`, matching
-                            // the lift. The proof rewrites with it.
+                            // Gap before owned byte: pin size (`fg.size = len`) so segsSL places the byte at `base + rel`.
                             let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
                             gap_size_hyps.push((format!("h{}_sz", g), format!("{}.size = {}", g, rel - cursor)));
                             segs.push(format!(".gap {}", g));
                             frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off + cursor, g));
                         }
-                        // Owned byte: use the lift's value. It is NOT framed —
-                        // the lift owns it (it read the cell), and the codec's
-                        // fine `.byte` atom matches the lift's atom directly. Its
-                        // `< 256` validity is surfaced as a theorem hypothesis.
+                        // Owned byte: NOT framed; fine `.byte` atom matches directly. Needs `< 256` hyp.
                         segs.push(format!(".byte ({})", val));
                         owned_blob_offs.push(off + rel);
                         byte_hyps.push(format!("(h_blob{} : {} < 256)", off + rel, val));
                         cursor = rel + 1;
                     }
                     if cursor < len {
-                        // Trailing gap (last seg): no following atom, so its size
-                        // needs no hyp — it stays a free `ByteArray`.
+                        // Trailing gap (last seg): no size hyp needed — free ByteArray.
                         let g = format!("fg{}", fresh); fresh += 1; ba_params.push(g.clone());
                         segs.push(format!(".gap {}", g));
                         frame.push(format!("(effectiveAddr {} {} ↦Bytes {})", base_l, off + cursor, g));
@@ -5965,9 +5128,7 @@ fn emit_vault_refinement(
     }
     if !updated_seen { return None; }
 
-    // setup = lift atoms not owning the codec cells (the updated u64 dword
-    // AND every owned blob byte the split exposes) — those flow through the
-    // codec's fine form, not the setup frame.
+    // setup: lift atoms that don't own codec cells (updated u64 + split blob bytes flow through fine form).
     let owned_base = base.to_lean();
     let is_owned = |a: &Atom| match a {
         Atom::Mem { addr_base, addr_off, width, .. } =>
@@ -5987,9 +5148,7 @@ fn emit_vault_refinement(
     Some((module, lean, None))
 }
 
-/// Render the vault refinement. The proof reshapes both coarse codecs to
-/// fine via `account_agg` (`codecCoarse_eq_fine`), unfolds the fine atoms,
-/// frames the untouched fields, and closes with `sl_exact`.
+/// Render the vault refinement. Proof: `codecCoarse_eq_fine` reshape → simp fine atoms → `sl_exact`.
 fn render_vault_refinement(
     spec: &RefineSpec, module: &str, base_l: &str,
     pre_fields: &[String], post_fields: &[String], frame: &[String], params: &[String],
@@ -6002,37 +5161,27 @@ fn render_vault_refinement(
 ) -> String {
     let mut nat_params = vars.join(" ");
     for p in params { nat_params.push(' '); nat_params.push_str(p); }
-    // Binder group for the `ensures` corollary: only the params that appear
-    // in the field lists (the updated field's pre value + the framed-field
-    // params), so the projection theorem has no unused binders.
+    // `ensures` corollary binders: only params that appear in the field lists (no unused binders).
     let mut ens_nat = upd_pre_l.to_string();
     for p in params { ens_nat.push(' '); ens_nat.push_str(p); }
     let mut ensures_binders = format!("({ens_nat} : Nat)");
     if !ba_params.is_empty() {
         ensures_binders.push_str(&format!("\n    ({} : ByteArray)", ba_params.join(" ")));
     }
-    // Nat binder group, plus a `ByteArray` group for blob-field gaps (only
-    // emitted when a blob field is present, so non-blob output is unchanged).
+    // ByteArray group only when a blob field is present; keeps non-blob output byte-identical.
     let mut binders = format!("({nat_params} : Nat)");
     if !ba_params.is_empty() {
         binders.push_str(&format!("\n    ({} : ByteArray)", ba_params.join(" ")));
     }
-    // `< 256` validity hypotheses for the split blob's owned bytes + the
-    // gap-size hyps that pin the split's running offsets.
     for h in byte_hyps { binders.push_str(&format!("\n    {}", h)); }
     for (name, prop) in gap_size_hyps { binders.push_str(&format!("\n    ({} : {})", name, prop)); }
-    // Compose the simp sets from the field kinds actually present, so each
-    // lemma is used (no `unusedSimpArgs` lint) and a blob-free vault emits
-    // byte-identically to before. `pubkeyIs` only when a pubkey field is
-    // framed; the segment lemmas (`segsSL`/`FieldSeg.sl`, `segsValid`/
-    // `FieldSeg.valid`) only when a blob field is present.
+    // Simp sets: conditioned on field kinds present to avoid `unusedSimpArgs` and keep non-blob output stable.
     let has_pubkey = pre_fields.iter().any(|f| f.contains(".pubkey"));
     let has_blob = !ba_params.is_empty();
     let mut fine: Vec<String> = vec!["codecFine".into(), "FieldVal.fine".into()];
     if has_pubkey { fine.push("pubkeyIs".into()); }
     if has_blob { fine.push("segsSL".into()); fine.push("FieldSeg.sl".into()); }
-    // A SPLIT blob: unfold `FieldSeg.size` and rewrite the gap-size hyps so the
-    // running offsets reduce to the lift's concrete addresses.
+    // SPLIT blob: add `FieldSeg.size` + gap-size hyps so running offsets reduce to concrete addresses.
     if !gap_size_hyps.is_empty() {
         fine.push("FieldSeg.size".into());
         for (name, _) in gap_size_hyps { fine.push(name.clone()); }
@@ -6043,10 +5192,7 @@ fn render_vault_refinement(
     let mut valid = vec!["codecValid", "FieldVal.fineValid"];
     if has_blob { valid.push("segsValid"); valid.push("FieldSeg.valid"); }
     let valid_simp = valid.join(", ");
-    // A SPLIT blob's owned `.byte` segs leave a `(v % 256) < 256` residual
-    // after the `codecValid` simp — close it with `omega`. Whole-gap blobs
-    // (and the non-split vault) close in `simp` alone, so they stay
-    // byte-identical.
+    // SPLIT blob: `(v % 256) < 256` residual after codecValid simp → `omega`; whole-gap closes in simp alone.
     let valid_tac = if byte_hyps.is_empty() {
         format!("by simp [{valid_simp}]")
     } else {
@@ -6146,13 +5292,8 @@ fn lift_one(
     trace:           Option<&[usize]>,
     arm_name:        Option<&str>,
     idl:             Option<&serde_json::Value>,
-    // Recovered LOGICAL arm-entry PC from the qedrecover sidecar
-    // (`[instruction.recovered].arm_entry_pc`), issue #41 Phase 4. When
-    // present it is the authoritative arm head: it SEEDS the no-trace
-    // static walk (replacing the fragile disc-guided cascade navigation)
-    // and CROSS-CHECKS a trace-guided walk (the trace must reach it).
-    // `None` reproduces the prior behaviour exactly (disc-walk / trace
-    // as-is), so every pre-#41 call site stays byte-identical.
+    // Recovered arm-entry PC from qedrecover sidecar (#41 Phase 4): seeds no-trace static walk
+    // and cross-checks trace walk. `None` = prior behaviour (disc-walk / trace as-is).
     arm_entry:       Option<usize>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
@@ -6160,8 +5301,6 @@ fn lift_one(
     let text_bytes  = ctx.text_bytes.as_slice();
     let insns       = &ctx.insns;
 
-    // Diagnostic dump (stderr) — useful when step() can't model an
-    // opcode and we want to see the surrounding shape anyway.
     eprintln!("=== decoded insns ===");
     for (i, ins) in insns.iter().enumerate() {
         let rendered = insn_to_lean(ins, i).unwrap_or_else(|e| format!("?? ({})", e));
@@ -6169,7 +5308,6 @@ fn lift_one(
     }
     eprintln!();
 
-    // Default module name from the .so filename.
     let so_stem = so_path.file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "lifted".to_string());
@@ -6185,20 +5323,11 @@ fn lift_one(
         format!("{}Lifted", out)
     });
 
-    // The byte embedding + decode bridge (`*Bytes`, `*Insns`,
-    // `*_decodes`) is a sanity check that the .so bytes decode to the
-    // expected insns. It is NOT load-bearing for the Hoare triple,
-    // whose `CodeReq` is built from walked-PC singletons. For large
-    // binaries the full `.text` as a ByteArray literal blows
-    // `maxRecDepth` during elaboration / `native_decide`, so we skip
-    // the whole bridge above a threshold and emit per-PC decode pins
-    // instead (`<Module>_decode_pins`, over a hex-string embedding —
-    // soundness-audit H8). two_op (40 bytes) keeps the full bridge;
-    // p_token (~96KB) gets the pins.
+    // NOT load-bearing for the Hoare triple. Large binaries blow `maxRecDepth` as a ByteArray
+    // literal — emit per-PC decode pins (hex-string, H8) above 4096 bytes; small binaries get the full bridge.
     const DECODE_BRIDGE_MAX_BYTES: usize = 4096;
     let emit_decode_bridge = text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES;
 
-    // Emit the Lean module.
     let mut out = String::new();
     let decode_claim = if emit_decode_bridge {
         "1. The .text bytes are embedded verbatim as a `ByteArray`.\n\
@@ -6233,14 +5362,9 @@ fn lift_one(
     out.push_str("import SVM.SBPF.Macros\n");
     // The satisfiability-witness section (H8) applies `SatWitness.sat_witness`.
     out.push_str("import SVM.SBPF.SatWitness\n\n");
-    // File-level option bumps. Long chains (especially ones with
-    // call_local + exit_pops composition) blow past the defaults
-    // during `slBlockIter`'s isDefEq work.
+    // call_local + exit_pops chains blow past default heartbeats during slBlockIter isDefEq.
     out.push_str("set_option maxRecDepth 65536\n");
-    // Hot (byte-demoted) regions leave closed Horner byte-combos in
-    // the chain; their defeq normalization reduces numerals through
-    // the unary Nat model and needs a far larger budget. The walk
-    // hasn't run yet here — patched after it (see `@@HEARTBEATS@@`).
+    // Hot regions leave Horner byte-combos; their defeq needs a larger budget — patched post-walk via @@HEARTBEATS@@.
     out.push_str("set_option maxHeartbeats @@HEARTBEATS@@\n\n");
     out.push_str(&format!("namespace Examples.Lifted.{}\n\n", module_name));
 
@@ -6272,19 +5396,8 @@ fn lift_one(
         ));
     }
 
-    // The decoded insns.
-    // Try to render the full decoded `.text` as an `Array Insn`. This
-    // doubles as a sanity-check (the `*_decodes` theorem proves
-    // byte→insn correspondence by `native_decide`) but it isn't
-    // load-bearing for the Hoare triple — the triple's `CodeReq` is
-    // built from walked-PC singletons, decoupled from this array.
-    //
-    // If any opcode in `.text` can't yet be rendered, we skip both
-    // the array def and the decode theorem and continue with just
-    // the Hoare triple. This lets us lift a known-good arm out of a
-    // binary that contains other arms we don't yet model (e.g. lifting
-    // SPL Token's `Transfer` arm out of p_token even though some other
-    // arm uses `jgt_reg`).
+    // Render the full `.text` as `Array Insn` (sanity, not load-bearing for the Hoare triple).
+    // Skip if any opcode can't be rendered — lets us lift a good arm from a partially-modelled binary.
     let mut rendered_insns: Vec<String> = Vec::with_capacity(insns.len());
     let mut decode_skip_reason: Option<String> = None;
     if emit_decode_bridge {
@@ -6298,7 +5411,6 @@ fn lift_one(
         }
     }
     if !emit_decode_bridge {
-        // Bridge already noted above; emit nothing here.
     } else if let Some(reason) = decode_skip_reason {
         out.push_str(&format!(
             "-- NOTE: `{}Insns` + `{}_decodes` omitted — `.text` contains an\n\
@@ -6315,12 +5427,7 @@ fn lift_one(
             out.push_str(&format!("  {}{}\n", lean, sep));
         }
         out.push_str("]\n\n");
-        // The V0 function registry solana-sbpf built (audit H2). The
-        // decode resolves an internal `call`'s murmur3 imm to its
-        // `.call_local <pc>` through this registry; an empty registry
-        // would instead fail-close every internal call to
-        // `.call (.unknown _)`, so the registry is REQUIRED for the
-        // decode to match `<Module>Insns`.
+        // H2: registry resolves call murmur3 imm → .call_local; empty registry fail-closes to .unknown.
         let reg = function_registry(ctx);
         out.push_str(&format!(
             "/-- The V0 function registry (murmur3 key → target slot) \
@@ -6340,11 +5447,7 @@ fn lift_one(
     }
 
     let entry_pc: usize = executable.get_entrypoint_instruction_offset();
-    // Hot (byte-demoted) regions, grown across walk retries: when a
-    // wide access overlaps byte-granular cells, the walk requests the
-    // span's demotion and is re-run with the union hot set (H8 Phase
-    // B). Growth is monotone and bounded by the touched bytes; the
-    // attempt cap is a safety net.
+    // Hot regions: grow monotonically across walk retries (H8 Phase B); attempt cap is a safety net.
     let mut hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>> =
         Default::default();
     let mut blob_splits: std::collections::BTreeMap<(String, i64), i64> =
@@ -6356,37 +5459,21 @@ fn lift_one(
         return Err("qedlift: hot-region demotion did not converge after 8 \
                     walk retries".into());
     }
-    // Spec calls collected during the walk for the
-    // `sl_block_iter` proof emission (when needed).
     let mut spec_calls: Vec<SpecCall> = Vec::new();
 
-    // CFG-aware happy-path walk + symbolic execution in one pass.
-    // PC progression follows the actual control flow:
-    //   * straight-line opcode    → pc + 1
-    //   * `ja off`                → pc + 1 + off
-    //   * conditional jump (jeq/jne) → pc + 1 (fall-through policy)
-    //   * `call_local target`     → push pc+1, jump to target
-    //   * `exit` with empty stack → top-level terminator, walk ends
-    //   * `exit` with non-empty stack → pop, resume at popped PC
-    //
-    // Walk starts at the ELF's declared entrypoint (NOT analysis PC 0:
-    // the linker may place helper functions before the entrypoint).
+    // CFG walk + symbolic execution: straight-line→pc+1, ja→target, cond-jump→fall-through,
+    // call_local→push+jump, exit/empty-stack→done, exit/non-empty→pop+resume.
+    // Starts at ELF entrypoint (NOT analysis PC 0: linker may place helpers before it).
     let mut block_pcs: Vec<usize> = Vec::new();
     let exit_pc: usize;
     let mut state = SymState::default();
     state.hot_regions = hot_regions.clone();
     state.blob_splits = blob_splits.clone();
     {
-        // In trace mode the walk follows the recorded PC sequence; `ti`
-        // is the cursor into it and `pc_iter` mirrors `trace[ti]`.
-        let mut ti: usize = 0;
+        let mut ti: usize = 0; // trace cursor; pc_iter mirrors trace[ti] in trace mode
         let mut pc_iter: usize = match trace {
             Some(t) => {
-                // #41 Phase 4: when the sidecar supplies the recovered arm
-                // entry, cross-check that the recorded path actually reaches
-                // it — a trace/sidecar/binary mismatch otherwise lifts a
-                // chain the sidecar's claims don't describe. Consumes the
-                // recovered fact without changing the walk (output identical).
+                // #41 Phase 4: cross-check sidecar arm_entry_pc is on the trace (mismatch → fail-closed).
                 if let Some(arm) = arm_entry {
                     if !t.contains(&arm) {
                         return Err(format!(
@@ -6397,19 +5484,10 @@ fn lift_one(
                 }
                 t[0] // load_trace guarantees non-empty
             }
-            // #41 Phase 4: no trace — seed the static walk from the
-            // recovered arm entry instead of re-deriving it by navigating
-            // the dispatcher cascade from the entrypoint. Falls back to
-            // `entry_pc` (the disc-guided walk) when no arm was supplied.
+            // #41 Phase 4: seed from recovered arm_entry (no disc-cascade nav); fallback = entry_pc.
             None => arm_entry.unwrap_or(entry_pc),
         };
-        // Safety cap on walk length. Without this, an unmodelled
-        // back-branch (e.g. a copy loop whose conditional jump we
-        // default to "not taken") can spin the walker forever. The
-        // cap is high enough to permit deep dispatcher cascades
-        // (SPL Token has 28 arms; 16 PCs/arm + 200 PCs/handler ≈ 700)
-        // but low enough to fail fast on a runaway. With a trace the
-        // bound is exactly the trace length (plus slack).
+        // Walk cap: prevents runaway on unmodelled back-branches; generous for deep dispatcher cascades.
         let walk_cap: usize = match trace { Some(t) => t.len() + 8, None => 1024 };
         let mut walk_steps: usize = 0;
         loop {
@@ -6419,8 +5497,6 @@ fn lift_one(
                     "walker exceeded {} steps at pc={} (likely back-branch \
                      defaulted to fall-through)", walk_cap, pc_iter).into());
             }
-            // Trace mode: the recorded sequence is authoritative for the
-            // current PC. When it's exhausted the walk is done.
             if let Some(t) = trace {
                 if ti >= t.len() { exit_pc = pc_iter; break; }
                 pc_iter = t[ti];
@@ -6428,42 +5504,29 @@ fn lift_one(
             if pc_iter >= insns.len() { exit_pc = pc_iter; break; }
             let ins = &insns[pc_iter];
 
-            // Handle exit specially — it's either a nested return
-            // (pops the call stack + restores r10) or a top-level
-            // terminator (ends the walk; not included in the CR).
+            // EXIT: nested return (pop call stack + restore r6..r10) or top-level terminator.
             if ins.opc == ebpf::EXIT {
                 if state.call_stack.is_empty() {
                     exit_pc = pc_iter;
                     break;
                 } else {
                     block_pcs.push(pc_iter);
-                    // Emit a spec call for the nested exit (before
-                    // popping the call stack so r10 etc. are still
-                    // at their +0x1000-bumped values).
+                    // Emit spec call BEFORE popping (r6..r10 still at callee-frame values).
                     if let Some(sc) = spec_call_for(&state, ins, pc_iter, None, None, None, None) {
                         spec_calls.push(sc);
                     }
                     let (call_pc, saved) = state.call_stack.pop().unwrap();
-                    // exit_pops_spec restores r6..r10 to the saved frame
-                    // (the pre-call values). Mirror that in the symbolic
-                    // state so the post matches — a callee that clobbered
-                    // r6..r9 leaves their *current* values stale.
+                    // Mirror exit_pops_spec: restore saved r6..r10 so post-state matches (callee may have clobbered them).
                     for (i, r) in (6u8..=10).enumerate() {
                         state.write_reg(r, saved[i].clone());
                     }
-                    // In trace mode the next PC comes from the trace (it
-                    // should equal the return PC); otherwise jump to callpc+1.
+                    // Trace: next PC from trace; static: jump to callpc+1.
                     if trace.is_some() { ti += 1; } else { pc_iter = call_pc + 1; }
                     continue;
                 }
             }
 
-            // Syscall detection (trace mode): a `call_imm` whose next
-            // executed PC is the fall-through (pc+1) is a host syscall
-            // (e.g. `sol_memset_`), not an internal `call_local` — the
-            // host runs it and returns to pc+1 without pushing a BPF
-            // frame. Dispatch on the resolved syscall hash; emit the
-            // matching syscall-effect spec, advance, and continue.
+            // Syscall (trace): call_imm returning to pc+1 (no BPF frame push) → dispatch on hash.
             if ins.opc == ebpf::CALL_IMM {
                 if let Some(t) = trace {
                     if t.get(ti + 1).copied() == Some(pc_iter + 1) {
@@ -6475,9 +5538,7 @@ fn lift_one(
                             continue;
                         }
                         if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
-                            // H8 Phase C-2: faithful buffer-writing
-                            // emission (rent / offset 0 / length 17 —
-                            // anything else fails closed inside).
+                            // H8 Phase C-2: faithful buffer-write (rent/offset 0/length 17; else fail-closed).
                             emit_sol_get_sysvar(&mut state, &mut spec_calls,
                                 &mut block_pcs, pc_iter, ctx)?;
                             ti += 1;
@@ -6489,12 +5550,7 @@ fn lift_one(
                             ti += 1;
                             continue;
                         }
-                        // CPI. NOTE: modelled per the SVM's step-level CPI
-                        // STUB (`Cpi.exec` = r0:=0) — effect-free on the
-                        // invoked accounts. Sound w.r.t. `step`, but the
-                        // lifted triple does NOT capture the callee's
-                        // account writes (those live in executeFnCpi). See
-                        // `call_sol_invoke_signed_spec`'s doc comment.
+                        // CPI: step-level stub (Cpi.exec = r0:=0) — effect-free on invoked accounts; callee writes not captured. See call_sol_invoke_signed_spec.
                         if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
                             emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
                                 pc_iter, "call_sol_invoke_signed_spec", ".sol_invoke_signed", "InvokeSigned");
@@ -6520,9 +5576,7 @@ fn lift_one(
 
             block_pcs.push(pc_iter);
             let call_target = resolve_call_target_logical(ctx, &analysis, ins);
-            // Branch hypothesis name (if this is a conditional jump).
-            // The index into branch_hyps is the count of branches
-            // seen so far.
+            // Branch hyp name indexed by number of branches seen so far.
             let branch_idx = state.branch_hyps.len();
             let branch_hyp = format!("h_branch{}", branch_idx);
             let is_cond_jump = matches!(ins.opc,
@@ -6551,18 +5605,10 @@ fn lift_one(
             let branch_hyp_for_call = if is_cond_jump {
                 Some(branch_hyp.as_str())
             } else { None };
-            // Resolve the slot-relative jump offset to a logical PC
-            // (handles lddw's 2-slot encoding). Shared by spec emission,
-            // step's path-hypothesis target, and the PC walk.
+            // Slot-relative offset → logical PC (handles lddw 2-slot encoding); shared by spec + walk.
             let jtgt = resolve_jump_target(ctx, pc_iter, ins.off as i64);
-            // Decide the branch direction.
-            //   * Trace mode: a conditional jump is "taken" iff the next
-            //     recorded PC is not the fall-through (pc+1). When taken,
-            //     that next PC must equal the resolved jump target — if
-            //     it doesn't, the trace and the decoder disagree (a bug),
-            //     so fail loudly rather than emit an unsound chain.
-            //   * Static mode: discriminator-driven where possible,
-            //     else fall-through. (No `--trace` supplied.)
+            // Trace: taken iff next PC ≠ pc+1; target mismatch vs decoded offset = fail-closed.
+            // Static: discriminator-driven where possible, else fall-through.
             let branch_taken: Option<bool> = if let Some(t) = trace {
                 if is_cond_jump {
                     let next = t.get(ti + 1).copied();
@@ -6587,13 +5633,7 @@ fn lift_one(
                     (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => {
                         Some(ins.imm != td)
                     }
-                    // JGT-on-discriminator: with `--target-disc td`, the
-                    // taken branch fires when the discriminator (the
-                    // imm being compared) is strictly less than td. This
-                    // matches `jgt dst, imm, target` semantics: "jump if
-                    // r3 > imm". For dispatcher cascades that use the
-                    // pattern `if (disc > N) goto upper_half`, td <= imm
-                    // means we take the upper branch.
+                    // JGT: take branch when td > imm (disc > N → upper_half pattern).
                     (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) => {
                         Some(td > ins.imm)
                     }
@@ -6606,11 +5646,7 @@ fn lift_one(
                 spec_calls.push(sc);
             }
             step(&mut state, ins, Some(pc_iter), branch_taken)?;
-            // Phase A aliasing: surface the address equation for an
-            // access that resolved to an existing cell through a
-            // different rendering (consumed by the `rw [h_alias_<pc>]`
-            // the spec call just emitted; discharged by `decide` at
-            // instantiation like the h_addr* equations).
+            // Phase A aliasing: surface address equation for same-cell different-rendering (consumed by rw [h_alias_<pc>]).
             if let Some((lhs, rhs)) = state.pending_alias.take() {
                 state.side_hyps.push((
                     format!("h_alias_{}", pc_iter),
@@ -6624,9 +5660,6 @@ fn lift_one(
                 ));
             }
 
-            // PC progression. In trace mode the next PC is simply the
-            // next recorded entry (the loop top reloads `pc_iter` from
-            // it); we only advance the cursor here.
             if trace.is_some() {
                 ti += 1;
                 continue;
@@ -6647,13 +5680,10 @@ fn lift_one(
                 ebpf::JLT64_REG | ebpf::JLT32_REG |
                 ebpf::JSLE64_REG | ebpf::JSLE32_REG
                     if branch_taken == Some(true) => {
-                    // Take the branch to the resolved logical target.
                     pc_iter = jtgt as usize;
                 }
                 ebpf::CALL_IMM => {
-                    // The immediate is a Murmur3 hash; look up the
-                    // function registry to resolve the callee PC (mapped
-                    // slot→logical).
+                    // CALL_IMM: imm is a Murmur3 hash; registry maps it to a logical PC.
                     pc_iter = resolve_call_target_logical(ctx, &analysis, ins).ok_or_else(|| {
                         format!(
                             "qedlift: call_local at pc {} has imm 0x{:x} \
@@ -6674,8 +5704,7 @@ fn lift_one(
         }
         continue;
     }
-    // Demotion requested: merge the new spans into the hot set and
-    // re-walk (this pass's output is discarded).
+    // Demotion requested: merge new spans into hot set and re-walk (this pass discarded).
     if !state.new_hot.is_empty() {
         for (root, lo, hi) in state.new_hot.drain(..) {
             let v = hot_regions.entry(root).or_default();
@@ -6689,9 +5718,7 @@ fn lift_one(
         }
         continue;
     }
-    // FAIL CLOSED on atom-footprint overlap (soundness audit H8): a
-    // sepConj with overlapping memory atoms is unsatisfiable, so the
-    // emitted theorem would be vacuously true — worse than no theorem.
+    // H8 FAIL CLOSED: overlapping atom footprints make precondition's sepConj unsatisfiable (vacuous).
     if !state.overlap_errors.is_empty() {
         return Err(format!(
             "qedlift: refusing to emit a vacuous lift — overlapping atom \
@@ -6707,10 +5734,7 @@ fn lift_one(
         if state.hot_regions.is_empty() { "4000000" } else { "16000000" });
     let mut out = out_patched;
 
-    // Build the CR as a Lean string. `sl_block_auto` requires the CR
-    // to appear as a literal `union`-of-`singleton`s in the theorem
-    // statement (it walks the AST), so we capture the string here and
-    // inline it below instead of emitting a `def`.
+    // CR must be a literal `union`-of-`singleton`s (sl_block_auto walks the AST), so inline not def.
     let cr_lean: String = if block_pcs.is_empty() {
         "CodeReq.empty".to_string()
     } else {
@@ -6718,9 +5742,7 @@ fn lift_one(
         let opens = "(".repeat(block_pcs.len().saturating_sub(1));
         s.push_str(&opens);
         for (i, &pc) in block_pcs.iter().enumerate() {
-            // A `call_imm` the walk resolved to a host syscall renders
-            // as `.call <ctor>` (matching the syscall spec's CodeReq
-            // singleton), not the `.call_local` insn_to_lean_full emits.
+            // Syscall renders as `.call <ctor>` (not `.call_local`) to match syscall spec's CR singleton.
             let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
                 format!(".call {}", ctor)
             } else {
@@ -6737,18 +5759,8 @@ fn lift_one(
         s
     };
 
-    // H8 (large-binary decode pin) + H2 (internal-call resolution): the
-    // full `decodeProgram` bridge was omitted above, so pin the
-    // byte→Insn decode of every walked PC directly against the real
-    // `.text` bytes. The bytes are embedded as a hex STRING (one token
-    // — a `#[..]` ByteArray literal of this size blows `maxRecDepth`),
-    // the slot map is computed in-kernel by `Decode.buildSlotMap`, and a
-    // single `native_decide` compares `decodeInsn` (threaded with the V0
-    // function registry solana-sbpf built) at each walked byte offset
-    // against the exact instruction term the CodeReq above uses.
-    // Internal `call_local` PCs are now PINNED too: the registry
-    // resolves their murmur3 imm to the same `.call_local <pc>` the
-    // CodeReq carries (audit H2 closed).
+    // H8 + H2: full bridge omitted for large binaries; pin each walked PC's decode via hex-string embedding
+    // + buildSlotMap + native_decide, including call_local PCs resolved through the function registry.
     if !emit_decode_bridge && !block_pcs.is_empty() {
         let mut pin_offs: Vec<String> = Vec::new();
         let mut pin_exps: Vec<String> = Vec::new();
@@ -6788,9 +5800,7 @@ fn lift_one(
             "def {}SlotMap : Array Nat := Decode.buildSlotMap {}Text\n\n",
             module_name, module_name));
 
-        // The V0 function registry solana-sbpf built (audit H2). The
-        // pins below resolve internal `call` imms to `.call_local`
-        // targets through it.
+        // H2: registry resolves call imms to .call_local targets in the pins below.
         let reg = function_registry(ctx);
         out.push_str(&format!(
             "/-- The V0 function registry (murmur3 key → target slot) \
@@ -6829,43 +5839,26 @@ fn lift_one(
         out.push_str("    ] := by\n  native_decide\n\n");
     }
 
-    // --- Phase 2: symbolic execution + Hoare-triple emission. ---
+    // Phase 2: Hoare-triple emission. Symbolic execution already done inline above; `state` is ready.
     out.push_str("/-! ## Symbolically lifted Hoare triple\n\n");
     out.push_str("Synthesised by qedlift's symbolic executor walking the\n");
     out.push_str("decoded insns left-to-right. Closed by `sl_block_auto`. -/\n\n");
-
-    // Note: symbolic execution already happened inline in the walker
-    // above; `state` is populated and ready to snapshot.
     let pre  = state.pre.clone();
     let post = post_atoms(&pre, &state);
-    // (rr computed after abs_subst is built — see below)
 
-    // Drop surfaced `< 2^k` load-bound hypotheses no spec call consumes.
-    // `read_mem` records a bound for every fresh wide cell — including a
-    // dword cell that's only STORED to (the old value `stxdw_spec` takes
-    // but doesn't bound). Such `h<var>_lt` would be an unused theorem
-    // hypothesis; keep only the ones a spec call references as `hv`.
+    // Drop `< 2^k` bounds for cells only STORED to (stxdw_spec takes but doesn't bound them).
     state.u64_load_vars.retain(|(v, _)| {
         let h = format!("h{}_lt", v);
         spec_calls.iter().any(|sc| sc.have_line.contains(&h))
     });
 
-    // Detect "complex" addresses in mem atoms — anything other than a
-    // bare `InitReg` base counts as complex (wrapAdd-shaped, etc.).
-    // Each unique complex address gets parameterised as an opaque Nat
-    // variable with a bridging equality, so the chain composes over
-    // clean atoms (see `pda_n1_stack_macro_spec` in
-    // SVM/SBPF/Macros.lean for the worked pattern).
-    let mut abstractions: Vec<(String, String, String)> = Vec::new();
-    // (param_name, bridge_hyp_name, raw_expression)
+    // Complex addresses (non-InitReg) → opaque Nat params + bridging equalities, so the chain
+    // composes over clean atoms (see pda_n1_stack_macro_spec in SVM/SBPF/Macros.lean).
+    let mut abstractions: Vec<(String, String, String)> = Vec::new(); // (param, bridge_hyp, raw_expr)
     {
         let mut seen: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
-        // A flat constant address (e.g. `toU64 0x300000000` from an
-        // `lddw` — the program-heap case) is NOT complex: it has no nested
-        // `wrapAdd` chain to fold, and `sl_block_auto` re-derives the same
-        // concrete value, so abstracting it to `addrK` only creates a
-        // mismatch (the opaque param can't unify with the literal).
+        // Flat const address (e.g. lddw heap base) is NOT complex: sl_block_auto re-derives it; abstracting breaks unification.
         let is_const_addr = |e: &Expr| matches!(e, Expr::Const(_))
             || matches!(e, Expr::ToU64(inner) if matches!(inner.as_ref(), Expr::Const(_)));
         for atom in &pre {
@@ -6885,24 +5878,15 @@ fn lift_one(
             }
         }
     }
-    // Substitution map: rendered raw expression → parameter name.
     let abs_subst: std::collections::BTreeMap<String, String> =
         abstractions.iter()
             .map(|(p, _, e)| (e.clone(), p.clone()))
             .collect();
     let rr = region_req(&pre, &state, &abs_subst);
-    // When the walk crossed a call_local, the chain's pre/post must
-    // include `callStackIs []` as a framed atom — `call_local_spec`
-    // takes a `callStackIs cs` in its pre, and the matching
-    // `exit_pops_spec` returns the popped `callStackIs cs` in its
-    // post. The empty initial stack pushes the new frame, then pops
-    // back to empty on exit_pops, so net change is none — but the
-    // atom must be present in pre+post for sl_block_iter to thread
-    // it through the chain.
+    // call_local requires `callStackIs []` in pre+post (call_local_spec takes it, exit_pops_spec returns it).
+    // Net change = none, but sl_block_iter must thread it through the chain.
     let cs_atom = if state.saw_call { " ** callStackIs []" } else { "" };
 
-    // Collect the symbolic variables we introduced so the theorem
-    // signature can quantify over them.
     let mut vars: Vec<String> = Vec::new();
     let push_var = |v: &Expr, vars: &mut Vec<String>| {
         if let Expr::InitReg(n) | Expr::InitMem(n) = v {
@@ -6925,28 +5909,18 @@ fn lift_one(
     }
     let vars_sig = if vars.is_empty() { String::new() }
                    else { format!("({} : Nat)\n    ", vars.join(" ")) };
-    // Side-condition hypotheses for u64-width loads. Per
-    // `ldxdw_spec`, each loaded value carries a `< 2^64` constraint
-    // that `sl_block_auto` leaves as a residual goal; we surface them
-    // as theorem hypotheses and discharge with `<;> assumption`.
+    // u64-load bounds: ldxdw_spec leaves `< 2^64` residuals; surface as hyps, discharge with `<;> assumption`.
     let mut u64_hyps = String::new();
     for (v, k) in &state.u64_load_vars {
         u64_hyps.push_str(&format!("(h{}_lt : {} < 2 ^ {})\n    ", v, v, k));
     }
-    // Path-hypothesis surface for any conditional jumps we walked.
-    // For a JeqImm whose happy path is fall-through (the common
-    // guard-check shape), the hypothesis is `dst ≠ toU64 imm`.
+    // Path hyps for conditional jumps (e.g. JeqImm fall-through: `dst ≠ toU64 imm`).
     let mut branch_hyps_sig = String::new();
     for (i, bh) in state.branch_hyps.iter().enumerate() {
         branch_hyps_sig.push_str(&format!("({} : {})\n    ", bh.name(i), bh.lean_hyp()));
     }
-    // Memory-syscall surface. Each memset contributes a `ByteArray`
-    // param + a `.size = <count>` hypothesis (the spec's `hbs`), and a
-    // `nCu` Nat param + a per-step CU-bound hypothesis (the spec's
-    // `hCu`). The model's `syscallCu` for memory ops scales with `r3`,
-    // so this bound is an honest modeling assumption surfaced in the
-    // signature, not a fact the lift can prove.
-    // Surfaced side-condition hypotheses (e.g. div/mod divisor ≠ 0).
+    // Memset: ByteArray param + `.size = count` hyp (spec's hbs) + nCu + CU-bound hyp (honest model assumption).
+    // Side-condition hyps (e.g. div/mod divisor ≠ 0).
     let mut side_hyps_sig = String::new();
     for (name, prop) in &state.side_hyps {
         side_hyps_sig.push_str(&format!("({} : {})\n    ", name, prop));
@@ -6964,10 +5938,7 @@ fn lift_one(
             hcu, ctor, ncu,
         ));
     }
-    // The triple's CU bound `M`: 0 for syscall-free arms, else the sum
-    // of the memory syscalls' `nCu` vars. `sl_block_iter`'s final
-    // `cuTripleWithinMem_cast` reconciles the chain's `0 + nCu + …`
-    // against this closed form via `omega`.
+    // CU bound M = sum of nCu vars; sl_block_iter's cuTripleWithinMem_cast closes via omega.
     let m_bound: String = if state.syscall_cu_vars.is_empty() {
         "0".to_string()
     } else {
@@ -6982,38 +5953,16 @@ fn lift_one(
     // `< 2^64` residuals.
     let needs_assumption = !state.branch_hyps.is_empty()
                         || !state.u64_load_vars.is_empty();
-    // Switch to explicit `sl_block_iter`-style proof when either:
-    //   * the walk crossed a `call_local` (sl_block_auto diverges on
-    //     wrapAdd-shaped addresses) — the `pda_n1_stack_macro_spec`
-    //     workaround pattern, or
-    //   * the walk took ANY conditional jump's "taken" branch —
-    //     SpecGen.lean's mkSpec only dispatches `_not_taken` for
-    //     jeq/jne; for taken arms we need the explicit spec call.
+    // Use sl_block_iter when: call_local crossed (sl_block_auto diverges on wrapAdd addresses),
+    // or any cond-jump taken (SpecGen.mkSpec only has _not_taken; taken arms need explicit spec calls).
     let any_taken = state.branch_hyps.iter().any(|b| b.taken);
     let use_block_iter = state.saw_call || any_taken;
 
-    // Value abstraction: complex bit-level *value* expressions
-    // (wrapAdd / shift / mod / and chains) carry no proof content of
-    // their own — the per-opcode spec already proved what each one
-    // computes. But `sl_block_iter` re-reduces them (whnf) at every
-    // chain step, which is the dominant cost on long arms (the
-    // discriminator-extraction value alone took transferChecked from
-    // 178ms to a >15min timeout). We `generalize` each such value to
-    // an opaque `vgvN` immediately before `sl_block_iter`, so the
-    // mechanical composition threads an opaque Nat instead of
-    // reducing arithmetic. The `generalize h : e = v` keeps the bridge
-    // `h` in scope (for the refinement layer) and leaves the THEOREM
-    // STATEMENT concrete — only the proof goal is abstracted.
-    //
-    // Skip values that are already address abstractions (folded via
-    // sl_rw_abs) and bare initials/constants (cheap, nothing to gain).
+    // Value abstraction: sl_block_iter re-reduces complex values (wrapAdd/shift/etc.) at every step
+    // (transferChecked: 178ms→>15min). Generalize to opaque Nat; theorem statement stays concrete.
     let value_gens: Vec<String> = if use_block_iter {
         let is_complex = |e: &Expr| match e {
-            // An all-constant Horner combo is a CLOSED term —
-            // generalizing it makes `kabstract` defeq-check the
-            // reducible literal against every numeral in the goal
-            // (a whnf blowup). Leave it inline; branch hypotheses
-            // over it are consumer-decidable.
+            // All-constant ByteCombo is closed: generalizing triggers kabstract whnf blowup. Leave inline.
             Expr::ByteCombo(vs) =>
                 vs.iter().any(|v| !matches!(v, Expr::Const(_))),
             Expr::WrapAdd(..) | Expr::WrapSub(..) | Expr::WrapMul(..)
@@ -7026,24 +5975,16 @@ fn lift_one(
         let mut seen = std::collections::BTreeSet::new();
         let mut gens = Vec::new();
         for atom in pre.iter().chain(post.iter()) {
-            // `↦Bytes` blobs carry a `BytesVal`, not a Nat `Expr` value
-            // (the fill/count are constants), so there's nothing to
-            // generalize — skip them.
+            // ↦Bytes blobs have no Nat Expr value (BytesVal, constants only) — skip.
             let v = match atom {
                 Atom::Reg(_, v) => v,
                 Atom::Mem { value, .. } => value,
                 Atom::Bytes { .. } | Atom::Bytes32 { .. } => continue,
             };
             if is_complex(v) {
-                // Render with sub-expression abstractions folded, so the
-                // generalize target matches the (sl_rw_abs-folded) proof
-                // term — e.g. `(addr0 <<< …) …`, not addr0's expansion.
+                // Fold sub-expr abstractions first so generalize target matches the sl_rw_abs-folded proof term.
                 let r = fold_abstractions(v.to_lean(), &abs_subst);
-                // Skip address abstractions (handled by sl_rw_abs): both
-                // the expanded form (a map key) and — after folding — the
-                // bare param name (a map value, e.g. `addr5`). Generalizing
-                // an address base rewrites it everywhere, breaking the
-                // address matching in the post/rr.
+                // Skip address abstractions: generalizing an address rewrites it everywhere, breaking post/rr matching.
                 let is_addr_abs = abs_subst.contains_key(&r)
                     || abs_subst.values().any(|p| *p == r);
                 if !is_addr_abs && seen.insert(r.clone()) {
@@ -7051,9 +5992,7 @@ fn lift_one(
                 }
             }
         }
-        // Outer (longer) expressions first: generalizing a parent
-        // before its sub-terms keeps the sub-terms from being
-        // clobbered into the parent's fresh var prematurely.
+        // Longest first: generalize parent before sub-terms to avoid premature clobbering.
         gens.sort_by_key(|e| std::cmp::Reverse(e.len()));
         gens
     } else {
@@ -7062,22 +6001,13 @@ fn lift_one(
 
     let tactic: String = if use_block_iter {
         let mut t = String::new();
-        // Spec-call have lines (one per insn in walk order).
         for sc in &spec_calls {
             t.push_str("  ");
             t.push_str(&sc.have_line);
             t.push('\n');
         }
-        // sl_rw_abs to rewrite each spec's wrapAdd-shaped atoms to
-        // use the abstracted parameter, if any abstractions exist.
+        // sl_rw_abs: apply innermost-first (shortest raw expr) so inner folds land before outer rw [← h_addrN] can match.
         if !abstractions.is_empty() {
-            // Apply innermost-first (shortest raw expression first).
-            // sl_rw_abs is a single forward pass, and an outer
-            // abstraction's (folded) bridge RHS references inner
-            // params — so the inner folds must land in the term before
-            // the outer `rw [← h_addrN]` can match. Sorting by raw expr
-            // length ascending gives a valid inner→outer topological
-            // order (a sub-term is always strictly shorter).
             let mut ordered: Vec<&(String, String, String)> =
                 abstractions.iter().collect();
             ordered.sort_by_key(|(_, _, e)| e.len());
@@ -7089,11 +6019,7 @@ fn lift_one(
                 "  sl_rw_abs [{}] at [{}]\n", abs_names, hyp_names,
             ));
         }
-        // Final composition. Value abstraction rides along as the
-        // `generalizing [...]` clause on sl_block_iter — the tactic
-        // opaque-ifies each complex value (generalize … at *) before
-        // composing, so generated proofs are a single tactic call and
-        // the abstraction logic lives in the library, not here.
+        // Value abstraction as `generalizing [...]` clause — opaque-ification lives in the library tactic.
         let hyp_names = spec_calls.iter()
             .map(|sc| sc.hyp_name.clone()).collect::<Vec<_>>().join(", ");
         if value_gens.is_empty() {
@@ -7106,27 +6032,15 @@ fn lift_one(
         }
         t
     } else if needs_assumption {
-        // 2-space indent (matching the sl_block_iter branch): a bare
-        // col-0 tactic gets absorbed by a following `open Memory in`
-        // (parsed as the tactic combinator) when a `_balance_correct`
-        // corollary follows, breaking the parse. Indenting lets the
-        // col-0 `open …`/`end` terminate the block.
+        // 2-space indent: bare col-0 tactic is absorbed by `open Memory in` as a combinator; indent avoids it.
         "  sl_block_auto <;> assumption".to_string()
     } else {
         "  sl_block_auto".to_string()
     };
     let tactic: &str = Box::leak(tactic.into_boxed_str());
 
-    // Fold nested abstractions inside each bridge RHS. A bridge's RHS
-    // may contain another abstraction's full expression as a sub-term
-    // (e.g. addr3 = `wrapAdd <all of addr0> (toU64 8)`). `sl_rw_abs`
-    // folds inner abstractions first; once addr0's expansion becomes
-    // `addr0`, the outer bridge's LHS pattern (written with addr0
-    // expanded) no longer matches and the fold gets stuck. Rewriting
-    // each RHS to reference the inner *param* keeps folding consistent
-    // inner→outer. Longest-expression-first avoids partial overlaps;
-    // only strictly-shorter exprs are folded (never self, never a
-    // same-length sibling).
+    // Fold inner abstractions inside each bridge RHS so sl_rw_abs doesn't get stuck on partially-expanded
+    // patterns (e.g. addr3 = wrapAdd <addr0-expansion> k → wrapAdd addr0 k). Longest-first, strictly-shorter only.
     let folded_rhs: Vec<String> = abstractions.iter().map(|(_, _, expr)| {
         let mut inner: Vec<(&String, &String)> = abstractions.iter()
             .filter(|(_, _, e)| e.len() < expr.len())
@@ -7140,8 +6054,7 @@ fn lift_one(
         out
     }).collect();
 
-    // Build the abstraction signature fragment (params + bridge
-    // equality hypotheses) for programs using sl_block_iter style.
+    // Abstraction signature (params + bridge equality hyps) for sl_block_iter programs.
     let abs_sig: String = if use_block_iter && !abstractions.is_empty() {
         let mut s = String::new();
         for (param, _, _) in &abstractions {
@@ -7155,9 +6068,7 @@ fn lift_one(
         String::new()
     };
     let n = block_pcs.len();
-    // The triple's start PC is the first instruction actually walked.
-    // In static mode that's the entrypoint; in trace mode it's the
-    // trace's first PC. Falls back to `entry_pc` only for an empty walk.
+    // Start PC = first walked instruction (trace first / static entrypoint / entry_pc fallback).
     let start_pc = block_pcs.first().copied().unwrap_or(entry_pc);
 
     out.push_str(&format!(
@@ -7184,9 +6095,7 @@ fn lift_one(
         tactic,
     ));
 
-    // ── H8 satisfiability witness ───────────────────────────────────
-    // Fail closed: a precondition this builder can't witness as
-    // satisfiable does not ship (see `build_sat_witness`).
+    // H8 satisfiability witness: fail-closed if precondition can't be witnessed satisfiable.
     match build_sat_witness(&pre, &state, &abstractions, &abs_subst,
                             &folded_rhs, &vars) {
         Ok(w) => out.push_str(&w),
@@ -7194,30 +6103,19 @@ fn lift_one(
             "qedlift: satisfiability witness construction failed — {}", e).into()),
     }
 
-    // ── Branch-satisfiability witness (Phase 7 sub-item 1) ──────────
-    // Complements the H8 footprint witness: certifies the value-level
-    // path hypotheses (`h_branch*` / `h*_lt`) are JOINTLY satisfiable at
-    // a concrete assignment (kernel-checked by `native_decide`), closing
-    // the branch-vacuity channel. Conservative — emits nothing when the
-    // steerer can't satisfy every branch (non-breaking).
+    // Branch-satisfiability witness (Phase 7.1): certifies h_branch* / h*_lt jointly satisfiable
+    // at a concrete assignment (native_decide), closing branch-vacuity. Conservative (non-breaking).
     if let Some(w) = build_branch_witness(&state, &vars) {
         out.push_str(&w);
     }
 
-    // ── Heap-allocation corollary ──────────────────────────────────
-    // If the program touched the runtime heap (the embedded bump
-    // allocator keeps its position at MM_HEAP_START and allocates by
-    // load/store/ALU on heap memory), re-express those cells via the
-    // `heapBumpPtr` / `heapBlockU64` predicates so the spec reads as an
-    // allocation claim rather than raw cells at fixed addresses. The
-    // predicates unfold to the same `memU64Is` cells, so `exact` closes
-    // after `simp`. Gated on heap cells being present, so non-heap lifts
-    // (counter / vault / token) regenerate byte-identical.
+    // Heap-allocation corollary: re-express heap cells via heapBumpPtr/heapBlockU64 predicates
+    // (unfold to same memU64Is, so `exact` closes after `simp`). Gated on heap cells; non-heap arms byte-identical.
     let has_heap = pre.iter().chain(post.iter()).any(|a|
         matches!(a, Atom::Mem { addr_base, addr_off, width, .. }
             if matches!(width, Width::Dword) && heap_cell_addr(addr_base, *addr_off).is_some()));
     if has_heap {
-        // The lift theorem's parameter list, in declaration order.
+        // Parameter list in declaration order (mirrors the lift theorem's signature).
         let mut names: Vec<String> = vars.clone();
         if use_block_iter && !abstractions.is_empty() {
             for (p, _, _) in &abstractions { names.push(p.clone()); }
@@ -7257,15 +6155,8 @@ fn lift_one(
         ));
     }
 
-    // ── Balance-correctness corollary ──────────────────────────────
-    // Re-expose `wrapSub`/`wrapAdd` balance shifts in the post as
-    // ordinary Nat arithmetic (`a - b` / `a + b`), justified by
-    // `wrapSub_of_le` / `wrapAdd_of_lt` under explicit funds /
-    // no-overflow guards. This lifts the bit-level triple to the
-    // domain-meaningful claim "the handler debits/credits the balance
-    // cell by exactly the amount." Only memory cells whose value wraps
-    // two LOADED values (`InitMem`) qualify — register/address
-    // arithmetic (`r8 ↦ wrapAdd addrN k`) is excluded by that filter.
+    // Balance-correctness corollary: re-expose wrapSub/wrapAdd as Nat arithmetic under
+    // funds/no-overflow guards. Only cells wrapping two InitMem values qualify (excludes reg/addr arithmetic).
     enum Shift { Sub(Expr, Expr), Add(Expr, Expr), AddConst(Expr, i64) }
     let is_initmem = |e: &Expr| matches!(e, Expr::InitMem(_));
     // A constant immediate delta `toU64 k` (e.g. `add64 r2, 1`).
@@ -7275,9 +6166,7 @@ fn lift_one(
         }
         None
     };
-    // Only constant-delta codec arms (counter / vault) expose the constant
-    // `+k` cleaning; other arms (e.g. `two_op`'s `+1`) keep the raw
-    // `wrapAdd` form so they regenerate byte-identically.
+    // Only counter/vault arms (is_const_delta_arm) get the constant +k cleaning; others stay wrapAdd.
     let counter_arm = is_const_delta_arm(arm_name);
     let mut shifts: Vec<Shift> = Vec::new();
     let mut post_clean: Vec<Atom> = Vec::with_capacity(post.len());
@@ -7315,9 +6204,7 @@ fn lift_one(
     }
 
     if !shifts.is_empty() {
-        // Ordered param-name list to re-apply the main spec, mirroring
-        // the signature: vars, then (abstraction params, abstraction
-        // hyps), u64 bound hyps, branch hyps.
+        // Param names in signature order (vars → abstraction params/hyps → u64 bounds → branch hyps → syscall).
         let mut names: Vec<String> = vars.clone();
         if use_block_iter && !abstractions.is_empty() {
             for (p, _, _) in &abstractions { names.push(p.clone()); }
@@ -7326,9 +6213,6 @@ fn lift_one(
         for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
         for (name, _) in &state.side_hyps { names.push(name.clone()); }
-        // Memory-syscall params, in the same order `syscall_sig` binds
-        // them: each blob's `ByteArray` + size hyp, then each `nCu` +
-        // CU-bound hyp.
         for (bs, _) in &state.memset_blobs {
             names.push(bs.clone());
             names.push(format!("h{}_sz", bs));
@@ -7356,9 +6240,7 @@ fn lift_one(
                     rw_terms.push(format!("← wrapAdd_of_lt h_noovf{}", k));
                 }
                 Shift::AddConst(a, c) => {
-                    // The counter `+1` credit. `wrapAdd_one_of_lt` cleans
-                    // `wrapAdd a (toU64 1)` to `a + 1`; only `+1` is wired
-                    // (the sole counter delta).
+                    // wrapAdd_one_of_lt cleans wrapAdd a (toU64 1) → a+1; only +1 delta wired.
                     debug_assert_eq!(*c, 1, "only a +1 constant delta is supported");
                     let al = fold_abstractions(a.to_lean(), &abs_subst);
                     extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
@@ -7424,29 +6306,18 @@ fn pascal_case(s: &str) -> String {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
-    // Load the .so + analysis once. For batch runs over a large
-    // binary (p_token: ~28 arms, ~10s/arm cold), this hoists the
-    // per-arm cost from ~10s to a few ms by amortising the parse
-    // + CFG build over the whole batch.
+    // Load once: amortises parse+CFG build across batch arms (~28 arms × ~10s → a few ms each).
     let ctx = load_binary(&args.so)?;
     let analysis = Analysis::from_executable(&ctx.executable)?;
 
-    // Codama IDL (when a `.json` is given) — used by the refinement
-    // codegen to derive account layouts (rest-region start + size).
     let idl_value = args.idl.as_ref().and_then(|p| load_idl_value(p));
 
-    // Optional execution-trace oracle (single-arm mode). One decimal
-    // logical PC per line; blank lines and `#` comments are ignored.
     let trace: Option<Vec<usize>> = match args.trace.as_ref() {
         Some(p) => Some(load_trace(p)?),
         None => None,
     };
 
-    // Sidecar-driven mode: --qedmeta <toml>. Drives targeting from the
-    // qedrecover sidecar (discriminator + name) instead of the manual
-    // --target-disc/--arm-name flags, and cross-checks each lifted
-    // triple's CU against the claimed cu_budget. Optionally narrowed to
-    // one instruction with --target-name.
+    // --qedmeta mode: targeting from qedrecover sidecar (disc + name), CU cross-check, optional --target-name filter.
     if let Some(meta_path) = args.qedmeta.as_ref() {
         let meta = load_qedmeta(meta_path)?;
         let so_stem = args.so.file_stem()
@@ -7473,16 +6344,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for ix in selected {
             let arm = pascal_case(&ix.name);
             let module_name = format!("{}{}", so_stem, arm);
-            // #41 Phase 4: consume the recovered arm entry instead of
-            // dropping it — seeds the no-trace walk, cross-checks a trace.
+            // #41 Phase 4: recovered arm_entry seeds no-trace walk / cross-checks trace.
             let arm_entry = ix.recovered.as_ref().map(|r| r.arm_entry_pc);
             let result = lift_one(&args.so, &ctx, &analysis,
                 Some(ix.discriminator.value), Some(module_name.clone()),
                 trace.as_deref(), Some(&arm), idl_value.as_ref(), arm_entry)?;
 
-            // Cross-check the claimed CU budget against the lifted triple.
-            // The budget is an upper bound on the verified CU; the lifted
-            // `n` is the exact CU of the discharged triple.
+            // Cross-check: cu_budget is upper bound; result.cu is the exact discharged CU.
             let budget_note = match ix.cu_budget {
                 Some(b) if result.cu as u64 > b => {
                     budget_fail = true;
@@ -7516,9 +6384,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Batch mode: --idl <toml|json> + --output-dir <dir>. With --idl but
-    // no --output-dir, fall through to single-arm mode (the IDL is still
-    // loaded into `idl_value` above for layout-driven aggregation).
+    // Batch mode: --idl + --output-dir. Without --output-dir falls through to single-arm.
     if let (Some(idl_path), Some(output_dir)) =
         (args.idl.as_ref(), args.output_dir.as_ref())
     {
@@ -7538,14 +6404,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut lifted = 0usize;
         let mut skipped: Vec<(String, String)> = Vec::new();
         for ix in &idl {
-            // Convention: namespace `Examples.Lifted.<SoStem><Name>`,
-            // file `<SoStem><Name>Lifted.lean`. The "Lifted" suffix
-            // lives only on the filename so the namespace stays tidy.
+            // Namespace Examples.Lifted.<SoStem><Name>; file <SoStem><Name>Lifted.lean.
             let module_name = format!("{}{}", so_stem, pascal_case(&ix.name));
-            // Per-arm error tolerance: an arm that hits an unmodelled
-            // opcode (in either the .text renderer or the symbolic
-            // executor) is reported and skipped, not fatal. This makes
-            // the batch a coverage probe.
+            // Per-arm tolerance: unmodelled opcodes are reported+skipped (batch = coverage probe).
             match lift_one(&args.so, &ctx, &analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value.as_ref(), None) {
                 Ok(result) => {
                     let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
@@ -7575,7 +6436,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Single-instruction mode (unchanged behaviour).
     let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone(),
                           trace.as_deref(), args.arm_name.as_deref(), idl_value.as_ref(), None)?;
     match args.output {

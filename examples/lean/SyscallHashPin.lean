@@ -1,16 +1,8 @@
 /-
-Regression pin for the Murmur3 syscall-hash constants.
-
-`SyscallHash.fromHash` identifies syscalls by the Murmur3-32 hash of their
-name. If a refactor of `Murmur3` ever shifted the hashing (seed, tail
-handling, finalizer), EVERY hash would move consistently and `fromHash`
-would still be internally self-consistent, so no proof or diff test would
-fail, yet real-world syscall identification would silently break.
-
-These pins tie a representative hash from each functional group to its known
-agave literal (e.g. `sol_log_` = 0x207559bd = 544561597), so any drift fails
-the `Examples` build immediately. Values cross-checked against
-`solana_sbpf::ebpf::hash_symbol_name`.
+  Murmur3 syscall-hash regression pins. A silent seed/finalizer shift would leave
+  `fromHash` internally consistent but break real syscall identification; these pins
+  catch that by tying known agave literals to computed hashes (cross-checked vs
+  `solana_sbpf::ebpf::hash_symbol_name`).
 -/
 import SVM.SBPF.SyscallHash
 

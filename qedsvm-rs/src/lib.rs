@@ -1,15 +1,6 @@
 //! Rust driver for the qedsvm Lean reference SVM.
-//!
-//! Two entry points:
-//! - [`Svm`] — Mollusk-shaped: `add_program(pid, elf)` /
-//!   `process_instruction(&ix, &accounts)` returning
-//!   `InstructionResult { program_result, logs, return_data,
-//!   resulting_accounts, .. }`. This is what you'll use in
-//!   differential tests.
-//! - [`run_buffer`] — low-level: raw ELF + already-serialized input
-//!   buffer. Useful when you want to drive the Lean runner from a
-//!   non-Solana-typed test harness, or to short-circuit the
-//!   account-buffer marshaling.
+//! Two entry points: [`Svm`] (Mollusk-shaped API for differential tests) and
+//! [`run_buffer`] (low-level: raw ELF + serialized input buffer).
 
 mod deserialize;
 mod ffi;
@@ -17,16 +8,11 @@ mod serialize;
 mod svm;
 mod wire;
 
-/// Diff-testing utilities — converters + assertion helpers for
-/// running the same fixture through both qedsvm and Mollusk. Only
-/// compiled when the `diff-mollusk` feature is on (same gate as the
-/// `mollusk-svm` dependency).
+/// Diff-testing converters + assertion helpers (qedsvm vs Mollusk). Feature-gated: `diff-mollusk`.
 #[cfg(feature = "diff-mollusk")]
 pub mod diff;
 
-/// Shared program-analysis substrate for the qedlift / qedrecover
-/// pipeline (issue #41). Only compiled under the `qedrecover` feature,
-/// same gate as the `solana-sbpf` dependency it analyses through.
+/// Shared slot↔logical PC converter + account layout (issue #41). Feature-gated: `qedrecover`.
 #[cfg(feature = "qedrecover")]
 pub mod analysis;
 
@@ -36,25 +22,13 @@ pub use svm::{vm_fault_name, InstructionResult, PostStateError, ProgramResult, S
               SvmError, ERR_INVALID_POSTSTATE};
 pub use wire::{decode as decode_wire, DecodeError, ExitOutcome, RawResult};
 
-/// Run an ELF binary under the Lean VM with an arbitrary input buffer
-/// placed at `INPUT_START`. This is the low-level entry — for the
-/// Mollusk-shaped instruction API see [`Svm::process_instruction`].
-///
-/// `elf` is the raw ELF64 binary; `input` is the bytes written at
-/// `INPUT_START` (real Solana programs read accounts + instruction
-/// data from this region via the `entrypoint!` deserializer).
-///
-/// Thread-safe: serialized internally under a process-wide Mutex
-/// around the Lean runtime. Init happens on first call.
+/// Run an ELF binary under the Lean VM. Low-level entry — for the Mollusk-shaped API see
+/// [`Svm::process_instruction`]. Thread-safe: serialized under a process-wide Mutex; init on first call.
 pub fn run_buffer(elf: &[u8], input: &[u8], cu_budget: u64) -> Result<RawResult, DecodeError> {
     let g = ffi::lock();
-    // SAFETY: all of the following Lean-runtime calls happen under
-    // the guard `g`. Ref-count discipline:
-    //   - alloc_bytearray returns refcount=1 → owned by us
-    //   - qedsvm_run_elf_buffer *consumes* elf_obj and input_obj
-    //     (Lean's ABI for ByteArray arguments)
-    //   - the returned result_obj is owned by us; we dec_ref it
-    //     after copying its bytes out
+    // SAFETY: all Lean-runtime calls happen under `g`.
+    // alloc_bytearray → refcount=1; qedsvm_run_elf_buffer *consumes* elf_obj/input_obj;
+    // result_obj is owned by us — dec_ref after copying bytes out.
     let bytes = unsafe {
         let elf_obj = ffi::alloc_bytearray(&g, elf);
         let input_obj = ffi::alloc_bytearray(&g, input);
@@ -67,21 +41,8 @@ pub fn run_buffer(elf: &[u8], input: &[u8], cu_budget: u64) -> Result<RawResult,
     wire::decode(&bytes)
 }
 
-/// Like [`run_buffer`] but additionally passes a CPI program registry —
-/// a flat blob mapping pubkeys to ELF bytes that the Lean runner
-/// consults on `sol_invoke_signed{,_c}`. Use this when the program
-/// under test may CPI into other programs (Token, ATA, System, etc.).
-///
-/// `registry_blob` format (all little-endian):
-/// ```text
-/// u32 num_entries
-/// for each entry:
-///   [32]u8 pubkey
-///   u32 elf_size
-///   [u8; elf_size] elf
-/// ```
-///
-/// See [`encode_registry`] for the canonical builder.
+/// Like [`run_buffer`] but passes a CPI program registry (pubkey → ELF) the Lean runner
+/// consults on `sol_invoke_signed`. See [`encode_registry`] for the blob format.
 pub fn run_buffer_with_registry(
     elf: &[u8],
     input: &[u8],
@@ -103,12 +64,8 @@ pub fn run_buffer_with_registry(
     wire::decode(&bytes)
 }
 
-/// Like [`run_buffer_with_registry`] but also threads the top-level
-/// program's 32-byte pubkey into Lean's `State.progIdBytes`. Required
-/// for `invoke_signed` with PDA signer seeds: the CPI handler derives
-/// the PDA via `create_program_address(seeds, callerPid)`. Without
-/// the right `pid_bytes`, the derived PDA won't match any AccountInfo
-/// and no signer promotion happens.
+/// Like [`run_buffer_with_registry`] but also passes `pid_bytes` into `State.progIdBytes`.
+/// Required for `invoke_signed` with PDA signer seeds (CPI handler derives PDAs via `callerPid`).
 pub fn run_buffer_with_registry_and_pid(
     elf: &[u8],
     input: &[u8],
@@ -132,19 +89,8 @@ pub fn run_buffer_with_registry_and_pid(
     wire::decode(&bytes)
 }
 
-/// Drive the Lean precompile dispatcher
-/// (`SVM.Native.Precompiles.dispatch`) for the three sig-verify
-/// precompile pubkeys. Returns `(r0, compute_units_consumed)`:
-///   - `r0 == 0` → all signatures verified (ProgramResult::Success).
-///   - `r0 == 1` → any failure (bad offsets, bad sig, out-of-bounds,
-///     non-`0xFFFF` instruction_index, etc).
-///   - `cu` is `num_signatures × per_sig_cost` (per agave's
-///     cost-model `*_VERIFY_*_COST` constants), charged regardless
-///     of pass/fail.
-///
-/// This bypasses the BPF VM entirely — precompiles never enter it
-/// in agave either; the Solana runtime detects their pubkey early
-/// in `process_instruction` and routes to a Rust `verify()` closure.
+/// Drive `SVM.Native.Precompiles.dispatch` for the three sig-verify precompiles.
+/// Returns `(r0, cu)`: r0=0 success, r0=1 failure. Bypasses the BPF VM (agave does the same).
 pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> Result<(u64, u64), DecodeError> {
     let g = ffi::lock();
     let bytes = unsafe {
@@ -156,9 +102,7 @@ pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> Result<(u64, u64), Deco
         bytes
     };
     drop(g);
-    // 16-byte wire format: [u64 LE r0 ‖ u64 LE cu]. A malformed length
-    // would otherwise panic on the slice below in release — surface it
-    // as a wire-format error so callers can decide.
+    // Wire format: [u64 LE r0 ‖ u64 LE cu]; surface malformed length as a wire-format error.
     if bytes.len() != 16 {
         return Err(DecodeError::Malformed("precompile FFI: expected 16 bytes"));
     }
@@ -169,8 +113,7 @@ pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> Result<(u64, u64), Deco
     Ok((u64::from_le_bytes(r0_b), u64::from_le_bytes(cu_b)))
 }
 
-/// Build the canonical registry blob from a list of (pubkey, elf) pairs.
-/// Matches `SVM.Ffi.parseRegistry` in the Lean side.
+/// Build the canonical registry blob from (pubkey, elf) pairs; matches `SVM.Ffi.parseRegistry`.
 pub fn encode_registry(entries: &[(&[u8; 32], &[u8])]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(entries.len() as u32).to_le_bytes());

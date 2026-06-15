@@ -1,18 +1,12 @@
--- Reusable sBPF instruction patterns for formal verification
+-- Reusable sBPF instruction patterns for formal verification: common 2-3 insn
+-- sequences (error handlers, duplicate checks, chunk comparisons), parameterized
+-- over the fetch function and registers. Register-disjointness premises are
+-- `decide`-dischargeable at call sites (concrete register names).
 --
--- Common 2-3 instruction sequences that recur across Solana sBPF programs:
--- error handlers, duplicate checks, and chunk comparisons.
---
--- All theorems are parameterized over the fetch function and registers.
--- Register disjointness hypotheses are dischargeable by `decide` at
--- call sites since the caller always has concrete register names.
---
--- Every `ldx`-bearing pattern carries a `h_b*` premise asserting the
--- accessed `[addr, addr + w.bytes)` window lies in some region of
--- `s.regions`. Without it, `step` traps to `ERR_ACCESS_VIOLATION` and
--- the pattern's "exited normally" conclusion no longer holds.
--- Compositions discharge the downstream bounds via
--- `executeFn_preserves_regions` (`@[simp]`).
+-- Every `ldx`-bearing pattern carries a `h_b*` premise that the accessed window
+-- lies in some region; without it `step` traps to `ERR_ACCESS_VIOLATION` and the
+-- "exited normally" conclusion fails. Compositions discharge downstream bounds
+-- via `executeFn_preserves_regions` (`@[simp]`).
 
 import SVM.SBPF.Execute
 
@@ -22,9 +16,7 @@ open Memory
 
 /-! ## Error handler: mov32 r0 errorCode; exit
 
-Every sBPF validation program has error handlers that set r0 to an error
-code and exit. This 2-step pattern is fully general — parameterized over
-the fetch function and error code. -/
+Sets r0 to an error code and exits. Parameterized over fetch and error code. -/
 
 theorem error_exit (fetch : Nat → Option Insn) (s : State) (errorCode : Int)
     (h_exit : s.exitCode = none)
@@ -40,14 +32,10 @@ theorem error_exit (fetch : Nat → Option Insn) (s : State) (errorCode : Int)
 
 /-! ## Duplicate marker check: ldx byte + jne
 
-SIMD-0321 account format marks each account with a duplicate byte:
-255 = non-duplicate (pass), anything else = duplicate (branch to error).
-
-Parameters:
-- `dstReg`: scratch register that receives the loaded byte
-- `addrReg`: register holding the account base address
-- `off`: byte offset to the duplicate marker field
-- `dupImm`: the immediate value in the jne (typically 255 as Int) -/
+SIMD-0321 marks each account with a duplicate byte: 255 = non-duplicate (pass),
+else duplicate (branch to error). `dstReg` receives the loaded byte, `addrReg`
+holds the account base, `off` is the marker offset, `dupImm` the jne immediate
+(typically 255). -/
 
 set_option maxHeartbeats 800000 in
 theorem dup_pass (fetch : Nat → Option Insn) (s : State)
@@ -95,11 +83,8 @@ theorem dup_fail (fetch : Nat → Option Insn) (s : State)
 
 /-! ## Chunk comparison: ldx + ldx + jne (memory vs memory)
 
-Compares two 8-byte memory chunks via scratch registers. Used for 32-byte
-pubkey validation (4 chunks × 3 instructions each).
-
-Register disjointness hypotheses are dischargeable by `decide` at call sites
-since the caller always has concrete register names from their program. -/
+Compares two 8-byte chunks via scratch registers. Used for 32-byte pubkey
+validation (4 chunks × 3 insns each). -/
 
 set_option maxHeartbeats 1600000 in
 theorem chunk_eq_mem (fetch : Nat → Option Insn) (s : State)
@@ -168,13 +153,12 @@ theorem chunk_ne_mem (fetch : Nat → Option Insn) (s : State)
 
 /-! ## Chunk comparison: ldx + lddw + jne (memory vs 64-bit immediate)
 
-Used when comparing a memory chunk against a known constant loaded via lddw.
-The `toU64` in the conclusion comes from lddw semantics: `rf.set dst (toU64 imm)`.
+Compares a memory chunk against a constant loaded via lddw; `toU64` in the
+conclusion is from lddw's `rf.set dst (toU64 imm)`.
 
-**Important**: when proving the `h_ne` hypothesis at call sites, avoid
-`simp [toU64]` — it causes term explosion. Instead, use bridge lemmas:
-  `theorem my_bridge : toU64 (↑MY_CONST : Int) = MY_CONST := by native_decide`
-and rewrite with them before applying this theorem. -/
+**Important**: proving `h_ne` at call sites, avoid `simp [toU64]` (term
+explosion); use a bridge lemma `toU64 (↑C) = C := by native_decide` and rewrite
+first. -/
 
 set_option maxHeartbeats 1600000 in
 theorem chunk_eq_imm (fetch : Nat → Option Insn) (s : State)
@@ -235,8 +219,8 @@ theorem chunk_ne_imm (fetch : Nat → Option Insn) (s : State)
 
 /-! ## Chunk comparison: ldx + mov32 + jne (memory vs 32-bit immediate)
 
-Used for the last chunk of a pubkey comparison when the constant fits in 32 bits.
-mov32 sets `rf.set dst (resolveSrc rf src % U32_MODULUS)`. -/
+For the last pubkey chunk when the constant fits in 32 bits. mov32 sets
+`rf.set dst (resolveSrc rf src % U32_MODULUS)`. -/
 
 set_option maxHeartbeats 1600000 in
 theorem chunk_eq_imm32 (fetch : Nat → Option Insn) (s : State)
@@ -297,9 +281,8 @@ theorem chunk_ne_imm32 (fetch : Nat → Option Insn) (s : State)
 
 /-! ## Composition: chunk mismatch → error exit
 
-Combines a 3-step chunk mismatch (branch taken) with a 2-step error handler
-into a single 5-step theorem. Use with `executeFn_compose` to split longer
-executions. -/
+3-step chunk mismatch + 2-step error handler into one 5-step theorem. Use with
+`executeFn_compose` to split longer executions. -/
 
 theorem chunk_ne_mem_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (dstA dstB srcA srcB : Reg) (offA offB : Int) (target : Nat) (errorCode : Int)
@@ -333,8 +316,7 @@ theorem chunk_ne_mem_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
 
 /-! ## Chunk mismatch → error (immediate variants)
 
-Like `chunk_ne_mem_error` but for lddw and mov32 instruction patterns.
-Used in pubkey comparison against known constant values. -/
+Like `chunk_ne_mem_error` but for lddw / mov32, comparing against constants. -/
 
 theorem chunk_ne_imm_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
     (dstA dstB srcA : Reg) (off : Int) (val : Int) (target : Nat) (errorCode : Int)
@@ -392,19 +374,13 @@ theorem chunk_ne_imm32_error (fetch : Nat → Option Insn) (s : State) (n : Nat)
 
 /-! ## 4-chunk pubkey comparison cascades
 
-These theorems prove that a 4-chunk, 14-step pubkey comparison sequence
-results in error exit when at least one chunk mismatches. Each chunk is
-3 instructions: ldx(src) + ldx/lddw/mov32(ref) + jne(branch on mismatch).
+A 4-chunk, 14-step pubkey comparison error-exits when any chunk mismatches.
+Each chunk is 3 insns: ldx(src) + ldx/lddw/mov32(ref) + jne. Variants:
+`pubkey_compare_mem` (both sides memory), `pubkey_compare_imm` (ref=constant).
 
-Two variants:
-- `pubkey_compare_mem`: both sides memory reads (ldx + ldx + jne)
-- `pubkey_compare_imm`: source=memory, ref=constant (3× lddw + 1× mov32)
-
-The `hb*` premises bound each `ldx` access at the *initial* state. The
-intermediate states arising between chunks have `.regions` equal to the
-initial state's (via `executeFn_preserves_regions`, `@[simp]`) and the
-`srcA`/`srcB` registers preserved (via the chunk's `hreg`). The local
-`bound` helper threads both rewrites mechanically. -/
+The `hb*` premises bound each `ldx` at the *initial* state; intermediate states
+keep `.regions` (via `executeFn_preserves_regions`) and `srcA`/`srcB` (via the
+chunk's `hreg`), so both rewrites thread through mechanically. -/
 
 set_option maxHeartbeats 8000000 in
 theorem pubkey_compare_mem (fetch : Nat → Option Insn) (s : State)

@@ -1,8 +1,7 @@
--- SL predicate for the Rust `solana_program::AccountInfo` struct as
--- programs see it after deserialization.
+-- SL predicate for the Rust `solana_program::AccountInfo` struct as programs
+-- see it post-deserialization.
 --
--- Layout (default Rust, 64-bit BPF target — mirrors the doc comment on
--- `SVM.SBPF.Runner.parseAccountInfo`):
+-- Layout (default Rust, 64-bit BPF target — mirrors `SVM.SBPF.Runner.parseAccountInfo`):
 --
 --   offset  size  field
 --   0       8     keyPtr           (*const Pubkey)
@@ -17,16 +16,14 @@
 --   ----   ----
 --   total = 48 bytes
 --
--- This is the Rust-struct view (post-deserialization). The SBF
--- serialized input-region per-account block (88 bytes per
--- `serialize_parameters_aligned`) is a separate predicate to be added
--- when pinocchio-style proofs need it — pinocchio reads the serialized
--- form directly without going through the full Rust deserializer.
+-- Rust-struct view only. The SBF serialized input-region per-account block
+-- (88 bytes per `serialize_parameters_aligned`) is a separate predicate, added
+-- when pinocchio-style proofs need it (pinocchio reads the serialized form
+-- directly, skipping the Rust deserializer).
 --
--- The pointers reference further memory regions that hold the actual
--- key/owner/lamports/data bytes. A future `accountInfoChain` predicate
--- will compose `accountInfoHeader` with the indirected payloads;
--- today's first cut is the header alone.
+-- The pointers reference further memory regions holding the actual
+-- key/owner/lamports/data bytes; a future `accountInfoChain` will compose this
+-- header with the indirected payloads. Today's first cut is the header alone.
 
 import SVM.SBPF.SepLogic
 
@@ -70,10 +67,9 @@ def ACCT_INFO_PAD_SIZE : Nat := 5
 
 /-! ## SL predicate -/
 
-/-- An `AccountInfo` struct at byte address `base` with the given
-    pointer / flag fields. The 5-byte trailing padding (`base+43 ..
-    base+48`) is carried as an opaque `pad : ByteArray` frame; the
-    well-formed caller requires `pad.size = ACCT_INFO_PAD_SIZE`. -/
+/-- An `AccountInfo` struct at byte address `base`. The 5-byte trailing padding
+    (`base+43 .. base+48`) is an opaque `pad : ByteArray` frame; the well-formed
+    caller requires `pad.size = ACCT_INFO_PAD_SIZE`. -/
 def accountInfoHeader (base : Nat) (h : AcctInfoHeader) (pad : ByteArray) :
     Assertion :=
   ((base + ACCT_INFO_KEY_PTR_OFF)      ↦U64 h.keyPtr)        **

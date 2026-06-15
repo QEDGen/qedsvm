@@ -6,18 +6,15 @@ open Memory
 
 /-! ## `call_local target` — push a frame, bump r10, jump (lift #3)
 
-The instruction-level Hoare triple for sBPF's internal call. The
-precondition owns r6..r10 (so their values are determinate for the
-saved-frame) and `callStackIs cs`. The post: r6..r9 unchanged,
-r10 bumped by `0x1000` (one V0 stack frame), and the new frame
-pushed onto the call stack. PC moves to `target`. -/
+Owns r6..r10 (determinate for the saved frame) and `callStackIs cs`. Post:
+r6..r9 unchanged, r10 bumped by `0x1000` (one V0 stack frame), new frame
+pushed, PC moves to `target`. -/
 
 theorem call_local_spec
     (target : Nat) (cs : List CallFrame)
     (r6V r7V r8V r9V r10V : Nat) (pc : Nat)
-    -- Call-depth bound (H4): the push only happens below MAX_CALL_DEPTH.
-    -- A trailing autoParam so existing (qedlift-emitted) call sites,
-    -- which pass a concrete `cs`, discharge it automatically.
+    -- Call-depth bound (H4): push only below MAX_CALL_DEPTH. autoParam so
+    -- qedlift-emitted sites (concrete `cs`) discharge it automatically.
     (hDepth : cs.length < MAX_CALL_DEPTH := by
       simp only [List.length_cons, List.length_nil, MAX_CALL_DEPTH]; omega) :
     cuTripleWithin 1 0 pc target
@@ -28,7 +25,6 @@ theorem call_local_spec
         (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ (r10V + 0x1000)) **
         callStackIs (⟨pc + 1, r6V, r7V, r8V, r9V, r10V⟩ :: cs)) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- Phase 1: destructure 6-atom precondition.
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r6, h_T1, hd_r6_T1, hu_r6_T1, h_r6_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r7, h_T2, hd_r7_T2, hu_r7_T2, h_r7_pred, h_T2_sat⟩ := h_T1_sat
@@ -46,7 +42,6 @@ theorem call_local_spec
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
   have hcm_cs := hcompat.callStack
-  -- Phase 2: lift atoms through hp.
   have h_T4_cs : h_T4.callStack = some cs := by
     rw [← hu_r10_cs, PartialState.union_callStack_of_left_none
           PartialState.singletonReg_callStack]; rfl
@@ -123,7 +118,6 @@ theorem call_local_spec
   have hs_regs_r8 : s.regs.r8 = r8V := hcr_regs .r8 r8V hp_regs_r8
   have hs_regs_r9 : s.regs.r9 = r9V := hcr_regs .r9 r9V hp_regs_r9
   have hs_regs_r10 : s.regs.r10 = r10V := hcr_regs .r10 r10V hp_regs_r10
-  -- Phase 3: executeFn.
   have hfetch : fetch s.pc = some (.call_local target) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call_local target) s) := by
@@ -137,7 +131,6 @@ theorem call_local_spec
                callStack := ⟨s.pc + 1, s.regs.r6, s.regs.r7,
                              s.regs.r8, s.regs.r9, s.regs.r10⟩ :: s.callStack } := by
     rw [hstep_eq]; simp only [step, if_neg hnotdepth]
-  -- Phase 4: hR non-overlap.
   have hd_PR_regs := hd_PR.regs
   have hd_PR_cs := hd_PR.callStack
   have h_R_no_r6 : h_R.regs .r6 = none := by
@@ -165,7 +158,6 @@ theorem call_local_spec
     rcases hd_PR_cs with hl | hr
     · rw [h_P_cs] at hl; nomatch hl
     · exact hr
-  -- Phase 5: build post heap.
   let newFrame : CallFrame := ⟨pc + 1, r6V, r7V, r8V, r9V, r10V⟩
   let h_r6_new : PartialState := PartialState.singletonReg .r6 r6V
   let h_r7_new : PartialState := PartialState.singletonReg .r7 r7V
@@ -179,7 +171,6 @@ theorem call_local_spec
   let h_T2_new : PartialState := h_r8_new.union h_T3_new
   let h_T1_new : PartialState := h_r7_new.union h_T2_new
   let h_P_new : PartialState := h_r6_new.union h_T1_new
-  -- Phase 6: inner disjointness (bottom-up).
   have hd_r10_cs_new : h_r10_new.Disjoint h_cs_new :=
     { regs := fun r => Or.inr (PartialState.singletonCallStack_regs r)
       mem  := fun a => Or.inl (PartialState.singletonReg_mem a)
@@ -260,7 +251,6 @@ theorem call_local_spec
             (PartialState.singletonReg_regs_other (by decide : Reg.r6 ≠ Reg.r10))]
       exact PartialState.singletonCallStack_regs .r6
     · left; exact PartialState.singletonReg_regs_other hr
-  -- Phase 7: per-field projections of h_P_new.
   have h_P_new_regs_r6 : h_P_new.regs .r6 = some r6V :=
     PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
   have h_P_new_regs_r7 : h_P_new.regs .r7 = some r7V := by
@@ -338,7 +328,6 @@ theorem call_local_spec
     rw [PartialState.union_callStack_of_left_none
           PartialState.singletonReg_callStack]
     rfl
-  -- Phase 8: outer disjointness.
   have hd_PnewR : h_P_new.Disjoint h_R :=
     { regs := fun r => by
         by_cases h6 : r = .r6
@@ -383,7 +372,6 @@ theorem call_local_spec
               PartialState.singletonReg_returnData]
         exact PartialState.singletonCallStack_returnData)
       callStack := Or.inr h_R_no_cs }
-  -- Phase 9: assemble.
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; rfl
   · rw [hexec]; exact hex
@@ -511,11 +499,9 @@ theorem call_local_spec
 
 /-! ## `.exit` (non-empty callStack) — pop frame, restore r6..r10 (lift #3)
 
-The dual of `call_local`: the precondition owns r6..r10 (whatever the
-callee left them as) and the call stack with at least one frame.
-The post: r6..r10 restored to the saved values from the top frame,
-the stack popped, PC moves to the frame's return PC. The empty-stack
-case (program termination) is covered by `exit_aborts_spec` above. -/
+Dual of `call_local`: pop the top frame, restore r6..r10 to its saved values,
+PC moves to its return PC. The empty-stack case (termination) is
+`exit_aborts_spec` above. -/
 
 theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
     (r6Old r7Old r8Old r9Old r10Old : Nat) (pc : Nat) :
@@ -527,7 +513,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
         (.r8 ↦ᵣ frame.savedR8) ** (.r9 ↦ᵣ frame.savedR9) **
         (.r10 ↦ᵣ frame.savedR10) ** callStackIs cs) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- Phase 1: destructure 6-atom precondition.
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r6, h_T1, hd_r6_T1, hu_r6_T1, h_r6_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r7, h_T2, hd_r7_T2, hu_r7_T2, h_r7_pred, h_T2_sat⟩ := h_T1_sat
@@ -545,7 +530,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
   have hcr_regs := hcompat.regs
   have hcm_mem := hcompat.mem
   have hcm_cs := hcompat.callStack
-  -- Phase 2: lift atoms through hp.
   have h_T4_cs : h_T4.callStack = some (frame :: cs) := by
     rw [← hu_r10_cs, PartialState.union_callStack_of_left_none
           PartialState.singletonReg_callStack]; rfl
@@ -607,13 +591,12 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
         ← hu_r9_T4, PartialState.union_regs_of_left_none
           (PartialState.singletonReg_regs_other (by decide : Reg.r10 ≠ Reg.r9))]
     exact h_T4_regs_r10
-  -- Phase 3: executeFn.
   have hfetch : fetch s.pc = some .exit := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step .exit s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  -- Show the non-empty branch of the match runs.
+  -- non-empty branch of the callStack match fires (hs_cs)
   have hexec : executeFn fetch s 1 = chargeCu
       { s with pc := frame.retPc
                regs := { s.regs with
@@ -633,7 +616,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
           | [] => { s with exitCode := some (s.regs.get .r0) })
         = _
     rw [hs_cs]
-  -- Phase 4: hR non-overlap.
   have hd_PR_regs := hd_PR.regs
   have hd_PR_cs := hd_PR.callStack
   have h_R_no_r6 : h_R.regs .r6 = none := by
@@ -661,7 +643,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
     rcases hd_PR_cs with hl | hr
     · rw [h_P_cs] at hl; nomatch hl
     · exact hr
-  -- Phase 5: build post heap (each reg gets the saved value).
   let h_r6_new : PartialState := PartialState.singletonReg .r6 frame.savedR6
   let h_r7_new : PartialState := PartialState.singletonReg .r7 frame.savedR7
   let h_r8_new : PartialState := PartialState.singletonReg .r8 frame.savedR8
@@ -673,7 +654,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
   let h_T2_new : PartialState := h_r8_new.union h_T3_new
   let h_T1_new : PartialState := h_r7_new.union h_T2_new
   let h_P_new : PartialState := h_r6_new.union h_T1_new
-  -- Phase 6: inner disjointness.
   have hd_r10_cs_new : h_r10_new.Disjoint h_cs_new :=
     { regs := fun r => Or.inr (PartialState.singletonCallStack_regs r)
       mem  := fun a => Or.inl (PartialState.singletonReg_mem a)
@@ -754,7 +734,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
             (PartialState.singletonReg_regs_other (by decide : Reg.r6 ≠ Reg.r10))]
       exact PartialState.singletonCallStack_regs .r6
     · left; exact PartialState.singletonReg_regs_other hr
-  -- Phase 7: per-field projections of h_P_new.
   have h_P_new_regs_r6 : h_P_new.regs .r6 = some frame.savedR6 :=
     PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
   have h_P_new_regs_r7 : h_P_new.regs .r7 = some frame.savedR7 := by
@@ -832,7 +811,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
     rw [PartialState.union_callStack_of_left_none
           PartialState.singletonReg_callStack]
     rfl
-  -- Phase 8: outer disjointness.
   have hd_PnewR : h_P_new.Disjoint h_R :=
     { regs := fun r => by
         by_cases h6 : r = .r6
@@ -877,7 +855,6 @@ theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
               PartialState.singletonReg_returnData]
         exact PartialState.singletonCallStack_returnData)
       callStack := Or.inr h_R_no_cs }
-  -- Phase 9: assemble.
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]; rfl
   · rw [hexec]; exact hex

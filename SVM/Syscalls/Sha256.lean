@@ -1,18 +1,7 @@
 /-
-  SHA-256 (FIPS-180-4).
-
-  Pure-Lean, kernel-reducible 32-byte hash. Used by the `sol_sha256`
-  syscall, and (indirectly) by PDA derivation via
-  `sol_create_program_address` / `sol_try_find_program_address`.
-
-  The shape mirrors `SVM/SBPF/Murmur3.lean`: a handful of 32-bit
-  arithmetic helpers, the round constants, a per-block compression
-  function, and a top-level `hash : ByteArray → ByteArray` that returns
-  the 32-byte big-endian digest.
-
-  Test vectors at the bottom of the file are checked by `native_decide`.
-
-  References:
+  SHA-256 (FIPS-180-4): pure-Lean, kernel-reducible 32-byte hash. Used by
+  `sol_sha256` and (indirectly) PDA derivation. Test vectors below via
+  `native_decide`. References:
   - FIPS-180-4 (NIST), §5 (padding), §6.2.2 (SHA-256 round).
   - Firedancer `src/ballet/sha256/fd_sha256.c`.
   - Agave: `solana-bpf-loader-program/src/syscalls/mod.rs` (`SyscallSha256`).
@@ -114,8 +103,7 @@ def messageSchedule (msg : ByteArray) (blockOff : Nat) : Array Nat :=
     let new := wadd (wadd (wadd s1 w[t - 7]!) s0) w[t - 16]!
     w.push new) w0
 
-/-- One SHA-256 compression: update hash state `H` from the 64-byte block
-    starting at `blockOff` in `msg`. -/
+/-- One SHA-256 compression: update `H` from the 64-byte block at `blockOff`. -/
 def processBlock (H : Array Nat) (msg : ByteArray) (blockOff : Nat) : Array Nat :=
   let W := messageSchedule msg blockOff
   let a := H[0]!
@@ -184,51 +172,27 @@ example : Sha256.hash ⟨#[0x61, 0x62, 0x63]⟩ = ⟨#[
 
 /-! ## Agave-conformance audit hook
 
-`hashAgave` calls the same `sha2 = 0.10.8` crate agave's runtime uses
-(via `lean-bridge`). Byte-equivalence between `hash` (pure-Lean
-FIPS-180-4) and `hashAgave` is verified on a sweep of inputs by Demo
-28 in `RunnerTests.lean`. The production path remains `hash` — keeping
-the pure-Lean impl is the point of this audit; this hook is a safety
-net to catch any future divergence between our independently-built
-spec and agave's runtime call chain. -/
+`hashAgave` calls agave's `sha2 = 0.10.8` (via `lean-bridge`). Demo 28 in
+`RunnerTests.lean` checks `hash` ≡ `hashAgave` over an input sweep — a safety net
+against future divergence; the production path stays the pure-Lean `hash`. -/
 @[extern "lean_sha256_agave"]
 opaque hashAgave (data : @& ByteArray) : ByteArray
 
 /-! ## `sol_sha256` syscall
 
-Body and CU charge for the `sol_sha256` syscall. Lives here, next to
-the FIPS-180-4 primitive, so `Execute.lean::execSyscall` can stay a
-thin dispatcher.
+ABI: r1 = `*const SliceDesc` vals, r2 = n_vals, r3 = `*mut [u8; 32]` out, where
+`SliceDesc = { ptr, len }` (16 bytes LE). Gathers all slice bytes, hashes once,
+writes the 32-byte BE digest to `*r3`, r0 := 0 on success. -/
 
-ABI:
-  r1 = `*const SliceDesc` (vals)
-  r2 = `u64`              (n_vals)
-  r3 = `*mut [u8; 32]`    (out)
-where `SliceDesc = { ptr: u64, len: u64 }` (16 bytes LE). The
-implementation gathers all slice bytes, hashes once with the
-pure-Lean `hash`, and writes the 32-byte big-endian digest to `*r3`.
-`r0` is set to 0 on success. -/
-
-/-- CU charge for `sol_sha256`. Agave consumes `sha256_base_cost
-    (85)` once, then per slice `max(mem_op_base_cost (10),
-    sha256_byte_cost (1) * len / 2)` — *not* a flat
-    `byte_cost * total_bytes`. See
+/-- CU for `sol_sha256`: base 85 + per-slice `max(10, len/2)` (NOT flat
+    `byte_cost * total_bytes`). See
     `blueshift/sbpf/crates/runtime/src/syscalls/crypto.rs:83-86`. -/
 @[simp] def cu (s : State) : Nat := 85 + hashSliceCost s.mem s.regs.r1 s.regs.r2
 
-/-- Execute `sol_sha256` against the supplied state.
-
-    `@[simp]` so the original `execSyscall_preserves_r10` proof,
-    which case-splits on `Syscall` and rewrites with
-    `simp [execSyscall]`, still discharges the sha256 arm.
-
-    H6: region-check the full agave envelope via `State.hashWrite` — the fixed
-    32-byte output `[r3, r3+32)` (`translate_slice_mut`, checked FIRST), then
-    the `SliceDesc[r2]` input descriptor array at `r1`, then each input slice.
-    Any out-of-region (or non-writable output) access traps with a typed access
-    violation. `exec` stays `@[simp]` and unfolds to the folded `hashWrite`,
-    whose `@[simp]` field lemmas + `hashWrite_regs_of_k` / `hashWrite_mem_lt`
-    closers discharge the `Bounded` / `Execute` syscall sweeps. -/
+/-- Execute `sol_sha256`. `@[simp]` so `execSyscall_preserves_r10` discharges the
+    arm. H6: `hashWrite` region-checks the full envelope — output `[r3,32)` first,
+    then the `SliceDesc[r2]` descriptor array at `r1`, then each input slice; its
+    `@[simp]` field lemmas + `hashWrite_regs_of_k`/`_mem_lt` close the sweeps. -/
 @[simp] def exec (s : State) : State :=
   s.hashWrite s.regs.r3 32 s.regs.r1 s.regs.r2
     (hash (readSlices s.mem s.regs.r1 s.regs.r2))

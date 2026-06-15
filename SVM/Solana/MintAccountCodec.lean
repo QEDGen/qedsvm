@@ -1,14 +1,11 @@
 /-
-  Byte-level SL codec for the SPL Token *mint* account, plus the
-  record-keyed view bridging it to the abstract `Mint` record
-  (`SVM/Solana/Abstract/State.lean`). Sibling of `TokenAccount.lean` +
-  `TokenAccountCodec.lean`, for the MintTo / Burn intrinsics.
+  Byte-level SL codec for the SPL Token *mint* account + record-keyed view
+  onto the abstract `Mint`. For the MintTo / Burn intrinsics.
 
-  Only `supply` is mutated by MintTo/Burn; it sits at byte offset 36,
-  after the 36-byte `COption<Pubkey>` mint_authority, so it can't be a
-  single trailing field. The mint_authority (`preAuth`) and the
-  decimals/is_initialized/freeze_authority tail (`rest`) are carried as
-  opaque byte-arrays that flow through unchanged.
+  Only `supply` is mutated; it sits mid-struct at offset 36 (after the
+  36-byte `COption<Pubkey>` mint_authority), so not a trailing field.
+  mint_authority (`preAuth`) and the decimals/is_init/freeze tail (`rest`)
+  are opaque flow-through byte-arrays.
 -/
 
 import SVM.SBPF.PubkeySL
@@ -27,8 +24,7 @@ def MINT_AUTH_OFF : Nat := 0
 /-- Byte offset of the `supply` field (8-byte little-endian u64). -/
 def SUPPLY_OFF : Nat := 36
 
-/-- Byte offset of the opaque tail (decimals / is_initialized /
-    freeze_authority). -/
+/-- Byte offset of the opaque tail (decimals / is_initialized / freeze_authority). -/
 def MINT_REST_OFF : Nat := 44
 
 /-- Total serialized size of an SPL Token mint account. -/
@@ -36,14 +32,10 @@ def MINT_ACCOUNT_SIZE : Nat := 82
 
 /-! ## SL predicate -/
 
-/-- An SPL Token mint account at byte address `base` with the given
-    supply. `preAuth` (36 bytes: the `COption<Pubkey>` mint_authority)
-    and `rest` (38 bytes: decimals / is_initialized / freeze_authority)
-    are opaque flow-through byte-arrays; well-formed callers require
-    `preAuth.size = 36` and `rest.size = 38`.
-
-    The post-state of a MintTo/Burn rebinds only the `supply` argument
-    (`supply ± amount`); `preAuth` and `rest` flow through unchanged. -/
+/-- An SPL Token mint account at byte address `base` with the given supply.
+    `preAuth` (36-byte mint_authority) and `rest` (38-byte decimals/is_init/freeze
+    tail) are opaque flow-through; well-formed callers require sizes 36 / 38.
+    A MintTo/Burn post-state rebinds only `supply` (`supply ± amount`). -/
 def mintAcctSupply
     (base : Nat) (preAuth : ByteArray) (supply : Nat) (rest : ByteArray) :
     Assertion :=
@@ -62,10 +54,9 @@ def mintSupplyOf (base : Nat) (m : Abstract.Mint) : Assertion :=
 @[simp] theorem mintSupplyOf_eq (base : Nat) (m : Abstract.Mint) :
     mintSupplyOf base m = mintAcctSupply base m.preAuth m.supply m.rest := rfl
 
-/-- A `withSupply` shift on the abstract record rewrites the SL atom to
-    one with the new supply, preAuth/rest unchanged. The load-bearing
-    lemma the MintTo/Burn refinement applies to convert the abstract
-    post-state to the asm-side predicate. -/
+/-- Load-bearing: a `withSupply` shift rewrites the SL atom to the new supply
+    (preAuth/rest unchanged); the MintTo/Burn refinement applies it to convert
+    the abstract post-state to the asm-side predicate. -/
 @[simp] theorem mintSupplyOf_withSupply
     (base : Nat) (m : Abstract.Mint) (s : Nat) :
     mintSupplyOf base (m.withSupply s) =

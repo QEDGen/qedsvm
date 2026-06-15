@@ -1,13 +1,9 @@
 /-
-  Verified sBPF runner demos.
-
-  These are **not** part of the production aggregator (`SVM.SBPF`).
-  They are example programs that we feed to `SVM.SBPF.Runner.run` and
-  prove the exit codes of via `native_decide`. Lean's kernel commits
-  to the result of decoding + executing each `ByteArray`.
-
-  Treat this file as integration tests for the runner: editing the
-  Decode or Runner code that breaks these should be a build failure.
+  Verified sBPF runner demos — integration tests, NOT part of the
+  production aggregator (`SVM.SBPF`). Each feeds a `ByteArray` to
+  `Runner.run` and proves the exit code via `native_decide` (the kernel
+  commits to decode + execute). Breaking these via Decode/Runner edits
+  should fail the build.
 -/
 
 import SVM.SBPF.Runner
@@ -199,15 +195,12 @@ example : Runner.runElfForExit helloElf = some 42 := by native_decide
 
 /-! ## Demo 9 — `call <hash>` decoding (internal-call fallback)
 
-A program that issues a `0x85 call` with an imm that doesn't match any
-registered syscall hash. The decoder routes such imms to `.call_local
-target = pc + 1 + imm` (signed). Here we use `imm = 0` so the target
-is the next instruction — a benign self-call that pushes one frame and
-proceeds. The next instruction (exit) pops the frame and re-executes
-exit at PC 1, which halts with `r0 = 0`. This proves the 0x85 opcode
-decodes and the unknown-hash → call_local fallback runs cleanly.
-Real `sol_log_*` / `sol_memcpy_*` / `sol_invoke_signed_*` calls use
-the *known*-hash branch, which dispatches to a syscall variant. -/
+A `0x85 call` whose imm matches no syscall hash routes to
+`.call_local target = pc + 1 + imm` (signed). With `imm = 0` the target
+is the next instruction: a benign self-call pushes one frame; the exit
+pops it and re-runs exit at PC 1, halting `r0 = 0`. Proves the 0x85
+opcode + unknown-hash→call_local fallback. Known hashes take the syscall
+branch instead. -/
 
 def callProgram : ByteArray := ⟨#[
   -- call 0  (no syscall hash matches imm=0; decoder routes to
@@ -312,15 +305,11 @@ example : Runner.runElfForExit rodataElf = some 0x37 := by native_decide
 
 /-! ## Demo 11 — `call sol_log_` resolves to the typed `Syscall` variant
 
-We construct the bytecode for `call <Murmur3("sol_log_")>` by embedding
-the precomputed hash at decode-time into the immediate field of the
-`call` instruction. The decoder runs Murmur3 (via `SyscallHash.fromHash`)
-on the hash it reads and produces `.call .sol_log_` — a *typed* dispatch.
-
-This is the load-bearing demo for the syscall dispatch story: it proves
-the entire `bytes → Murmur3 → typed Syscall` pipeline is in place. Real
-programs from Anchor / Pinocchio / native-Rust / Quasar all encode
-their `call` instructions exactly this way. -/
+`call <Murmur3("sol_log_")>` with the precomputed hash in the imm field;
+the decoder runs Murmur3 (`SyscallHash.fromHash`) and produces the typed
+`.call .sol_log_`. Load-bearing: proves the whole
+`bytes → Murmur3 → typed Syscall` pipeline. Real Anchor/Pinocchio/
+native-Rust/Quasar programs encode `call` exactly this way. -/
 
 /-- Helper: pack a 32-bit hash as 4 little-endian `UInt8`s. -/
 private def hashLE (h : Nat) : Array UInt8 :=
@@ -357,9 +346,9 @@ copied byte:
   exit                  ; exit code = dst[0]
 ```
 
-With `cfg.input = #[0x55, 0x55, 0x55]`, the destination's first byte is
-`0x55` after the memcpy, so the exit code is `0x55`. This proves the
-typed dispatch *and* real memory-moving syscall semantics work end-to-end. -/
+With `cfg.input = #[0x55, 0x55, 0x55]` the dst first byte is `0x55`, so
+exit code `0x55`. Proves typed dispatch + real memory-moving syscall
+semantics end-to-end. -/
 
 def memcpyDemo : ByteArray :=
   let h := SyscallHash.sol_memcpy_hash
@@ -424,9 +413,9 @@ example : Runner.runForExit memsetDemo = some 0xAA := by native_decide
   exit
 ```
 
-We exit with the low byte of the comparison result: 0 if equal, 0xFF
-if the first range is less. This is the byte pattern Anchor's
-`PubKey::eq` and discriminator checks rely on. -/
+Exit with the low byte of the result: 0 if equal, 0xFF if the first
+range is less. The byte pattern Anchor's `PubKey::eq` + discriminator
+checks rely on. -/
 
 def memcmpDemo : ByteArray :=
   let h := SyscallHash.sol_memcmp_hash
@@ -810,21 +799,14 @@ example : Runner.runElfForExit relocElf = some 0x42 := by native_decide
 
 /-! ## Demo 25 — cross-program invocation via `sol_invoke_signed`
 
-The runner's `RunConfig.programRegistry` maps a program-id (encoded as
-a little-endian Nat over 32 bytes) to the callee's raw bytecode. When
-the caller issues `sol_invoke_signed` (the Rust-ABI variant called
-from `solana_program::invoke`), the CPI handler reads the 32-byte
-`program_id` from caller memory at `*(r1 + 48)`. Why +48: Rust's
-default layout for `Instruction { program_id, accounts: Vec, data: Vec }`
-reorders fields by alignment — the 8-byte-aligned Vec fields come
-first (24 B each), then `program_id` (1-byte-aligned Pubkey) at the
-end, offset 48.
+`RunConfig.programRegistry` maps a program-id (LE Nat over 32 bytes) to
+callee bytecode. On `sol_invoke_signed` (Rust ABI) the CPI handler reads
+the 32-byte `program_id` at `*(r1 + 48)`. Why +48: Rust reorders
+`Instruction { program_id, accounts: Vec, data: Vec }` by alignment — the
+two 24B Vec fields come first, then `program_id` at 48. The demo only
+plants a 32-byte pubkey at that offset, not a full `Instruction`.
 
-For this demo we don't bother building the rest of `Instruction`; we
-just need a 32-byte pubkey at the right offset.
-
-Caller (places `0x42, 0, …, 0` at `[r10-32]` and sets r1 so that
-`r1 + 48 = r10 - 32`):
+Caller (plants `0x42, 0, …` at `[r10-32]`, sets r1 so `r1 + 48 = r10 - 32`):
 ```
   st .byte [r10-32], 0x42   ; first byte of pubkey
   mov64 r1, r10
@@ -839,10 +821,9 @@ Callee (registered at pubkey `0x42, 0, …, 0` → LE Nat 0x42):
   exit
 ```
 
-What's still TODO (Phase 3-full): real `AccountInfo` decoding +
-write-back propagation for CPIs that pass accounts. The current
-implementation handles the zero-account case (which this demo
-exercises) with a fresh sub-input + sub-mem.
+TODO (Phase 3-full): real `AccountInfo` decode + write-back for CPIs
+passing accounts. This demo exercises the zero-account case (fresh
+sub-input + sub-mem).
 -/
 
 def cpiCalleeBytes : ByteArray := ⟨#[
@@ -1083,28 +1064,16 @@ example :
 
 /-! ## Demo 28 — agave-conformance audit for SHA-256
 
-The pure-Lean `Sha256.hash` is the production path for `sol_sha256`.
-This demo proves byte-equivalence with `Sha256.hashAgave`, which calls
-the same `sha2 = 0.10.8` crate agave's runtime uses (via `lean-bridge`)
-on a sweep of inputs:
+Proves the pure-Lean `Sha256.hash` (the `sol_sha256` production path) is
+byte-equivalent to `Sha256.hashAgave` (the same `sha2 = 0.10.8` crate
+agave's runtime uses, via `lean-bridge`) over an input sweep: empty, 1
+byte, "abc", the pangram, 256/1025/4096 bytes (multi-block strides). A
+failure = a divergence between our spec and agave's hashing chain, the
+kind a reference interpreter must not have.
 
-- empty buffer
-- single byte
-- "abc"
-- "The quick brown fox jumps over the lazy dog"
-- 256 bytes (multi-block territory)
-- 1025 bytes
-- 4096 bytes (multi-block-stride sanity)
-
-`native_decide` makes the kernel commit to both digests on these
-inputs and check structural equality. A failure here is a divergence
-between our pure-Lean spec and agave's runtime hashing call chain —
-exactly the kind of bug a reference interpreter must not have.
-
-Keccak-256 and BLAKE3 no longer have separate audit hooks: the
-production paths `Keccak256.hash` and `Blake3.hash` go through
-`lean-bridge` directly (calling the same `sha3` / `blake3` crates
-agave uses), so an audit would be a tautology. -/
+Keccak-256 / BLAKE3 have no separate audit: `Keccak256.hash` /
+`Blake3.hash` go through `lean-bridge` directly (the same `sha3`/`blake3`
+crates), so an audit would be a tautology. -/
 
 private def auditInput0   : ByteArray := ByteArray.empty
 private def auditInput1   : ByteArray := ⟨#[0x5a]⟩

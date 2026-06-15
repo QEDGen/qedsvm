@@ -1,36 +1,27 @@
 /-
   Satisfiability witnesses for qedlift-emitted preconditions.
 
-  Soundness-audit H8 hardening: a lifted Hoare triple whose precondition
-  is an UNSATISFIABLE separating conjunction (overlapping ownership
-  atoms) is vacuously true — it type-checks, `sl_block_iter` never needs
-  a satisfying heap, and the theorem claims nothing. The qedlift walker
-  now detects footprint overlap and fails closed (Rust-side), but that
-  detector is itself unverified. This module closes the loop KERNEL-side:
-  qedlift emits, alongside every lift, an
+  H8 hardening: a lifted Hoare triple with an UNSATISFIABLE precondition
+  (overlapping ownership atoms) is vacuously true — type-checks, claims nothing.
+  qedlift's Rust-side overlap detector is itself unverified; this module closes
+  the loop KERNEL-side by emitting, per lift, an
 
       example : ∃ s, (pre at a concrete assignment) s :=
         SatWitness.sat_witness [reflected atoms] (by native_decide)
 
-  so an unsatisfiable precondition fails `lake build` instead of
-  shipping silently — even for overlap classes the Rust detector does
-  not model.
+  so an unsatisfiable precondition fails `lake build` rather than shipping
+  silently — even for overlap classes the Rust detector misses.
 
-  Design: every qedlift pre atom is an EXACT-state predicate
-  (`fun h => h = singleton…`), so the canonical witness for
-  `A₁ ** … ** Aₙ` is the right-nested union of the singleton states,
-  and satisfiability reduces to pairwise footprint disjointness — a
-  decidable check (`satCheck`) over the reflected `SatAtom` list, made
-  sound by `sat_witness`. The connection to the REAL precondition is the
-  elaborator's defeq check: `interp atoms` must unify with the rendered
-  pre (with the theorem's variables instantiated), so a divergence
-  between the reflected atoms and the actual atoms is a type error.
+  Design: every pre atom is an EXACT-state predicate, so the canonical witness
+  is the right-nested union of singleton states and satisfiability reduces to a
+  decidable pairwise footprint-disjointness check (`satCheck`), made sound by
+  `sat_witness`. The link to the REAL precondition is the elaborator's defeq
+  check: `interp atoms` must unify with the rendered pre, so any divergence is a
+  type error.
 
-  SCOPE: the witness covers the heap predicate (the sepConj) at one
-  concrete assignment that respects the address-defining `h_addr`
-  equations (each pinned by its own `native_decide` guard, emitted by
-  qedlift). Value-level path hypotheses (`h_branch*`, `h*_lt`) are NOT
-  certified consistent by the witness — they are outside the
+  SCOPE: covers the heap predicate (the sepConj) at one assignment respecting
+  the address-defining `h_addr` equations. Value-level path hypotheses
+  (`h_branch*`, `h*_lt`) are NOT certified consistent — outside the
   overlap-vacuity class this guards against.
 -/
 
@@ -41,8 +32,8 @@ namespace SatWitness
 
 open PartialState
 
-/-- Reflected form of one qedlift precondition atom. One constructor per
-    exact-state assertion the emitter can produce. -/
+/-- Reflected form of one qedlift precondition atom (one constructor per
+    exact-state assertion the emitter produces). -/
 inductive SatAtom where
   | reg (r : Reg) (v : Nat)
   | byte (a v : Nat)
@@ -55,9 +46,9 @@ inductive SatAtom where
   | retData (bs : ByteArray)
   | callStack (cs : List CallFrame)
 
-/-- The assertion a reflected atom denotes. Must mirror the assertion
-    definitions exactly (each is `fun h => h = SatAtom.state _`), so
-    `pred_state` is `rfl` and `interp` is defeq to the rendered pre. -/
+/-- The assertion a reflected atom denotes. Mirrors the assertion definitions
+    exactly (each `fun h => h = SatAtom.state _`), so `pred_state` is `rfl` and
+    `interp` is defeq to the rendered pre. -/
 def SatAtom.pred : SatAtom → Assertion
   | .reg r v      => regIs r v
   | .byte a v     => memByteIs a v
@@ -88,8 +79,8 @@ theorem SatAtom.pred_state (x : SatAtom) : x.pred x.state := by
 
 /-! ## Footprints
 
-Each `PartialState` field contributes one footprint projection; the
-domain lemmas below tie them to the singleton definitions. -/
+One footprint projection per `PartialState` field; the domain lemmas tie them
+to the singleton definitions. -/
 
 /-- Memory footprint `(start, length)`; `(0, 0)` for non-memory atoms
     (and the empty blob, which owns nothing). -/
@@ -280,8 +271,8 @@ theorem disjoint_of_pairOk {x y : SatAtom} (h : pairOk x y = true) :
         rw [d1, d2] at hcs
         simp at hcs
 
-/-- Right-nested union of the atoms' singleton states — the canonical
-    satisfying heap. Mirrors `interp`'s nesting exactly. -/
+/-- Right-nested union of the atoms' singleton states — the canonical satisfying
+    heap, mirroring `interp`'s nesting. -/
 def statesUnion : List SatAtom → PartialState
   | [] => PartialState.empty
   | [x] => x.state
@@ -303,9 +294,9 @@ theorem disjoint_statesUnion {x : SatAtom} :
       exact (Disjoint_union_of_both h1.symm
               (disjoint_statesUnion h2).symm).symm
 
-/-- The assertion a reflected atom LIST denotes: the right-nested
-    separating conjunction of the atoms' assertions. Defeq to the
-    qedlift-rendered precondition at a concrete assignment. -/
+/-- The assertion a reflected atom LIST denotes: the right-nested separating
+    conjunction. Defeq to the qedlift-rendered precondition at a concrete
+    assignment. -/
 def interp : List SatAtom → Assertion
   | [] => emp
   | [x] => x.pred
@@ -316,27 +307,26 @@ theorem sat_sound : (atoms : List SatAtom) → satCheck atoms = true →
   | [], _ => rfl
   | [x], _ => x.pred_state
   | x :: y :: rest, h => by
-      -- `satCheck (x :: y :: rest)` is DEFEQ to the `&&`; avoid
-      -- `simp [satCheck]`, which would unfold the recursion all the way.
+      -- `satCheck (x :: y :: rest)` is DEFEQ to the `&&`; `simp [satCheck]`
+      -- would unfold the recursion all the way, so avoid it.
       have h' : ((y :: rest).all (pairOk x) && satCheck (y :: rest)) = true := h
       rw [Bool.and_eq_true] at h'
       exact ⟨x.state, statesUnion (y :: rest),
              disjoint_statesUnion h'.1, rfl,
              x.pred_state, sat_sound (y :: rest) h'.2⟩
 
-/-- The H8 vacuity gate: a `true` pairwise-disjointness check yields a
-    satisfying heap for the whole separating conjunction. qedlift emits
-    one application per lift; the elaborator's defeq check ties
-    `interp atoms` to the rendered precondition. -/
+/-- The H8 vacuity gate: a `true` pairwise-disjointness check yields a satisfying
+    heap for the whole sepConj. qedlift emits one per lift; the elaborator's defeq
+    check ties `interp atoms` to the rendered precondition. -/
 theorem sat_witness (atoms : List SatAtom) (h : satCheck atoms = true) :
     ∃ s, interp atoms s :=
   ⟨statesUnion atoms, sat_sound atoms h⟩
 
 /-! ## Shape self-tests
 
-These pin the defeq bridge `interp [..] =?= (rendered pre)` on each atom
-form the emitter produces (incl. `effectiveAddr`-shaped addresses, which
-must reduce against the reflected literal address). -/
+Pin the defeq bridge `interp [..] =?= (rendered pre)` on each atom form
+(incl. `effectiveAddr`-shaped addresses reducing against the reflected
+literal). -/
 
 open Memory in
 example : ∃ s,
@@ -351,9 +341,8 @@ open Memory in
 example : ∃ s, ((effectiveAddr 4096 0 + 2 ↦U16 9) ** (8192 ↦Bytes ByteArray.empty)) s :=
   sat_witness [.u16 4098 9, .bytes 8192 ByteArray.empty] (by native_decide)
 
-/-- Overlap really is rejected: two dword cells 4 bytes apart fail
-    `satCheck` (this is the H8 vacuity class, caught by `native_decide`
-    returning `false`). -/
+/-- Overlap is rejected: two dword cells 4 bytes apart fail `satCheck` (the H8
+    vacuity class). -/
 example : satCheck [.u64 4096 0, .u64 4100 0] = false := by native_decide
 
 end SatWitness

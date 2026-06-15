@@ -1,17 +1,10 @@
 -- The Solana System program — native, not BPF.
 --
--- Agave's System program implementation lives in
--- `programs/system/src/system_processor.rs`. It deserializes its
--- instruction from `ix.data` via bincode and dispatches on the
--- `SystemInstruction` enum discriminant (a u32 LE prefix).
---
--- The program-id is the all-zero pubkey (`11111111111111111111111111111111`),
--- so when its little-endian Nat encoding is computed by the Runner's
--- CPI arm it lands at `0`. Native.dispatch keys on this.
---
--- All 13 SystemInstruction variants are modeled here. Coverage is
--- driven by agave's actual semantics, not by what existing fixtures
--- happen to exercise — see [[feedback-project-charter]].
+-- Mirrors agave's `programs/system/src/system_processor.rs`: bincode-decode
+-- `ix.data` and dispatch on the `SystemInstruction` u32 LE discriminant.
+-- Program-id is the all-zero pubkey, so its LE Nat encoding is `0`;
+-- Native.dispatch keys on this. All 13 variants are modeled per agave
+-- semantics (not fixture coverage), see [[feedback-project-charter]].
 
 import SVM.Native.AcctInput
 import SVM.SBPF.Machine
@@ -23,25 +16,17 @@ open SVM.SBPF.Memory
 open SVM.SBPF (writeBytes)
 open SVM.Native
 
-/-- The all-zero pubkey, encoded little-endian as a `Nat`. The CPI
-    handler reads the 32-byte program-id from caller memory the same
-    way, so equality matches under this encoding. -/
+/-- The all-zero pubkey as a LE `Nat`; the CPI handler reads the program-id the same way. -/
 def PROGRAM_ID : Nat := 0
 
-/-- Per-instruction compute cost. Agave charges
-    `solana_system_program_compute_cost = 150` for every System
-    invocation (`solana-compute-budget/src/compute_budget.rs`).
-    Per-discriminant variance only kicks in for the seed-based
-    variants (which charge an extra sha256 cost); the simple
-    Transfer / Assign / Allocate / CreateAccount paths all bottom
-    out at 150. -/
+/-- Per-instruction cost: agave's `solana_system_program_compute_cost = 150`
+    for every System invocation. (Seed variants charge an extra sha256 cost
+    in agave; we flatten to 150.) -/
 def CU_DEFAULT : Nat := 150
 
 /-! ## SystemInstruction discriminants
 
-Mirrors agave's `solana_system_interface::SystemInstruction` enum,
-field-for-field. All 13 variants are decoded; each has its own
-arm in `dispatch` below. -/
+Mirrors agave's `solana_system_interface::SystemInstruction`, field-for-field. -/
 
 inductive SystemIx
   /-- `CreateAccount { lamports, space, owner }`. Discriminant 0. -/
@@ -82,11 +67,8 @@ inductive SystemIx
 
 /-! ## Wire decode
 
-`ix.data` is bincode-encoded: a u32 LE discriminant followed by the
-payload. We read fields directly from the `ByteArray` rather than
-going through a generic bincode layer; the inputs are small (≤80B
-for the largest System variant) so the explicit reads are clearer
-than a serializer. -/
+`ix.data` is bincode: u32 LE discriminant + payload. Read directly from
+the `ByteArray` (inputs are ≤80B, so explicit reads beat a serializer). -/
 
 /-- Read a u32 LE at offset `off` in `bs`. Returns 0 past the end. -/
 private def readU32LE (bs : ByteArray) (off : Nat) : Nat :=
@@ -194,20 +176,14 @@ def decode (ixData : ByteArray) : SystemIx :=
 
 /-! ## Execution -/
 
-/-- 64-bit modulus, mirroring `Memory.U64_MODULUS`. Used to clamp the
-    post-transfer lamports against u64 overflow on the destination
-    (agave returns `SystemError::ResultWithNegativeLamports` instead;
-    we return r0=1 on both underflow and overflow). -/
+/-- 64-bit modulus. Clamps post-transfer lamports against u64 overflow;
+    agave returns `ResultWithNegativeLamports`, we return r0=1. -/
 private def U64_MODULUS : Nat := 0x10000000000000000
 
-/-- MAX_PERMITTED_DATA_LENGTH from agave (and mirrored in
-    `blueshift/sbpf/crates/runtime/src/cpi/builtins/system.rs:13`).
-    System refuses to create or grow an account past 10 MiB. -/
+/-- MAX_PERMITTED_DATA_LENGTH from agave: 10 MiB cap on create/grow. -/
 private def MAX_PERMITTED_DATA_LENGTH : Nat := 10 * 1024 * 1024
 
-/-- The all-zero System program pubkey (32 bytes). Used as the
-    "owner = System" check for `CreateAccount`'s
-    "is-this-account-uninitialized" gate. -/
+/-- "owner = System" check (all-zero 32-byte pubkey) for the uninitialized-account gate. -/
 private def isSystemOwner (b : ByteArray) : Bool :=
   b.size = 32 && (List.range 32).all (fun i => b.get! i = 0)
 
@@ -218,13 +194,10 @@ def execTransfer (mem : Mem) (accts : List AcctInput) (lamports : Nat) :
     NativeResult :=
   match accts with
   | fromAcct :: toAcct :: _ =>
-    -- Agave checks: from is signer, both writable, from.owner = System,
-    -- from.lamports ≥ lamports, no overflow on to. We surface a
-    -- single failure code (r0 := 1) for any of these; specific
-    -- `SystemError` mapping is a follow-up. (H9: the writable + owner
-    -- gates were previously missing — agave rejects a transfer debiting a
-    -- non-System-owned or read-only account: `ExternalAccountLamportSpend`
-    -- / `ReadonlyLamportChange`. See docs/SOUNDNESS_AUDIT_* (H9).)
+    -- agave checks: from signer, both writable, from.owner = System,
+    -- from.lamports ≥ lamports, no overflow on to. Any failure → r0 := 1.
+    -- H9: the writable + owner gates were previously missing (agave rejects
+    -- debiting a non-System-owned or read-only account). See SOUNDNESS_AUDIT_* (H9).
     if !fromAcct.isSigner then
       ⟨mem, 1, CU_DEFAULT⟩
     else if !fromAcct.isWritable || !toAcct.isWritable then
@@ -243,25 +216,11 @@ def execTransfer (mem : Mem) (accts : List AcctInput) (lamports : Nat) :
       ⟨m2, 0, CU_DEFAULT⟩
   | _ => ⟨mem, 1, CU_DEFAULT⟩  -- not enough accounts
 
-/-- Execute `CreateAccount { lamports, space, owner }`. Two accounts:
-    `from` (signer, writable, funds source) and `to` (signer,
-    writable, must be uninitialized).
-
-    Agave checks:
-    - both signers,
-    - `to` looks uninitialized: `data.is_empty() ∧ lamports == 0 ∧
-      owner == System`,
-    - `from.lamports ≥ lamports`,
-    - `space ≤ MAX_PERMITTED_DATA_LENGTH`.
-
-    Effects:
-    - `from.lamports -= lamports`, `to.lamports += lamports`,
-    - `to.dataLen := space` (new bytes are zero — the caller's
-      MAX_PERMITTED_DATA_INCREASE pad already covers it),
-    - `to.owner := newOwner`.
-
-    Returns `r0 := 1` on any check failure, otherwise the mutated
-    memory + `r0 := 0` + `CU_DEFAULT`. -/
+/-- Execute `CreateAccount { lamports, space, owner }`. Accounts: `from`
+    (signer, funds), `to` (signer, must be uninitialized: empty data,
+    0 lamports, system-owned). Checks `from.lamports ≥ lamports` and
+    `space ≤ MAX_PERMITTED_DATA_LENGTH`; moves lamports, sets
+    `to.dataLen := space` and `to.owner := newOwner`. -/
 def execCreateAccount (mem : Mem) (accts : List AcctInput)
     (lamports space : Nat) (newOwner : ByteArray) : NativeResult :=
   match accts with
@@ -278,26 +237,18 @@ def execCreateAccount (mem : Mem) (accts : List AcctInput)
       let newTo   := lamports                       -- to was 0
       let m1 := writeU64 mem fromAcct.lamportsRefAddr newFrom
       let m2 := writeU64 m1 toAcct.lamportsRefAddr newTo
-      -- Update the BPF program's Rc-chain length (so subsequent
-      -- in-program AccountInfo accesses see the new size).
+      -- Rc-chain length (in-program AccountInfo view).
       let m3 := writeU64 m2 toAcct.dataLenRefAddr space
-      -- Also update the *serialized* `data_len` slot in the input
-      -- buffer (8 bytes before `dataPtr` per `serialize_parameters`
-      -- block layout). This is what `deserialize_account_writes`
-      -- reads when reconstructing the post-state, so without this
-      -- write the harness sees `data.len() == 0` even though the
-      -- BPF program would see the right size.
+      -- Serialized data_len slot (dataPtr-8); `deserialize_account_writes`
+      -- reads this for the post-state, else the harness sees len 0.
       let m4 := writeU64 m3 (toAcct.dataPtr - 8) space
       let m5 := writeBytes m4 toAcct.ownerPtr 32 newOwner
       ⟨m5, 0, CU_DEFAULT⟩
   | _ => ⟨mem, 1, CU_DEFAULT⟩
 
-/-- Execute `Allocate { space }`. One account: `acct` (signer,
-    writable, must be uninitialized: empty data, system-owned).
-    Sets `acct.dataLen := space` in both the Rc-chain slot and the
-    input-buffer slot (8 bytes before `dataPtr`). The MAX_PERMITTED
-    pad already covers the new bytes (pre-zeroed). Lamports and
-    owner are untouched. -/
+/-- Execute `Allocate { space }`. One account (signer, uninitialized:
+    empty data, system-owned). Sets `dataLen := space` in both the
+    Rc-chain and input-buffer (dataPtr-8) slots; lamports/owner untouched. -/
 def execAllocate (mem : Mem) (accts : List AcctInput) (space : Nat) :
     NativeResult :=
   match accts with
@@ -312,22 +263,14 @@ def execAllocate (mem : Mem) (accts : List AcctInput) (space : Nat) :
       ⟨m2, 0, CU_DEFAULT⟩
   | _ => ⟨mem, 1, CU_DEFAULT⟩
 
-/-- Execute `Assign { owner }`. One account: `acct` (signer,
-    writable). Overwrites `acct.owner` with the 32-byte `newOwner`
-    pubkey via `ownerPtr`. Lamports and data are untouched.
-
-    Note: agave is permissive about the current owner — even a
-    non-system-owned account can re-assign to a different owner if
-    it's a signer (programs commonly use this to hand off accounts
-    they created). -/
+/-- Execute `Assign { owner }`. One account (writable signer, currently
+    System-owned). Overwrites `acct.owner` via `ownerPtr`; lamports/data untouched. -/
 def execAssign (mem : Mem) (accts : List AcctInput) (newOwner : ByteArray) :
     NativeResult :=
   match accts with
   | acct :: _ =>
-    -- H9: agave's `Assign` requires the account to be a (writable)
-    -- signer AND currently owned by the System program — you cannot
-    -- reassign an account another program owns. The owner gate was
-    -- previously missing. See docs/SOUNDNESS_AUDIT_* (H9/M4-account).
+    -- H9: agave's `Assign` requires a writable signer currently owned by
+    -- System; the owner gate was previously missing. See SOUNDNESS_AUDIT_* (H9/M4-account).
     if !acct.isSigner then ⟨mem, 1, CU_DEFAULT⟩
     else if !acct.isWritable then ⟨mem, 1, CU_DEFAULT⟩
     else if !isSystemOwner acct.owner then ⟨mem, 1, CU_DEFAULT⟩
@@ -338,12 +281,9 @@ def execAssign (mem : Mem) (accts : List AcctInput) (newOwner : ByteArray) :
 
 /-! ## With-seed variants
 
-`Pubkey::create_with_seed(base, seed, owner) = SHA256(base ‖ seed ‖
-owner)`. Same primitive as PDA derivation but *without* the bump
-search and the on-curve check — `create_with_seed` is allowed to
-land on a valid ed25519 point, since the base account is what
-actually signs. agave's check is just `seed.len() ≤ MAX_SEED_LEN
-(32)` and an equality test against the pre-derived address. -/
+`create_with_seed(base, seed, owner) = SHA256(base ‖ seed ‖ owner)`. Like
+PDA derivation but without the bump search / on-curve check (the base
+account signs). agave checks `seed.len() ≤ 32` + address equality. -/
 
 /-- Compose `base ‖ seed ‖ owner` and SHA-256 it. -/
 private def deriveWithSeed (base seed owner : ByteArray) : ByteArray :=
@@ -357,13 +297,9 @@ private def pubkeyEq (a b : ByteArray) : Bool :=
     `MaxSeedLengthExceeded` for `seed.len() > 32`. -/
 private def MAX_SEED_LEN : Nat := 32
 
-/-- Execute `CreateAccountWithSeed`. The new account (`accts[1]`) is
-    NOT a signer of the transaction — instead its address is verified
-    to equal `SHA256(base ‖ seed ‖ owner)`, and the base account
-    (`accts[2]`) is the signer that authorizes the derivation.
-    `accts[0]` is the funding `from`, same as the non-seed variant.
-
-    Mirrors `blueshift/sbpf/crates/runtime/src/cpi/builtins/system.rs::create_account_with_seed`. -/
+/-- Execute `CreateAccountWithSeed`. The new account (`accts[1]`) isn't a
+    signer; its address must equal `SHA256(base ‖ seed ‖ owner)`, and the
+    base (`accts[2]`) is the signer authorizing it. `accts[0]` funds it. -/
 def execCreateAccountWithSeed (mem : Mem) (accts : List AcctInput)
     (base seed : ByteArray) (lamports space : Nat) (newOwner : ByteArray) :
     NativeResult :=
@@ -391,11 +327,9 @@ def execCreateAccountWithSeed (mem : Mem) (accts : List AcctInput)
         ⟨m5, 0, CU_DEFAULT⟩
     | _ => ⟨mem, 1, CU_DEFAULT⟩
 
-/-- Execute `AllocateWithSeed`. Two accounts: the derived address
-    (`accts[0]`, NOT signer) and the base (`accts[1]`, signer that
-    authorizes the operation). Allocates `space` bytes AND reassigns
-    the owner (agave's allocate_with_seed does both, see
-    `blueshift/.../system.rs:374-376`). -/
+/-- Execute `AllocateWithSeed`. Accounts: derived address (`accts[0]`, not
+    signer), base (`accts[1]`, signer). Allocates `space` AND reassigns the
+    owner (agave's allocate_with_seed does both). -/
 def execAllocateWithSeed (mem : Mem) (accts : List AcctInput)
     (base seed : ByteArray) (space : Nat) (newOwner : ByteArray) :
     NativeResult :=
@@ -433,10 +367,8 @@ def execAssignWithSeed (mem : Mem) (accts : List AcctInput)
         ⟨m, 0, CU_DEFAULT⟩
     | _ => ⟨mem, 1, CU_DEFAULT⟩
 
-/-- Execute `TransferWithSeed`. Three accounts: `from` (writable,
-    must be derived from base+seed+from_owner), `base` (signer,
-    funds the signature), `to` (writable). Lamports move from
-    `from` to `to` like a regular transfer. -/
+/-- Execute `TransferWithSeed`. Accounts: `from` (must derive from
+    base+seed+from_owner), `base` (signer), `to`. Lamports move from `from` to `to`. -/
 def execTransferWithSeed (mem : Mem) (accts : List AcctInput)
     (lamports : Nat) (fromSeed fromOwner : ByteArray) : NativeResult :=
   if fromSeed.size > MAX_SEED_LEN then ⟨mem, 1, CU_DEFAULT⟩
@@ -458,10 +390,8 @@ def execTransferWithSeed (mem : Mem) (accts : List AcctInput)
 
 /-! ## Nonce-account variants
 
-Durable nonces are pre-priority-fees-era machinery that let
-transactions live beyond a recent-blockhash window by carrying a
-"nonce" the runtime advances after each use. The on-chain account
-stores a versioned `NonceState`:
+Durable-nonce machinery. The on-chain account stores a versioned
+`NonceState`:
 
 ```
 struct NonceVersions {
@@ -476,25 +406,16 @@ struct Initialized {
 }
 ```
 
-Serialized size: 4 (version) + 4 (variant tag for `state`) + 32
-(authority) + 32 (nonce) + 8 (fee) = 80 bytes total.
+Serialized size: 4 + 4 + 32 + 32 + 8 = 80 bytes.
 
-State-machine: `Uninitialized → Initialized` via
-`InitializeNonceAccount`. `Initialized → Initialized` via
-`AdvanceNonceAccount` (rotates `durable_nonce` to the recent
-blockhash), `AuthorizeNonceAccount` (rotates `authority`), or
-`WithdrawNonceAccount` (lamports out — restricted to fully-funded
-withdrawals to keep rent-exempt unless emptying entirely).
+State machine: Init via `InitializeNonceAccount`; once Initialized,
+`AdvanceNonceAccount` rotates `durable_nonce`, `AuthorizeNonceAccount`
+rotates `authority`, `WithdrawNonceAccount` moves lamports out.
+`UpgradeNonceAccount` (v0→v1) is a no-op since we only model v1.
 
-`UpgradeNonceAccount` is a v0→v1 migration we treat as a no-op
-since qedsvm only models v1.
-
-For `AdvanceNonceAccount` / `InitializeNonceAccount` we need a
-"current blockhash" — agave reads `RecentBlockhashes` sysvar
-account (deprecated but still threaded through this code path).
-We model that as a fixed 32-byte value (`RECENT_BLOCKHASH_STUB`)
-since qedsvm is per-instruction; mollusk's default supplies
-the same stub, so cross-engine equality holds. -/
+The "current blockhash" (agave reads the `RecentBlockhashes` sysvar) is
+modeled as a fixed `RECENT_BLOCKHASH_STUB`; mollusk's default matches it,
+so cross-engine equality holds. -/
 
 /-- Per-account nonce-data offsets within the account's `data` buffer
     (which lives at `acct.dataPtr` in caller memory). -/
@@ -508,9 +429,7 @@ private def NONCE_TOTAL_SIZE         : Nat := 80
 private def NONCE_VERSION_V1     : Nat := 1
 private def NONCE_STATE_INIT     : Nat := 1
 
-/-- Stub blockhash for AdvanceNonce / InitializeNonce. Agave reads the
-    `RecentBlockhashes` sysvar; we don't track block boundaries, so
-    we use a single fixed 32-byte value. -/
+/-- Fixed stub blockhash (we don't track block boundaries; agave reads the sysvar). -/
 private def RECENT_BLOCKHASH_STUB : ByteArray :=
   ⟨((List.range 32).map (fun _ => (0 : UInt8))).toArray⟩
 
@@ -539,8 +458,7 @@ private def readNonceStateTag (mem : Mem) (dataPtr : Nat) : Nat :=
 private def readNonceAuthority (mem : Mem) (dataPtr : Nat) : ByteArray :=
   SVM.SBPF.readBytes mem (dataPtr + NONCE_AUTHORITY_OFFSET) 32
 
-/-- Write a u32 LE at `addr`. Helper since most state fields are u32
-    headers. -/
+/-- Write a u32 LE at `addr`. -/
 private def writeU32 (mem : Mem) (addr v : Nat) : Mem :=
   fun a =>
     if a = addr     then v % 0x100
@@ -563,13 +481,8 @@ def execAuthorizeNonceAccount (mem : Mem) (accts : List AcctInput)
         ⟨mem, 1, CU_DEFAULT⟩
       else
         let curAuth := readNonceAuthority mem acct.dataPtr
-        -- Agave requires the *current authority* to be a signer of
-        -- this transaction. We approximate by requiring `acct.isSigner`
-        -- AND `acct.key == curAuth` — the nonce account itself can be
-        -- the authority for self-authorized nonces. For cases where
-        -- the authority is a separate pubkey, the caller must pass
-        -- that account as a signer; we surface the failure when
-        -- `acct` isn't both writable and signer.
+        -- agave requires the current authority to sign. We approximate as
+        -- `acct.isSigner ∧ acct.key == curAuth` (self-authorized nonce).
         if !acct.isSigner then ⟨mem, 1, CU_DEFAULT⟩
         else if !pubkeyEq acct.key curAuth then ⟨mem, 1, CU_DEFAULT⟩
         else
@@ -620,15 +533,9 @@ def execAdvanceNonceAccount (mem : Mem) (accts : List AcctInput) :
           ⟨m, 0, CU_DEFAULT⟩
   | _ => ⟨mem, 1, CU_DEFAULT⟩
 
-/-- Execute `WithdrawNonceAccount(lamports)`. Two accounts: nonce
-    account (writable, authority signs) and recipient (writable).
-    Moves lamports out. For partial withdrawals the nonce account
-    must remain rent-exempt; for full withdrawals (`lamports ==
-    nonce.lamports`) we wipe the nonce account back to
-    Uninitialized. We don't model Rent here — agave's check is
-    `remaining < rent_exempt_minimum(80) → fail`; without Rent
-    plumbing we just require either `lamports < nonce.lamports`
-    (no rent check) or full drain. -/
+/-- Execute `WithdrawNonceAccount(lamports)`. Accounts: nonce (signs),
+    recipient. Moves lamports out; full drain wipes the account back to
+    Uninitialized. We don't model Rent (agave's rent-exempt-minimum check). -/
 def execWithdrawNonceAccount (mem : Mem) (accts : List AcctInput)
     (lamports : Nat) : NativeResult :=
   match accts with
@@ -648,10 +555,8 @@ def execWithdrawNonceAccount (mem : Mem) (accts : List AcctInput)
       ⟨m3, 0, CU_DEFAULT⟩
   | _ => ⟨mem, 1, CU_DEFAULT⟩
 
-/-- Execute `UpgradeNonceAccount`. agave migrates v0 → v1 nonce
-    accounts here; qedsvm only models v1, so this is a no-op
-    when the account is already v1, and a failure for legacy v0
-    (we don't model it). -/
+/-- Execute `UpgradeNonceAccount`. We only model v1: no-op if already v1,
+    fail for legacy v0. -/
 def execUpgradeNonceAccount (mem : Mem) (accts : List AcctInput) :
     NativeResult :=
   match accts with
@@ -663,11 +568,9 @@ def execUpgradeNonceAccount (mem : Mem) (accts : List AcctInput) :
       else ⟨mem, 1, CU_DEFAULT⟩
   | _ => ⟨mem, 1, CU_DEFAULT⟩
 
-/-- Top-level System dispatcher. Decodes `ixData` and routes. Returns
-    `some result` so the CPI handler knows native dispatch consumed
-    the call; unimplemented variants still return `some` with `r0=1`
-    so the failure surfaces deterministically rather than silently
-    falling back to the BPF registry. -/
+/-- Top-level System dispatcher. Always returns `some` (so native dispatch
+    consumes the call); unknown variants return `r0=1` instead of falling
+    through to the BPF registry. -/
 def dispatch (ixData : ByteArray) (accts : List AcctInput) (mem : Mem) :
     Option NativeResult :=
   match decode ixData with
@@ -689,9 +592,7 @@ def dispatch (ixData : ByteArray) (accts : List AcctInput) (mem : Mem) :
     some (execTransferWithSeed mem accts lamports fromSeed fromOwner)
   | .upgradeNonceAccount                => some (execUpgradeNonceAccount mem accts)
   | .unknown _ =>
-    -- Truly unknown discriminant (forward-compat: agave adds a new
-    -- variant we haven't modeled yet). Surfaces as a deterministic
-    -- failure rather than falling through to the BPF registry.
+    -- Unknown discriminant: deterministic failure, no fall-through.
     some ⟨mem, 1, CU_DEFAULT⟩
 
 end SVM.Native.System

@@ -30,19 +30,13 @@ fn minimal_noop_program_runs() {
 
 #[test]
 fn solana_program_entrypoint_noop_runs() {
-    // The 18KB cargo-build-sbf output of a noop using
-    // `solana_program::entrypoint!`. Exercises the full BPF input
-    // buffer deserialization path that real on-chain programs use.
-    let program_id = pid(2);
+    let program_id = pid(2); // 18KB cargo-build-sbf noop; exercises full BPF input buffer deserialization
     let mut svm = Svm::default();
     svm.add_program(&program_id, SOLANA_NOOP_SO);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
     println!("solana_noop.so: program_result={:?} cu={}",
         result.program_result, result.compute_units_consumed);
-    // The bar for success here is *not* OOG and not ELF decode failure
-    // — a sign that qedsvm's loader/decoder accept the real
-    // cargo-build-sbf output.
     assert!(matches!(result.program_result,
         ProgramResult::Success | ProgramResult::Failure { .. }
     ), "got OOG on cargo-build-sbf noop");

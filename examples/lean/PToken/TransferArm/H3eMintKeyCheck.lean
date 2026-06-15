@@ -1,37 +1,7 @@
 /-
-  Layer 3b artifact (happy-path chain, H3e): Hoare triple over the
-  next 12 instructions of the p-token Transfer main body at bytes
-  0x87b8-0x8810 of `qedsvm-rs/tests/fixtures/p_token.so`.
-
-  Continues H3d. Four (mint-word, src-word, jne-not-taken) triples
-  enforce that the source account's mint pubkey matches the canonical
-  mint key from the input layout. The 32-byte pubkey is split into
-  4 u64 words; each pair must be equal.
-
-  The 12 instructions:
-
-  ```
-  87b8: 79 15 68 29 ...   ldxdw r5, [r1 + 0x2968]   ← mint word 1
-  87c0: 79 10 60 00 ...   ldxdw r0, [r1 + 0x60]     ← src  word 1
-  87c8: 5d 50 ff 02 ...   jne   r0, r5, +0x2ff      ← NOT taken (= mint1)
-  87d0: 79 15 70 29 ...   ldxdw r5, [r1 + 0x2970]   ← mint word 2
-  87d8: 79 10 68 00 ...   ldxdw r0, [r1 + 0x68]     ← src  word 2
-  87e0: 5d 50 fc 02 ...   jne   r0, r5, +0x2fc      ← NOT taken
-  87e8: 79 15 78 29 ...   ldxdw r5, [r1 + 0x2978]   ← mint word 3
-  87f0: 79 10 70 00 ...   ldxdw r0, [r1 + 0x70]     ← src  word 3
-  87f8: 5d 50 f9 02 ...   jne   r0, r5, +0x2f9      ← NOT taken
-  8800: 79 15 80 29 ...   ldxdw r5, [r1 + 0x2980]   ← mint word 4
-  8808: 79 10 78 00 ...   ldxdw r0, [r1 + 0x78]     ← src  word 4
-  8810: 5d 50 f6 02 ...   jne   r0, r5, +0x2f6      ← NOT taken
-  ```
-
-  Spec: 12 CU advancing PC 0 → 12. Post:
-  - r0 := mint4 (last loaded src word = last loaded mint word)
-  - r5 := mint4
-  - r1, r2, r3, r6, r7 unchanged
-  - 8 mem cells preserved.
-
-  4 if-collapses (all jne-reg-not-taken under mintN = srcN).
+  Layer 3b H3e: 12 CU triple (bytes 0x87b8-0x8810, p_token.so).
+  Validates source account mint = canonical mint, word-by-word (4×u64, 4 jne-NT collapses).
+  Post: r0=src4, r5=mint4, 8 cells preserved.
 -/
 
 import PToken.TransferArm.H3dBalanceCheck
@@ -110,7 +80,6 @@ theorem p_token_transfer_arm_h3e_spec
   have h9  := ldxdw_spec .r5 .r1 0x2980 mint3 initR1 mint4 (base + 9)  (by decide) h_m4_lt
   have h10 := ldxdw_spec .r0 .r1 0x78   src3  initR1 src4  (base + 10) (by decide) h_s4_lt
   have h11 := jne_reg_spec .r0 .r5 src4 mint4 (base + 11) h3eErrPc
-  -- Collapse each jne under srcN = mintN.
   rw [show (if src1 ≠ mint1 then h3eErrPc else (base + 2) + 1) = base + 3 from by
         rw [h_eq1]; simp] at h2
   rw [show (if src2 ≠ mint2 then h3eErrPc else (base + 5) + 1) = base + 6 from by

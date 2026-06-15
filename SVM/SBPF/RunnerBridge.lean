@@ -2,14 +2,10 @@
   Bridge from the spec-level stepper (`executeFn`) to the runtime stepper
   (`Runner.executeFnCpi`) used by `Runner.run`.
 
-  Why: `cuTripleWithin` is stated in terms of `executeFn fetch s k`. The
-  actual `Runner.run` entrypoint uses `Runner.executeFnCpi` to additionally
-  handle cross-program-invocation (the two `sol_invoke_signed*` syscalls).
-  For any program whose decoded instruction stream contains no CPI-call,
-  the two steppers coincide; this file proves exactly that.
-
-  Closes the "spec-level stepper ≠ runtime stepper" half of the decode →
-  spec wiring gap.
+  `cuTripleWithin` is stated over `executeFn`, but `Runner.run` uses
+  `executeFnCpi` to additionally handle CPI (the two `sol_invoke_signed*`).
+  For a program with no CPI-call the two coincide; this file proves that,
+  closing the "spec-level stepper ≠ runtime stepper" half of the decode→spec gap.
 -/
 
 import SVM.SBPF.Runner
@@ -25,19 +21,14 @@ def Insn.isCpiCall : Insn → Bool
   | _                          => false
 
 -- `Insn.isCallLocal`, `execTryFind_preserves_callStack`, and
--- `execSyscall_preserves_callStack` live in `Execute.lean` (moved
--- there for the conditional r10 lemmas, issue #32 item 4 — same
--- precedent as `commitOptional_preserves_callStack` in `Machine.lean`).
+-- `execSyscall_preserves_callStack` live in `Execute.lean` (with the
+-- conditional r10 lemmas, issue #32 item 4).
 
 namespace Runner
 
 /-- The per-instruction step body of `executeFnCpiWithFuel` collapses to
-    `step insn s` whenever the fetched instruction is not a CPI-call.
-
-    This is the workhorse case lemma; `executeFnCpi_eq_executeFn_of_no_cpi`
-    inducts on fuel and invokes it at each step. The case split on `insn`
-    has small per-arm bodies thanks to the `cpiCallNextState` extraction
-    in `Runner.lean`. -/
+    `step insn s` for a non-CPI instruction. Workhorse case lemma;
+    `executeFnCpi_eq_executeFn_of_no_cpi` inducts on fuel invoking it per step. -/
 private theorem stepBody_eq_step_of_noCpi
     {registry : Nat → Option ByteArray} {s : State} {insn : Insn} {fuel' : Nat}
     {runCallee₁ runCallee₂ : ByteArray → Option (State × Memory.Mem × Nat)}
@@ -53,19 +44,15 @@ private theorem stepBody_eq_step_of_noCpi
   | _ => rfl
 
 set_option maxHeartbeats 1600000 in
-/-- `executeFnCpi ≡ executeFn` on programs that never invoke CPI.
-
-    Concretely: if the fetch function never produces an instruction that
-    triggers the CPI-call arm of `executeFnCpiWithFuel`, then running for
-    any amount of fuel under `executeFnCpi` produces the same final state
-    as running under the pure `executeFn` stepper that `cuTripleWithin`
-    reasons about. -/
+/-- `executeFnCpi ≡ executeFn` on programs that never invoke CPI: if `fetch`
+    never yields a CPI-call, running any fuel under `executeFnCpi` gives the
+    same final state as the pure `executeFn` `cuTripleWithin` reasons about. -/
 theorem executeFnCpi_eq_executeFn_of_no_cpi
     (registry : Nat → Option ByteArray) (fetch : Nat → Option Insn)
     (s : State) (fuel : Nat)
     (h : ∀ a i, fetch a = some i → Insn.isCpiCall i = false) :
     executeFnCpi registry fetch s fuel = executeFn fetch s fuel := by
-  -- Strengthen to the `.1` form of the WithFuel stepper so we can induct.
+  -- strengthen to the `.1` form of the WithFuel stepper to induct
   suffices hAux : ∀ (s : State) (fuel : Nat),
       (executeFnCpiWithFuel registry fetch s fuel).1 = executeFn fetch s fuel by
     show (executeFnCpiWithFuel registry fetch s fuel).1 = _
@@ -73,9 +60,7 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
   clear s fuel
   intro s fuel
   induction fuel generalizing s with
-  | zero =>
-    -- Both definitions return `s` at fuel = 0.
-    rfl
+  | zero => rfl  -- both return `s` at fuel = 0
   | succ fuel' ih =>
     show (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 = executeFn fetch s (fuel' + 1)
     cases hex : s.exitCode with
@@ -121,11 +106,8 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
           rw [hlhs, hrhs]
           exact ih (chargeCu (step insn s))
 
-/-- Lift a "for all members of an Array Insn" property to a "for all
-    fetch lookups" property. Used to discharge the fetch-form
-    hypotheses in `executeFnCpi_eq_executeFn_of_no_cpi`,
-    `executeFn_callStack_empty`, etc. from a simpler
-    `∀ i ∈ insns, ...` premise. -/
+/-- Lift `∀ i ∈ insns, P i = false` to a "for all fetch lookups" form, to
+    discharge the fetch-form hypotheses of the bridge theorems. -/
 theorem fetchFromArray_property_of_mem
     {insns : Array Insn} {P : Insn → Bool}
     (h : ∀ i, i ∈ insns → P i = false) :
@@ -137,9 +119,8 @@ theorem fetchFromArray_property_of_mem
     exact h i (Array.mem_iff_getElem.mpr ⟨a, hbnd, hfetch⟩)
   · simp [hbnd] at hfetch
 
-/-- Convenience corollary specialized to `fetchFromArray`. The hypothesis
-    becomes a property of the concrete instruction array — discharged
-    by `decide` once the array is a closed literal. -/
+/-- `fetchFromArray` corollary; the hypothesis becomes a property of the
+    concrete array, discharged by `decide` on a closed literal. -/
 theorem executeFnCpi_eq_executeFn_of_no_cpi_array
     (registry : Nat → Option ByteArray) (insns : Array Insn)
     (s : State) (fuel : Nat)
@@ -151,20 +132,13 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi_array
 
 /-! ## callStack-empty invariant
 
-The `.exit` instruction halts *only* when `s.callStack = []`. With a
-non-empty `callStack` it pops the top frame and continues execution.
-The demos rely on the halting behavior, so we prove that — under the
-hypothesis that no `.call_local` (the only push) is fetched along the
-way — `callStack = []` is preserved throughout the trace. -/
+`.exit` halts *only* when `s.callStack = []` (otherwise it pops a frame and
+continues). The demos rely on halting, so we prove `callStack = []` is preserved
+along any trace that never fetches a `.call_local` (the only push). -/
 
-/-- One-step preservation. For any instruction that's neither
-    `.call_local` (which would push) nor a CPI-call (which routes
-    through `executeFnCpiWithFuel`'s body, not `step`), `step insn s`
-    keeps `s.callStack = []` intact.
-
-    Most cases are trivial record updates that don't mention
-    `callStack`; the `.exit` arm depends on `h_cs` to take the halt
-    branch; the `.call syscall` arm routes through
+/-- One-step preservation: for any non-`.call_local` instruction, `step insn s`
+    keeps `s.callStack = []`. Most arms don't mention `callStack`; `.exit` uses
+    `h_cs` to take the halt branch; `.call syscall` routes through
     `execSyscall_preserves_callStack`. -/
 theorem step_callStack_empty_preserved (insn : Insn) (s : State)
     (h_cs : s.callStack = [])
@@ -173,26 +147,21 @@ theorem step_callStack_empty_preserved (insn : Insn) (s : State)
   cases insn with
   | call_local _ => simp [Insn.isCallLocal] at h_ncl
   | exit =>
-    -- step .exit with callStack=[] takes the halt arm:
-    -- { s with exitCode := some _ }.callStack = s.callStack = []
+    -- callStack=[] takes the halt arm
     simp only [step, h_cs]
   | call sc =>
-    -- step .call syscall = { (execSyscall sc s) with pc := _, cuConsumed := _ }
-    -- callStack = (execSyscall sc s).callStack = s.callStack = []
+    -- routes callStack through execSyscall (= s.callStack = [])
     simp only [step, execSyscall_preserves_callStack]
     exact h_cs
   | _ =>
-    -- All remaining arms are record updates that don't set callStack,
-    -- so the result's callStack reduces (via field projection) to
-    -- s.callStack, which is [] by h_cs.
+    -- remaining arms don't set callStack → reduces to s.callStack = [] by h_cs
     first
     | exact h_cs
     | (simp only [step]; exact h_cs)
     | (simp only [step]; split <;> exact h_cs)
 
-/-- Trace invariant: under no-`.call_local` non-CPI fetch from an
-    initial `callStack = []` state, `executeFn` keeps `callStack`
-    empty for any fuel. -/
+/-- Trace invariant: from `callStack = []` under no-`.call_local` fetch,
+    `executeFn` keeps `callStack` empty for any fuel. -/
 theorem executeFn_callStack_empty (fetch : Nat → Option Insn) (s : State) (k : Nat)
     (h_cs : s.callStack = [])
     (h_safe : ∀ a i, fetch a = some i → Insn.isCallLocal i = false) :
@@ -217,21 +186,13 @@ theorem executeFn_callStack_empty (fetch : Nat → Option Insn) (s : State) (k :
 
 /-! ## End-to-end soundness: cuTripleWithin lifts to Runner.run
 
-These are the headline theorems of this file. Together with
-`executeFnCpi_eq_executeFn_of_no_cpi_array`, they say: if you've
-proved a `cuTripleWithin` over the decoded instruction array of a
-bytecode, the same property holds for the actual bytes when executed
-by `Runner.run`. -/
+Headline theorems: a `cuTripleWithin` proven over the decoded instruction array
+holds for the actual bytes under `Runner.run`. -/
 
-/-- **Form A (witness):** A `cuTripleWithin` proven over a decoded
-    instruction array produces a k-step witness state inside the
-    pure-`executeFn` trace launched from `Runner.initialState cfg`,
-    where the post-assertion `Q` holds.
-
-    The witness is in terms of `executeFn`, not `Runner.run`, because
-    `cuTripleWithin` only constrains the trace up to step k. To
-    conclude about `run`'s output state, use `run_terminates_with_spec`
-    below (it requires the spec to land on an `Insn.exit`). -/
+/-- **Form A (witness):** a `cuTripleWithin` over a decoded array yields a k-step
+    witness state in the `executeFn` trace from `initialState cfg` where `Q`
+    holds. In `executeFn` (not `Runner.run`) terms since the triple only
+    constrains up to step k; for `run`'s output use `run_terminates_with_spec`. -/
 theorem run_reaches_spec
     {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
     (insns : Array Insn) (cfg : RunConfig)
@@ -244,7 +205,7 @@ theorem run_reaches_spec
       (executeFn (fetchFromArray insns) (initialState cfg) k).exitCode = none ∧
       Q.holdsFor (executeFn (fetchFromArray insns) (initialState cfg) k) ∧
       (executeFn (fetchFromArray insns) (initialState cfg) k).cuConsumed ≤ N := by
-  -- Instantiate the triple with R = emp; coerce P ⇔ P ** emp on holdsFor.
+  -- instantiate the triple with R = emp; coerce P ⇔ P ** emp on holdsFor
   have hPemp : (P ** emp).holdsFor (initialState cfg) := by
     rcases hP with ⟨hp, hcompat, hPhp⟩
     exact ⟨hp, hcompat, (sepConj_emp_right hp).mpr hPhp⟩
@@ -256,10 +217,8 @@ theorem run_reaches_spec
   rcases hQemp with ⟨hp, hcompat, hQhp⟩
   exact ⟨hp, hcompat, (sepConj_emp_right hp).mp hQhp⟩
 
-/-- **Form A-mem:** Memory-region variant of `run_reaches_spec`.
-    Threads the `rr : RegionTable → Prop` precondition through
-    `cuTripleWithinMem`. Useful for macro specs that pin region
-    requirements (e.g. `containsRange ∧ containsWritable`). -/
+/-- **Form A-mem:** memory-region variant of `run_reaches_spec`, threading the
+    `rr : RegionTable → Prop` precondition through `cuTripleWithinMem`. -/
 theorem run_reaches_spec_mem
     {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
     {rr : Memory.RegionTable → Prop}
@@ -280,11 +239,9 @@ theorem run_reaches_spec_mem
       hregions
   exact ⟨k, hk, hpc, hex, hQ, by simpa using hcu⟩
 
-/-- Shared core: given a Form-A-style k-step witness state at the
-    `Insn.exit` slot, plus the no-CPI / no-call_local / budget
-    hypotheses, conclude that `Runner.run` returns `step Insn.exit s_k`.
-    Factored out so both `run_terminates_with_spec` and
-    `run_terminates_with_spec_mem` can share the post-exit composition. -/
+/-- Shared core: from a Form-A k-step witness at the `Insn.exit` slot plus the
+    no-CPI / no-call_local / budget hypotheses, conclude `Runner.run` returns
+    `step Insn.exit s_k`. Shared by both `run_terminates_with_spec[_mem]`. -/
 private theorem run_terminates_after_witness
     {N k exit_ : Nat} {Q : Assertion}
     {bs : ByteArray} {insns : Array Insn} {cfg : RunConfig}
@@ -304,7 +261,7 @@ private theorem run_terminates_after_witness
     Q.holdsFor s_witness ∧
     Runner.run bs cfg = some (chargeCu (step Insn.exit s_witness)) ∧
     (step Insn.exit s_witness).exitCode = some s_witness.regs.r0 := by
-  -- callStack stays empty along the trace from initialState (no `.call_local`).
+  -- callStack stays empty along the trace (no `.call_local`)
   have hcs : (executeFn (fetchFromArray insns) (initialState cfg) k).callStack = [] :=
     executeFn_callStack_empty (fetchFromArray insns) (initialState cfg) k
       (initialState_callStack cfg) (fetchFromArray_property_of_mem hnoCallLocal)
@@ -359,27 +316,21 @@ private theorem run_terminates_after_witness
     show some _ = some _
     congr 1
     rw [h_bridge, h_full]
-  · -- Goal: (step Insn.exit s_witness).exitCode = some s_witness.regs.r0
-    -- step .exit on callStack=[] produces { s with exitCode := some (regs.get .r0) }.
-    -- After rewriting callStack via hcs, the match's [] arm fires; .exitCode
-    -- projection on the record literal then reduces by iota.
+  · -- (step Insn.exit s_witness).exitCode = some s_witness.regs.r0: after
+    -- rewriting callStack via hcs the match's [] arm fires, .exitCode reduces.
     show (step Insn.exit (executeFn (fetchFromArray insns) (initialState cfg) k)).exitCode = _
     unfold step
     rw [hcs]
     rfl
 
-/-- **Form B (terminated run):** Given that the spec lands on an
-    `Insn.exit` and the program has no `.call_local` or CPI-call,
-    `Runner.run bs cfg` produces a halted state equal to
-    `step Insn.exit s_witness`, where `s_witness` is the Form-A
-    k-step witness. Q holds at the witness (pre-exit) state;
-    `s_witness.regs.r0` is surfaced as `Runner.run`'s exit code.
+/-- **Form B (terminated run):** with the spec landing on `Insn.exit` and no
+    `.call_local`/CPI-call, `Runner.run bs cfg` halts equal to
+    `step Insn.exit s_witness` (the Form-A witness); Q holds at the pre-exit
+    witness, `s_witness.regs.r0` surfaces as the exit code.
 
-    Q-stability under the exit step is not claimed — typical Solana
-    specs don't mention `r0`/`exitCode`, but stating that formally is
-    a separate framework. Callers project the parts of Q they need
-    from the witness state, then use the run-output-equals-step-exit
-    equation to link to `Runner.run`'s output. -/
+    Q-stability under the exit step is not claimed. Callers project the Q parts
+    they need from the witness, then use the run-output-equals-step-exit
+    equation. -/
 theorem run_terminates_with_spec
     {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
     {bs : ByteArray} {insns : Array Insn} {cfg : RunConfig}
@@ -403,11 +354,9 @@ theorem run_terminates_with_spec
   exact ⟨k, hk, run_terminates_after_witness hdecode hexit_fetch hnoCpi hnoCallLocal
     hbudget hk hpc hex hQ hcuW⟩
 
-/-- **Form B-mem (terminated run, memory-region variant):** Mirrors
-    `run_terminates_with_spec` but takes a `cuTripleWithinMem` plus
-    the region-condition discharge `hregions`. The macro library is
-    proven in `cuTripleWithinMem` form (memory specs carry an `rr`
-    region predicate); this is the variant the Session-3 demos use. -/
+/-- **Form B-mem:** memory-region variant of `run_terminates_with_spec`, taking
+    a `cuTripleWithinMem` plus the region discharge `hregions`. The variant the
+    macro library (proven in `cuTripleWithinMem` form) uses. -/
 theorem run_terminates_with_spec_mem
     {N exit_ : Nat} {cr : CodeReq} {P Q : Assertion}
     {rr : Memory.RegionTable → Prop}

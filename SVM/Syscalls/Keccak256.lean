@@ -1,18 +1,10 @@
 /-
-  Keccak-256 (original Keccak, not FIPS-202 SHA-3).
+  Keccak-256 (original Keccak with 0x01 padding, not FIPS-202 SHA-3's 0x06).
 
-  Solana uses original Keccak with 0x01 padding (vs SHA-3's 0x06).
-  Backed by `lean-bridge` calling the `sha3 = 0.10.8` crate's
-  `Keccak256` digest — exactly what agave's `solana-keccak-hasher`
-  wraps. The `opaque` Lean side treats the hash as a black box at
-  proof time; `native_decide` reduces it via `ofReduceBool` (same
-  axiom already in use elsewhere).
-
-  We deliberately do **not** ship a pure-Lean spec here. Verification
-  of Keccak's algebraic properties is downstream work — its own
-  project — and shouldn't gate the runner.
-
-  Wired to the `.sol_keccak256` syscall via `Keccak256.exec` below.
+  Backed by `lean-bridge` calling `sha3 = 0.10.8`'s `Keccak256` (what
+  agave's `solana-keccak-hasher` wraps). Opaque at proof time;
+  `native_decide` reduces it via `ofReduceBool`. No pure-Lean spec:
+  Keccak's properties are downstream work. Wired to `.sol_keccak256`.
 -/
 
 import SVM.SBPF.Machine
@@ -20,11 +12,8 @@ import SVM.SBPF.Machine
 namespace SVM.SBPF
 namespace Keccak256
 
-/-- Keccak-256 of `data`, returning the 32-byte digest.
-
-    Implemented in Rust (`lean-bridge`) calling
-    `sha3::Keccak256`. Solana variant — uses 0x01 padding, NOT SHA-3's
-    0x06 padding. -/
+/-- Keccak-256 of `data`, returning the 32-byte digest (Rust
+    `sha3::Keccak256`, Solana variant: 0x01 padding, not SHA-3's 0x06). -/
 @[extern "lean_keccak256"]
 opaque hash (data : @& ByteArray) : ByteArray
 
@@ -34,9 +23,8 @@ Same `SliceDesc`-list ABI and base cost as `sol_sha256`. -/
 
 @[simp] def cu (s : State) : Nat := 85 + hashSliceCost s.mem s.regs.r1 s.regs.r2
 
-/-- H6: full region envelope via `State.hashWrite` — output `[r3, r3+32)`
-    checked first (`translate_slice_mut`), then the `r1` descriptor array
-    (`r2` × 16 bytes) and each input slice. -/
+/-- H6: region envelope via `State.hashWrite` — output `[r3, r3+32)` checked
+    first, then the `r1` descriptor array (`r2` × 16 bytes) and each slice. -/
 @[simp] def exec (s : State) : State :=
   s.hashWrite s.regs.r3 32 s.regs.r1 s.regs.r2
     (hash (readSlices s.mem s.regs.r1 s.regs.r2))

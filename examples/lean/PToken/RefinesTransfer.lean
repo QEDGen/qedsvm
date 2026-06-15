@@ -1,31 +1,11 @@
 /-
-  Refinement bridge — abstract `TokenAccount`-level reasoning ↔ asm
-  byte-level reasoning, for the synthetic anchor `MinimalTransferAsm`.
+  Refinement bridge for the synthetic MinimalTransferAsm anchor.
+  Per-program glue lives in Examples, not the core SVM lib.
 
-  Lives in the Examples lib (not the core SVM lib) because it ties a
-  specific asm program to the abstract layer. The SVM lib provides the
-  generic infrastructure (AbstractState / MIR / Triples / codec
-  bridge); the actual asm-to-abstract correspondence is per-program
-  glue and belongs alongside the program.
-
-  This bridge does NOT yet quantify over an arbitrary layout function
-  `Pubkey → Option Nat`. For the two-account pilot we take `srcAddr`
-  and `dstAddr` as direct parameters. A general `LayoutMap`-typed φ
-  comes when a second intrinsic forces it.
-
-  ## Why two theorems
-
-  `refines_TokenTransfer_minimal_flat` is the proof workhorse — it
-  states pre/post with **flat** byte-level atoms (one big right-folded
-  `**` chain) because that's the shape `sl_block_iter` consumes. The
-  per-instruction specs naturally produce flat chains; unfolding
-  `tokenAcctBalanceOf` mid-chain produces a *tree* (4 inner atoms per
-  account, wrapped at the outer ** boundary), which breaks the
-  bridging step.
-
-  `refines_TokenTransfer_minimal` is the user-facing form — pre/post
-  stated using `tokenAcctBalanceOf`. The body is a thin sepConj-assoc
-  reshape over the flat theorem. This is the theorem Task 9 cites.
+  Two theorems: `_flat` uses a flat right-folded ** chain (what sl_block_iter
+  needs — unfolding tokenAcctBalanceOf mid-chain produces a tree that breaks
+  the bridge). `refines_TokenTransfer_minimal` is the tokenAcctBalance-wrapped
+  user-facing corollary, discharged via a sepConj-assoc reshape over the flat form.
 -/
 
 import «MinimalTransferAsm»
@@ -42,13 +22,7 @@ open SVM.Solana
 open SVM.Solana.Abstract
 open Examples.MinimalTransferAsm
 
-/-! ## Flat byte-level refinement
-
-The `tokenAcctBalanceOf`-shaped predicates from the user-facing
-theorem are spelled out as their 4 per-field SL atoms each (pubkey
-mint, pubkey owner, u64 amount, opaque rest). This puts everything
-into one flat right-folded chain that `sl_block_iter` can permute and
-frame uniformly. -/
+/-! ## Flat byte-level refinement (proof workhorse) -/
 
 theorem refines_TokenTransfer_minimal_flat
     (srcAddr dstAddr amount vR3Old : Nat)
@@ -83,7 +57,7 @@ theorem refines_TokenTransfer_minimal_flat
             rt.containsWritable (srcAddr + AMOUNT_OFF) 8 = true) ∧
           rt.containsRange (dstAddr + AMOUNT_OFF) 8 = true) ∧
         rt.containsWritable (dstAddr + AMOUNT_OFF) 8 = true) := by
-  -- Wrap → Nat collapses.
+  -- wrapSub/wrapAdd → Nat collapses.
   have h_amt_lt : amount < U64_MODULUS := by unfold U64_MODULUS; omega
   have h_srcBal' : tSrc.amount < U64_MODULUS := by unfold U64_MODULUS; exact h_srcBal
   have h_noOverflow' : tDst.amount + amount < U64_MODULUS := by
@@ -99,12 +73,11 @@ theorem refines_TokenTransfer_minimal_flat
   have h_wadd : wrapAdd tDst.amount amount = tDst.amount + amount := by
     show (tDst.amount + amount) % U64_MODULUS = tDst.amount + amount
     exact Nat.mod_eq_of_lt h_noOverflow'
-  -- Bridge `effectiveAddr a (n : Int)` ↔ `a + n` for the AMOUNT_OFF case.
+  -- effectiveAddr → Nat for AMOUNT_OFF.
   have h_ea_src : effectiveAddr srcAddr amountOff = srcAddr + AMOUNT_OFF := by
     unfold effectiveAddr amountOff AMOUNT_OFF; omega
   have h_ea_dst : effectiveAddr dstAddr amountOff = dstAddr + AMOUNT_OFF := by
     unfold effectiveAddr amountOff AMOUNT_OFF; omega
-  -- Per-instruction specs.
   have h0 := ldxdw_spec .r3 .r1 amountOff vR3Old srcAddr tSrc.amount 0
               (by decide) h_srcBal
   have h1 := sub64_reg_spec .r3 .r4 tSrc.amount amount 1 (by decide)
@@ -122,42 +95,9 @@ theorem refines_TokenTransfer_minimal_flat
   unfold minimalTransferCr
   sl_block_iter [h0, h1, h2, h3, h4, h5]
 
-/-! ## On the user-facing `tokenAcctBalanceOf` shape
+/-! ## Wrapped form — pre/post via `tokenAcctBalance` (sepConj-assoc bridge) -/
 
-A naive corollary that restates the flat theorem in
-`tokenAcctBalanceOf`-wrapped pre/post hits the SL bracketing mismatch:
-`tokenAcctBalanceOf` definitionally unfolds to a 4-atom right-fold,
-which when inserted into a larger `**` chain creates a tree
-`(4 atoms) ** (4 atoms)` rather than the flat 8-atom right-fold the
-`sl_block_iter`-derived theorem produces. The two forms are equal up
-to `sepConj_assoc`, but the bridge takes ~30 LoC of pointwise-Iff
-chasing per side and is mostly mechanical.
-
-We defer that wrapper to the downstream consumer (Task 9 —
-`PTokenTransferBalanceSpec`), which can either unfold its own
-`tokenAcctBalance` atoms or apply the reshape inline. Once the
-pattern shows up in a third call site, lift it here as a separate
-corollary.
-
-The `h_restSrcSz` / `h_restDstSz` arguments aren't needed for the
-flat theorem but will be required by the user-facing wrapper (the
-`↦Bytes` atom is well-formed only when the byte array has the
-declared size).
--/
-
-/-! ## Wrapped form — pre/post stated via `tokenAcctBalance`
-
-The flat theorem above produces a 12-atom right-folded chain (4
-registers + 4 per-account-field atoms × 2). The user-facing form
-re-brackets the per-account atoms inside `tokenAcctBalance`, producing
-a 6-atom chain (4 registers + 1 per account). The two are equal up to
-`sepConj_assoc` × 3; this section provides the bridging iffs and
-the corollary.
--/
-
-/-- Re-bracket two adjacent 4-atom right-folded blocks into a single
-    8-atom right-folded chain. Three applications of `sepConj_assoc`
-    nested via `sepConj_iff_congr_right`. -/
+/-- Flatten (A**B**C**D)**E into A**B**C**D**E (three sepConj_assoc). -/
 private theorem two_block_unfold_iff
     (sMint sOwn sAmt sRest dChain : Assertion) :
     ∀ h, ((sMint ** sOwn ** sAmt ** sRest) ** dChain) h ↔
@@ -171,7 +111,7 @@ private theorem two_block_unfold_iff
   intro h2
   exact sepConj_assoc h2
 
-/-- Descend a tail iff through a 4-atom right-folded register prefix. -/
+/-- Thread an iff through a 4-atom register prefix. -/
 private theorem reg_prefix_descend_iff
     (a1 a2 a3 a4 : Assertion) {L R : Assertion}
     (hLR : ∀ h, L h ↔ R h) :
@@ -185,9 +125,7 @@ private theorem reg_prefix_descend_iff
   intro h3
   exact sepConj_iff_congr_right a4 hLR h3
 
-/-- Pointwise iff between the wrapped form and the flat form on the
-    pre-state side. Unfolds `tokenAcctBalance` at both ATA sites, then
-    re-brackets via the two helpers above. -/
+/-- Pointwise iff: tokenAcctBalance-wrapped ↔ flat, at both ATA sites. -/
 private theorem wrap_iff
     (a1 a2 a3 a4 : Assertion)
     (srcAddr dstAddr : Nat)
@@ -207,7 +145,6 @@ private theorem wrap_iff
             (dstAddr + AMOUNT_OFF ↦U64 amtDst) **
             (dstAddr + REST_OFF ↦Bytes restDst)) h := by
   intro h
-  -- Definitional unfold of `tokenAcctBalance` on both sides.
   show (a1 ** a2 ** a3 ** a4 **
           ((srcAddr + MINT_OFF ↦Pubkey mintSrc) **
            (srcAddr + OWNER_OFF ↦Pubkey ownerSrc) **
@@ -220,11 +157,7 @@ private theorem wrap_iff
   exact reg_prefix_descend_iff a1 a2 a3 a4
     (two_block_unfold_iff _ _ _ _ _) h
 
-/-! ## `refines_TokenTransfer_minimal` — wrapped corollary
-
-The user-facing form. Pre/post wrap each account's MINT/OWNER/AMOUNT/
-REST atoms inside a single `tokenAcctBalance`. Discharges via the wrap
-iff applied to `refines_TokenTransfer_minimal_flat`. -/
+/-! ## `refines_TokenTransfer_minimal` — user-facing wrapped corollary -/
 
 theorem refines_TokenTransfer_minimal
     (srcAddr dstAddr amount vR3Old : Nat)
@@ -251,15 +184,13 @@ theorem refines_TokenTransfer_minimal
                    tSrc tDst h_funds h_noOverflow h_srcBal h_dstBal
   refine cuTripleWithinMem_reshape_pre ?_
            (cuTripleWithinMem_reshape_post ?_ h_flat)
-  · -- pre iff: flat ↔ wrapped (reshape_pre demands OLD ↔ NEW)
-    intro h
+  · intro h
     exact (wrap_iff (.r1 ↦ᵣ srcAddr) (.r2 ↦ᵣ dstAddr)
              (.r3 ↦ᵣ vR3Old) (.r4 ↦ᵣ amount)
              srcAddr dstAddr
              tSrc.mint tSrc.owner tDst.mint tDst.owner
              tSrc.amount tDst.amount tSrc.rest tDst.rest h).symm
-  · -- post iff: flat ↔ wrapped (reshape_post demands OLD ↔ NEW)
-    intro h
+  · intro h
     exact (wrap_iff (.r1 ↦ᵣ srcAddr) (.r2 ↦ᵣ dstAddr)
              (.r3 ↦ᵣ tDst.amount + amount) (.r4 ↦ᵣ amount)
              srcAddr dstAddr

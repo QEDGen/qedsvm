@@ -1,19 +1,10 @@
 -- The Solana ComputeBudget program — native, not BPF.
 --
--- agave's `solana_compute_budget_program::Entrypoint` is a single
--- `declare_process_instruction!(Entrypoint, 150, |_| Ok(()))` —
--- charge 150 CU, return success, no state mutation. The real
--- semantics live at the transaction level (the runtime inspects the
--- ComputeBudget instructions on a *transaction* before scheduling
--- and uses them to size the CU budget / loaded-accounts-data
--- limit). CPI into ComputeBudget is therefore a no-op from the
--- callee's perspective.
---
--- qedsvm models per-instruction, not per-transaction, so the
--- runtime-level behavior is out of scope (Tier 4 in the
--- production-parity roadmap). What we DO model here is the CPI
--- path: a BPF program that calls `invoke(&compute_budget_ix, ...)`
--- sees `r0 = 0` and 150 CU charged, matching agave.
+-- agave's `Entrypoint` is `declare_process_instruction!(Entrypoint, 150,
+-- |_| Ok(()))`: charge 150 CU, succeed, no state mutation. Real semantics
+-- are transaction-level (budget/data-size sizing), out of scope for
+-- per-instruction qedsvm (Tier 4). We model only the CPI path: an
+-- `invoke(&compute_budget_ix)` sees `r0 = 0` and 150 CU, matching agave.
 
 import SVM.Native.AcctInput
 
@@ -22,25 +13,19 @@ namespace SVM.Native.ComputeBudget
 open SVM.SBPF.Memory
 open SVM.Native
 
-/-- ComputeBudget program-id (`ComputeBudget111111111111111111111111111111`)
-    encoded little-endian as a `Nat`. The bytes are
-    `[3, 6, 70, 111, 229, 33, 23, 50, 255, 236, 173, 186, 114, 195,
-    155, 231, 188, 140, 229, 187, 197, 247, 18, 107, 44, 67, 155,
-    58, 64, 0, 0, 0]` (the result of base58-decoding the canonical
-    pubkey string). -/
+/-- ComputeBudget program-id (`ComputeBudget111111111111111111111111111111`),
+    base58-decoded and encoded little-endian as a `Nat`. -/
 def PROGRAM_ID : Nat :=
   0x000000403a9b432c6b12f7c5bbe58cbce79bc372baadecff321721e56f460603
 
-/-- `DEFAULT_COMPUTE_UNITS` from
-    `solana-compute-budget-program/src/lib.rs`. Same for every
-    ComputeBudget variant — the entrypoint is just a constant. -/
+/-- `DEFAULT_COMPUTE_UNITS` from `solana-compute-budget-program/src/lib.rs`;
+    flat for every variant. -/
 def CU_DEFAULT : Nat := 150
 
 /-! ## ComputeBudgetInstruction enum
 
-Mirrors agave's `solana_compute_budget_interface::ComputeBudgetInstruction`.
-Decoded for spec fidelity; `dispatch` treats every variant the same
-way (no-op + 150 CU), matching agave's CPI behavior. -/
+Mirrors agave's `ComputeBudgetInstruction`. Decoded for spec fidelity;
+`dispatch` treats every variant the same (no-op + 150 CU) per agave's CPI. -/
 
 inductive ComputeBudgetIx
   /-- Deprecated `RequestUnits { units, additional_fee }`.
@@ -80,9 +65,8 @@ private def readU64LE (bs : ByteArray) (off : Nat) : Nat :=
     (bs.get! (off + 6)).toNat * 0x1000000000000 +
     (bs.get! (off + 7)).toNat * 0x100000000000000
 
-/-- Decode `ix.data`. The wire format starts with a u8 discriminant
-    (NOT u32 like System — ComputeBudgetInstruction is a "compact"
-    bincode variant with a 1-byte tag). -/
+/-- Decode `ix.data`. Wire format leads with a u8 discriminant (NOT u32
+    like System — this enum uses a compact 1-byte tag). -/
 def decode (ixData : ByteArray) : ComputeBudgetIx :=
   if ixData.size = 0 then .unknown 0
   else
@@ -98,17 +82,12 @@ def decode (ixData : ByteArray) : ComputeBudgetIx :=
     | 4 => .setLoadedAccountsDataSizeLimit (readU32LE ixData 1)
     | d => .unknown d
 
-/-- Dispatch a ComputeBudget CPI. Agave's `Entrypoint` is a no-op
-    that just consumes the default 150 CU. We mirror that exactly:
-    no memory mutation, `r0 := 0`, 150 CU.
-
-    `decode` is called for spec-fidelity (so the parsed `ix` is
-    well-typed) but its result is intentionally ignored — agave's
-    `declare_process_instruction!(Entrypoint, 150, |_invoke_context| Ok(()))`
-    likewise doesn't inspect the instruction data on CPI. -/
+/-- Dispatch a ComputeBudget CPI: no memory mutation, `r0 := 0`, 150 CU,
+    mirroring agave's no-op `Entrypoint`. `decode` runs for spec fidelity
+    but its result is intentionally ignored (agave likewise doesn't inspect
+    instruction data on CPI). -/
 def dispatch (ixData : ByteArray) (_accts : List AcctInput) (mem : Mem) :
     Option NativeResult :=
-  -- Discard the parsed variant — used only for spec fidelity.
   let _ := decode ixData
   some ⟨mem, 0, CU_DEFAULT⟩
 

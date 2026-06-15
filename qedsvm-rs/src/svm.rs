@@ -1,18 +1,6 @@
-//! The Mollusk-shaped public API.
-//!
-//! Naming intent: the *engine* is `qedsvm::Svm`; the *shape* (the
-//! `add_program` / `process_instruction` / `InstructionResult` triad)
-//! mirrors `mollusk_svm::Mollusk` so a real Mollusk test can run
-//! through qedsvm by replacing one type name.
-//!
-//! CPI: the underlying Lean runner (`Runner.executeFnCpiWithFuel`)
-//! executes `sol_invoke_signed{,_c}` by parsing the instruction +
-//! AccountInfo array, serializing a callee sub-input, and running the
-//! callee from the `add_program` registry (passed through as a blob),
-//! sharing the parent's compute-unit meter. NOTE: this is the
-//! diff-testing runner path; the proof-facing `step` CPI is a separate
-//! stub (see SVM/Syscalls/Cpi.lean) and the runner CPI model still has
-//! known authorization gaps (docs/SOUNDNESS_AUDIT_*.md, C4/C5/M6).
+//! The Mollusk-shaped public API (`add_program`/`process_instruction`/`InstructionResult`).
+//! NOTE: this is the diff-testing runner path; proof-facing `step` CPI is a separate stub
+//! (SVM/Syscalls/Cpi.lean); runner CPI has known authorization gaps (C4/C5/M6).
 use std::collections::HashMap;
 
 use solana_account::AccountSharedData;
@@ -33,41 +21,21 @@ pub const DEFAULT_CU_BUDGET: u64 = 200_000;
 pub enum ProgramResult {
     /// Program halted with `exit r0 = 0`.
     Success,
-    /// Program halted with non-zero r0 that didn't carry a
-    /// Pinocchio-encoded `ProgramError` (raw r0 in the low 32 bits,
-    /// upper 32 bits zero). Covers hand-rolled exit codes
-    /// (e.g. `exit 42` from a smoke program), the runtime error
-    /// sentinels in `SVM.SBPF.Execute.ERR_*` (invalid PC, abort,
-    /// divide-by-zero), and our internal post-state-invalid sentinel
-    /// (`ERR_INVALID_POSTSTATE`).
+    /// Program halted with non-zero r0, upper 32 bits zero (not a `ProgramError` encoding).
+    /// Covers hand-rolled exit codes, `ERR_*` sentinels, and `ERR_INVALID_POSTSTATE`.
     Failure { exit_code: u64 },
-    /// Program returned an `Err(ProgramError)` from a
-    /// `solana-program-entrypoint`-compatible handler (Pinocchio,
-    /// `solana-program`, etc.). The handler's
-    /// `Err(...)?` packs the error as `(code as u64) << 32`, which we
-    /// decode back into the typed variant here. Mirrors mollusk's
-    /// `Failure(InstructionError::ProgramError(_))` so cross-engine
-    /// diff tests can compare the variant directly.
+    /// Program returned `Err(ProgramError)` (Pinocchio/agave entrypoint packs it as `code << 32`).
+    /// Mirrors mollusk's `Failure(InstructionError::ProgramError(_))` for cross-engine diff.
     ProgramError(ProgramError),
     /// The CU budget was exhausted before the program halted.
     OutOfBudget,
-    /// A VM-level FAULT (the Lean `State.vmError` channel — audit L1):
-    /// access violation, divide-by-zero, unsupported instruction,
-    /// call-depth exceeded, a syscall abort, etc. This is distinct from
-    /// a program-RETURNED error: agave collapses essentially every VM
-    /// fault to `InstructionError::ProgramFailedToComplete` (surfaced by
-    /// mollusk as `UnknownError(ProgramFailedToComplete)`), so the
-    /// `sentinel` (the legacy `ERR_*` value identifying the fault) is
-    /// finer-grained than agave observably distinguishes — it is for
-    /// diagnostics / the M14 expected-divergence list, not for the
-    /// cross-engine variant comparison. See `vm_fault_name`.
+    /// VM-level fault (Lean `State.vmError` — audit L1): access violation, div-by-zero, abort, etc.
+    /// Distinct from program-returned errors. agave collapses nearly all to `ProgramFailedToComplete`;
+    /// `sentinel` is the fine-grained `ERR_*` for diagnostics/M14 divergence list. See `vm_fault_name`.
     VmFault { sentinel: u64 },
 }
 
-/// The legacy `ERR_*` sentinel for each Lean `VmError`, kept in sync with
-/// `SVM.SBPF.VmError.toSentinel` (audit M14). Used only for diagnostics
-/// and the expected-divergence list — agave does not observably
-/// distinguish most of these.
+/// Name for a `VmError` sentinel, in sync with `SVM.SBPF.VmError.toSentinel` (audit M14).
 pub const fn vm_fault_name(sentinel: u64) -> &'static str {
     match sentinel {
         0xFFFFFFFFFFFFFFFE => "divideByZero",
@@ -87,22 +55,14 @@ pub const fn vm_fault_name(sentinel: u64) -> &'static str {
 }
 
 impl ProgramResult {
-    /// Build a `ProgramResult` from the BPF interpreter's r0 value.
-    /// Decodes Pinocchio-/agave-encoded `ProgramError`s when the
-    /// upper 32 bits are non-zero (the documented "builtin return
-    /// values occupy the upper 32 bits" convention from
-    /// `solana-program-error`). Raw r0 values fall through to
-    /// `Failure { exit_code }` unchanged so existing exit-code
-    /// matchers keep working.
+    /// Build a `ProgramResult` from r0: decodes `ProgramError` when upper 32 bits are non-zero
+    /// (agave/Pinocchio convention); raw r0 falls through to `Failure { exit_code }`.
     pub(crate) fn from_bpf_r0(r0: u64) -> Self {
         if r0 == 0 {
             return Self::Success;
         }
         if (r0 >> 32) != 0 {
-            // `From<u64> for ProgramError` is a total function:
-            // unknown high bits fall into `Custom(low as u32)`, which
-            // matches what mollusk surfaces for an unrecognized
-            // builtin code.
+            // `From<u64> for ProgramError` is total; unknown high bits → `Custom(low as u32)`.
             return Self::ProgramError(ProgramError::from(r0));
         }
         Self::Failure { exit_code: r0 }
@@ -120,10 +80,7 @@ mod from_bpf_r0_tests {
 
     #[test]
     fn small_raw_exit_code_preserved() {
-        // hello.elf returns r0=42; CU-budget exhaustion sentinels also
-        // sit in the low half. These must NOT be decoded as ProgramError
-        // — every existing exit-code matcher in the test suite would
-        // break otherwise.
+        // Low-half r0 must NOT decode as ProgramError — breaks existing exit-code matchers.
         assert_eq!(
             ProgramResult::from_bpf_r0(42),
             ProgramResult::Failure { exit_code: 42 },
@@ -136,10 +93,7 @@ mod from_bpf_r0_tests {
 
     #[test]
     fn pinocchio_invalid_account_data_decodes() {
-        // The reporter's exact wire value (issue #9): pyth_resolver
-        // returned `Err(ProgramError::InvalidAccountData)` from its
-        // Pinocchio handler, which the entrypoint encodes as
-        // (4 << 32) = 17_179_869_184.
+        // issue #9: pyth_resolver InvalidAccountData; entrypoint encodes as (4 << 32).
         assert_eq!(
             ProgramResult::from_bpf_r0(17_179_869_184),
             ProgramResult::ProgramError(ProgramError::InvalidAccountData),
@@ -148,8 +102,7 @@ mod from_bpf_r0_tests {
 
     #[test]
     fn pinocchio_custom_error_decodes() {
-        // `Err(ProgramError::Custom(7))` packs as `(1 << 32) | 7`
-        // (CUSTOM_ZERO marker | low-half error code).
+        // Custom(7) packs as (CUSTOM_ZERO=1 << 32) | 7.
         let packed = (1u64 << 32) | 7;
         assert_eq!(
             ProgramResult::from_bpf_r0(packed),
@@ -159,8 +112,7 @@ mod from_bpf_r0_tests {
 
     #[test]
     fn pinocchio_custom_zero_decodes() {
-        // `Err(ProgramError::Custom(0))` is the one case that uses
-        // CUSTOM_ZERO with no low-half code; ensure it round-trips.
+        // Custom(0) = CUSTOM_ZERO with no low-half code; ensure round-trip.
         assert_eq!(
             ProgramResult::from_bpf_r0(1u64 << 32),
             ProgramResult::ProgramError(ProgramError::Custom(0)),
@@ -169,13 +121,8 @@ mod from_bpf_r0_tests {
 
     #[test]
     fn err_invalid_poststate_sentinel_is_explicit_not_decoded() {
-        // ERR_INVALID_POSTSTATE is a qedsvm-side sentinel synthesized
-        // by `validate_post_state` AFTER a Success outcome — it never
-        // arrives via `from_bpf_r0` in the normal path. But if anyone
-        // ever did pass it through this function, the high u32
-        // (0xFFFFFFFF) lies outside the builtin range, so the
-        // `From<u64>` catch-all decodes it to `Custom(0xFFFFFFFB)`.
-        // We document the behavior here so it's not surprising.
+        // ERR_INVALID_POSTSTATE is synthesized post-Success, never via `from_bpf_r0`.
+        // If it were passed here, the high 0xFFFFFFFF → `From<u64>` catch-all → Custom(0xFFFFFFFB).
         let r = ProgramResult::from_bpf_r0(ERR_INVALID_POSTSTATE);
         assert_eq!(
             r,
@@ -184,60 +131,38 @@ mod from_bpf_r0_tests {
     }
 }
 
-/// Mirrors the shape of `mollusk_svm::result::InstructionResult`.
-/// Difference from Mollusk: we don't surface an `InstructionError`
-/// enum — failures land as `ProgramResult::Failure { exit_code }`
-/// directly with the raw r0 value.
+/// Mirrors `mollusk_svm::result::InstructionResult`. Difference: failures surface as raw r0,
+/// not a typed `InstructionError`.
 #[derive(Debug, Clone)]
 pub struct InstructionResult {
     pub program_result: ProgramResult,
-    /// Compute units consumed at the top-level program. Per v1 CPI
-    /// semantics, a CPI call counts as 1 CU at the caller's level
-    /// regardless of how much the callee consumed.
+    /// CU consumed. Per v1 CPI semantics, a CPI call counts as 1 CU at the caller's level.
     pub compute_units_consumed: u64,
     pub logs: Vec<Vec<u8>>,
     pub return_data: Vec<u8>,
     /// Post-execution accounts, one entry per `AccountMeta` in the
     /// instruction (matching Mollusk's `resulting_accounts`).
     pub resulting_accounts: Vec<(Pubkey, AccountSharedData)>,
-    /// `Some(e)` iff the Lean VM returned `Success` but the Rust
-    /// post-state backstop (`validate_post_state`) caught an invariant
-    /// violation and downgraded the result to
-    /// `Failure { ERR_INVALID_POSTSTATE }` (M13). For a SOUND VM on
-    /// honest input this is always `None`: the violations the backstop
-    /// checks (lamport conservation, read-only modification, data-growth
-    /// overflow, rent state) are properties agave guarantees and the
-    /// Lean model should reproduce *itself*, not lean on the shell to
-    /// rescue. A `Some` here therefore means one of two things — a real
-    /// program error the model failed to surface, or a Lean-VM SOUNDNESS
-    /// bug (e.g. minted lamports) — and either way it must NOT hide
-    /// behind a coincidentally-matching `Failure`/`Failure` in a diff
-    /// test. Cross-engine fixtures assert this is `None` so the backstop
-    /// can never silently mask the very VM-bug class the diff exists to
-    /// surface. See `tests/diff_mollusk.rs::assert_no_poststate_backstop`.
+    /// `Some(e)` iff `Success` was downgraded to `Failure { ERR_INVALID_POSTSTATE }` by the
+    /// post-state backstop (M13). On a SOUND VM this is always `None`; `Some` signals either a
+    /// model failure to surface a program error, or a Lean-VM soundness bug (minted lamports, etc.).
+    /// Cross-engine fixtures assert `None` — the backstop must never silently mask VM bugs.
+    /// See `tests/diff_mollusk.rs::assert_no_poststate_backstop`.
     pub poststate_violation: Option<PostStateError>,
 }
 
-/// Errors that prevent `process_instruction` from even attempting to
-/// run the program (vs. errors *from* the program, which surface as
-/// `ProgramResult::Failure`).
+/// Errors that prevent `process_instruction` from running (vs. errors from the program).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SvmError {
-    /// No ELF registered for the program ID referenced by the
-    /// instruction.
+    /// No ELF registered for the program ID.
     UnknownProgram(Pubkey),
-    /// The instruction list / accounts were malformed (missing
-    /// account, too many accounts).
+    /// Malformed instruction or accounts (missing account, too many accounts).
     Serialize(SerializeError),
-    /// ELF parse failure inside Lean (returned status byte 0).
+    /// ELF parse failure inside Lean (status byte 0).
     ElfDecodeFailed,
-    /// Post-execution buffer parse failed — typically buffer
-    /// truncation or an account pubkey shift inside the program
-    /// (which would indicate Lean's memory model diverged from
-    /// agave's).
+    /// Post-execution buffer parse failed — typically truncation or a pubkey shift (Lean memory divergence from agave).
     BufferParse(DeserializeError),
-    /// The Lean side returned a malformed wire response — should be
-    /// impossible if `SVM.Ffi` is built from a matching Lean tree.
+    /// Malformed Lean wire response — impossible if `SVM.Ffi` matches the Lean tree.
     InternalWireFormat(crate::DecodeError),
 }
 
@@ -259,30 +184,14 @@ impl From<SerializeError> for SvmError {
     fn from(e: SerializeError) -> Self { Self::Serialize(e) }
 }
 
-/// Mollusk-shaped reference SVM backed by the qedsvm Lean
-/// interpreter.
-///
-/// Hold one `Svm` per test (or share via clone — registries are cheap
-/// to copy). For multi-program differential testing, register each
-/// program by its on-chain id with [`add_program`].
+/// Mollusk-shaped reference SVM backed by the qedsvm Lean interpreter.
+/// Hold one `Svm` per test; for multi-program diffs register programs with [`add_program`].
 pub struct Svm {
     programs: HashMap<Pubkey, Vec<u8>>,
     cu_budget: u64,
-    /// Whether to enforce the rent-state transition check from
-    /// `solana-svm::rent_calculator::check_rent_state` at instruction
-    /// exit (an account can't move from Uninitialized/RentExempt into
-    /// RentPaying, and a RentPaying account can't grow or be
-    /// credited).
-    ///
-    /// Default: **off**. Agave applies this check at the *transaction*
-    /// layer (`transaction_processor::execute_loaded_transaction`),
-    /// not per-instruction; mollusk's harness — which runs per-
-    /// instruction like us — bypasses it. Enabling here while
-    /// diff-testing against mollusk would surface false divergences
-    /// on fixtures that aren't rent-exempt by design.
-    ///
-    /// Enable when running qedsvm as a transaction-level oracle
-    /// (rather than the diff-mollusk per-instruction comparator).
+    /// Enforce rent-state transition check at instruction exit. Default OFF: agave applies this at
+    /// the transaction layer; mollusk bypasses it too, so enabling here causes false diff divergences.
+    /// Enable only when using qedsvm as a transaction-level oracle (not in diff-mollusk mode).
     enforce_rent_state: bool,
 }
 
@@ -299,34 +208,15 @@ impl Svm {
         }
     }
 
-    /// Lower or raise the per-instruction CU budget. Default is
-    /// `DEFAULT_CU_BUDGET = 200_000`.
+    /// Set the per-instruction CU budget (default: `DEFAULT_CU_BUDGET = 200_000`).
     pub fn with_cu_budget(mut self, cu_budget: u64) -> Self {
         self.cu_budget = cu_budget;
         self
     }
 
-    /// Transaction-level pre-flight equivalent: scan a transaction's
-    /// instruction list for a `ComputeBudgetInstruction::SetComputeUnitLimit`
-    /// and set [`Self::cu_budget`] from its value.
-    ///
-    /// qedsvm models per-instruction execution, not the full
-    /// transaction pipeline. Agave's `ComputeBudgetProcessor` does
-    /// this scan at the transaction level (before invoking each
-    /// top-level instruction); callers wanting that behavior can run
-    /// this helper themselves over the txn's `ix` list and pipe the
-    /// result into [`Self::with_cu_budget`]. We expose it as a
-    /// builder for ergonomics.
-    ///
-    /// Wire format: ComputeBudget's `SetComputeUnitLimit` is
-    /// discriminant `2` followed by a u32 LE value. Other variants
-    /// (`RequestUnits` legacy / heap frame / unit price / loaded-
-    /// accounts-data limit) don't affect the per-instruction CU cap
-    /// and are ignored. If multiple `SetComputeUnitLimit` are
-    /// present, the *last* wins (matches agave's behavior of
-    /// overwriting the running cap as it iterates).
-    ///
-    /// Returns `Self` unchanged if no `SetComputeUnitLimit` is found.
+    /// Scan a transaction's instruction list for `ComputeBudgetInstruction::SetComputeUnitLimit`
+    /// and apply it to `cu_budget`. Mirrors agave's `ComputeBudgetProcessor` pre-flight scan.
+    /// Wire format: discriminant `2` + u32 LE. Last `SetComputeUnitLimit` wins.
     pub fn with_compute_budget_from_instructions(
         mut self,
         instructions: &[Instruction],
@@ -344,38 +234,27 @@ impl Svm {
         self
     }
 
-    /// Enable the post-state rent-state transition check
-    /// (`solana-svm::rent_calculator::check_rent_state` equivalent).
-    /// Off by default — see field-level comment for the rationale.
+    /// Enable post-state rent-state transition enforcement (off by default — see field doc).
     pub fn with_rent_state_enforcement(mut self, enforce: bool) -> Self {
         self.enforce_rent_state = enforce;
         self
     }
 
-    /// Register an ELF binary for invocations of `program_id`.
-    /// Subsequent calls overwrite.
+    /// Register an ELF binary for `program_id`. Subsequent calls overwrite.
     pub fn add_program(&mut self, program_id: &Pubkey, elf: &[u8]) -> &mut Self {
         self.programs.insert(*program_id, elf.to_vec());
         self
     }
 
-    /// Run a single top-level instruction. Matches Mollusk's API
-    /// shape for swap-in differential testing.
+    /// Run a single top-level instruction (Mollusk API shape for drop-in differential testing).
     pub fn process_instruction(
         &self,
         instruction: &Instruction,
         accounts: &[(Pubkey, AccountSharedData)],
     ) -> Result<InstructionResult, SvmError> {
-        // Top-level precompile dispatch. Agave's runtime detects
-        // ed25519 / secp256k1 / secp256r1 program-ids before
-        // invoking the BPF VM and routes to a Rust `verify()` closure.
-        // The Lean spec (`SVM.Native.Precompiles.dispatch`) is the
-        // source of truth; we call it directly via FFI without
-        // serializing parameters or running the interpreter.
-        //
-        // Precompiles never mutate accounts and never produce logs or
-        // return data, so the resulting state mirrors the input
-        // verbatim.
+        // Top-level precompile dispatch: agave routes ed25519/secp256k1/secp256r1 before BPF VM.
+        // We call `SVM.Native.Precompiles.dispatch` via FFI directly — no account serialization.
+        // Precompiles never mutate accounts or produce logs/return_data.
         if is_precompile(&instruction.program_id) {
             let pid_bytes = instruction.program_id.to_bytes();
             let (r0, cu) = crate::run_precompile(&pid_bytes, &instruction.data)
@@ -394,11 +273,9 @@ impl Svm {
         let elf = self.programs.get(&instruction.program_id)
             .ok_or_else(|| SvmError::UnknownProgram(instruction.program_id))?;
 
-        // Sysvar read-only enforcement. Agave's loader rejects an
-        // instruction that marks a known sysvar account as writable.
-        // We mirror by inspecting `ix.accounts` *before* serializing
-        // (cheaper than catching after exec). Failures surface as
-        // ProgramResult::Failure with the post-state sentinel.
+        // Sysvar read-only enforcement: agave's loader rejects writable sysvar accounts.
+        // We mirror by inspecting `ix.accounts` before serializing
+        // (cheaper than catching after exec).
         if let Some(_bad) = ix_accounts_writable_sysvar(instruction) {
             return Ok(InstructionResult {
                 program_result: ProgramResult::Failure {
@@ -408,33 +285,23 @@ impl Svm {
                 logs: vec![],
                 return_data: vec![],
                 resulting_accounts: accounts.to_vec(),
-                // Pre-exec loader rejection (sysvar marked writable):
-                // the VM never ran, so there is no Success to mask.
-                poststate_violation: None,
+                poststate_violation: None, // pre-exec loader rejection; VM never ran
             });
         }
 
-        // Build the canonical, instruction-ordered account list once.
-        // Used for post-state validation (where pre/post must line up
-        // positionally) and as the returned `resulting_accounts` shape
-        // anchor. The caller-supplied `accounts` slice is now only a
-        // lookup source — its order doesn't affect anything downstream.
+        // Instruction-ordered account list for post-state validation (pre/post must align positionally)
+        // and `resulting_accounts`. Caller-supplied `accounts` is a lookup source only.
         let canonical_accounts = accounts_for_instruction(instruction, accounts)?;
 
         let input = serialize_parameters(instruction, accounts, &instruction.program_id)?;
 
-        // Build a CPI registry of all *other* programs registered with
-        // this `Svm`. The main program is fetched via `elf` directly,
-        // so we exclude it from the registry to keep the blob small —
-        // the Lean runner doesn't need it twice.
+        // CPI registry: all OTHER registered programs (main program excluded — Lean doesn't need it twice).
+        // Always pass program_id so the Lean runner can derive PDAs for `invoke_signed`.
         let registry_entries: Vec<(&[u8; 32], &[u8])> = self.programs
             .iter()
             .filter(|(pid, _)| **pid != instruction.program_id)
             .map(|(pid, elf)| (pid.as_array(), elf.as_slice()))
             .collect();
-        // Always thread `instruction.program_id` through so the Lean
-        // runner can derive PDAs for `invoke_signed`. The registry
-        // blob is empty when no other programs are registered.
         let registry_blob = if registry_entries.is_empty() {
             Vec::new()
         } else {
@@ -455,10 +322,7 @@ impl Svm {
         let program_result = match raw.outcome {
             ExitOutcome::OutOfBudget => ProgramResult::OutOfBudget,
             ExitOutcome::Halted(n) => ProgramResult::from_bpf_r0(n),
-            // A VM fault is represented distinctly (audit M14/L1): NOT a
-            // program-returned error. agave surfaces it as
-            // `UnknownError(ProgramFailedToComplete)` — see the
-            // cross-engine comparison in `diff_mollusk.rs`.
+            // VM fault is distinct from a program error (audit M14/L1); agave → `ProgramFailedToComplete`.
             ExitOutcome::Faulted(n) => ProgramResult::VmFault { sentinel: n },
         };
 
@@ -469,22 +333,14 @@ impl Svm {
                 .map_err(SvmError::BufferParse)?
         };
 
-        // Tier-2 post-instruction soundness validation. Runs only on
-        // successful program returns — failed programs already have
-        // their state semantically rolled back at the harness level
-        // (we don't write back to the caller's accounts), so the
-        // invariants don't apply. Any violation downgrades the
-        // outcome to `Failure { exit_code: ERR_INVALID_POSTSTATE }`.
+        // Post-instruction soundness validation (success only — failures are rolled back at the harness).
+        // Any violation downgrades to `Failure { ERR_INVALID_POSTSTATE }`.
         let (program_result, poststate_violation) =
             if matches!(program_result, ProgramResult::Success) {
                 match validate_post_state(instruction, &canonical_accounts, &resulting_accounts,
                                            self.enforce_rent_state) {
                     Ok(()) => (program_result, None),
-                    // Record WHICH invariant the backstop caught so a
-                    // diff test can assert the Lean VM never relied on it
-                    // (M13). Downgrade the outcome as before.
-                    Err(e) => (ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE },
-                               Some(e)),
+                    Err(e) => (ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE }, Some(e)),
                 }
             } else {
                 (program_result, None)
@@ -502,41 +358,14 @@ impl Svm {
 
 }
 
-/// Sentinel exit code returned when a program returns successfully
-/// from the BPF interpreter but violates a post-instruction
-/// invariant. Mirrors the family of agave's `InstructionError`
-/// variants for these checks (`ExternalAccountDataModified`,
-/// `ExternalAccountLamportChange`, `UnbalancedInstruction`,
-/// `MaxAccountsDataAllocationsExceeded`). We collapse them to a
-/// single sentinel since our `ProgramResult` is u64-keyed; the
-/// individual checks live in `validate_post_state` below.
-///
-/// `executable` and `rent_epoch` are *not* validated here — the
-/// post-buffer deserializer inherits both fields from pre-state by
-/// construction (see `deserialize::parse_non_dup_record`), so no
-/// program-visible mutation is possible to detect.
+/// Sentinel for "Success but post-state invariant violated" (M13). Collapses agave's
+/// `ExternalAccountDataModified`/`UnbalancedInstruction`/etc. to a single u64 sentinel.
+/// `executable`/`rent_epoch` not validated — inherited from pre-state by construction.
 pub const ERR_INVALID_POSTSTATE: u64 = 0xFFFFFFFFFFFFFFFB;
 
-/// Returns `Some(pubkey)` if any AccountMeta in `instruction.accounts`
-/// references a known sysvar pubkey with `is_writable = true`.
-/// Sysvar accounts are read-only by design — the runtime maintains
-/// their contents — and agave's loader rejects an instruction that
-/// marks one as writable.
-/// Build the instruction-ordered account list used for serialization,
-/// post-state validation, and the returned `resulting_accounts`.
-///
-/// One entry per `AccountMeta` in `instruction.accounts`, looking up
-/// the matching account from the caller-supplied `accounts` slice by
-/// pubkey. The caller's slice may be in any order, contain extra
-/// entries (which are ignored), and is only used as a lookup source.
-///
-/// Duplicate `AccountMeta`s produce duplicate (cloned) entries that
-/// match the shape of `deserialize::deserialize_account_writes` output
-/// — so `pre` and `post` line up positionally in `validate_post_state`
-/// without any per-call ordering assumption on the caller.
-///
-/// Errors with `MissingAccount` if an `AccountMeta` references a
-/// pubkey that isn't in `accounts`.
+/// Build the instruction-ordered account list for serialization, post-state validation,
+/// and `resulting_accounts`. Duplicate `AccountMeta`s produce duplicate entries matching
+/// `deserialize_account_writes` output so pre/post align positionally in `validate_post_state`.
 fn accounts_for_instruction(
     instruction: &Instruction,
     accounts: &[(Pubkey, AccountSharedData)],
@@ -574,32 +403,23 @@ fn ix_accounts_writable_sysvar(instruction: &Instruction) -> Option<Pubkey> {
         .map(|m| m.pubkey)
 }
 
-/// Whether `pid` is one of the three sig-verify precompile pubkeys
-/// (`Ed25519SigVerify1111…`, `KeccakSecp256k11111…`,
-/// `Secp256r1SigVerify1111…`). agave's runtime routes these without
-/// entering the BPF VM; we mirror by detecting them in
-/// `process_instruction` and calling
-/// `SVM.Native.Precompiles.dispatch` via FFI.
+/// Whether `pid` is one of the three sig-verify precompile pubkeys (ed25519/secp256k1/secp256r1).
 fn is_precompile(pid: &Pubkey) -> bool {
     *pid == solana_sdk_ids::ed25519_program::ID
         || *pid == solana_sdk_ids::secp256k1_program::ID
         || *pid == solana_sdk_ids::secp256r1_program::ID
 }
 
-/// Per-account / cross-account invariants agave enforces at
-/// instruction exit. Failures are mapped to a single sentinel
-/// `ERR_INVALID_POSTSTATE` exit code at the program-result level.
+/// Per-account / cross-account invariants agave enforces at instruction exit; all failures → `ERR_INVALID_POSTSTATE`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostStateError {
     /// A read-only account's lamports, data, or owner changed.
     ReadOnlyAccountModified(Pubkey),
-    /// Sum of lamports across all listed accounts changed.
-    /// Caller wouldn't be able to mint or destroy lamports.
+    /// Lamport sum across listed accounts changed (mint or burn).
     LamportConservationViolated { pre_sum: u128, post_sum: u128 },
     /// Account data grew past `pre_len + MAX_PERMITTED_DATA_INCREASE`.
     DataLengthOverflow { pubkey: Pubkey, pre: usize, post: usize },
-    /// Account transitioned to a disallowed rent state. Mirrors
-    /// agave's `TransactionError::InsufficientFundsForRent`.
+    /// Disallowed rent-state transition (mirrors `InsufficientFundsForRent`).
     RentStateTransitionInvalid {
         pubkey: Pubkey,
         pre_lamports: u64,
@@ -609,20 +429,13 @@ pub enum PostStateError {
     },
 }
 
-/// Default Rent's `lamports_per_byte_year * exemption_threshold` —
-/// the canonical mainnet value. Default Rent is
-/// `lamports_per_byte_year = 3480`, `exemption_threshold = 2.0`, so
-/// the product is `3480 * 2 = 6960` lamports per byte per
-/// exemption window.
+/// Default Rent: `lamports_per_byte_year(3480) * exemption_threshold(2.0) = 6960` per byte.
 const RENT_LAMPORTS_PER_BYTE_EXEMPT: u64 = 6960;
 
-/// `ACCOUNT_STORAGE_OVERHEAD` — fixed per-account overhead included
-/// in the rent-exempt minimum.
+/// Fixed per-account overhead (`ACCOUNT_STORAGE_OVERHEAD`) included in the rent-exempt minimum.
 const ACCOUNT_STORAGE_OVERHEAD: u64 = 128;
 
-/// `Rent::minimum_balance(data_len)` with the default Rent
-/// parameters. Mirrors `solana-rent`'s formula:
-/// `(ACCOUNT_STORAGE_OVERHEAD + data_len) * lamports_per_byte_exempt`.
+/// `Rent::minimum_balance(data_len)` with default params: `(128 + data_len) * 6960`.
 fn rent_minimum_balance(data_len: usize) -> u64 {
     let bytes = data_len as u64;
     ACCOUNT_STORAGE_OVERHEAD
@@ -630,19 +443,12 @@ fn rent_minimum_balance(data_len: usize) -> u64 {
         .saturating_mul(RENT_LAMPORTS_PER_BYTE_EXEMPT)
 }
 
-/// Rent state of a Solana account. Mirrors
-/// `solana-svm::rent_calculator::RentState`. -/
+/// Rent state of a Solana account (mirrors `solana-svm::rent_calculator::RentState`).
 #[derive(Debug, PartialEq, Eq)]
 enum RentState {
-    /// `account.lamports == 0` — account doesn't exist for rent
-    /// purposes.
-    Uninitialized,
-    /// `0 < lamports < minimum_balance`. Rent-paying accounts are
-    /// only allowed in legacy form; modern accounts must be
-    /// rent-exempt at instruction exit.
-    RentPaying { lamports: u64, data_size: usize },
-    /// `lamports >= minimum_balance`. The canonical state.
-    RentExempt,
+    Uninitialized,  // lamports == 0
+    RentPaying { lamports: u64, data_size: usize },  // 0 < lamports < minimum_balance (legacy only)
+    RentExempt,     // lamports >= minimum_balance
 }
 
 fn get_account_rent_state(lamports: u64, data_size: usize) -> RentState {
@@ -655,15 +461,8 @@ fn get_account_rent_state(lamports: u64, data_size: usize) -> RentState {
     }
 }
 
-/// Whether a transition from `pre` to `post` rent state is allowed.
-/// Mirrors `solana-svm::rent_calculator::transition_allowed`.
-///
-/// - Transitioning *to* `Uninitialized` or `RentExempt` is always
-///   allowed (you can always close an account or top it up to
-///   exempt).
-/// - Transitioning *to* `RentPaying` is allowed only when the pre
-///   was already `RentPaying` with the *same* data size and the
-///   account wasn't credited (post lamports ≤ pre lamports).
+/// Whether a rent-state transition is allowed (mirrors `solana-svm::rent_calculator::transition_allowed`).
+/// To Uninitialized/RentExempt: always OK. To RentPaying: only from RentPaying with same size and no credit.
 fn rent_transition_allowed(pre: &RentState, post: &RentState) -> bool {
     match post {
         RentState::Uninitialized | RentState::RentExempt => true,
@@ -688,41 +487,25 @@ fn validate_post_state(
 
     const MAX_PERMITTED_DATA_INCREASE: usize = 10240;
 
-    // Lamport conservation across the *per-call* account list — what
-    // the instruction's serialized input region observably owns. The
-    // BPF program can move lamports between these accounts but not
-    // mint or burn. (System program's create_account / transfer are
-    // implemented as redistributions of existing lamports, so this
-    // invariant holds even when System mutates balances.)
+    // Lamport conservation across the per-call account list. Programs can redistribute but not mint/burn.
+    // System's create_account/transfer are redistributions, so this holds even there.
     let pre_sum: u128  = pre.iter().map(|(_, a)| u128::from(a.lamports())).sum();
     let post_sum: u128 = post.iter().map(|(_, a)| u128::from(a.lamports())).sum();
     if pre_sum != post_sum {
         return Err(PostStateError::LamportConservationViolated { pre_sum, post_sum });
     }
 
-    // Per-account checks. Both `pre` and `post` are in
-    // `instruction.accounts` order — `pre` comes from
-    // `accounts_for_instruction` (canonical) and `post` from
-    // `deserialize_account_writes` (one entry per AccountMeta in
-    // order). The zip pairs corresponding accounts.
+    // Per-account checks. `pre` from `accounts_for_instruction` + `post` from
+    // `deserialize_account_writes` are both in `instruction.accounts` order; zip pairs them.
     for ((_, pre_acct), (post_pk, post_acct)) in pre.iter().zip(post.iter()) {
         let pk = *post_pk;
 
-        // `executable` and `rent_epoch` are inherited from pre-state
-        // in `deserialize::parse_non_dup_record`, so we don't compare
-        // them here — there's nothing a program could have changed.
-
-        // Read-only enforcement: find this pubkey's AccountMeta. If
-        // it's marked `is_writable = false`, lamports / data / owner
-        // must all be unchanged. (A program can mutate the
-        // `original_data_len` header field via the
-        // `entrypoint!`-macro deserializer, but that's not surfaced
-        // through `deserialize_account_writes` — we only see the
-        // logical fields.)
+        // `executable`/`rent_epoch` inherited from pre-state by construction — nothing to compare.
+        // Read-only enforcement: `is_writable=false` → lamports/data/owner must be unchanged.
         let meta_writable = instruction.accounts.iter()
             .find(|m| m.pubkey == pk)
             .map(|m| m.is_writable)
-            .unwrap_or(true);  // not in ix.accounts → no constraint
+            .unwrap_or(true); // not in ix.accounts → unconstrained
         if !meta_writable {
             if pre_acct.lamports() != post_acct.lamports()
                 || pre_acct.data() != post_acct.data()
@@ -732,7 +515,7 @@ fn validate_post_state(
             }
         }
 
-        // Per-account data-growth bound (Tier-2 #9).
+        // Data-growth bound.
         let pre_len  = pre_acct.data().len();
         let post_len = post_acct.data().len();
         if post_len > pre_len + MAX_PERMITTED_DATA_INCREASE {
@@ -741,11 +524,8 @@ fn validate_post_state(
             });
         }
 
-        // Rent-state transition enforcement. Off by default — see
-        // `Svm::with_rent_state_enforcement` for the rationale.
-        // Mirrors agave's `solana-svm::rent_calculator::check_rent_state`
-        // applied per account at instruction exit. The incinerator
-        // pubkey is exempt.
+        // Rent-state transition enforcement (off by default — see `with_rent_state_enforcement`).
+        // Incinerator pubkey is exempt.
         if enforce_rent_state && pk != solana_sdk_ids::incinerator::ID {
             let pre_state  = get_account_rent_state(pre_acct.lamports(),  pre_len);
             let post_state = get_account_rent_state(post_acct.lamports(), post_len);
@@ -766,11 +546,7 @@ fn validate_post_state(
 
 #[cfg(test)]
 mod rent_state_tests {
-    //! Unit tests for the rent-state machinery
-    //! (`rent_minimum_balance`, `get_account_rent_state`,
-    //! `rent_transition_allowed`). These run regardless of the
-    //! `diff-mollusk` feature gate — the math itself is harness-
-    //! independent.
+    //! Unit tests for `rent_minimum_balance`/`get_account_rent_state`/`rent_transition_allowed`.
     use super::*;
 
     #[test]
@@ -824,8 +600,7 @@ mod rent_state_tests {
 
     #[test]
     fn transition_allowed_paying_to_paying_credited_rejected() {
-        // Crediting a rent-paying account is forbidden (would let
-        // someone "donate" lamports into a state below rent exemption).
+        // Crediting a rent-paying account is forbidden (would "donate" lamports below exemption threshold).
         let pre  = RentState::RentPaying { lamports: 500,  data_size: 200 };
         let post = RentState::RentPaying { lamports: 1000, data_size: 200 };
         assert!(!rent_transition_allowed(&pre, &post));
@@ -857,8 +632,7 @@ mod rent_state_tests {
         (pk, acct)
     }
 
-    /// Distinct pubkey for test setup. Seed-based so values stay
-    /// stable across runs.
+    /// Seed-based test pubkey — stable across runs.
     fn test_pk(seed: u8) -> Pubkey {
         let mut b = [0u8; 32];
         b[0] = seed;
@@ -867,8 +641,7 @@ mod rent_state_tests {
 
     #[test]
     fn validate_post_state_off_admits_rent_violating_transition() {
-        // Pre/post conserve lamports but B goes Uninitialized →
-        // RentPaying (10_000 < minimum_balance(200) ≈ 2.28M).
+        // B goes Uninitialized → RentPaying (10_000 < minimum_balance(200) ≈ 2.28M); off → OK.
         let a = test_pk(1);
         let b = test_pk(2);
         let ix = Instruction {
@@ -878,10 +651,6 @@ mod rent_state_tests {
         };
         let pre  = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 1_000_000, 0), acct(b, 10_000, 200)];
-        // Enforcement off: the rent-state machinery is bypassed
-        // entirely. All other invariants (executable/rent_epoch
-        // immutability, lamport conservation, data-length growth, RO
-        // writes) still run, but they're satisfied here.
         assert!(validate_post_state(&ix, &pre, &post, false).is_ok());
     }
 
@@ -906,7 +675,6 @@ mod rent_state_tests {
 
     #[test]
     fn validate_post_state_on_admits_uninit_to_exempt() {
-        // Crediting an uninitialized account up to rent-exempt is OK.
         let a = test_pk(1);
         let b = test_pk(2);
         let ix = Instruction {
@@ -914,21 +682,15 @@ mod rent_state_tests {
             accounts: vec![writable_meta(a), writable_meta(b)],
             data: vec![],
         };
-        // `a` must stay above its own exempt min (891_360 for size 0)
-        // post-debit, otherwise `a` itself transitions RentExempt →
-        // RentPaying (also disallowed). Give `a` enough headroom.
+        // `a` stays above min(0)=891_360 post-debit; `b` reaches min(200)=2_282_880 → RentExempt.
         let pre  = vec![acct(a, 5_000_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 2_717_120, 0), acct(b, 2_282_880, 200)];
-        // 2_282_880 = (128 + 200) * 6960 = minimum_balance(200) → RentExempt.
-        // 2_717_120 ≥ minimum_balance(0) = 891_360 → still RentExempt.
         assert!(validate_post_state(&ix, &pre, &post, true).is_ok());
     }
 
     #[test]
     fn validate_post_state_on_exempts_incinerator() {
-        // The incinerator pubkey is the global lamport-burn sink.
-        // Its rent state can be anything; agave (and we) skip the
-        // transition check for it.
+        // Incinerator is the global lamport-burn sink; rent-state check is skipped for it.
         let a = test_pk(1);
         let inc = solana_sdk_ids::incinerator::ID;
         let ix = Instruction {
@@ -981,8 +743,7 @@ mod rent_state_tests {
 
     #[test]
     fn accounts_for_instruction_reorders_to_instruction_order() {
-        // Caller passes accounts in [B, A] order, instruction.accounts
-        // is [A, B] order. Canonical must come out [A, B].
+        // Caller [B, A], instruction [A, B] → canonical [A, B].
         let a = test_pk(1);
         let b = test_pk(2);
         let ix = Instruction {
@@ -1020,10 +781,7 @@ mod rent_state_tests {
 
     #[test]
     fn accounts_for_instruction_clones_duplicates() {
-        // instruction.accounts contains the same pubkey twice. The
-        // canonical list emits one entry per AccountMeta — matching
-        // the shape of `deserialize_account_writes` output so that
-        // `validate_post_state` zips them positionally.
+        // Same pubkey twice in instruction.accounts → two entries (matching `deserialize_account_writes`).
         let a = test_pk(1);
         let ix = Instruction {
             program_id: test_pk(99),
@@ -1056,9 +814,7 @@ mod rent_state_tests {
 
     #[test]
     fn fake_sysvar_prefix_pubkey_is_not_flagged() {
-        // The old prefix-based detector flagged any pubkey starting
-        // with [0x06, 0xa7, 0xd5, 0x17]. The explicit-list detector
-        // must not.
+        // Old prefix-based detector flagged [0x06, 0xa7, 0xd5, 0x17] prefix; explicit-list must not.
         let mut bytes = [0u8; 32];
         bytes[0] = 0x06; bytes[1] = 0xa7; bytes[2] = 0xd5; bytes[3] = 0x17;
         let fake = Pubkey::new_from_array(bytes);
