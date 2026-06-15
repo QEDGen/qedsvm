@@ -1,60 +1,94 @@
-# Public API: the stable Lean package surface
+# Public API
 
-This is the module boundary that downstream consumers (qedgen / QEDGen/solana-skills) pin against:
+This is the package boundary downstream consumers should pin against:
 
 ```lean
 require qedsvm from git
   "https://github.com/QEDGen/qedsvm.git" @ "v0.5.0"
 ```
 
-The rule is one line: **`lean_lib SVM` is the frozen surface; `lean_lib Examples` is never API.** Everything importable under the `SVM` namespace is public, with one flagged exception (the bridging predicates, below). `examples/lean/` holds one-time proofs and generated lift demos; nothing in `SVM` imports from it, and nothing in it is stable.
+The public Lean surface is `lean_lib SVM`. The `Examples` library is a proof and generated-artifact suite; it is useful for reference and regression coverage, but it is not API.
 
-## What the surface contains
+## Package Boundary
 
-qedsvm owns the sBPF semantics and both engines that prove things about the binary. Both are importable API, not forked:
+| Surface | API status | Notes |
+| --- | --- | --- |
+| `SVM.*` Lean modules | Public | Importable package surface. |
+| `examples/lean/*` | Not API | Demo proofs, generated lifts, and regression pins. |
+| `qedsvm-rs` library crate | Public Rust executor surface | Conformant execution and diff-test support. |
+| Rust binaries and analysis tools | Tooling, not API | Includes `qedlift`, `disasm_to_lean`, `cli`, `qedrecover`, and `qed-analysis`. |
 
-### The SL / lift engine
+## Lift Engine
 
-Separation-logic triples over decoded instruction blocks, with proven compute-unit bounds. This is the engine `qedlift` targets.
+These modules define the separation-logic proof target emitted by `qedlift`:
 
-- `SVM.SBPF.SepLogic`: the assertion language (`↦U64`, `↦Bytes`, `memU64Is`, `memBytesIs`) and `cuTripleWithinMem`, the triple shape every lift produces
-- `SVM.SBPF.Tactic.SL`: `sl_block_auto` and the block-composition tactics
-- `SVM.SBPF.SpecGen`, `SVM.SBPF.InstructionSpecs.*`: the per-instruction Hoare triples (142) and their dispatch
-- `SVM.SBPF.Decode` + the `CodeReq` pinning: how program bytes are tied to the decoded instructions a proof talks about
-- `SVM.SBPF.AccountCodec`: the layout-general field codec (`FieldVal`, `codecCoarse`) and the keystone reshape lemmas `account_agg` / `codecCoarse_eq_fine` (coarse whole-account bytes vs fine per-field views, for any field layout)
-- `SVM.SBPF.SegAggregation`: `memBytesIs_segs`, the segment-list aggregation `account_agg` is built on
-- `SVM.SBPF.HeapSL`: `heapBumpPtr` / `heapBlockU64` / `heapBlock`, the heap-allocation predicates
+| Module | Provides |
+| --- | --- |
+| `SVM.SBPF.SepLogic` | Assertion language, memory/register atoms, and `cuTripleWithinMem`. |
+| `SVM.SBPF.Tactic.SL` | `sl_block_auto`, `sl_exact`, and block-composition automation. |
+| `SVM.SBPF.SpecGen` | Dispatch from decoded instructions to instruction specs. |
+| `SVM.SBPF.InstructionSpecs.*` | Per-instruction and syscall Hoare triples. |
+| `SVM.SBPF.Decode` | Byte decoding, `CodeReq` pinning, slot maps, and per-PC decode pins. |
+| `SVM.SBPF.AccountCodec` | Layout-general account field codecs: `FieldVal`, `codecCoarse`, `account_agg`, `codecCoarse_eq_fine`. |
+| `SVM.SBPF.SegAggregation` | `memBytesIs_segs` and byte-segment aggregation lemmas. |
+| `SVM.SBPF.HeapSL` | Heap predicates: `heapBumpPtr`, `heapBlockU64`, `heapBlock`. |
+| `SVM.SBPF.SatWitness` | Generated precondition satisfiability witnesses. |
 
-### The WP / fuel engine
+## Execution / WP Engine
 
-Bounded execution to an exit code. This is the engine qedgen's guard DSL (`qedguards`) relies on: a `requires` obligation is literally `(executeFn prog (initState r1 mem) fuel).exitCode = some <errCode>`.
+These modules define bounded execution and exit-code proofs:
 
-- `SVM.SBPF.Execute`: `executeFn`, `initState`, the step semantics
-- `SVM.SBPF.Tactic.WP`: `wp_exec`, the one-shot discharge tactic for exit-code goals
-- `SVM.SBPF.Runner` / `SVM.SBPF.RunnerBridge`: `runElfForExit` and the ELF-to-execution plumbing
+| Module | Provides |
+| --- | --- |
+| `SVM.SBPF.Execute` | `executeFn`, `initState`, and step semantics. |
+| `SVM.SBPF.Tactic.WP` | `wp_exec` and related bounded-execution tactics. |
+| `SVM.SBPF.Runner` | ELF execution helpers over the Lean VM. |
+| `SVM.SBPF.RunnerBridge` | Bridge used by runtime execution and trace capture. |
 
-### The discharge route
+## Discharge Route
 
-`SVM.SBPF.Tactic.Discharge` provides `qedsvm_discharge`: the tactic qedgen's generated parametric obligations (`accessor post = accessor pre ± amount`, the `ensures_axiom` shape) are discharged with, on top of a lifted triple. This replaced the MIR pilot (#24, #25): consumers state field-level claims against the codec accessors and discharge them directly; there is no intermediate abstract machine.
+`SVM.SBPF.Tactic.Discharge` provides `qedsvm_discharge`, the tactic used to discharge field-level obligations from a lifted `cuTripleWithinMem` theorem. Generated refinements use it to connect concrete memory cells to codec accessors such as account balances, mint supply, and layout-general field updates.
 
-### The rest of the library surface
+## Core Semantics
 
-- `SVM.SBPF.{ISA, Machine, Memory, Elf}`: the core semantics and data model
-- `SVM.SBPF.{Murmur3, SyscallHash, CryptoTrust}`: syscall hashing and the explicit crypto trust statements
-- `SVM.Syscalls.*` and `SVM.SBPF.InstructionSpecs.Syscalls.*`: syscall semantics and their specs
-- `SVM.Native.*`: native program models (System, ComputeBudget, precompiles, loader)
-- Solana primitives: `SVM.Solana.{AccountInfo, Cpi, Pda}` and `SVM.Pubkey`
-- The `qedsvm-rs` Rust library crate (`lib.rs`, `svm.rs`, `diff.rs`, `ffi.rs`, `serialize` / `deserialize` / `wire`): the conformant executor and diff-testing surface. The Rust *bins* (`qedlift`, `disasm_to_lean`, `cli`) and the standalone `qedrecover` / `qed-analysis` crates are tools, not library API.
+The following modules are part of the public model surface:
 
-## The one evolving piece: the bridging predicates
+| Module family | Provides |
+| --- | --- |
+| `SVM.SBPF.{ISA,Machine,Memory,Region,Elf}` | sBPF instruction set, machine state, memory model, region table, and ELF loading. |
+| `SVM.SBPF.{Murmur3,SyscallHash,CryptoTrust}` | Syscall hashing and explicit crypto trust statements. |
+| `SVM.Syscalls.*` | Modeled Solana syscall behavior. |
+| `SVM.Native.*` | Native program models: System, ComputeBudget, precompiles, and loader behavior. |
+| `SVM.Solana.*` | Solana account/CPI/PDA data structures and account codecs. |
+| `SVM.Pubkey` | Pubkey representation. |
 
-`SVM.Solana.Abstract.{State, Refinement}` and the field codecs (`SVM.Solana.{Token,Mint,Counter}AccountCodec`, `TokenAccount`, `{Token,Mint}FieldCodec`) are the **bridging surface** between lifted asm triples and abstract claims. Within it:
+## Refinement Surface
 
-- **Stable target:** `AsmRefinesFieldUpdate`, the layout-parameterized obligation (one predicate over `codecCoarse base [FieldVal list]` for any account shape), plus the `account_agg` / `codecCoarse_eq_fine` reshape route it rides on.
-- **Evolving, do not pin:** the record-keyed `AsmRefinesToken*` / `AsmRefinesCounterIncrement` predicates and the abstract-record codecs they key on. They are kept for historical continuity and are scheduled to converge onto the field-codec route as qedgen consumes this surface (QEDGen/solana-skills#86); expect deletion, not deprecation cycles.
+Generated abstract refinements target `SVM.Solana.Abstract.Refinement`.
 
-If you are integrating today: state obligations via `AsmRefinesFieldUpdate` and the codec accessors, not via the `AsmRefinesToken*` records.
+| Predicate | Current use |
+| --- | --- |
+| `AsmRefinesFieldUpdate` | Layout-general field update over `codecCoarse base fields`; preferred target for new non-token account shapes. |
+| `AsmRefinesTokenTransfer` | SPL token `Transfer` and `TransferChecked` generated refinements. |
+| `AsmRefinesTokenMintTo` | SPL token `MintTo` generated refinement. |
+| `AsmRefinesTokenBurn` | SPL token `Burn` generated refinement. |
+| `AsmRefinesCounterIncrement` | Counter increment generated refinement. |
+
+For new integrations, prefer field-codec obligations and accessors where possible. The token/mint/counter predicates are supported by current generated examples, but they are more shape-specific than `AsmRefinesFieldUpdate`.
+
+## Rust Surface
+
+The `qedsvm-rs` library crate exposes the conformant executor and harness-facing APIs:
+
+| Area | Files |
+| --- | --- |
+| Executor API | `lib.rs`, `svm.rs` |
+| Diff/conformance support | `diff.rs` |
+| Lean FFI bridge | `ffi.rs` |
+| Solana wire/account serialization | `serialize`, `deserialize`, `wire` modules |
+
+The Rust crate executes programs on the qedsvm model. It does not prove program properties by itself; verification is through generated Lean and `lake build`.
 
 ## Versioning
 
-Pre-1.0: pin an exact tag (`@ "v0.5.0"`). Within the frozen surface above, breaking changes bump the minor version and get a new tag; the bridging predicates flagged as evolving may change or disappear without a major signal until #86 lands. `lean_lib Examples` and the Rust bins may change at any time.
+qedsvm is pre-1.0. Consumers should pin an exact tag. Breaking changes to the `SVM` Lean surface are expected to receive a new minor tag. `Examples` modules and Rust binaries/tools may change without API compatibility guarantees.

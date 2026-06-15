@@ -1,168 +1,131 @@
-# Lift coverage matrix: what an arbitrary `.so` + IDL gets you today
+# Coverage Boundary
 
-Date: 2026-06-05
-Status: reference for the current lift/recover coverage
-Verified against: `1df62c1` (`SVM/SBPF/SpecGen.lean`, `qedsvm-rs/src/bin/qedlift.rs`, `SVM/SBPF/ISA.lean`)
+Status: current lift/recover coverage
 Related: [PIPELINE.md](PIPELINE.md), [API.md](API.md)
 
-This is the honest boundary of the `.so` (+ Codama IDL, + trace) to machine-checked-proof
-pipeline. The headline: the **raw lift to a Hoare triple is broad**, but the **mechanical
-end-to-end story (raw triple to abstract refinement, no hand-written Lean) is narrow** and
-gated on (a) a concrete execution trace and (b) the program fitting one of a handful of codec
-shapes. This is not a general decompiler-verifier for an arbitrary binary yet, and the
-boundaries are sharp.
+This document describes what the `.so + IDL + trace -> Lean proof` pipeline can verify. The raw Hoare-triple lift is broader than the fully mechanical abstract-refinement path. A program is fully mechanical only when it fits all required axes: modeled instructions, a single selected path, modeled syscalls, and a registered refinement/codec shape.
 
-A useful mental model is four independent axes. A program is only "fully mechanical" if it
-clears all four: every instruction modeled, single happy path, only modeled syscalls, and a
-registered codec shape.
+This is not a general verifier for arbitrary Solana binaries.
 
-## Legend
+## Status Legend
 
-| Mark | Meaning |
+| Status | Meaning |
 | --- | --- |
-| ✅ | Mechanical: lifts end-to-end with no hand-written Lean. |
-| 🟡 | Triple-only / manual path: lifts the raw triple, but via the `sl_block_iter` manual-spec route or with no abstract-refinement meaning attached. |
-| 🟠 | Hand-authored: needs new Lean (a MIR intrinsic + abstract triple + refinement predicate + the first per-program proof). |
-| ❌ | Unmodeled in the proof layer. May still execute in the diff-tester against mollusk/agave (that is conformance, not a proof). |
+| Mechanical | Emitted and checked without hand-written Lean for the supported shape. |
+| Triple only | A raw `cuTripleWithinMem` theorem can be emitted, but no abstract refinement is attached. |
+| Manual | Requires new Lean definitions, specs, or refinement code. |
+| Unsupported | Not modeled in the proof layer. The program may still run in conformance tests. |
 
-## Axis 1: instruction semantics (raw lift)
+## Instruction Semantics
 
-Broad. The symbolic executor plus `SpecGen` cover the common compute opcodes. The real gaps
-are few and named.
+The symbolic executor and `SpecGen` cover common compute and memory instructions. Unsupported opcodes fail the lift or the Lean build.
 
 | Class | Status | Notes |
 | --- | --- | --- |
-| ALU64 imm+reg (`mov add sub mul and or xor lsh rsh arsh neg`) | ✅ | Full auto-dispatch via `sl_block_auto`. |
-| ALU32 imm+reg (same ops, zero-extended) | ✅ | Same. |
-| `div` / `mod` (64/32, imm+reg) | 🟡 | Modeled in the executor; carries a `divisor != 0` side hypothesis, so no `sl_block_auto` auto-dispatch. Rides the emitted `sl_block_iter` manual-spec path. |
-| Loads `ldxb/h/w/dw`, `lddw` | ✅ | Width-specific value bounds surfaced as side conditions. |
-| Stores, reg source `stxb/h/w/dw` | ✅ | |
-| Stores, imm source `stb/sth/stw/stdw` | ✅ | Wired at `SpecGen.lean` via the `st{b,h,w,dw}_spec` wrappers. All four widths; the `sth`/ST_H_IMM gap closed 2026-06-10 (pinned by `halfword_store.so`: diff-test + lift). |
-| Unconditional jump `ja` | ✅ | |
-| Conditional jumps `jeq`/`jne`, imm src, not-taken | ✅ | Auto-dispatch at `SpecGen.lean:337-345`. |
-| Conditional jumps, taken branch | 🟡 | Emitted via `sl_block_iter` (`use_block_iter` when any branch is taken or a call is present). |
-| Conditional jumps, reg src or other ops (`jgt jlt jsgt jset` ...) | 🟡 | Specs exist in `Jump.lean`; no `sl_block_auto` dispatch (`SpecGen.lean:232` rejects non-imm src). Manual path only. |
-| `call_local` + `exit` (nested return) | ✅ | Frame push/pop modeled; r6..r10 restored. |
-| `callx` (indirect call) | 🟡 | Spec exists (`ControlFlow.lean`); no `SpecGen` dispatch. |
-| Any other opcode | ❌ | Executor errors `opcode 0x.. not yet modelled`; Lean errors `SpecGen.lean:398`. |
+| ALU64 imm/reg: `mov add sub mul and or xor lsh rsh arsh neg` | Mechanical | Auto-dispatched through `sl_block_auto` where applicable. |
+| ALU32 imm/reg: same operations, zero-extended | Mechanical | Same proof route as ALU64. |
+| `div` / `mod` | Triple only | Modeled with a nonzero-divisor side condition; not fully auto-dispatched. |
+| Loads: `ldxb`, `ldxh`, `ldxw`, `ldxdw`, `lddw` | Mechanical | Width-specific value bounds are surfaced as side conditions. |
+| Stores, register source: `stxb`, `stxh`, `stxw`, `stxdw` | Mechanical |  |
+| Stores, immediate source: `stb`, `sth`, `stw`, `stdw` | Mechanical |  |
+| Unconditional jump `ja` | Mechanical |  |
+| Conditional jumps, imm source, not taken | Mechanical | Auto-dispatched where supported by `SpecGen`. |
+| Conditional jumps, taken branch | Triple only | Emitted through the iterative proof route. |
+| Conditional jumps, register source or non-`jeq`/`jne` forms | Triple only | Specs exist for more jump forms than the automatic dispatcher handles. |
+| `call_local` + `exit` | Mechanical | Models frame push/pop and callee return. |
+| `callx` | Triple only | Spec exists, but codegen support is limited. |
+| Other opcodes | Unsupported | Fail closed rather than emitting an unchecked theorem. |
 
-**Failure mode is clean.** An unmodeled opcode stops `qedlift` before it emits, or fails Lean
-elaboration. Nothing is silently lifted wrong.
+## Control Flow
 
-## Axis 2: control flow
-
-Single happy path only. The walker is a single-path symbolic executor, not a CFG analyzer.
+`qedlift` proves one selected path. It is not a whole-CFG verifier.
 
 | Shape | Status | Notes |
 | --- | --- | --- |
-| Straight-line block | ✅ | |
-| Forward unconditional jump | ✅ | |
-| Discriminator dispatch cascade (N-arm) | ✅ | One arm per invocation; the dispatcher is re-walked fresh per arm. Resolved by `--target-disc` or `--trace`. |
-| Internal call / return | ✅ | |
-| Loops (back-branch) | 🟡 → ❌ | No general support and no loop invariants. A trace gives bounded unrolling to the trace length only. A defaulted back-branch spins to `walk_cap` and errors. |
-| Path merge / multi-arm-at-once | ❌ | No joins. No "these N arms cover the whole program" theorem; each arm is an independent triple. |
+| Straight-line block | Mechanical |  |
+| Forward unconditional jump | Mechanical |  |
+| Discriminator dispatch cascade | Mechanical | One selected arm per lift, chosen by sidecar/targeting and optionally trace. |
+| Internal call / return | Mechanical |  |
+| Back-branch / loop | Triple only | A trace gives bounded unrolling for that concrete path only; no loop invariant is inferred. |
+| Path merge / whole-program arm coverage | Unsupported | No theorem states that all possible arms or paths are covered. |
 
-## Axis 3: syscalls (proof layer)
+## Syscalls
 
-Narrow. This is the largest runtime-vs-lift divergence. The ISA enumerates ~40 syscalls
-(`SVM/SBPF/ISA.lean`); the lift models 5.
+The Lean ISA includes a broad syscall enum. The lift currently emits proof obligations for a narrower set.
 
-| Syscall | Lift (proof) | Notes |
+| Syscall | Lift status | Notes |
 | --- | --- | --- |
-| `sol_log_` | ✅ | `qedlift.rs:4261`. |
-| `sol_memset_` | ✅ | 3-register shape (dst/fill/count), `qedlift.rs:4249`. |
-| `sol_get_sysvar` (generic) | ✅ | Opaque return + CU bound, `qedlift.rs:4255`. Actual sysvar contents not modeled. |
-| `sol_invoke_signed_rust` (CPI) | 🟡 | `qedlift.rs:4273`. Modeled as "r0 <- 0, envelope returns"; the callee's effects are NOT verified. |
-| `sol_invoke_signed_c` (CPI) | 🟡 | `qedlift.rs:4279`. Same caveat. |
-| Hashing (`sha256 sha512 keccak256 blake3 poseidon`) | ❌ | ISA only. |
-| Curve ops (`secp256k1_recover`, `curve_*`, `alt_bn128_*`, `big_mod_exp`) | ❌ | ISA only. |
-| PDA (`create_program_address`, `try_find_program_address`) | ❌ | ISA only. |
-| Memory (`memcpy memmove memcmp`) | ❌ | ISA only. |
-| Return data (`get_return_data`, `set_return_data`) | ❌ | ISA only. |
-| Sysvar getters (`clock rent epoch_schedule` ...) | ❌ | ISA only; only the generic `sol_get_sysvar` is modeled. |
-| Introspection (`remaining_compute_units`, `stack_height`, `sibling_instruction`) | ❌ | ISA only. |
-| `sol_alloc_free_` (heap allocator) | ❌ | Deprecated; the heap is treated as ordinary `↦U64` memory instead (see the `HeapSL` predicates). |
+| `sol_log_` | Mechanical | Models the log call shape and CU bound used by generated lifts. |
+| `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. |
+| `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. |
+| `sol_invoke_signed_rust` | Triple only | Modeled as an effect-free CPI envelope for the lifted caller path; callee effects are not verified by this theorem. |
+| `sol_invoke_signed_c` | Triple only | Same CPI limitation as the Rust ABI form. |
+| Hashing syscalls | Unsupported | ISA/runtime support may exist, but no lifted proof obligation is emitted. |
+| Curve/precompile syscalls | Unsupported | Same boundary as hashing. |
+| PDA syscalls | Unsupported | Same boundary as hashing. |
+| `memcpy`, `memmove`, `memcmp` | Unsupported | Not emitted by `qedlift` as proof obligations. |
+| Return data syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
+| Dedicated sysvar getters | Unsupported | Only the generic `sol_get_sysvar` proof path is modeled by the lift. |
+| Introspection syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
+| `sol_alloc_free_` | Unsupported | Heap proofs use ordinary memory predicates instead. |
 
-A ❌ here means "no proof obligation", not "cannot run". The diff-tester executes the real
-binary against mollusk/agave, so these syscalls run during conformance; they just have no
-modeled meaning in the lifted theorem.
+Unsupported here means "not verified by the lift", not "cannot execute". Diff tests can still run programs that use unverified runtime behavior.
 
-## Axis 4: refinement / codec (abstract meaning)
+## Abstract Refinement / Codec Coverage
 
-Narrow and IDL-gated. `CodecKind = { Token, Mint, Counter, Vault }` (`qedlift.rs:2868`). The
-registry (`refine_registry`, `qedlift.rs:2876`) maps arm names to obligations:
+Raw triples prove a selected bytecode path. Abstract refinements additionally connect that path to account-level state claims.
 
-| Arm name(s) | Obligation | Codec(s) | Status |
-| --- | --- | --- | --- |
-| `Transfer`, `TransferChecked` | `AsmRefinesTokenTransfer` | Token, Token | ✅ |
-| `MintTo` | `AsmRefinesTokenMintTo` | Mint, Token | ✅ |
-| `Burn` | `AsmRefinesTokenBurn` | Token, Mint | ✅ |
-| `counterIncrement` | `AsmRefinesCounterIncrement` | Counter (single u64, coarse = fine) | ✅ |
-| `VaultIncrement` | `AsmRefinesFieldUpdate` | Vault (layout-general field list) | ✅ |
-| heap allocation | `<Module>_allocates` corollary | `heapBumpPtr` / `heapBlockU64` | ✅ |
-| anything else | none | — | 🟠 |
-
-The `Vault` / `AsmRefinesFieldUpdate` path is the genuinely layout-general one: any
-`{Pubkey, u64, u8, blob}` field list is parsed from the Codama IDL (`parse_account_layout`)
-into a `FieldVal` list and reshaped through `codecCoarse` / `account_agg`. Coverage:
-
-- **Blob / option / enum / array fields** (`FieldKind::Bytes`): now mechanized. An untouched
-  blob field is framed as a single opaque `.blob [.gap g]` (a free `ByteArray`, rendered
-  `↦Bytes`); `account_agg` / `memBytesIs_segs` reshape it coarse to fine generically. Verified
-  end-to-end by `Generated.VaultBlobRefinement` (sorry-free `lake build`, axiom-clean) and the
-  `vault_blob_refinement_is_mechanically_emitted` pin test. The blob's byte size is not pinned
-  in the obligation (the gap is universally quantified), so the theorem holds for any contents.
-- **Non-constant deltas**: Counter and Vault both assume post = `NatAdd(InitMem, Const)`. A
-  register-computed delta needs custom refinement.
-- **Owned (handler-touched) bytes inside a blob**: the generic vault path only emits
-  fully-framed blobs (a single `.gap`), not a mixed `[.byte, .gap, .u64, ...]` segment list. Two
-  things to note. (1) For SPL token/mint this is already mechanized on the *token* path:
-  `rest_segments` + `render_token_agg_module` discover the owned bytes of the `rest` region and
-  emit the segment list, so the common touched-blob instance is covered. (2) The open gap is a
-  *non-token* program that reads or writes scattered bytes inside an IDL-opaque field; the
-  generic `account_agg` machinery already proves it (`memBytesIs_segs` over the mixed list), only
-  the vault codegen does not yet discover owned bytes from the lift atoms and emit them. A
-  read-only touched blob fits `AsmRefinesFieldUpdate` directly (pre == post for the blob); a
-  written one makes the blob differ pre/post and shades into new state semantics.
-- **New state semantics** (swap, deposit, anything not token/mint/+const-field): needs the full
-  hand-authored stack: a `MirStmt` constructor + `runStep` clause + abstract triple + an
-  `AsmRefines*` predicate + the first per-program proof.
-
-## IDL consumption: derived vs fallback
-
-The Codama IDL carries account layout only (field offsets, sizes, kinds). A TOML IDL carries
-just discriminators for batch targeting, no layout, so it falls back to the hardcoded constants.
-
-| Quantity | Derived from IDL | Fallback (when IDL absent / parse fails) |
+| Arm / shape | Predicate | Status |
 | --- | --- | --- |
-| Token rest-region start | `amount.offset + 8` | `72` |
-| Token account size | `layout.size` | `165` |
-| Mint supply offset | `supply.offset` | `36` |
-| Mint rest offset | `supply.offset + 8` | `44` |
-| Mint account size | `layout.size` | `82` |
-| Vault field layout | fully IDL-driven `FieldVal` list | none: bails if IDL missing or account not found |
+| SPL `Transfer` | `AsmRefinesTokenTransfer` | Mechanical |
+| SPL `TransferChecked` | `AsmRefinesTokenTransfer` | Mechanical |
+| SPL `MintTo` | `AsmRefinesTokenMintTo` | Mechanical |
+| SPL `Burn` | `AsmRefinesTokenBurn` | Mechanical |
+| Counter increment | `AsmRefinesCounterIncrement` | Mechanical |
+| Vault constant field update | `AsmRefinesFieldUpdate` | Mechanical |
+| Heap bump allocation | Heap corollary over `heapBumpPtr` / `heapBlock*` | Mechanical |
+| SPL `CloseAccount` | Raw traced triple + generated balance-style corollary | Triple only |
+| SPL `InitializeMint2` | Raw traced triple | Triple only |
+| New operation semantics | New predicate/spec required | Manual |
 
-## Prerequisites for a non-trivial lift
+## Account Layouts
 
-1. **A concrete trace is effectively mandatory** beyond a single straight-line arm.
-   Multi-arm dispatch needs `--target-disc` or `--trace` to choose the path, and
-   syscall-vs-internal-call disambiguation only works in trace mode. In practice you need a
-   runnable input fixture, not just the binary plus IDL. Capture is now a single script
-   invocation (`scripts/capture_trace.sh`), but it is still a separate pipeline step rather
-   than part of one orchestrated qedgen command.
-2. **A Codama JSON IDL** for any layout-general (vault) or batch lift. Without it you are
-   limited to the hardcoded token/mint/counter shapes.
-
-## Bottom line: what an arbitrary program buys you
-
-| Tier | Programs | Needs |
+| Layout feature | Status | Notes |
 | --- | --- | --- |
-| Fully mechanical, no hand Lean | SPL Transfer / TransferChecked / MintTo / Burn, Counter-increment, Vault `{pubkey,u64,u8,blob}` +const field update, heap-bump allocation | `.so` + trace; IDL for vault/batch |
-| Raw triple only (no abstract meaning) | any straight-line / dispatch / bounded-trace arm over the modeled opcodes + 5 syscalls | `.so` + a concrete `--trace` |
-| Needs hand-authoring | new intrinsic semantics, handler-touched bytes inside a blob, variable deltas, loops with invariants | new MIR intrinsic + triple + refinement + first proof |
-| Not modeled at all | hashing, curves, PDA derivation, memcpy, return data, real CPI callee semantics, real sysvar contents | spec work in `SpecGen` + ISA |
+| SPL token account | Mechanical | Token amount and owned rest-region bytes are handled by token-specific aggregation. |
+| SPL mint account | Mechanical | Mint supply and owned rest-region bytes are handled by mint-specific aggregation. |
+| Counter account | Mechanical | Single `u64` field. |
+| Vault-style field list | Mechanical | IDL-driven `{Pubkey, u64, u8, blob}` field lists through `codecCoarse` and `account_agg`. |
+| Untouched blob fields | Mechanical | Framed as opaque `ByteArray` gaps. |
+| Read-only owned bytes inside a blob | Mechanical for covered generated shapes | Split into byte/gap segments when the codegen recognizes the owned bytes. |
+| Written bytes inside an otherwise opaque blob | Manual | Requires state semantics for how the blob changes. |
+| Non-constant deltas | Manual | Existing counter/vault refinements assume constant addition. |
 
-Comprehensive and genuinely mechanical inside the token / mint / counter / vault / heap
-envelope with a trace. Broad but trace-bound at the raw-triple level. Clearly bounded the
-moment you hit a loop with an invariant, a real syscall (hash / curve / PDA / CPI), a
-non-constant delta, or brand-new operation semantics.
+## IDL Requirements
+
+Codama JSON IDLs carry discriminator and account-layout metadata. TOML IDLs are sufficient for simple batch targeting but do not provide layout-general account fields.
+
+| Quantity | Codama JSON IDL | Fallback |
+| --- | --- | --- |
+| Instruction discriminator | Derived | Required for recovery/batch targeting. |
+| Account roles | Derived | Required for account-aware sidecar metadata. |
+| Token account layout | Derived | Hardcoded SPL token constants if layout is unavailable. |
+| Mint account layout | Derived | Hardcoded SPL mint constants if layout is unavailable. |
+| Vault/account field list | Derived | No fallback; lift bails without layout. |
+
+## Practical Requirements
+
+- A concrete trace is effectively required for branchy happy-path lifts.
+- A runnable fixture is required to capture that trace.
+- A Codama JSON IDL is required for layout-general account refinements.
+- The emitted CU bound must be less than or equal to the sidecar budget.
+- Generated Lean must pass `lake build`.
+
+## Summary
+
+| Tier | Programs | Requirements |
+| --- | --- | --- |
+| Fully mechanical abstract refinement | SPL Transfer / TransferChecked / MintTo / Burn, counter increment, vault constant field update, heap bump allocation | `.so`, sidecar metadata, trace when branchy, Codama IDL when layout is needed |
+| Raw Hoare triple only | Selected paths over modeled instructions and modeled lift syscalls, including generated CloseAccount and InitializeMint2 traced lifts | `.so`, targeting metadata, concrete trace for branchy paths |
+| Manual extension | New state semantics, loops with invariants, non-constant account deltas, unrecognized blob mutations | New Lean specs/refinement predicates/codegen |
+| Unsupported by proof layer | Unmodeled opcodes or syscalls such as hashing, curve ops, PDA derivation, return data, real CPI callee effects | New instruction/syscall specs and lift support |

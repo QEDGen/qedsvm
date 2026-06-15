@@ -4,12 +4,12 @@
 
 A Lean 4 model of the Solana Virtual Machine. It operates on the compiled `.so`, the same artifact mainnet runs, and does two separate jobs:
 
-- **Execute** a program on a model proven byte-for-byte conformant with agave (differential-tested against mollusk across 46 fixtures, p-token Transfer at 76 CU identical, full suite in seconds). The `qedsvm-rs` crate is this executor, published mainly so the model can be diff-tested against mollusk and reused by fuzzing and diff-test harnesses.
-- **Verify** a program against a separation-logic spec with a proven compute-unit bound, in Lean: 142 per-instruction Hoare triples, composition tactics, and `qedlift` to lift a `.so` straight to a machine-checked proof with no `sorry`.
+- **Execute** a program on a model diff-tested against mollusk/agave. The `qedsvm-rs` crate is this executor, published mainly so the model can be reused by conformance tests, fuzzing, and downstream diff-test harnesses.
+- **Verify** a selected bytecode path against a separation-logic spec with a proven compute-unit bound, in Lean. `qedlift` emits machine-checked `cuTripleWithinMem` theorems from compiled bytecode; supported shapes also get abstract refinement corollaries.
 
 > **Execution is not verification.** The Rust crate tells you what a program does on one input; it does not prove what it does on all of them. If you only use `qedsvm-rs`, you have a conformant executor, not a verified program. Verification lives entirely in the Lean layer.
 
-Small trust base: Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean` plus 21 explicit crypto trust statements. No rustc.
+Small trust base: Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean`, explicit crypto trust statements, and the generated proof obligations that `lake build` checks. The Rust executor is not a verifier.
 
 ## Install
 
@@ -54,9 +54,9 @@ Worked examples: [`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncremen
 
 ### Lift a compiled program to a proof (`qedlift`)
 
-`qedlift` and its sibling `qedrecover` are the lifting front-end: they turn a binary into a proof obligation against the spec layer. This is the surface [qedgen](https://github.com/QEDGen) consumes, and long-term it lives there; it ships here for now as the most direct demonstration of the binary → proof path. `qedrecover` (scoping) is an analysis-only standalone crate at `qedsvm-rs/qedrecover/`, so it builds without the Lean bridge; `qedlift` is a `qedsvm-rs` bin behind the `qedrecover` feature.
+`qedlift` and its sibling `qedrecover` are the lifting front-end. `qedrecover` binds IDL/overlay claims to locations in the binary and emits `qedmeta.toml`; it is an analysis-only standalone crate at `qedsvm-rs/qedrecover/`. `qedlift` consumes binary bytes plus targeting metadata and emits Lean proof modules.
 
-Point it at a `.so` and it emits a Lean module that embeds the `.text` bytes, proves they decode to the expected `List Insn`, states a `cuTripleWithinMem` Hoare triple synthesized by symbolic execution, and discharges it with `sl_block_auto`. The spec statement is mechanical from the binary, not hand-typed, and the proof closes with no `sorry`.
+Point it at a `.so` and it emits a Lean module that pins the walked `.text` bytes through `SVM.SBPF.Decode`, states a `cuTripleWithinMem` Hoare triple synthesized by symbolic execution, and discharges the proof. Small binaries use a full `decodeProgram` theorem; large binaries use per-PC decode pins. The proof closes with no `sorry`.
 
 ```bash
 cargo run --features qedrecover --bin qedlift -- \
@@ -64,7 +64,7 @@ cargo run --features qedrecover --bin qedlift -- \
   --output examples/lean/Generated/ByteIncrementLifted.lean
 ```
 
-With `--trace`, qedlift follows the real happy path through branchy bytecode and additionally emits a `*_balance_correct` corollary (clean Nat debit/credit). The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, the Counter family, Logger, a layout-general Vault (field-update + blob), heap-bump allocation, and six p-token arms (Transfer, TransferChecked, MintTo, Burn, CloseAccount, InitializeMint2), all proof-complete. Batch mode (`--idl`) lifts every instruction in a TOML or Codama IDL.
+With `--trace`, qedlift follows a concrete path through branchy bytecode. The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, Counter, Logger, layout-general Vault examples, heap-bump allocation, and traced p-token arms. Abstract refinements are registered for Transfer, TransferChecked, MintTo, Burn, Counter increment, Vault field update, and heap allocation; other generated traced lifts are raw Hoare triples unless a refinement predicate is registered. Batch mode (`--idl`) targets IDL-described instructions.
 
 For the full `.so` + IDL to proof workflow (qedrecover scoping, trace capture, qedlift, and `lake build`), see [`docs/PIPELINE.md`](docs/PIPELINE.md).
 
@@ -84,19 +84,14 @@ Crate-level docs (differential testing, consuming qedsvm downstream, the `solana
 
 ## Coverage
 
-| Layer | Status |
-| --- | --- |
-| ALU + jumps + memory + call/return | ✅ |
-| ELF64 loader (all `R_BPF_64_*`) | ✅ |
-| Crypto syscalls (12), agave-pinned crates | ✅ |
-| Native programs (System, ComputeBudget, BPF Loader v3, precompiles) | ✅ Firedancer-aligned |
-| CPI (Rust + C ABI, depth-2+, PDA signer promotion) | ✅ |
-| 142 per-instruction Hoare triples | ✅ |
-| Composition tactics (`sl_block_iter`, `sl_branch`, `sl_rw_abs`) | ✅ |
-| End-to-end proofs over compiler-emitted bytecode | ✅ 76 / 76 CU on p-token Transfer, exitCode = 0 |
-| Bytecode → proof lift (`qedlift`) | ✅ `.so` → `sorry`-free Lean triple + CU bound |
+qedsvm has two coverage surfaces:
 
-See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the precise lift/recover coverage boundary and [`docs/PIPELINE.md`](docs/PIPELINE.md) for the `.so` → proof toolchain.
+| Surface | What it means |
+| --- | --- |
+| Executor conformance | The Lean VM and Rust harness run compiled programs and diff-test observable behavior against mollusk/agave. |
+| Proof coverage | `qedlift` emits Lean Hoare triples for selected paths over modeled instructions and modeled lift syscalls. Supported codec shapes get abstract refinements. |
+
+The proof pipeline is path-scoped. It is broad at the raw Hoare-triple layer and narrower at the abstract-refinement layer. See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the precise boundary and [`docs/PIPELINE.md`](docs/PIPELINE.md) for the `.so` → proof toolchain.
 
 ## Layout
 
@@ -112,10 +107,6 @@ qedsvm-rs/            Cargo workspace
 └── lean-bridge/      Agave-pinned crypto staticlib called by Lean
 docs/                 Reference docs (API, PIPELINE, COVERAGE)
 ```
-
-## Origin
-
-Extracted on 2026-05-12 from [QEDGen/solana-skills](https://github.com/QEDGen/solana-skills). The methodology (separation logic over machine state with bounded Hoare triples) is borrowed from [Verified-zkEVM/evm-asm](https://github.com/Verified-zkEVM/evm-asm), which descends from Kennedy/Benton/Jensen/Dagand, *"Coq: The world's best macro assembler?"* (PPDP 2013).
 
 ## License
 
