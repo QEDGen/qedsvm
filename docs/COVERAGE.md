@@ -147,8 +147,9 @@ just discriminators for batch targeting, no layout, so it falls back to the hard
 1. **A concrete trace is effectively mandatory** beyond a single straight-line arm.
    Multi-arm dispatch needs `--target-disc` or `--trace` to choose the path, and
    syscall-vs-internal-call disambiguation only works in trace mode. In practice you need a
-   runnable input fixture, not just the binary plus IDL. Capture is still manual (see
-   PIPELINE.md seam 2).
+   runnable input fixture, not just the binary plus IDL. Capture is now a single script
+   invocation (`scripts/capture_trace.sh`), but it is still a separate pipeline step rather
+   than part of one orchestrated qedgen command.
 2. **A Codama JSON IDL** for any layout-general (vault) or batch lift. Without it you are
    limited to the hardcoded token/mint/counter shapes.
 

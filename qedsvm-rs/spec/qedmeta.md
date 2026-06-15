@@ -1,4 +1,4 @@
-# qedmeta — sidecar verification artifact (v0.1 draft)
+# qedmeta - sidecar verification artifact (v0.2 / schema v2)
 
 ## What it is
 
@@ -82,7 +82,9 @@ specific binary.
 ## Format reference
 
 See `qedsvm-rs/tests/fixtures/p_token.qedmeta.toml` for a concrete
-example. The schema (v0.1):
+example. Current files use `spec_version = "qedmeta/0.2"` and
+`schema_version = 2`; older v1 sidecars are still accepted by current
+consumers when they omit `[instruction.recovered]`.
 
 | Section | Purpose |
 |---------|---------|
