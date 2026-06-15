@@ -5,6 +5,7 @@
 # the qedsvm-specific bits that no IDL describes:
 #   * which MIR intrinsic each instruction refines
 #   * the CU budget we claim to verify against
+#   * instruction-account role -> account-data layout bindings
 #
 # Production form (when qedgen ships) is whatever qedgen prefers
 # emitting; the only contract is "supply the same fields keyed by
@@ -22,3 +23,9 @@ idl = "spl_token.codama.json"
 name      = "transfer"
 refines   = "Mir.tokenTransfer"
 cu_budget = 76
+
+# Codama names the instruction roles; the overlay says which roles carry
+# token-account bytes for high-level refinement.
+[instruction.account_layouts]
+source      = "token"
+destination = "token"

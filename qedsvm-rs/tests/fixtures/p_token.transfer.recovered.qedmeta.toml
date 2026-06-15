@@ -15,6 +15,98 @@ inline = false
 ref    = "spl_token.codama.json"
 sha256 = "c89ff1397238d09605423e2012e2d2d0a919ef469133df5b4127fd4348484994"
 
+[[account_layout]]
+name   = "mint"
+source = "codama"
+size   = 82
+
+[[account_layout.field]]
+name        = "mintAuthority"
+offset      = 0
+kind        = "bytes"
+width_bytes = 36
+[[account_layout.field]]
+name        = "supply"
+offset      = 36
+kind        = "u64"
+[[account_layout.field]]
+name        = "decimals"
+offset      = 44
+kind        = "byte"
+[[account_layout.field]]
+name        = "isInitialized"
+offset      = 45
+kind        = "byte"
+[[account_layout.field]]
+name        = "freezeAuthority"
+offset      = 46
+kind        = "bytes"
+width_bytes = 36
+
+[[account_layout]]
+name   = "multisig"
+source = "codama"
+size   = 355
+
+[[account_layout.field]]
+name        = "m"
+offset      = 0
+kind        = "byte"
+[[account_layout.field]]
+name        = "n"
+offset      = 1
+kind        = "byte"
+[[account_layout.field]]
+name        = "isInitialized"
+offset      = 2
+kind        = "byte"
+[[account_layout.field]]
+name        = "signers"
+offset      = 3
+kind        = "bytes"
+width_bytes = 352
+
+[[account_layout]]
+name   = "token"
+source = "codama"
+size   = 165
+
+[[account_layout.field]]
+name        = "mint"
+offset      = 0
+kind        = "pubkey"
+[[account_layout.field]]
+name        = "owner"
+offset      = 32
+kind        = "pubkey"
+[[account_layout.field]]
+name        = "amount"
+offset      = 64
+kind        = "u64"
+[[account_layout.field]]
+name        = "delegate"
+offset      = 72
+kind        = "bytes"
+width_bytes = 36
+[[account_layout.field]]
+name        = "state"
+offset      = 108
+kind        = "byte"
+[[account_layout.field]]
+name        = "isNative"
+offset      = 109
+kind        = "bytes"
+width_bytes = 12
+[[account_layout.field]]
+name        = "delegatedAmount"
+offset      = 121
+kind        = "u64"
+[[account_layout.field]]
+name        = "closeAuthority"
+offset      = 129
+kind        = "bytes"
+width_bytes = 36
+
 [[instruction]]
 name      = "transfer"
 refines   = "Mir.tokenTransfer"
@@ -29,10 +121,12 @@ format      = "u8"
 name     = "source"
 writable = true
 signer   = false
+layout   = "token"
 [[instruction.account]]
 name     = "destination"
 writable = true
 signer   = false
+layout   = "token"
 [[instruction.account]]
 name     = "authority"
 writable = false

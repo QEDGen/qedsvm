@@ -90,9 +90,11 @@ consumers when they omit `[instruction.recovered]`.
 |---------|---------|
 | `target` | Binary hash, program name/id, source provenance |
 | `idl` | Hash-pin to the IDL the metadata was produced against (inline or external) |
+| `[[account_layout]]` | Fixed account-data layout decoded from the IDL |
+| `[[account_layout.field]]` | One field in the enclosing account layout |
 | `[[instruction]]` | Per-instruction claim + recovered metadata + proof binding |
 | `instruction.discriminator` | Discriminator value, width, format |
-| `[[instruction.account]]` | One row per account in instruction-order |
+| `[[instruction.account]]` | One row per account in instruction-order; may bind `layout = "<account_layout.name>"` |
 | `instruction.recovered` | Build-time-frozen PCs and CFG slice |
 | `[[instruction.idiom]]` | v0.2+: block-level idiom annotations (lever 4 from issue #11) |
 | `[[instruction.tag]]` | v0.2+: happy/sad-path tagging from execution traces |
@@ -108,13 +110,24 @@ Top-level fields:
 ## Sidecar emission (v0.2)
 
 qedrecover EMITS this sidecar: `qedrecover --qedmeta-out <path>` writes
-`[target]`/`[idl]` (real SHA-256 hash-pins), `[[instruction]]` +
+`[target]`/`[idl]` (real SHA-256 hash-pins), fixed Codama
+`[[account_layout]]` tables when available, `[[instruction]]` +
 `[instruction.discriminator]` + `[[instruction.account]]`, the
 `[instruction.recovered]` arm decomposition, and the v0.2 tables below.
 (`[instruction.proofs]` is NOT emitted — it links to a Lean theorem, a
 human/qedgen assertion the recogniser doesn't know.) Pinned by
 `qedmeta_sidecar_emits_recovered_facts`; the recover→lift loop is
 exercised end-to-end (qedlift `--qedmeta` consumes the emitted file).
+
+- **Account layouts** (`[[account_layout]]`). Fixed-size Codama account
+  structs are normalized to `{ name, source = "codama", size }` plus
+  `[[account_layout.field]]` rows carrying `{ name, offset, kind }`.
+  `kind` is one of `pubkey`, `u64`, `byte`, or `bytes`; opaque byte
+  fields also carry `width_bytes`. Instruction accounts can bind to a
+  layout via `layout = "token"` when the overlay supplies a role→layout
+  map such as `[instruction.account_layouts] source = "token"`. These
+  facts are provenance for generated account-codec/refinement lemmas;
+  qedrecover does not infer whole account serde from bytecode.
 
 - **Idiom annotations** (`[[instruction.idiom]]`). The asm-side
   recogniser (`idioms.rs`) vocabulary — `u64_field_{increment,decrement}`

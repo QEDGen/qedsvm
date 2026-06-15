@@ -79,11 +79,18 @@ fn codama_field_kind(
     defined: &HashMap<String, serde_json::Value>,
 ) -> Option<FieldKind> {
     let size = codama_type_size(ty, defined)?;
-    Some(match ty.get("kind").and_then(|k| k.as_str()) {
+    let resolved = if ty.get("kind").and_then(|k| k.as_str()) == Some("definedTypeLinkNode") {
+        let name = ty.get("name")?.as_str()?;
+        defined.get(name)?.get("type")?
+    } else {
+        ty
+    };
+    Some(match resolved.get("kind").and_then(|k| k.as_str()) {
         Some("publicKeyTypeNode")              => FieldKind::Pubkey,
         Some("numberTypeNode") if size == 8    => FieldKind::U64,
         Some("numberTypeNode") if size == 1    => FieldKind::Byte,
         Some("booleanTypeNode") if size == 1   => FieldKind::Byte,
+        Some("enumTypeNode") if size == 1      => FieldKind::Byte,
         _                                      => FieldKind::Bytes(size),
     })
 }
@@ -143,6 +150,7 @@ mod tests {
         assert_eq!((by("amount").offset, by("amount").kind.clone()), (64, FieldKind::U64));
         // delegate (option<pubkey>) starts the opaque rest region at 72.
         assert_eq!(by("delegate").offset, 72);
+        assert_eq!((by("state").offset, by("state").kind.clone()), (108, FieldKind::Byte));
     }
 
     #[test]

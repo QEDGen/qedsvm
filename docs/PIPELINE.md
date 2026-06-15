@@ -141,6 +141,7 @@ The qedsvm overlay supplies qedsvm-specific intent:
 | Instructions in scope | overlay `[[instruction]]` entries |
 | Claimed refinement target | overlay `refines` |
 | Claimed CU budget | overlay `cu_budget` |
+| Instruction account layout bindings | overlay `[instruction.account_layouts]` |
 | IDL path | overlay `idl` |
 
 The Codama IDL supplies standard program metadata:

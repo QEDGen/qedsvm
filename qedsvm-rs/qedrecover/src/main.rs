@@ -15,7 +15,10 @@ use solana_sbpf::{
     vm::ContextObject,
 };
 
-use qed_analysis::PcMap;
+use qed_analysis::{
+    layout::{parse_account_layout, AccountLayout, FieldKind},
+    PcMap,
+};
 use sha2::Digest;
 
 #[derive(Debug, Deserialize)]
@@ -31,6 +34,10 @@ struct OverlayIx {
     // No claim fields are required; an unclaimed instruction is still recovered.
     refines: Option<String>,
     cu_budget: Option<u64>,
+    /// Optional instruction-account role -> account-data layout binding.
+    /// Example: `[instruction.account_layouts] source = "token"`.
+    #[serde(default)]
+    account_layouts: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -388,6 +395,75 @@ enum Recovery<'a> {
     Arm(RecoveredArm<'a>),
 }
 
+fn collect_account_layouts(idl_value: &serde_json::Value) -> Vec<AccountLayout> {
+    let Some(accounts) = idl_value
+        .get("program")
+        .unwrap_or(idl_value)
+        .get("accounts")
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+
+    let mut layouts = Vec::new();
+    for account in accounts {
+        let Some(name) = account.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        if let Ok(layout) = parse_account_layout(idl_value, name) {
+            layouts.push(layout);
+        }
+    }
+    layouts.sort_by(|a, b| a.name.cmp(&b.name));
+    layouts
+}
+
+fn validate_account_layout_bindings(
+    overlay: &Overlay,
+    idl: &Idl,
+    layouts: &[AccountLayout],
+) -> Result<(), String> {
+    let layout_names: BTreeSet<&str> = layouts.iter().map(|l| l.name.as_str()).collect();
+    for ovix in &overlay.instructions {
+        let idl_ix = idl
+            .program
+            .instructions
+            .iter()
+            .find(|i| i.name == ovix.name)
+            .ok_or_else(|| {
+                format!(
+                    "overlay names instruction `{}` but IDL has no such instruction",
+                    ovix.name
+                )
+            })?;
+        let role_names: BTreeSet<&str> = idl_ix.accounts.iter().map(|a| a.name.as_str()).collect();
+        for (role, layout) in &ovix.account_layouts {
+            if !role_names.contains(role.as_str()) {
+                return Err(format!(
+                    "overlay instruction `{}` binds unknown account role `{}`",
+                    ovix.name, role
+                ));
+            }
+            if !layout_names.contains(layout.as_str()) {
+                return Err(format!(
+                    "overlay instruction `{}` binds account role `{}` to unknown or unsupported account layout `{}`",
+                    ovix.name, role, layout
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn field_kind_name(kind: &FieldKind) -> &'static str {
+    match kind {
+        FieldKind::Pubkey => "pubkey",
+        FieldKind::U64 => "u64",
+        FieldKind::Byte => "byte",
+        FieldKind::Bytes(_) => "bytes",
+    }
+}
+
 /// Emit the recovered arm metadata as a Lean module.
 fn emit_lean<W: std::io::Write>(
     out: &mut W,
@@ -705,6 +781,7 @@ fn emit_qedmeta<W: std::io::Write>(
     ovix: &OverlayIx,
     idl: &Idl,
     idl_ix: &IdlInstruction,
+    account_layouts: &[AccountLayout],
     so_sha256: &str,
     idl_sha256: &str,
     recovered: &RecoveredArm<'_>,
@@ -733,6 +810,24 @@ fn emit_qedmeta<W: std::io::Write>(
     writeln!(out, "sha256 = \"{}\"", idl_sha256)?;
     writeln!(out)?;
 
+    for layout in account_layouts {
+        writeln!(out, "[[account_layout]]")?;
+        writeln!(out, "name   = \"{}\"", layout.name)?;
+        writeln!(out, "source = \"codama\"")?;
+        writeln!(out, "size   = {}", layout.size)?;
+        writeln!(out)?;
+        for field in &layout.fields {
+            writeln!(out, "[[account_layout.field]]")?;
+            writeln!(out, "name        = \"{}\"", field.name)?;
+            writeln!(out, "offset      = {}", field.offset)?;
+            writeln!(out, "kind        = \"{}\"", field_kind_name(&field.kind))?;
+            if let FieldKind::Bytes(n) = &field.kind {
+                writeln!(out, "width_bytes = {}", n)?;
+            }
+        }
+        writeln!(out)?;
+    }
+
     writeln!(out, "[[instruction]]")?;
     writeln!(out, "name      = \"{}\"", idl_ix.name)?;
     if let Some(r) = ovix.refines.as_ref() {
@@ -757,6 +852,9 @@ fn emit_qedmeta<W: std::io::Write>(
             serde_json::Value::Bool(b) => writeln!(out, "signer   = {}", b)?,
             serde_json::Value::String(s) => writeln!(out, "signer   = \"{}\"", s)?,
             _ => writeln!(out, "signer   = false")?,
+        }
+        if let Some(layout) = ovix.account_layouts.get(&acc.name) {
+            writeln!(out, "layout   = \"{}\"", layout)?;
         }
     }
     writeln!(out)?;
@@ -943,6 +1041,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let idl_path = overlay_dir.join(&overlay.idl);
     let idl_text = std::fs::read_to_string(&idl_path)?;
     let idl: Idl = serde_json::from_str(&idl_text)?;
+    let idl_value: serde_json::Value = serde_json::from_str(&idl_text)?;
+    let account_layouts = collect_account_layouts(&idl_value);
+    validate_account_layout_bindings(&overlay, &idl, &account_layouts)
+        .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     let bytes = std::fs::read(&args.so)?;
     let loader = Arc::new(BuiltinProgram::new_mock());
@@ -967,6 +1069,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  instructions: {}", analysis.instructions.len());
     println!("  basic blocks: {}", analysis.cfg_nodes.len());
     println!("  functions:    {}", analysis.functions.len());
+    println!("  account layouts: {}", account_layouts.len());
     println!();
 
     // Overlay claims decorate the summary line but their absence does NOT skip recovery.
@@ -1149,7 +1252,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => "—",
             };
             let writ = if acc.is_writable { "writable" } else { "ro" };
-            println!("      [{}] {:14} {} {}", i, acc.name, writ, signer);
+            let layout = ovix
+                .account_layouts
+                .get(&acc.name)
+                .map(|l| format!(" layout={}", l))
+                .unwrap_or_default();
+            println!(
+                "      [{}] {:14} {} {}{}",
+                i, acc.name, writ, signer, layout
+            );
         }
 
         match recover_one(&analysis, &pc_map, idl_ix)? {
@@ -1294,6 +1405,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ovix,
                         &idl,
                         idl_ix,
+                        &account_layouts,
                         &so_sha256,
                         &idl_sha256,
                         &recovered,
@@ -1508,6 +1620,10 @@ mod tests {
             .unwrap();
         let idl_text = std::fs::read_to_string("../tests/fixtures/spl_token.codama.json").unwrap();
         let idl: Idl = serde_json::from_str(&idl_text).unwrap();
+        let idl_value: serde_json::Value = serde_json::from_str(&idl_text).unwrap();
+        let account_layouts = collect_account_layouts(&idl_value);
+        validate_account_layout_bindings(&overlay, &idl, &account_layouts)
+            .expect("overlay account layout bindings");
         let idl_ix = idl
             .program
             .instructions
@@ -1531,6 +1647,7 @@ mod tests {
             ovix,
             &idl,
             idl_ix,
+            &account_layouts,
             &so_sha256,
             &idl_sha256,
             &recovered,
@@ -1552,6 +1669,23 @@ mod tests {
 
         // Verify the consumer contract: parses through the same shape qedlift's QedMeta uses.
         #[derive(serde::Deserialize)]
+        struct Field {
+            name: String,
+            offset: usize,
+            kind: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct Layout {
+            name: String,
+            size: usize,
+            field: Vec<Field>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Acct {
+            name: String,
+            layout: Option<String>,
+        }
+        #[derive(serde::Deserialize)]
         struct Rec {
             arm_entry_pc: usize,
             dispatch_load_pc: usize,
@@ -1559,17 +1693,44 @@ mod tests {
         }
         #[derive(serde::Deserialize)]
         struct Ix {
+            account: Vec<Acct>,
             recovered: Rec,
         }
         #[derive(serde::Deserialize)]
         struct Meta {
             schema_version: u32,
+            #[serde(default)]
+            account_layout: Vec<Layout>,
             #[serde(rename = "instruction")]
             instructions: Vec<Ix>,
         }
         let meta: Meta = toml::from_str(&emitted).expect("emitted sidecar must parse");
         assert_eq!(meta.schema_version, 2, "emitted schema must be v2");
+        let token = meta
+            .account_layout
+            .iter()
+            .find(|layout| layout.name == "token")
+            .expect("token account layout emitted");
+        assert_eq!(token.size, 165, "token layout size");
+        let amount = token
+            .field
+            .iter()
+            .find(|field| field.name == "amount")
+            .expect("token amount field emitted");
+        assert_eq!((amount.offset, amount.kind.as_str()), (64, "u64"));
         let rec = &meta.instructions[0].recovered;
+        let source = meta.instructions[0]
+            .account
+            .iter()
+            .find(|account| account.name == "source")
+            .expect("source account emitted");
+        assert_eq!(source.layout.as_deref(), Some("token"));
+        let destination = meta.instructions[0]
+            .account
+            .iter()
+            .find(|account| account.name == "destination")
+            .expect("destination account emitted");
+        assert_eq!(destination.layout.as_deref(), Some("token"));
         assert_eq!(
             rec.arm_entry_pc, 304,
             "emitted arm entry must be logical 304"
