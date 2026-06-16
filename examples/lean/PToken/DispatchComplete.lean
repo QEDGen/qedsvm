@@ -426,4 +426,56 @@ theorem route_312_body_other
     rw [if_pos h2] at h322
     sl_block_iter [h316, h317, h318, h319, h320, h321, h322]
 
+/-! ## Option (c): dispatch-routing completeness (the rescoped Gap #1 result)
+
+The full Option (a) per-arm partition (every discriminator + account state → a
+proven arm OR a fail-closed fault) requires routing the deep CFG to its
+DISTRIBUTED fault sinks: unmatched discriminators funnel into arm paths that fail
+validation far down (no shortcut — see docs/DISPATCH_COMPLETENESS_PLAN.md). Gap #1
+is therefore rescoped to Option (c): the TRACTABLE completeness core — the
+dispatcher is TOTAL and DETERMINISTIC. Every discriminator value is routed to a
+definite, known destination; no byte value is "stuck"/unhandled.
+
+Honest scope: this proves routing COMPLETENESS (no discriminator escapes the
+dispatch), classified by destination. It does NOT prove the deeper per-path
+account-state validation, nor that unmatched inputs fault (the Option (a) fault
+leaf). The supporting routing lemmas above carry the dispatch two levels deep
+(byte → {304,201,312}; the [r1+88] dword sub-dispatch for both families; the PC
+312 shared sub-dispatcher's first level), all standard-axiom clean. -/
+
+/-- The entry dispatcher's routing function is TOTAL: EVERY discriminator lands
+    on exactly one of the three known destinations (304 = byte-3 family,
+    201 = byte-4 family, 312 = the shared sub-dispatcher). `Route` is a total
+    `if`-cascade with those three leaves, so the range fact is structural — no
+    discriminator value falls through to an undefined destination. -/
+theorem dispatch_byte_total :
+    ∀ d : Nat, Route d = 304 ∨ Route d = 201 ∨ Route d = 312 := by
+  intro d
+  unfold Route
+  split
+  · exact Or.inl rfl
+  · split
+    · exact Or.inr (Or.inl rfl)
+    · exact Or.inr (Or.inr rfl)
+
+/-- **Option (c) dispatch-routing completeness.** The entry dispatch is
+    exhaustive AND deterministic over all discriminators:
+
+    1. (totality) every discriminator routes to one of the three known
+       destinations — `dispatch_byte_total`; and
+    2. (semantics) the program actually follows `Route` from PC 198 in ≤ 3 steps
+       for every `disc` — `entry_route`.
+
+    Together: no discriminator value escapes routing or lands somewhere undefined.
+    This is the rescoped Gap #1 result (routing completeness); the deeper
+    per-path validation + fault coverage of Option (a) is out of scope. -/
+theorem dispatch_routing_complete :
+    (∀ d : Nat, Route d = 304 ∨ Route d = 201 ∨ Route d = 312) ∧
+    (∀ initR1 initR2 disc : Nat,
+      cuTripleWithinMem 3 0 198 (Route disc) dispatchCr
+        ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) ** (effectiveAddr initR1 0 ↦ₘ disc))
+        ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ disc % 256) ** (effectiveAddr initR1 0 ↦ₘ disc))
+        (fun rt => rt.containsRange (effectiveAddr initR1 0) 1 = true)) :=
+  ⟨dispatch_byte_total, entry_route⟩
+
 end Examples.PTokenDispatchComplete
