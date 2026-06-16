@@ -204,4 +204,77 @@ theorem route_byte3_family
     rw [if_pos h165] at h3'
     sl_block_iter [h0, h1, h2, h3']
 
+/-! ## Second level, byte=4 family (PCs 201 → 202): the symmetric `[r1+88]` sub-dispatch
+
+`entry_route` sends disc byte = 4 to PC 201, where the `[r1+88]` dword is checked
+(TransferChecked / InitializeMint2 family):
+
+- PC 201: `ldxdw r2 ← [r1+88]`
+- PC 202: `jne r2 165 → 312`  (dword = 165 → continue @ 203; else → 312)
+
+Symmetric to `route_byte3_family`; walks PCs 198/199/200/201/202. -/
+
+/-- Where the byte=4 family goes after the `[r1+88]` dword check: 203 (continue)
+    or 312 (shared region). -/
+def Route4 (dword : Nat) : Nat := if dword = toU64 165 then 203 else 312
+
+/-- CodeReq for the byte=4 family's first two dispatch levels. -/
+def cr4Family : CodeReq :=
+  cr![ 198 ↦ .ldx .byte .r2 .r1 0,
+       199 ↦ .jeq .r2 (.imm 3) 304,
+       200 ↦ .jne .r2 (.imm 4) 312,
+       201 ↦ .ldx .dword .r2 .r1 88,
+       202 ↦ .jne .r2 (.imm 165) 312 ]
+
+/-- Byte=4 family routing completeness: when the discriminator byte is 4, EVERY
+    `[r1+88]` dword routes from PC 198 to `Route4 dword` (203 / 312) in 5 steps. -/
+theorem route_byte4_family
+    (initR1 initR2 byte dword : Nat)
+    (h4 : byte % 256 = toU64 4) (hdword : dword < 2 ^ 64) :
+    cuTripleWithinMem 5 0 198 (Route4 dword) cr4Family
+      ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
+        (effectiveAddr initR1 0 ↦ₘ byte) ** (effectiveAddr initR1 88 ↦U64 dword))
+      ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ dword) **
+        (effectiveAddr initR1 0 ↦ₘ byte) ** (effectiveAddr initR1 88 ↦U64 dword))
+      (fun rt => rt.containsRange (effectiveAddr initR1 0) 1 = true ∧
+                 rt.containsRange (effectiveAddr initR1 88) 8 = true) := by
+  have h0 := ldxb_spec .r2 .r1 0 initR2 initR1 byte 198 (by decide)
+  have h1 := jeq_imm_spec .r2 3 (byte % 256) 199 304
+  rw [if_neg (show ¬(byte % 256 = toU64 3) by rw [h4]; decide)] at h1
+  have h2 := jne_imm_spec .r2 4 (byte % 256) 200 312
+  rw [if_neg (fun hn => hn h4)] at h2
+  have h3 := ldxdw_spec .r2 .r1 88 (byte % 256) initR1 dword 201 (by decide) hdword
+  unfold Route4 cr4Family
+  by_cases h165 : dword = toU64 165
+  · rw [if_pos h165]
+    have h4' := jne_imm_spec .r2 165 dword 202 312
+    rw [if_neg (fun hn => hn h165)] at h4'
+    sl_block_iter [h0, h1, h2, h3, h4']
+  · rw [if_neg h165]
+    have h4' := jne_imm_spec .r2 165 dword 202 312
+    rw [if_pos h165] at h4'
+    sl_block_iter [h0, h1, h2, h3, h4']
+
+/-! ## Fault-leaf primitive: the error-return idiom aborts
+
+The dispatcher's fail-closed paths terminate in the idiom `mov64 r0 <errcode>;
+exit` (e.g. PC 9247 `mov64 r0 10` / PC 9248 `exit` returns error code 10). This
+primitive proves that idiom ABORTS with `exitCode = toU64 errcode`, the
+reusable building block for the fault leaf: any unmatched-discriminator path that
+reaches such a block aborts (`exit_aborts_spec` reads r0; the `mov` pins it to
+the error code). Composed via `cuTripleAbortsWithin_seq_abort` (`mov` is a normal
+step; `exit` is the abort). The `callStackIs []` atom carries `exit`'s top-level
+condition (the success/error exit needs an empty call stack). -/
+theorem error_return_aborts (errcode vR0Old pc : Nat) :
+    cuTripleAbortsWithin 2 0 pc
+      (cr![ pc ↦ .mov64 .r0 (.imm errcode), pc + 1 ↦ .exit ])
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 errcode) := by
+  have h1 := cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs [])
+    (mov64_imm_spec .r0 errcode vR0Old pc (by decide))
+  have h2 := exit_aborts_spec_cuTriple (toU64 errcode) (pc + 1)
+  have hd : (CodeReq.singleton pc (.mov64 .r0 (.imm errcode))).Disjoint
+            (CodeReq.singleton (pc + 1) .exit) := by sl_disjoint_codereq
+  exact cuTripleAbortsWithin_seq_abort hd h1 h2
+
 end Examples.PTokenDispatchComplete
