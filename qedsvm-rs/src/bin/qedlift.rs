@@ -74,6 +74,29 @@ struct QedMeta {
     schema_version: u32,
     #[serde(rename = "instruction")]
     instructions: Vec<QedMetaIx>,
+    /// `[[account_layout]]` tables emitted by qedrecover (#41 Phase 2). Consumed as the
+    /// refinement-codegen layout source so qedlift trusts qedrecover's validated layout
+    /// instead of re-parsing the IDL. `default` so pre-layout sidecars still load.
+    #[serde(default, rename = "account_layout")]
+    account_layouts: Vec<QedMetaAccountLayout>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct QedMetaAccountLayout {
+    name: String,
+    size: usize,
+    #[serde(default, rename = "field")]
+    fields: Vec<QedMetaField>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct QedMetaField {
+    name:   String,
+    offset: usize,
+    kind:   String,
+    /// Present only for `kind = "bytes"` (opaque region width); mirrors `field_kind_name`.
+    #[serde(default)]
+    width_bytes: Option<usize>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -96,6 +119,40 @@ struct QedMetaDisc {
 struct QedMetaRecovered {
     /// Logical (decoded-array) arm-entry PC — same space as walker / `.pcs` traces, NOT a raw slot.
     arm_entry_pc: usize,
+}
+
+/// Reconstruct the shared `AccountLayout`s from a sidecar's `[[account_layout]]` tables.
+/// Inverse of qedrecover's emitter (`field_kind_name` + `width_bytes`); the round-trip is
+/// exact for the codecs qedlift consumes (pubkey/u64/byte/bytes).
+fn sidecar_account_layouts(meta: &QedMeta) -> Vec<AccountLayout> {
+    meta.account_layouts.iter().map(|l| AccountLayout {
+        name: l.name.clone(),
+        size: l.size,
+        fields: l.fields.iter().map(|f| AccountField {
+            name:   f.name.clone(),
+            offset: f.offset,
+            kind: match f.kind.as_str() {
+                "pubkey" => FieldKind::Pubkey,
+                "u64"    => FieldKind::U64,
+                "byte"   => FieldKind::Byte,
+                // "bytes" (or any unknown) → opaque region; width_bytes carries the size.
+                _        => FieldKind::Bytes(f.width_bytes.unwrap_or(0)),
+            },
+        }).collect(),
+    }).collect()
+}
+
+/// Resolve an account layout by name, preferring qedrecover's sidecar tables over a fresh
+/// IDL parse. Sidecar layouts are validated + emitted by qedrecover; the IDL fallback keeps
+/// non-qedmeta runs (batch / single-arm `--idl`) byte-identical to the prior behaviour.
+fn resolve_layout(
+    sidecar: Option<&[AccountLayout]>,
+    idl:     Option<&serde_json::Value>,
+    name:    &str,
+) -> Option<AccountLayout> {
+    sidecar
+        .and_then(|ls| ls.iter().find(|l| l.name == name).cloned())
+        .or_else(|| idl.and_then(|v| parse_account_layout(v, name).ok()))
 }
 
 fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
@@ -193,7 +250,7 @@ fn load_idl_value(path: &Path) -> Option<serde_json::Value> {
 }
 
 // Account layout types live in the shared `qed-analysis` crate (#41 Phase 2) so qedrecover shares field names/offsets.
-use qed_analysis::layout::{FieldKind, parse_account_layout};
+use qed_analysis::layout::{AccountField, AccountLayout, FieldKind, parse_account_layout};
 
 #[cfg(test)]
 mod layout_tests {
@@ -275,6 +332,65 @@ mod layout_tests {
         assert_eq!(rlean, refine_on_disk,
             "VaultRefinement.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
+    }
+
+    /// #41 loop closure: qedlift consumes qedrecover's emitted account layout. The vault
+    /// refinement *requires* a layout (it returns `None` without one), so it cleanly
+    /// distinguishes "layout consumed" from "fell back to a hardcoded default". Feeding the
+    /// layout through the sidecar channel (no `--idl`) must reproduce the IDL-derived
+    /// refinement exactly, and dropping every layout source must suppress the refinement.
+    #[test]
+    fn vault_refinement_consumes_sidecar_layout() {
+        let so = std::path::Path::new("tests/fixtures/vault.so");
+        let idl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+                .expect("read vault.codama.json")).expect("parse vault IDL");
+        let ctx = load_binary(so).expect("load vault.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault.so");
+
+        // (a) IDL path — the existing, blessed behaviour.
+        let via_idl = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
+            None, Some("VaultIncrement"), Some(&idl), None, None).expect("lift via idl");
+
+        // (b) Sidecar path — layout supplied as qedrecover emits it; NO `--idl`.
+        let layouts = vec![parse_account_layout(&idl, "vault").expect("vault layout")];
+        let via_sidecar = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
+            None, Some("VaultIncrement"), None, None, Some(&layouts)).expect("lift via sidecar");
+
+        // (c) No layout source at all.
+        let via_none = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
+            None, Some("VaultIncrement"), None, None, None).expect("lift with no layout");
+
+        assert_eq!(via_idl.refinement, via_sidecar.refinement,
+            "sidecar-supplied layout must reproduce the IDL-derived vault refinement");
+        assert_eq!(via_idl.aggregation, via_sidecar.aggregation);
+        assert!(via_sidecar.refinement.is_some(),
+            "sidecar layout must drive the vault refinement codegen");
+        assert!(via_none.refinement.is_none(),
+            "vault refinement needs a layout source — the sidecar is what supplies it");
+    }
+
+    /// The sidecar `[[account_layout]]` → `AccountLayout` converter is the exact inverse of
+    /// qedrecover's emitter (`kind` + `width_bytes` round-trip). Pins the SPL token/mint shapes.
+    #[test]
+    fn sidecar_account_layout_roundtrip() {
+        let meta = load_qedmeta(std::path::Path::new(
+            "tests/fixtures/p_token.transfer.recovered.qedmeta.toml"))
+            .expect("load recovered sidecar");
+        let layouts = sidecar_account_layouts(&meta);
+
+        let token = layouts.iter().find(|l| l.name == "token").expect("token layout");
+        assert_eq!(token.size, 165);
+        let f = |n: &str| token.fields.iter().find(|f| f.name == n).expect("field");
+        assert_eq!((f("mint").offset,   f("mint").kind.clone()),   (0,  FieldKind::Pubkey));
+        assert_eq!((f("amount").offset, f("amount").kind.clone()), (64, FieldKind::U64));
+        assert_eq!((f("state").offset,  f("state").kind.clone()),  (108, FieldKind::Byte));
+        // opaque region keeps its width (`bytes` + `width_bytes` round-trip).
+        assert_eq!(f("delegate").kind, FieldKind::Bytes(36));
+
+        let mint = layouts.iter().find(|l| l.name == "mint").expect("mint account layout");
+        let supply = mint.fields.iter().find(|f| f.name == "supply").expect("supply field");
+        assert_eq!((supply.offset, supply.kind.clone()), (36, FieldKind::U64));
     }
 
     /// `vault.so` with a `[u8;32]` owner field: framed as opaque `.blob [.gap g]` (`↦Bytes`), exercising the `memBytesIs_segs` blob aggregation path.
@@ -4129,6 +4245,8 @@ fn emit_refinement(
     start_pc:     usize,
     exit_pc:      usize,
     idl:          Option<&serde_json::Value>,
+    // qedrecover-emitted layouts; preferred over `idl` for account-codec offsets (#41 loop closure).
+    sidecar_layouts: Option<&[AccountLayout]>,
     // Returns `(refine_module, refine_lean, optional (agg_module, agg_lean))`.
 ) -> Option<(String, String, Option<(String, String)>)> {
     let spec = refine_registry(arm_name)?;
@@ -4142,7 +4260,7 @@ fn emit_refinement(
     // Vault codec (IDL layout, multi-field): owns updated u64, frames the rest, reshapes via `account_agg`.
     if spec.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Vault)) {
         return emit_vault_refinement(&spec, lift_module, pre, post_clean,
-            abs_subst, vars, n_cu, start_pc, exit_pc, idl);
+            abs_subst, vars, n_cu, start_pc, exit_pc, idl, sidecar_layouts);
     }
 
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
@@ -4227,8 +4345,7 @@ fn emit_refinement(
 
     // Emit aggregation module from detected owned-byte patterns. Token -> `PToken.TransferAggregation`;
     // mint -> `PToken.MintAggregation`. Rest-region start/size from IDL; fallback = SPL token 72/165.
-    let (tok_rest_start, tok_size) = idl
-        .and_then(|v| parse_account_layout(v, "token").ok())
+    let (tok_rest_start, tok_size) = resolve_layout(sidecar_layouts, idl, "token")
         .and_then(|l| {
             let amount = l.fields.iter().find(|f| f.name == "amount")?;
             Some((amount.offset as i64 + 8, l.size as i64))
@@ -4238,8 +4355,7 @@ fn emit_refinement(
     let uses_mint = spec.accounts.iter().any(|(_, c)| matches!(c, CodecKind::Mint));
     let aggregation = if uses_mint {
         // Mint codec: supply/rest offsets from the IDL mint layout; fallback = SPL defaults.
-        let (supply_off, rest_off, mint_size) = idl
-            .and_then(|v| parse_account_layout(v, "mint").ok())
+        let (supply_off, rest_off, mint_size) = resolve_layout(sidecar_layouts, idl, "mint")
             .and_then(|l| {
                 let s = l.fields.iter().find(|f| f.name == "supply")?;
                 Some((s.offset as i64, s.offset as i64 + 8, l.size as i64))
@@ -5016,9 +5132,10 @@ fn emit_vault_refinement(
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
     n_cu: usize, start_pc: usize, exit_pc: usize,
     idl: Option<&serde_json::Value>,
+    sidecar_layouts: Option<&[AccountLayout]>,
 ) -> Option<(String, String, Option<(String, String)>)> {
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
-    let layout = parse_account_layout(idl?, "vault").ok()?;
+    let layout = resolve_layout(sidecar_layouts, idl, "vault")?;
 
     let mut updated: Option<(Expr, i64, Expr, i64)> = None; // base, off, pre_val, delta (NatAdd(InitMem, Const))
     for atom in post_clean {
@@ -5283,7 +5400,25 @@ fn strip_refinement(module: &str) -> String {
     module.strip_suffix("Refinement").unwrap_or(module).to_string()
 }
 
+/// Lift without a qedrecover layout sidecar (tests, batch, single-arm `--idl`): refinement
+/// codegen resolves account layouts from the IDL only. `--qedmeta` runs call
+/// `lift_one_with_layouts` directly so the sidecar's `[[account_layout]]` is the layout source.
 fn lift_one(
+    so_path:         &Path,
+    ctx:             &BinaryCtx,
+    analysis:        &Analysis<'_>,
+    target_disc:     Option<i64>,
+    module_override: Option<String>,
+    trace:           Option<&[usize]>,
+    arm_name:        Option<&str>,
+    idl:             Option<&serde_json::Value>,
+    arm_entry:       Option<usize>,
+) -> Result<LiftOutput, Box<dyn std::error::Error>> {
+    lift_one_with_layouts(so_path, ctx, analysis, target_disc, module_override,
+        trace, arm_name, idl, arm_entry, None)
+}
+
+fn lift_one_with_layouts(
     so_path:         &Path,
     ctx:             &BinaryCtx,
     analysis:        &Analysis<'_>,
@@ -5295,6 +5430,9 @@ fn lift_one(
     // Recovered arm-entry PC from qedrecover sidecar (#41 Phase 4): seeds no-trace static walk
     // and cross-checks trace walk. `None` = prior behaviour (disc-walk / trace as-is).
     arm_entry:       Option<usize>,
+    // qedrecover-emitted account layouts (#41 loop closure): preferred over `idl` in the
+    // refinement codegen. `None` = resolve layouts from `idl` (the wrapper's behaviour).
+    sidecar_layouts: Option<&[AccountLayout]>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
     let text_offset = ctx.text_offset;
@@ -6276,7 +6414,8 @@ fn lift_one(
 
     // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
     let refine_emit = arm_name.and_then(|arm| emit_refinement(
-        arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc, idl));
+        arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc, idl,
+        sidecar_layouts));
     let aggregation = refine_emit.as_ref().and_then(|(_, _, a)| a.clone());
     let refinement = refine_emit.map(|(m, l, _)| (m, l));
 
@@ -6320,6 +6459,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --qedmeta mode: targeting from qedrecover sidecar (disc + name), CU cross-check, optional --target-name filter.
     if let Some(meta_path) = args.qedmeta.as_ref() {
         let meta = load_qedmeta(meta_path)?;
+        // #41 loop closure: consume qedrecover's emitted + validated account layouts as the
+        // refinement-codegen layout source (falls back to `--idl` per-name when a layout is absent).
+        let sidecar_layouts = sidecar_account_layouts(&meta);
         let so_stem = args.so.file_stem()
             .map(|s| pascal_case(&s.to_string_lossy()))
             .unwrap_or_else(|| "Lifted".to_string());
@@ -6346,9 +6488,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let module_name = format!("{}{}", so_stem, arm);
             // #41 Phase 4: recovered arm_entry seeds no-trace walk / cross-checks trace.
             let arm_entry = ix.recovered.as_ref().map(|r| r.arm_entry_pc);
-            let result = lift_one(&args.so, &ctx, &analysis,
+            let result = lift_one_with_layouts(&args.so, &ctx, &analysis,
                 Some(ix.discriminator.value), Some(module_name.clone()),
-                trace.as_deref(), Some(&arm), idl_value.as_ref(), arm_entry)?;
+                trace.as_deref(), Some(&arm), idl_value.as_ref(), arm_entry,
+                Some(&sidecar_layouts))?;
 
             // Cross-check: cu_budget is upper bound; result.cu is the exact discharged CU.
             let budget_note = match ix.cu_budget {
