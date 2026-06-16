@@ -1,4 +1,9 @@
--- AsmRefinesTokenTransfer. MECHANICALLY EMITTED by qedlift. Do not hand-edit.
+/-
+  AsmRefinesTokenTransfer asm-refines-intrinsic theorem. MECHANICALLY EMITTED by qedlift's
+  refinement codegen from the lift's atoms + the IDL arm name. Wires the
+  trace-guided lift to `AsmRefinesTokenTransfer` via the codec-aggregation lemmas +
+  `cuTripleWithinMem_frame_right` + `sl_exact`.
+-/
 
 import SVM.SBPF.Tactic.SL
 import SVM.Solana.Abstract.Refinement
@@ -174,7 +179,13 @@ theorem refines_asm
   simp only [Nat.add_assoc, Nat.reduceAdd]
   sl_exact framed
 
-/-- Reshape `AsmRefinesTokenTransfer` to `codecCoarse`/`tokenFields` form via `tokenAcctBalance_codec`. Pairs with `refines_asm`. -/
+/-- Discharge-route reshape: the `AsmRefinesTokenTransfer` obligation is a layout-general
+    field-list (`codecCoarse`/`tokenFields`/`mintFields`) obligation. The
+    convergence keystones (`tokenAcctBalance_codec` / `mintSupply_codec`)
+    rewrite the bespoke `tokenAcctBalanceOf` / `mintSupplyOf` atoms to the
+    field-list codec, so qedgen reads the mutated field off the decoded list
+    via the library `*_ensures_*` facts (`qedsvm_discharge`). Pairs with
+    `refines_asm` (the lift realises the obligation). -/
 theorem refines_field
     (cr : CodeReq) (rr : Memory.RegionTable → Prop)
     (baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 oldMemB_4 oldMemD_5 vR4Old vR3Old oldMemD_6 oldMemB_7 vR6Old vR7Old oldMemB_8 oldMemB_9 vR5Old oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 vR0Old oldMemD_14 oldMemD_15 oldMemD_16 oldMemD_17 oldMemD_18 oldMemD_19 oldMemD_20 oldMemB_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemD_27 oldMemD_28 oldMemB_29 oldMemD_30 oldMemB_31 o0 o1 o2 o3 : Nat)

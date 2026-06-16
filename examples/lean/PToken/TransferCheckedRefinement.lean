@@ -231,7 +231,13 @@ theorem refines_asm
   simp only [Nat.add_assoc, Nat.reduceAdd]
   sl_exact framed
 
-/-- Reshapes `AsmRefinesTokenTransfer` from scattered atoms to `codecCoarse`/`tokenFields` form via `tokenAcctBalance_codec`; pairs with `refines_asm`. -/
+/-- Discharge-route reshape: the `AsmRefinesTokenTransfer` obligation is a layout-general
+    field-list (`codecCoarse`/`tokenFields`/`mintFields`) obligation. The
+    convergence keystones (`tokenAcctBalance_codec` / `mintSupply_codec`)
+    rewrite the bespoke `tokenAcctBalanceOf` / `mintSupplyOf` atoms to the
+    field-list codec, so qedgen reads the mutated field off the decoded list
+    via the library `*_ensures_*` facts (`qedsvm_discharge`). Pairs with
+    `refines_asm` (the lift realises the obligation). -/
 theorem refines_field
     (cr : CodeReq) (rr : Memory.RegionTable → Prop)
     (baseAddr oldMemB_0 vR2Old oldMemD_1 oldMemB_2 oldMemD_3 oldMemB_4 oldMemD_5 oldMemB_6 oldMemD_7 vR4Old vR5Old oldMemD_8 oldMemB_9 vR6Old vR7Old oldMemB_10 oldMemB_11 vR3Old oldMemD_12 oldMemD_13 oldMemD_14 vR0Old oldMemD_15 oldMemD_16 vR8Old oldMemD_17 vR10Old oldMemD_18 oldMemD_19 oldMemD_20 vR9Old oldMemD_21 oldMemD_22 oldMemD_23 oldMemD_24 oldMemD_25 oldMemD_26 oldMemB_27 oldMemB_28 oldMemB_29 oldMemD_30 oldMemB_31 oldMemD_32 oldMemD_33 oldMemD_34 oldMemD_35 oldMemD_36 oldMemD_37 oldMemD_38 oldMemB_39 oldMemD_40 oldMemB_41 o0 o1 o2 o3 : Nat)

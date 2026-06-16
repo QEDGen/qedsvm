@@ -1,4 +1,9 @@
--- Token-account codec aggregation. MECHANICALLY EMITTED by qedlift. Do not hand-edit.
+/-
+  Account-codec aggregation for token-account lifts.
+  MECHANICALLY EMITTED by qedlift from the IDL account layout + the lift's
+  owned-byte pattern (general `rest_segments`; the proof is a fixed
+  `memBytesIs_segs` instance). Do not edit by hand.
+-/
 
 import SVM.SBPF.SegAggregation
 import SVM.SBPF.PubkeySL

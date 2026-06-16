@@ -263,8 +263,12 @@ mod layout_tests {
             &[("src_account_eq", true,  vec![72, 108, 109]),
               ("dst_account_eq", false, vec![108])],
             72, 165);
-        let on_disk = std::fs::read_to_string("../examples/lean/PToken/TransferAggregation.lean")
-            .expect("read TransferAggregation.lean");
+        let path = "../examples/lean/PToken/TransferAggregation.lean";
+        // QEDLIFT_BLESS=1 re-blesses after an intentional emitter change (e.g. comment drift).
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &m).expect("write TransferAggregation.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read TransferAggregation.lean");
         assert_eq!(m, on_disk,
             "TransferAggregation.lean is out of sync with the qedlift emitter — \
              regenerate it (the file is mechanically emitted, do not hand-edit)");
