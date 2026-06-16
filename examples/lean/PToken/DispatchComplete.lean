@@ -277,4 +277,58 @@ theorem error_return_aborts (errcode vR0Old pc : Nat) :
             (CodeReq.singleton (pc + 1) .exit) := by sl_disjoint_codereq
   exact cuTripleAbortsWithin_seq_abort hd h1 h2
 
+/-! ## The PC 312 shared sub-dispatcher (entry prologue, PCs 312 → 315)
+
+PC 312 is the major shared join (reached by byte=3 ∧ dword≠165 [MintTo],
+byte∉{3,4} [InitializeMint2, …], and unmatched discriminators). Its prologue
+re-reads `[r1+0]` as a FULL 8-byte word and makes the first sub-dispatch
+decision:
+
+- 312 `mov64 r0 ← r1`; 313 `add64 r0 += 8`;
+- 314 `ldxdw_bytes r7 ← [r1+0]`  (r7 = the LE 8-byte word, via `ldxdw_bytes_spec`
+                                  over 8 owned byte cells);
+- 315 `jeq r7 0 → 418`           (word = 0 → 418; else → 316, the 316–320
+                                  arithmetic + further r7 sub-dispatch at 321/322).
+
+`route_312_prologue` covers PCs 312 → 315 for EVERY 8-byte word. The full
+sub-dispatch (the 316–320 arithmetic + word=1→330 / word=2→323 / else→3361
+branches) and the fault leaf (routing unmatched words to their DISTINCT
+error-return exits — the 23 exits don't share a common tail) are the remaining
+312-region work; see docs/DISPATCH_COMPLETENESS_PLAN.md. -/
+
+theorem route_312_prologue
+    (vR0Old baseAddr vR7Old b0 b1 b2 b3 b4 b5 b6 b7 : Nat)
+    (hb0 : b0 < 256) (hb1 : b1 < 256) (hb2 : b2 < 256) (hb3 : b3 < 256)
+    (hb4 : b4 < 256) (hb5 : b5 < 256) (hb6 : b6 < 256) (hb7 : b7 < 256) :
+    cuTripleWithinMem 4 0 312
+      (if (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+          (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) = toU64 0 then 418 else 316)
+      (cr![ 312 ↦ .mov64 .r0 (.reg .r1),
+            313 ↦ .add64 .r0 (.imm 8),
+            314 ↦ .ldx .dword .r7 .r1 0,
+            315 ↦ .jeq .r7 (.imm 0) 418 ])
+      ((.r0 ↦ᵣ vR0Old) ** (.r1 ↦ᵣ baseAddr) ** (.r7 ↦ᵣ vR7Old) **
+        ((effectiveAddr baseAddr 0 ↦ₘ b0) ** (effectiveAddr baseAddr 0 + 1 ↦ₘ b1) **
+         (effectiveAddr baseAddr 0 + 2 ↦ₘ b2) ** (effectiveAddr baseAddr 0 + 3 ↦ₘ b3) **
+         (effectiveAddr baseAddr 0 + 4 ↦ₘ b4) ** (effectiveAddr baseAddr 0 + 5 ↦ₘ b5) **
+         (effectiveAddr baseAddr 0 + 6 ↦ₘ b6) ** (effectiveAddr baseAddr 0 + 7 ↦ₘ b7)))
+      ((.r0 ↦ᵣ wrapAdd baseAddr (toU64 8)) ** (.r1 ↦ᵣ baseAddr) **
+        (.r7 ↦ᵣ (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+          (b4 + 256 * (b5 + 256 * (b6 + 256 * b7)))))))) **
+        ((effectiveAddr baseAddr 0 ↦ₘ b0) ** (effectiveAddr baseAddr 0 + 1 ↦ₘ b1) **
+         (effectiveAddr baseAddr 0 + 2 ↦ₘ b2) ** (effectiveAddr baseAddr 0 + 3 ↦ₘ b3) **
+         (effectiveAddr baseAddr 0 + 4 ↦ₘ b4) ** (effectiveAddr baseAddr 0 + 5 ↦ₘ b5) **
+         (effectiveAddr baseAddr 0 + 6 ↦ₘ b6) ** (effectiveAddr baseAddr 0 + 7 ↦ₘ b7)))
+      (fun rt => rt.containsRange (effectiveAddr baseAddr 0) 8 = true) := by
+  have h0 := mov64_reg_spec .r0 .r1 vR0Old baseAddr 312 (by decide)
+  have h1 := add64_imm_spec .r0 8 baseAddr 313 (by decide)
+  have h2 := ldxdw_bytes_spec .r7 .r1 0 vR7Old baseAddr b0 b1 b2 b3 b4 b5 b6 b7
+    (effectiveAddr baseAddr 0) (effectiveAddr baseAddr 0 + 1) (effectiveAddr baseAddr 0 + 2)
+    (effectiveAddr baseAddr 0 + 3) (effectiveAddr baseAddr 0 + 4) (effectiveAddr baseAddr 0 + 5)
+    (effectiveAddr baseAddr 0 + 6) (effectiveAddr baseAddr 0 + 7) 314 (by decide)
+    hb0 hb1 hb2 hb3 hb4 hb5 hb6 hb7 rfl rfl rfl rfl rfl rfl rfl rfl
+  have h3 := jeq_imm_spec .r7 0 (b0 + 256 * (b1 + 256 * (b2 + 256 * (b3 + 256 *
+    (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) 315 418
+  sl_block_iter [h0, h1, h2, h3]
+
 end Examples.PTokenDispatchComplete
