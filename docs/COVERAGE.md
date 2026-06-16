@@ -65,7 +65,8 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | PDA syscalls | Unsupported | Same boundary as hashing. |
 | `memcpy`, `memmove` | Mechanical | Two `↦Bytes` atoms (src readable, dst writable, disjoint); dst blob ← src, `r0 := 0` (`call_sol_mem{cpy,move}_spec`). |
 | `memcmp` | Mechanical | Two `↦Bytes` inputs + a 4-byte `↦U32` output; result `memcmpResultU32 p1 p2 n` (`call_sol_memcmp_spec`). |
-| Return data syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
+| `sol_set_return_data` | Mechanical | One `↦Bytes` input (`[r1, r1+r2)` readable, `r2 ≤ MAX_RETURN_DATA`) copied into the framed `↦ReturnData` atom; `r0 := 0` (`call_sol_set_return_data_spec`). |
+| `sol_get_return_data` | Unsupported | Only the fault direction (`execGet_faults_oob`) is modeled; no success triple. |
 | Dedicated sysvar getters | Unsupported | Only the generic `sol_get_sysvar` proof path is modeled by the lift. |
 | Introspection syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
 | `sol_alloc_free_` | Unsupported | Heap proofs use ordinary memory predicates instead. |
@@ -129,4 +130,4 @@ Codama JSON IDLs carry discriminator and account-layout metadata. TOML IDLs are 
 | Fully mechanical abstract refinement | SPL Transfer / TransferChecked / MintTo / Burn, counter increment, vault constant field update, heap bump allocation | `.so`, sidecar metadata, trace when branchy, Codama IDL when layout is needed |
 | Raw Hoare triple only | Selected paths over modeled instructions and modeled lift syscalls, including generated CloseAccount and InitializeMint2 traced lifts | `.so`, targeting metadata, concrete trace for branchy paths |
 | Manual extension | New state semantics, loops with invariants, non-constant account deltas, unrecognized blob mutations | New Lean specs/refinement predicates/codegen |
-| Unsupported by proof layer | Unmodeled opcodes or syscalls such as hashing, curve ops, PDA derivation, return data, real CPI callee effects | New instruction/syscall specs and lift support |
+| Unsupported by proof layer | Unmodeled opcodes or syscalls such as hashing, curve ops, PDA derivation, return-data reads, real CPI callee effects | New instruction/syscall specs and lift support |

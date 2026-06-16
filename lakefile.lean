@@ -134,6 +134,10 @@ lean_lib Examples where
     -- Memcmp: two `↦Bytes` inputs + a `↦U32` output (call_sol_memcmp_spec),
     -- post value `memcmpResultU32`.
     `Generated.MemcmpLifted,
+    -- SetReturnData: one `↦Bytes` input + the framed `↦ReturnData` atom
+    -- (call_sol_set_return_data_spec), returnData ← input blob, r0 := 0.
+    -- Wires the return-data syscall family into the lift emitter (Stage C).
+    `Generated.SetReturnDataLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

@@ -31,6 +31,10 @@ pub(super) struct SymState {
     pub(super) syscall_cu_vars: Vec<(String, String, &'static str)>,
     /// `(bytes_sym, size_rendered)` per memset blob; emitted as a `ByteArray` param + `.size = <count>` hypothesis (spec's `hbs` obligation).
     pub(super) memset_blobs: Vec<(String, String)>,
+    /// Bare `ByteArray` params (no size hypothesis), e.g. `sol_set_return_data`'s old returnData buffer — arbitrary, so unconstrained.
+    pub(super) bytearray_vars: Vec<String>,
+    /// Post-state value of the `↦ReturnData` atom (`sol_set_return_data` copies the input blob into returnData). `None` = no returnData atom in the pre.
+    pub(super) returndata_post: Option<BytesVal>,
     /// `(hyp_name, prop)` side-condition hypotheses emitted verbatim (e.g. divisor `v ≠ 0` for `div/mod` reg-form — symbolic divisor, so caller's obligation).
     pub(super) side_hyps: Vec<(String, String)>,
     /// Canonical `(root, lo, hi_exclusive, key_render)` footprint of every materialized atom. Consulted on each new materialization to detect overlaps — an overlapping sepConj is unsatisfiable (vacuous theorem, soundness audit H8).

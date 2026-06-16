@@ -44,6 +44,11 @@ const MEMMOVE_CALLER_SO: &[u8] = include_bytes!("fixtures/memmove_caller.so");
 /// writes the 4-byte result to a third disjoint slot. Trace source for
 /// `MemcmpLifted` (two `↦Bytes` inputs + one `↦U32` output).
 const MEMCMP_CALLER_SO: &[u8] = include_bytes!("fixtures/memcmp_caller.so");
+/// Happy-path `sol_set_return_data`: copies a 16-byte in-bounds heap slice
+/// into `State.returnData`. Trace source for `SetReturnDataLifted`
+/// (one `↦Bytes` input + the framed `↦ReturnData` atom).
+const SET_RETURN_DATA_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/set_return_data_caller.so");
 /// Calls `sol_remaining_compute_units()` and writes the returned u64
 /// (LE) into accounts[0].data[0..8]. The empirical anchor for H7: the
 /// 8-byte cross-engine data equality pins qedsvm's remaining-budget
@@ -741,6 +746,58 @@ fn memcpy_caller_program_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for memcpy_caller: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// H6 happy path: `sol_set_return_data` over an in-bounds 16-byte heap slice
+/// succeeds on both engines with matching CU and return_data. The success
+/// direction to `oob_set_return_data_fails_on_both`, and the trace source for
+/// `SetReturnDataLifted`.
+#[test]
+fn set_return_data_caller_program_matches_mollusk() {
+    let program_id = pid(41);
+    let acct_key = pid(42);
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, SET_RETURN_DATA_CALLER_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs set_return_data_caller");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        SET_RETURN_DATA_CALLER_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for set_return_data_caller: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }

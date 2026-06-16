@@ -100,6 +100,10 @@ fn atom_to_lean_with_subst(
         Atom::Bytes32 { addr, name } => {
             format!("({} ↦Bytes32 {})", sub(addr), name)
         }
+        Atom::ReturnData { value } => {
+            // Global returnData buffer — no address, no subst.
+            format!("(↦ReturnData {})", value.to_lean())
+        }
     }
 }
 
@@ -153,6 +157,7 @@ pub(super) fn build_sat_witness(
         Atom::Bytes { addr, .. } => Some(addr),
         Atom::Bytes32 { addr, .. } => Some(addr),
         Atom::Reg(..) => None,
+        Atom::ReturnData { .. } => None,
     }).collect();
 
     // Pass 1: variable roots get bases directly.
@@ -257,6 +262,20 @@ pub(super) fn build_sat_witness(
                 sat_atoms.push(format!(".bytes32 {} {}", a, name));
                 feet.push(Foot { mem: Some((a, 32)), reg: None, cs: false,
                                  desc: format!("`{}` at {}", name, a) });
+            }
+            Atom::ReturnData { value } => {
+                // Old returnData is arbitrary (no size hyp): witness it as the
+                // empty buffer and substitute the symbolic name accordingly so
+                // `interp` stays defeq to the rendered pre. Owns no mem/reg.
+                let name = match value {
+                    BytesVal::Sym(n) => n,
+                    BytesVal::Replicate { .. } => return Err(
+                        "unexpected Replicate blob in a returnData precondition".into()),
+                };
+                sat_atoms.push(".retData ByteArray.empty".to_string());
+                blob_subst.push((name.clone(), "ByteArray.empty".to_string()));
+                feet.push(Foot { mem: None, reg: None, cs: false,
+                                 desc: format!("returnData `{}`", name) });
             }
         }
     }
@@ -418,6 +437,12 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
             Atom::Bytes32 { addr, name } => {
                 // Read-only named constant (sysvar id) — unchanged.
                 out.push(Atom::Bytes32 { addr: addr.clone(), name: name.clone() });
+            }
+            Atom::ReturnData { value } => {
+                // returnData flips to the syscall-set value (`returndata_post`).
+                let post_val = state.returndata_post.clone()
+                    .unwrap_or_else(|| value.clone());
+                out.push(Atom::ReturnData { value: post_val });
             }
         }
     }

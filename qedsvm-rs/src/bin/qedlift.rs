@@ -54,7 +54,7 @@ use refinement::{emit_refinement, is_const_delta_arm};
 use state::SymState;
 use syscalls::{
     emit_r0_syscall, emit_sol_get_sysvar, emit_sol_log, emit_sol_memcmp, emit_sol_memcpy,
-    emit_sol_memset,
+    emit_sol_memset, emit_sol_set_return_data,
 };
 use witness::build_branch_witness;
 use qed_analysis::layout::AccountLayout;
@@ -342,6 +342,32 @@ mod layout_tests {
         let on_disk = std::fs::read_to_string(path).expect("read MemcmpLifted.lean");
         assert_eq!(result.lean, on_disk,
             "MemcmpLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
+    }
+
+    /// Pins the `sol_set_return_data` happy-path lift
+    /// (`call_sol_set_return_data_spec`): one `↦Bytes` input + the framed
+    /// `↦ReturnData` atom (flips old → input blob), r0 := 0. Trace-driven.
+    #[test]
+    fn set_return_data_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/set_return_data_caller.so");
+        let ctx = load_binary(so).expect("load set_return_data_caller.so");
+        let analysis = Analysis::from_executable(&ctx.executable)
+            .expect("analyse set_return_data_caller.so");
+        let trace = load_trace(
+            std::path::Path::new("tests/fixtures/set_return_data_caller.pcs"))
+            .expect("load set_return_data trace");
+        let result = lift_one(so, &ctx, &analysis, None,
+            Some("SetReturnData".to_string()),
+            Some(&trace), None, None, None).expect("lift set_return_data_caller.so");
+
+        let path = "../examples/lean/Generated/SetReturnDataLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write SetReturnDataLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read SetReturnDataLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "SetReturnDataLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
     }
 
@@ -1711,9 +1737,9 @@ struct LiftOutput {
 /// preamble is threaded); the small `decodeProgram` bridge and bare `sl_block_auto`
 /// can't handle a syscall. Mirrors the trace dispatch in `lift_one_with_layouts`.
 fn imm_is_modeled_syscall(imm: u32) -> bool {
-    const NAMES: [&[u8]; 8] = [
+    const NAMES: [&[u8]; 9] = [
         b"sol_memset_", b"sol_memcpy_", b"sol_memmove_", b"sol_memcmp_",
-        b"sol_log_", b"sol_get_sysvar",
+        b"sol_log_", b"sol_get_sysvar", b"sol_set_return_data",
         b"sol_invoke_signed_rust", b"sol_invoke_signed_c",
     ];
     NAMES.iter().any(|name| imm == ebpf::hash_symbol_name(name))
@@ -2028,6 +2054,12 @@ fn lift_one_with_layouts(
                             ti += 1;
                             continue;
                         }
+                        if imm == ebpf::hash_symbol_name(b"sol_set_return_data") {
+                            emit_sol_set_return_data(&mut state, &mut spec_calls,
+                                &mut block_pcs, pc_iter);
+                            ti += 1;
+                            continue;
+                        }
                         // CPI: step-level stub (Cpi.exec = r0:=0) — effect-free on invoked accounts; callee writes not captured. See call_sol_invoke_signed_spec.
                         if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
                             emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
@@ -2045,8 +2077,8 @@ fn lift_one_with_layouts(
                             "call_imm at pc {} is a syscall (trace returns to {} \
                              without a frame push) with imm hash 0x{:08x}, but only \
                              sol_memset_ / sol_memcpy_ / sol_memmove_ / sol_memcmp_ / \
-                             sol_get_sysvar / sol_log_ / sol_invoke_signed{{,_c}} are \
-                             modelled so far. \
+                             sol_get_sysvar / sol_log_ / sol_set_return_data / \
+                             sol_invoke_signed{{,_c}} are modelled so far. \
                              This arm needs a syscall-effect spec for that hash.",
                             pc_iter, pc_iter + 1, imm).into());
                     }
@@ -2384,6 +2416,9 @@ fn lift_one_with_layouts(
             // `memset_blobs`, not here); the address's Nat leaves were
             // already collected when the syscall's registers were read.
             Atom::Bytes { addr, .. } => push_var(addr, &mut vars),
+            // The returnData buffer has no address; its `ByteArray` name is
+            // bound via `bytearray_vars`.
+            Atom::ReturnData { .. } => {}
         }
     }
     let vars_sig = if vars.is_empty() { String::new() }
@@ -2405,6 +2440,10 @@ fn lift_one_with_layouts(
         side_hyps_sig.push_str(&format!("({} : {})\n    ", name, prop));
     }
     let mut syscall_sig = String::new();
+    // Bare `ByteArray` params with no size constraint (e.g. sol_set_return_data's old buffer).
+    for ba in &state.bytearray_vars {
+        syscall_sig.push_str(&format!("({} : ByteArray)\n    ", ba));
+    }
     for (bs, size) in &state.memset_blobs {
         syscall_sig.push_str(&format!("({} : ByteArray)\n    ", bs));
         syscall_sig.push_str(&format!("(h{}_sz : {}.size = {})\n    ", bs, bs, size));
@@ -2460,7 +2499,8 @@ fn lift_one_with_layouts(
             let v = match atom {
                 Atom::Reg(_, v) => v,
                 Atom::Mem { value, .. } => value,
-                Atom::Bytes { .. } | Atom::Bytes32 { .. } => continue,
+                Atom::Bytes { .. } | Atom::Bytes32 { .. }
+                    | Atom::ReturnData { .. } => continue,
             };
             if is_complex(v) {
                 // Fold sub-expr abstractions first so generalize target matches the sl_rw_abs-folded proof term.

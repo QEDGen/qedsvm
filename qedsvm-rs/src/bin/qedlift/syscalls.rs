@@ -750,3 +750,83 @@ pub(super) fn emit_sol_memcpy(
     });
     block_pcs.push(pc);
 }
+
+/// Emit `sol_set_return_data(ptr = r1, len = r2)` (H6 + H7). Reads the input
+/// slice `[r1, r1+r2)` and COPIES it into `State.returnData`, setting `r0 := 0`;
+/// memory is unchanged. Shaped to `call_sol_set_return_data_spec`: a read-only
+/// input `↦Bytes` blob at r1 (size r2) plus the framed `↦ReturnData` atom (old
+/// buffer `rdOld`, flips to the input blob in the post). `rr = containsRange r1
+/// r2`; the length guard `r2 ≤ MAX_RETURN_DATA` (H7) is discharged by `decide`,
+/// so a trace fixture must pass a constant in-limit length (else the build fails
+/// closed). CU is data-dependent (∝ r2) so `nCu`/`hCu` are surfaced as hypotheses.
+pub(super) fn emit_sol_set_return_data(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1); // ptr
+    let r2v = state.read_reg(2); // len
+
+    // H6: the input slice `[r1, r1+r2)` must be in a readable region.
+    state.rr_walk.push((
+        r1v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r1v.clone(), r2v.clone())),
+    ));
+
+    let idx = state.fresh;
+    state.fresh += 1;
+    let blob_name = format!("setRetData_{}", idx);
+    let rd_old_name = format!("retDataOld_{}", idx);
+    let ncu_name = format!("nCuSetRetData{}", idx);
+    let hcu_name = format!("hCuSetRetData{}", idx);
+
+    let size_rendered = r2v.atom_lean();
+    let blob_len = const_of_expr(&r2v).unwrap_or(1).max(1);
+
+    // Pre atoms in spec order: `(r1V ↦Bytes inputBlob) ** (↦ReturnData rdOld)`.
+    state.pre.push(Atom::Bytes {
+        addr: r1v.clone(),
+        value: BytesVal::Sym(blob_name.clone()),
+    });
+    state.pre.push(Atom::ReturnData {
+        value: BytesVal::Sym(rd_old_name.clone()),
+    });
+    state.memset_blobs.push((blob_name.clone(), size_rendered));
+    state.bytearray_vars.push(rd_old_name.clone());
+
+    // Footprint: the read input slice (must be disjoint from other owned regions).
+    state.note_access(&r1v, 0, blob_len, format!("setRetData:{}", r1v.to_lean()));
+
+    state
+        .syscall_cu_vars
+        .push((ncu_name.clone(), hcu_name.clone(), ".sol_set_return_data"));
+    state.syscall_pcs.insert(pc, ".sol_set_return_data");
+
+    // Post: returnData holds the input blob; input blob unchanged; r0 := 0.
+    state.returndata_post = Some(BytesVal::Sym(blob_name.clone()));
+    state.write_reg(0, Expr::Const(0));
+
+    // call_sol_set_return_data_spec r0Old r1V r2V pc nCu inputBlob rdOld hsize hlen hCu
+    let have_line = format!(
+        "have h_{pc} := call_sol_set_return_data_spec {r0} {r1} {r2} {pc} {ncu} \
+         {blob} {rd} h{blob}_sz (by decide) {hcu}",
+        pc = pc,
+        r0 = r0v.atom_lean(),
+        r1 = r1v.atom_lean(),
+        r2 = r2v.atom_lean(),
+        ncu = ncu_name,
+        blob = blob_name,
+        rd = rd_old_name,
+        hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall {
+        hyp_name: format!("h_{}", pc),
+        have_line,
+    });
+    block_pcs.push(pc);
+}
