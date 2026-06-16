@@ -331,4 +331,99 @@ theorem route_312_prologue
     (b4 + 256 * (b5 + 256 * (b6 + 256 * b7))))))) 315 418
   sl_block_iter [h0, h1, h2, h3]
 
+/-! ## The PC 312 sub-dispatcher body (PCs 316 → 322): the word∈{1,2,else} branches
+
+After the `word = 0` check at 315 falls through (word ≠ 0), the 312 region runs
+address arithmetic then sub-dispatches on the same 8-byte word `r7`:
+
+- 316 `stxdw [r10-2072] ← r0`; 317 `ldxdw r2 ← [r1+88]`; 318 `add64 r1 += r2`;
+  319 `add64 r1 += 10351`; 320 `and64 r1 &= -8`  (the 316–320 arithmetic);
+- 321 `jeq r7 1 → 330`  (word = 1 → 330, e.g. InitializeMint2);
+- 322 `jne r7 2 → 3361` (word = 2 → 323; else → 3361).
+
+`route_312_body` covers PCs 316 → 322 for EVERY word, routing to `Route312body
+word` (330 / 323 / 3361). The arithmetic is carried through the chain (post
+`r0`/`r1`/`r2`/stack are concrete symbolic values) but only `r7` is read by the
+dispatch, so the post is uniform across the three word cases (only the exit PC
+and step count differ; word=1 jumps at 321 in 6 steps, the rest in 7). Composing
+`route_312_prologue` (else-branch → 316) with this gives the 312 region's full
+first-level sub-dispatch. -/
+
+/-- The uniform post-state of the 312 body (PCs 316–320 arithmetic): r0 / r10 /
+    the read-only `[r1+88]` cell unchanged, r1 reshaped by `add;add;and`, r2 ←
+    the `[r1+88]` dword, the stack cell ← r0. Shared by both body lemmas (the
+    jeq/jne at 321/322 are pure, so the word case only changes the exit PC). -/
+private def body312Post (baseAddr r0In dword88 word vR10Old : Nat) : Assertion :=
+  (.r0 ↦ᵣ r0In) **
+    (.r1 ↦ᵣ ((wrapAdd (wrapAdd baseAddr dword88) (toU64 10351)) &&& toU64 (-8))
+              % U64_MODULUS) **
+    (.r2 ↦ᵣ dword88) ** (.r7 ↦ᵣ word) ** (.r10 ↦ᵣ vR10Old) **
+    (effectiveAddr baseAddr 88 ↦U64 dword88) **
+    (effectiveAddr vR10Old (-2072) ↦U64 r0In)
+
+private def body312Pre (baseAddr r0In vR2Old word vR10Old dword88 oldStack : Nat) :
+    Assertion :=
+  (.r0 ↦ᵣ r0In) ** (.r1 ↦ᵣ baseAddr) ** (.r2 ↦ᵣ vR2Old) ** (.r7 ↦ᵣ word) **
+    (.r10 ↦ᵣ vR10Old) ** (effectiveAddr baseAddr 88 ↦U64 dword88) **
+    (effectiveAddr vR10Old (-2072) ↦U64 oldStack)
+
+private def body312Rr (baseAddr vR10Old : Nat) : Memory.RegionTable → Prop :=
+  fun rt => rt.containsWritable (effectiveAddr vR10Old (-2072)) 8 = true ∧
+            rt.containsRange (effectiveAddr baseAddr 88) 8 = true
+
+/-- 312 body, word = 1 → 330 (the `jeq r7 1` at PC 321 is taken; PCs 316–321,
+    6 steps). 330 is the InitializeMint2-family continuation. -/
+theorem route_312_to_330
+    (baseAddr r0In vR2Old word vR10Old dword88 oldStack : Nat)
+    (hdword88 : dword88 < 2 ^ 64) (h1 : word = toU64 1) :
+    cuTripleWithinMem 6 0 316 330
+      (cr![ 316 ↦ .stx .dword .r10 (-2072) .r0, 317 ↦ .ldx .dword .r2 .r1 88,
+            318 ↦ .add64 .r1 (.reg .r2), 319 ↦ .add64 .r1 (.imm 10351),
+            320 ↦ .and64 .r1 (.imm (-8)), 321 ↦ .jeq .r7 (.imm 1) 330 ])
+      (body312Pre baseAddr r0In vR2Old word vR10Old dword88 oldStack)
+      (body312Post baseAddr r0In dword88 word vR10Old)
+      (body312Rr baseAddr vR10Old) := by
+  unfold body312Pre body312Post body312Rr
+  have h316 := stxdw_spec .r10 .r0 (-2072) vR10Old r0In oldStack 316
+  have h317 := ldxdw_spec .r2 .r1 88 vR2Old baseAddr dword88 317 (by decide) hdword88
+  have h318 := add64_reg_spec .r1 .r2 baseAddr dword88 318 (by decide)
+  have h319 := add64_imm_spec .r1 10351 (wrapAdd baseAddr dword88) 319 (by decide)
+  have h320 := and64_imm_spec .r1 (-8)
+    (wrapAdd (wrapAdd baseAddr dword88) (toU64 10351)) 320 (by decide)
+  have h321 := jeq_imm_spec .r7 1 word 321 330
+  rw [if_pos h1] at h321
+  sl_block_iter [h316, h317, h318, h319, h320, h321]
+
+/-- 312 body, word ≠ 1 → 323 (word = 2) / 3361 (else) (the `jeq r7 1` falls
+    through, then `jne r7 2` at PC 322; PCs 316–322, 7 steps). -/
+theorem route_312_body_other
+    (baseAddr r0In vR2Old word vR10Old dword88 oldStack : Nat)
+    (hdword88 : dword88 < 2 ^ 64) (hne1 : word ≠ toU64 1) :
+    cuTripleWithinMem 7 0 316 (if word = toU64 2 then 323 else 3361)
+      (cr![ 316 ↦ .stx .dword .r10 (-2072) .r0, 317 ↦ .ldx .dword .r2 .r1 88,
+            318 ↦ .add64 .r1 (.reg .r2), 319 ↦ .add64 .r1 (.imm 10351),
+            320 ↦ .and64 .r1 (.imm (-8)), 321 ↦ .jeq .r7 (.imm 1) 330,
+            322 ↦ .jne .r7 (.imm 2) 3361 ])
+      (body312Pre baseAddr r0In vR2Old word vR10Old dword88 oldStack)
+      (body312Post baseAddr r0In dword88 word vR10Old)
+      (body312Rr baseAddr vR10Old) := by
+  unfold body312Pre body312Post body312Rr
+  have h316 := stxdw_spec .r10 .r0 (-2072) vR10Old r0In oldStack 316
+  have h317 := ldxdw_spec .r2 .r1 88 vR2Old baseAddr dword88 317 (by decide) hdword88
+  have h318 := add64_reg_spec .r1 .r2 baseAddr dword88 318 (by decide)
+  have h319 := add64_imm_spec .r1 10351 (wrapAdd baseAddr dword88) 319 (by decide)
+  have h320 := and64_imm_spec .r1 (-8)
+    (wrapAdd (wrapAdd baseAddr dword88) (toU64 10351)) 320 (by decide)
+  have h321 := jeq_imm_spec .r7 1 word 321 330
+  rw [if_neg hne1] at h321
+  by_cases h2 : word = toU64 2
+  · rw [if_pos h2]
+    have h322 := jne_imm_spec .r7 2 word 322 3361
+    rw [if_neg (fun hn => hn h2)] at h322
+    sl_block_iter [h316, h317, h318, h319, h320, h321, h322]
+  · rw [if_neg h2]
+    have h322 := jne_imm_spec .r7 2 word 322 3361
+    rw [if_pos h2] at h322
+    sl_block_iter [h316, h317, h318, h319, h320, h321, h322]
+
 end Examples.PTokenDispatchComplete
