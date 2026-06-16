@@ -148,4 +148,60 @@ theorem entry_route (initR1 initR2 disc : Nat) :
       rw [if_pos h4] at h2
       sl_block_iter [h0, h1, h2]
 
+/-! ## Second level, byte=3 family (PCs 304 → 305): the `[r1+88]` dword sub-dispatch
+
+`entry_route` sends disc byte = 3 to PC 304, where a SECOND discriminator — a
+DWORD at `[r1+88]` — separates the Transfer arm from the MintTo arm (both have
+disc byte 3):
+
+- PC 304: `ldxdw r2 ← [r1+88]`  (reload r2 with the [r1+88] dword)
+- PC 305: `jne r2 165 → 312`    (dword = 165 → Transfer continues @ 306;
+                                  else → 312, the MintTo body / shared region)
+
+`route_byte3_family` covers BOTH levels (PCs 198/199/304/305) for EVERY
+[r1+88] dword value, given the disc byte is 3. -/
+
+/-- Where the byte=3 family goes after the `[r1+88]` dword discriminator: 306
+    (Transfer continues) or 312 (MintTo body / shared region). Total over the
+    dword's `< 2^64` range. -/
+def Route304 (dword : Nat) : Nat := if dword = toU64 165 then 306 else 312
+
+/-- CodeReq for the byte=3 family's first two dispatch levels. -/
+def cr304Family : CodeReq :=
+  cr![ 198 ↦ .ldx .byte .r2 .r1 0,
+       199 ↦ .jeq .r2 (.imm 3) 304,
+       304 ↦ .ldx .dword .r2 .r1 88,
+       305 ↦ .jne .r2 (.imm 165) 312 ]
+
+/-- Byte=3 family routing completeness: when the discriminator byte is 3, EVERY
+    `[r1+88]` dword routes from PC 198 to `Route304 dword` (306 / 312) in 4 steps.
+    Composes the byte level (`jeq 3 → 304`) with the dword sub-dispatch
+    (`ldxdw [r1+88]` + `jne 165 → 312`). -/
+theorem route_byte3_family
+    (initR1 initR2 byte dword : Nat)
+    (h3 : byte % 256 = toU64 3) (hdword : dword < 2 ^ 64) :
+    cuTripleWithinMem 4 0 198 (Route304 dword) cr304Family
+      ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ initR2) **
+        (effectiveAddr initR1 0 ↦ₘ byte) ** (effectiveAddr initR1 88 ↦U64 dword))
+      ((.r1 ↦ᵣ initR1) ** (.r2 ↦ᵣ dword) **
+        (effectiveAddr initR1 0 ↦ₘ byte) ** (effectiveAddr initR1 88 ↦U64 dword))
+      (fun rt => rt.containsRange (effectiveAddr initR1 0) 1 = true ∧
+                 rt.containsRange (effectiveAddr initR1 88) 8 = true) := by
+  have h0 := ldxb_spec .r2 .r1 0 initR2 initR1 byte 198 (by decide)
+  have h1 := jeq_imm_spec .r2 3 (byte % 256) 199 304
+  rw [if_pos h3] at h1
+  have h2 := ldxdw_spec .r2 .r1 88 (byte % 256) initR1 dword 304 (by decide) hdword
+  unfold Route304 cr304Family
+  by_cases h165 : dword = toU64 165
+  · -- dword = 165 → Transfer continues @ 306 (PC 305 jne not taken).
+    rw [if_pos h165]
+    have h3' := jne_imm_spec .r2 165 dword 305 312
+    rw [if_neg (fun hn => hn h165)] at h3'
+    sl_block_iter [h0, h1, h2, h3']
+  · -- dword ≠ 165 → MintTo body / shared region @ 312 (PC 305 jne taken).
+    rw [if_neg h165]
+    have h3' := jne_imm_spec .r2 165 dword 305 312
+    rw [if_pos h165] at h3'
+    sl_block_iter [h0, h1, h2, h3']
+
 end Examples.PTokenDispatchComplete
