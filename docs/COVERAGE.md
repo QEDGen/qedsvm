@@ -144,7 +144,8 @@ The symbolic executor and `SpecGen` cover common compute and memory instructions
 | Discriminator dispatch cascade | Mechanical | One selected arm per lift, chosen by sidecar/targeting and optionally trace. |
 | Internal call / return | Mechanical |  |
 | Back-branch / loop | Triple only | A trace gives bounded unrolling for that concrete path only; no loop invariant is inferred. |
-| Path merge / whole-program arm coverage | Unsupported | No theorem states that all possible arms or paths are covered. |
+| Dispatch routing completeness | Triple only | For SPL p_token, `dispatch_routing_complete` proves the entry dispatcher is total and deterministic: every discriminator byte routes to a definite, known destination (no value is stuck/unhandled), backed by per-level routing lemmas two levels deep. Hand-written; not yet emitted by `qedlift`. |
+| Whole-program per-path arm + fault coverage | Unsupported | No theorem states that all account-state paths reach a proven arm or a fail-closed fault (the deep CFG fault sinks are not routed). |
 
 ## Syscalls
 
