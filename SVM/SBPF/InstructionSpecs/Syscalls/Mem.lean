@@ -1660,7 +1660,9 @@ theorem call_sol_memcmp_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V) ** (.r3 ↦ᵣ r3V) ** (.r4 ↦ᵣ r4V)
        ** (r1V ↦Bytes p1Bytes) ** (r2V ↦Bytes p2Bytes)
        ** (r4V ↦U32 (memcmpResultU32 p1Bytes p2Bytes r3V)))
-      (fun rt => rt.containsRange r1V r3V = true ∧ rt.containsRange r2V r3V = true ∧
+      -- Left-associated to match the lift emitter's `region_req` fold
+      -- (`((A ∧ B) ∧ C)`), which `sl_block_iter` matches structurally.
+      (fun rt => (rt.containsRange r1V r3V = true ∧ rt.containsRange r2V r3V = true) ∧
                  rt.containsWritable r4V 4 = true) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   let cmpResult := memcmpResultU32 p1Bytes p2Bytes r3V
@@ -1771,11 +1773,11 @@ theorem call_sol_memcmp_spec
   -- The `rr` region requirements, specialised to this state's registers:
   -- collapse the three nested guards in `step (.call .sol_memcmp)`.
   have hRd1 : s.regions.containsRange s.regs.r1 s.regs.r3 = true := by
-    rw [hs_r1_field, hs_r3_field]; exact h_region.1
+    rw [hs_r1_field, hs_r3_field]; exact h_region.1.1
   have hRd2 : s.regions.containsRange s.regs.r2 s.regs.r3 = true := by
-    rw [hs_r2_field, hs_r3_field]; exact h_region.2.1
+    rw [hs_r2_field, hs_r3_field]; exact h_region.1.2
   have hWr : s.regions.containsWritable s.regs.r4 4 = true := by
-    rw [hs_r4_field]; exact h_region.2.2
+    rw [hs_r4_field]; exact h_region.2
   -- p1 at r1V (sits at h_T5 layer).
   have h_T5_mem_p1 (i : Nat) (hi : i < r3V) :
       h_T5.mem (r1V + i) = some (p1Bytes.get! i).toNat := by

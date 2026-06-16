@@ -267,6 +267,131 @@ pub(super) fn emit_sol_memset(
     block_pcs.push(pc);
 }
 
+/// Emit `sol_memcmp_(p1 = r1, p2 = r2, n = r3, out = r4)` (H6). Reads `n`
+/// bytes at `[r1,r1+n)`/`[r2,r2+n)`, writes the u32-encoded i32 compare
+/// result to the 4-byte cell at `r4`, sets `r0 := 0`. Shaped to
+/// `call_sol_memcmp_spec`: two `↦Bytes` inputs + one `↦U32` output whose
+/// post value is `memcmpResultU32 p1 p2 r3`. `rr = containsRange r1 r3 ∧
+/// containsRange r2 r3 ∧ containsWritable r4 4`.
+pub(super) fn emit_sol_memcmp(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1); // p1
+    let r2v = state.read_reg(2); // p2
+    let r3v = state.read_reg(3); // n
+    let r4v = state.read_reg(4); // out
+
+    // rr in the spec's conjunct order: p1 readable, p2 readable, then the
+    // fixed 4-byte output writable.
+    state.rr_walk.push((
+        r1v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r1v.clone(), r3v.clone())),
+    ));
+    state.rr_walk.push((
+        r2v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r2v.clone(), r3v.clone())),
+    ));
+    state.rr_walk.push((
+        r4v.clone(),
+        0,
+        Width::Word,
+        true,
+        Some((r4v.clone(), Expr::Const(4))),
+    ));
+
+    let idx = state.fresh;
+    state.fresh += 1;
+    let p1_name = format!("memcmpP1_{}", idx);
+    let p2_name = format!("memcmpP2_{}", idx);
+    let size_rendered = r3v.atom_lean();
+    let blob_len = const_of_expr(&r3v).unwrap_or(1).max(1);
+
+    // Pre: `(r1V ↦Bytes p1) ** (r2V ↦Bytes p2)`.
+    state.pre.push(Atom::Bytes {
+        addr: r1v.clone(),
+        value: BytesVal::Sym(p1_name.clone()),
+    });
+    state.pre.push(Atom::Bytes {
+        addr: r2v.clone(),
+        value: BytesVal::Sym(p2_name.clone()),
+    });
+    state.memset_blobs.push((p1_name.clone(), size_rendered.clone()));
+    state.memset_blobs.push((p2_name.clone(), size_rendered.clone()));
+
+    // Pre: the 4-byte `↦U32` output cell at r4 (old value = fresh var,
+    // surfaced as a theorem param via `u64_load_vars` like the sysvar cells).
+    let out_idx = state.fresh;
+    state.fresh += 1;
+    let out_name = format!("oldMemW_{}", out_idx);
+    state.u64_load_vars.push((out_name.clone(), 32));
+    let out_old = Expr::InitMem(out_name.clone());
+    state.mem.push(MemCell {
+        addr_base: r4v.clone(),
+        addr_off: 0,
+        width: Width::Word,
+        value: out_old.clone(),
+        delta: 0,
+    });
+    let out_ci = state.mem.len() - 1;
+    state.pre.push(Atom::Mem {
+        addr_base: r4v.clone(),
+        addr_off: 0,
+        width: Width::Word,
+        value: out_old,
+        delta: 0,
+    });
+
+    // Footprints: three pairwise-disjoint regions.
+    state.note_access(&r1v, 0, blob_len, format!("memcmpP1:{}", r1v.to_lean()));
+    state.note_access(&r2v, 0, blob_len, format!("memcmpP2:{}", r2v.to_lean()));
+    state.note_access(&r4v, 0, 4, format!("memcmpOut:{}", r4v.to_lean()));
+
+    // Post: out cell ← `memcmpResultU32 p1 p2 r3`; r0 := 0.
+    state.mem[out_ci].value = Expr::Raw(format!(
+        "(memcmpResultU32 {} {} {})",
+        p1_name, p2_name, size_rendered
+    ));
+    state.write_reg(0, Expr::Const(0));
+
+    let ncu_name = format!("nCuMemcmp{}", idx);
+    let hcu_name = format!("hCuMemcmp{}", idx);
+    state
+        .syscall_cu_vars
+        .push((ncu_name.clone(), hcu_name.clone(), ".sol_memcmp"));
+    state.syscall_pcs.insert(pc, ".sol_memcmp");
+
+    // call_sol_memcmp_spec r0Old r1V r2V r3V r4V outOld pc nCu p1 p2 hsz1 hsz2 hCu
+    let have_line = format!(
+        "have h_{pc} := call_sol_memcmp_spec {r0} {r1} {r2} {r3} {r4} {out} {pc} {ncu} {p1} {p2} h{p1}_sz h{p2}_sz {hcu}",
+        pc = pc,
+        r0 = r0v.atom_lean(),
+        r1 = r1v.atom_lean(),
+        r2 = r2v.atom_lean(),
+        r3 = r3v.atom_lean(),
+        r4 = r4v.atom_lean(),
+        out = out_name,
+        ncu = ncu_name,
+        p1 = p1_name,
+        p2 = p2_name,
+        hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall {
+        hyp_name: format!("h_{}", pc),
+        have_line,
+    });
+    block_pcs.push(pc);
+}
+
 /// The 32-byte rent sysvar id (`SysvarRent111…`), mirroring
 /// `SysvarData.rentId`.
 const RENT_ID_BYTES: [u8; 32] = [
@@ -516,6 +641,107 @@ pub(super) fn emit_sol_log(
         r1 = r1v.atom_lean(),
         r2 = r2v.atom_lean(),
         ncu = ncu_name,
+        hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall {
+        hyp_name: format!("h_{}", pc),
+        have_line,
+    });
+    block_pcs.push(pc);
+}
+
+/// Emit `sol_memcpy_`/`sol_memmove_(dst = r1, src = r2, n = r3)` (H6). Both share
+/// `MemOps.execCopy`: copy `n` bytes src→dst, set `r0 := 0`. Shaped to
+/// `call_sol_{memcpy,memmove}_spec` — two `↦Bytes` atoms (`srcBytes` at r2,
+/// `bsOld` at r1) force src/dst disjoint, and the post rewrites the dst blob to
+/// `srcBytes`. `rr = containsRange r2 r3 ∧ containsWritable r1 r3`. CU is
+/// data-dependent (∝ r3) so `nCu`/`hCu` are surfaced as hypotheses. `is_move`
+/// selects the (otherwise identical) `memmove` spec.
+pub(super) fn emit_sol_memcpy(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+    is_move: bool,
+) {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1); // dst
+    let r2v = state.read_reg(2); // src
+    let r3v = state.read_reg(3); // n
+
+    // rr in the spec's conjunct order: src `[r2, r2+r3)` readable, then dst
+    // `[r1, r1+r3)` writable. Left-fold order matches `slBlockIter`.
+    state.rr_walk.push((
+        r2v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r2v.clone(), r3v.clone())),
+    ));
+    state.rr_walk.push((
+        r1v.clone(),
+        0,
+        Width::Byte,
+        true,
+        Some((r1v.clone(), r3v.clone())),
+    ));
+
+    let idx = state.fresh;
+    state.fresh += 1;
+    let (mnem, ctor, cap) = if is_move {
+        ("memmove", ".sol_memmove", "Memmove")
+    } else {
+        ("memcpy", ".sol_memcpy", "Memcpy")
+    };
+    let src_name = format!("{}Src_{}", mnem, idx);
+    let dst_name = format!("{}Dst_{}", mnem, idx);
+    let size_rendered = r3v.atom_lean();
+    let blob_len = const_of_expr(&r3v).unwrap_or(1).max(1);
+
+    // Pre atoms in spec order: `(r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld)`.
+    state.pre.push(Atom::Bytes {
+        addr: r2v.clone(),
+        value: BytesVal::Sym(src_name.clone()),
+    });
+    state.pre.push(Atom::Bytes {
+        addr: r1v.clone(),
+        value: BytesVal::Sym(dst_name.clone()),
+    });
+    state.memset_blobs.push((src_name.clone(), size_rendered.clone()));
+    state.memset_blobs.push((dst_name.clone(), size_rendered));
+
+    // Footprints: disjoint src-read + dst-write regions (overlap ⇒ vacuous, fail closed).
+    state.note_access(&r2v, 0, blob_len, format!("{}Src:{}", mnem, r2v.to_lean()));
+    state.note_access(&r1v, 0, blob_len, format!("{}Dst:{}", mnem, r1v.to_lean()));
+
+    let ncu_name = format!("nCu{}{}", cap, idx);
+    let hcu_name = format!("hCu{}{}", cap, idx);
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ctor));
+    state.syscall_pcs.insert(pc, ctor);
+
+    // Post: dst blob (at r1V) holds `srcBytes`; src blob unchanged; r0 := 0.
+    state
+        .byte_blob_post
+        .insert(r1v.to_lean(), BytesVal::Sym(src_name.clone()));
+    state.write_reg(0, Expr::Const(0));
+
+    let spec = if is_move {
+        "call_sol_memmove_spec"
+    } else {
+        "call_sol_memcpy_spec"
+    };
+    // call_sol_{memcpy,memmove}_spec r0Old r1V r2V r3V pc nCu srcBytes bsOld hsrc hbs hCu
+    let have_line = format!(
+        "have h_{pc} := {spec} {r0} {r1} {r2} {r3} {pc} {ncu} {src} {dst} h{src}_sz h{dst}_sz {hcu}",
+        pc = pc,
+        spec = spec,
+        r0 = r0v.atom_lean(),
+        r1 = r1v.atom_lean(),
+        r2 = r2v.atom_lean(),
+        r3 = r3v.atom_lean(),
+        ncu = ncu_name,
+        src = src_name,
+        dst = dst_name,
         hcu = hcu_name,
     );
     spec_calls.push(SpecCall {

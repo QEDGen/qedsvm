@@ -124,6 +124,16 @@ lean_lib Examples where
     -- in one straight line — the ST_H_IMM (sth_spec) pin on real
     -- cargo-build-sbf bytecode. Same fixture diff-tests vs mollusk.
     `Generated.HalfwordStoreLifted,
+    -- Memcpy: the sol_memcpy_ happy path (call_sol_memcpy_spec) — two
+    -- `↦Bytes` atoms (src readable, dst writable, disjoint), dst blob ← src,
+    -- r0 := 0. The success-direction counterpart to oob_memset; wires the
+    -- memory-op syscall family into the lift emitter.
+    `Generated.MemcpyLifted,
+    -- Memmove: the same shape via the `is_move` arm (call_sol_memmove_spec).
+    `Generated.MemmoveLifted,
+    -- Memcmp: two `↦Bytes` inputs + a `↦U32` output (call_sol_memcmp_spec),
+    -- post value `memcmpResultU32`.
+    `Generated.MemcmpLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

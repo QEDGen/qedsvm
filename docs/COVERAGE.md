@@ -63,7 +63,8 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | Hashing syscalls | Unsupported | ISA/runtime support may exist, but no lifted proof obligation is emitted. |
 | Curve/precompile syscalls | Unsupported | Same boundary as hashing. |
 | PDA syscalls | Unsupported | Same boundary as hashing. |
-| `memcpy`, `memmove`, `memcmp` | Unsupported | Not emitted by `qedlift` as proof obligations. |
+| `memcpy`, `memmove` | Mechanical | Two `↦Bytes` atoms (src readable, dst writable, disjoint); dst blob ← src, `r0 := 0` (`call_sol_mem{cpy,move}_spec`). |
+| `memcmp` | Mechanical | Two `↦Bytes` inputs + a 4-byte `↦U32` output; result `memcmpResultU32 p1 p2 n` (`call_sol_memcmp_spec`). |
 | Return data syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
 | Dedicated sysvar getters | Unsupported | Only the generic `sol_get_sysvar` proof path is modeled by the lift. |
 | Introspection syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |

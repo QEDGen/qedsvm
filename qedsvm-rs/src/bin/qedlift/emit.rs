@@ -103,6 +103,20 @@ fn atom_to_lean_with_subst(
     }
 }
 
+/// Parse a recorded blob size to a concrete `u64` for the satisfiability witness.
+/// Accepts a bare decimal (`"16"`) or a `toU64`-wrapped literal (`"(toU64 16)"`),
+/// which a constant-count blob renders via `atom_lean()`. `toU64 n = n` for any
+/// `n < 2^64`, so unwrapping is sound; a genuinely symbolic size returns `None`
+/// (fail closed — no witness, so vacuity still can't ship).
+fn const_blob_size(s: &str) -> Option<u64> {
+    let t = s.trim();
+    if let Ok(n) = t.parse::<u64>() {
+        return Some(n);
+    }
+    let inner = t.strip_prefix('(')?.strip_suffix(')')?.trim();
+    inner.strip_prefix("toU64")?.trim().parse::<u64>().ok()
+}
+
 /// Build the H8 satisfiability-witness: a concrete variable assignment proving the precondition
 /// is satisfiable, kernel-checked by `native_decide`. One guard pins each `addrK` literal to its
 /// `h_addrK` equation; the `∃ s, pre s` example uses `SatWitness.sat_witness` with reflected
@@ -229,7 +243,7 @@ pub(super) fn build_sat_witness(
                 let size_s = state.memset_blobs.iter()
                     .find(|(n, _)| n == name).map(|(_, s)| s.clone())
                     .ok_or_else(|| format!("no size recorded for blob `{}`", name))?;
-                let sz: u64 = size_s.parse().map_err(|_| format!(
+                let sz: u64 = const_blob_size(&size_s).ok_or_else(|| format!(
                     "blob `{}` has a non-constant size `{}`", name, size_s))?;
                 let repl = format!("(replicateByte 0 {})", sz);
                 sat_atoms.push(format!(".bytes {} {}", a, repl));

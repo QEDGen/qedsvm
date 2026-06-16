@@ -52,7 +52,10 @@ use isa::{
 };
 use refinement::{emit_refinement, is_const_delta_arm};
 use state::SymState;
-use syscalls::{emit_r0_syscall, emit_sol_get_sysvar, emit_sol_log, emit_sol_memset};
+use syscalls::{
+    emit_r0_syscall, emit_sol_get_sysvar, emit_sol_log, emit_sol_memcmp, emit_sol_memcpy,
+    emit_sol_memset,
+};
 use witness::build_branch_witness;
 use qed_analysis::layout::AccountLayout;
 #[cfg(test)]
@@ -273,6 +276,73 @@ mod layout_tests {
         assert_eq!(result.lean, on_disk,
             "HeapAllocLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
+    }
+
+    /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
+    /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
+    /// Trace-driven (syscall dispatch only fires on a trace).
+    #[test]
+    fn memcpy_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/memcpy_caller.so");
+        let ctx = load_binary(so).expect("load memcpy_caller.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse memcpy_caller.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/memcpy_caller.pcs"))
+            .expect("load memcpy trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("Memcpy".to_string()),
+            Some(&trace), None, None, None).expect("lift memcpy_caller.so");
+
+        let path = "../examples/lean/Generated/MemcpyLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write MemcpyLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read MemcpyLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "MemcpyLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
+    }
+
+    /// Pins the `sol_memmove_` happy-path lift (`call_sol_memmove_spec`): the
+    /// `is_move` arm of the shared memcpy emitter. Trace-driven.
+    #[test]
+    fn memmove_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/memmove_caller.so");
+        let ctx = load_binary(so).expect("load memmove_caller.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse memmove_caller.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/memmove_caller.pcs"))
+            .expect("load memmove trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("Memmove".to_string()),
+            Some(&trace), None, None, None).expect("lift memmove_caller.so");
+
+        let path = "../examples/lean/Generated/MemmoveLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write MemmoveLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read MemmoveLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "MemmoveLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
+    }
+
+    /// Pins the `sol_memcmp_` happy-path lift (`call_sol_memcmp_spec`): two
+    /// `↦Bytes` inputs + one `↦U32` output, post value `memcmpResultU32`.
+    #[test]
+    fn memcmp_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/memcmp_caller.so");
+        let ctx = load_binary(so).expect("load memcmp_caller.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse memcmp_caller.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/memcmp_caller.pcs"))
+            .expect("load memcmp trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("Memcmp".to_string()),
+            Some(&trace), None, None, None).expect("lift memcmp_caller.so");
+
+        let path = "../examples/lean/Generated/MemcmpLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write MemcmpLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read MemcmpLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "MemcmpLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
     }
 
     /// Pins ldxh/stxh and ST_H_IMM (`sth_spec`) on real cargo-build-sbf bytecode.
@@ -1635,6 +1705,20 @@ struct LiftOutput {
 /// Lift without a qedrecover layout sidecar (tests, batch, single-arm `--idl`): refinement
 /// codegen resolves account layouts from the IDL only. `--qedmeta` runs call
 /// `lift_one_with_layouts` directly so the sidecar's `[[account_layout]]` is the layout source.
+/// True if `imm` is the hash of a syscall the lift emits an effect spec for.
+/// Such a call must take the decode-pins path (so `syscall_pcs` resolves it to
+/// `.call <ctor>`) and the `sl_block_iter` proof body (so the `call_<name>_spec`
+/// preamble is threaded); the small `decodeProgram` bridge and bare `sl_block_auto`
+/// can't handle a syscall. Mirrors the trace dispatch in `lift_one_with_layouts`.
+fn imm_is_modeled_syscall(imm: u32) -> bool {
+    const NAMES: [&[u8]; 8] = [
+        b"sol_memset_", b"sol_memcpy_", b"sol_memmove_", b"sol_memcmp_",
+        b"sol_log_", b"sol_get_sysvar",
+        b"sol_invoke_signed_rust", b"sol_invoke_signed_c",
+    ];
+    NAMES.iter().any(|name| imm == ebpf::hash_symbol_name(name))
+}
+
 fn lift_one(
     so_path:         &Path,
     ctx:             &BinaryCtx,
@@ -1695,8 +1779,14 @@ fn lift_one_with_layouts(
 
     // NOT load-bearing for the Hoare triple. Large binaries blow `maxRecDepth` as a ByteArray
     // literal — emit per-PC decode pins (hex-string, H8) above 4096 bytes; small binaries get the full bridge.
+    // A modeled syscall ALSO forces the pins path: the small `decodeProgram` bridge renders the raw
+    // decode (`.call_local <unresolved>`) for a syscall hash, whereas the pins path threads `syscall_pcs`
+    // to render `.call <ctor>` at the syscall PC (matching the spec-call preamble).
     const DECODE_BRIDGE_MAX_BYTES: usize = 4096;
-    let emit_decode_bridge = text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES;
+    let has_modeled_syscall = insns.iter().any(|ins|
+        ins.opc == ebpf::CALL_IMM && imm_is_modeled_syscall(ins.imm as u32));
+    let emit_decode_bridge =
+        text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES && !has_modeled_syscall;
 
     let mut out = String::new();
     let decode_claim = if emit_decode_bridge {
@@ -1920,6 +2010,24 @@ fn lift_one_with_layouts(
                             ti += 1;
                             continue;
                         }
+                        if imm == ebpf::hash_symbol_name(b"sol_memcpy_") {
+                            emit_sol_memcpy(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter, false);
+                            ti += 1;
+                            continue;
+                        }
+                        if imm == ebpf::hash_symbol_name(b"sol_memmove_") {
+                            emit_sol_memcpy(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter, true);
+                            ti += 1;
+                            continue;
+                        }
+                        if imm == ebpf::hash_symbol_name(b"sol_memcmp_") {
+                            emit_sol_memcmp(&mut state, &mut spec_calls, &mut block_pcs,
+                                pc_iter);
+                            ti += 1;
+                            continue;
+                        }
                         // CPI: step-level stub (Cpi.exec = r0:=0) — effect-free on invoked accounts; callee writes not captured. See call_sol_invoke_signed_spec.
                         if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
                             emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
@@ -1936,9 +2044,10 @@ fn lift_one_with_layouts(
                         return Err(format!(
                             "call_imm at pc {} is a syscall (trace returns to {} \
                              without a frame push) with imm hash 0x{:08x}, but only \
-                             sol_memset_ / sol_get_sysvar / sol_log_ / \
-                             sol_invoke_signed{{,_c}} are modelled so far. This arm \
-                             needs a syscall-effect spec for that hash.",
+                             sol_memset_ / sol_memcpy_ / sol_memmove_ / sol_memcmp_ / \
+                             sol_get_sysvar / sol_log_ / sol_invoke_signed{{,_c}} are \
+                             modelled so far. \
+                             This arm needs a syscall-effect spec for that hash.",
                             pc_iter, pc_iter + 1, imm).into());
                     }
                 }
@@ -2324,9 +2433,11 @@ fn lift_one_with_layouts(
     let needs_assumption = !state.branch_hyps.is_empty()
                         || !state.u64_load_vars.is_empty();
     // Use sl_block_iter when: call_local crossed (sl_block_auto diverges on wrapAdd addresses),
-    // or any cond-jump taken (SpecGen.mkSpec only has _not_taken; taken arms need explicit spec calls).
+    // any cond-jump taken (SpecGen.mkSpec only has _not_taken; taken arms need explicit spec calls),
+    // or a syscall was walked (SpecGen has no `.call <Syscall>` dispatch — the effect is supplied by
+    // the emitted `call_<name>_spec` preamble, which only sl_block_iter threads).
     let any_taken = state.branch_hyps.iter().any(|b| b.taken);
-    let use_block_iter = state.saw_call || any_taken;
+    let use_block_iter = state.saw_call || any_taken || !state.syscall_pcs.is_empty();
 
     // Value abstraction: sl_block_iter re-reduces complex values (wrapAdd/shift/etc.) at every step
     // (transferChecked: 178ms→>15min). Generalize to opaque Nat; theorem statement stays concrete.
