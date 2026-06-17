@@ -142,6 +142,10 @@ lean_lib Examples where
     -- one-entry SliceDesc, hashes the input slice into a 32-byte output
     -- (↦Bytes32 ← Sha256.hash inputBytes). Wires the hashing family (Stage D).
     `Generated.Sha256CallerLifted,
+    -- Single-seed sol_create_program_address (call_sol_create_program_address_spec):
+    -- derives a PDA from seed + program_id (↦Bytes32 ← Sha256.hash(seed ‖ pid ‖
+    -- PDA_MARKER)); off-curve is a surfaced hypothesis. Wires the PDA family (Stage E).
+    `Generated.PdaCreateLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

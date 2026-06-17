@@ -963,3 +963,157 @@ pub(super) fn emit_sol_sha256(
     block_pcs.push(pc);
     Ok(())
 }
+
+/// Emit single-seed `sol_create_program_address(r1 = vals, r2 = 1, r3 = pid,
+/// r4 = out)` (H6). The 16-byte `SliceDesc` at `vals` was written by the program
+/// (descriptor cells consumed from the post-store state, `effectiveAddr` forms
+/// passed as `a1`/`a2`). The seed slice (`ptr ↦Bytes`), the read-only program_id
+/// (`pid ↦Bytes32`), and the 32-byte output (`out ↦Bytes32`, flipping to
+/// `Sha256.hash (seed ++ pid ++ PDA_MARKER)` in the post) are introduced here.
+/// Off-curve + the 32-byte program_id size are opaque/symbolic, surfaced as
+/// theorem hypotheses (`decide` can't see them); the address disjointness is
+/// concrete (`decide`). Shaped to `call_sol_create_program_address_spec`.
+pub(super) fn emit_sol_create_program_address(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1); // vals (seed descriptor array)
+    let r2v = state.read_reg(2); // n_seeds
+    let r3v = state.read_reg(3); // program_id
+    let r4v = state.read_reg(4); // out (32-byte PDA)
+
+    let n = const_of_expr(&r2v)
+        .ok_or_else(|| format!("create_pda at pc {pc}: symbolic n_seeds"))?;
+    if n != 1 {
+        return Err(format!(
+            "create_pda at pc {pc}: only the single-seed (n_seeds = 1) shape is \
+             modelled so far, got {n}").into());
+    }
+
+    let env = std::collections::BTreeMap::new();
+    let (i_ptr, _) = state.lookup_cell_aliased(&r1v, 0, Width::Dword).ok_or_else(|| {
+        format!("create_pda at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
+                 — the seed descriptor must be written before the call")
+    })?;
+    let (i_len, _) = state.lookup_cell_aliased(&r1v, 8, Width::Dword).ok_or_else(|| {
+        format!("create_pda at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]")
+    })?;
+    let a1 = SymState::cell_render(&state.mem[i_ptr]);
+    let a2 = SymState::cell_render(&state.mem[i_len]);
+    let ptr_expr = state.mem[i_ptr].value.clone();
+    let len_expr = state.mem[i_len].value.clone();
+    if eval_expr(&ptr_expr, &env).is_none() {
+        return Err(format!("create_pda at pc {pc}: symbolic descriptor.ptr").into());
+    }
+    let len_val = eval_expr(&len_expr, &env)
+        .ok_or_else(|| format!("create_pda at pc {pc}: symbolic descriptor.len"))?;
+
+    let idx = state.fresh;
+    state.fresh += 1;
+    let seed_name = format!("pdaSeed_{}", idx);
+    let pid_name = format!("pdaPid_{}", idx);
+    let out_name = format!("pdaOldOut_{}", idx);
+    let ncu_name = format!("nCuPda{}", idx);
+    let hcu_name = format!("hCuPda{}", idx);
+    let hpid_sz = format!("hPdaPidSz{}", idx);
+    let hoff = format!("hPdaOffCurve{}", idx);
+    let len_rendered = len_expr.atom_lean();
+    let payload = format!("(Sha256.hash ({} ++ {} ++ Pda.PDA_MARKER))", seed_name, pid_name);
+
+    // Pre atoms (spec order, after the descriptor cells already present from the
+    // stores): seed `↦Bytes`, program_id `↦Bytes32` (read-only), output `↦Bytes32`.
+    state.pre.push(Atom::Bytes {
+        addr: ptr_expr.clone(),
+        value: BytesVal::Sym(seed_name.clone()),
+    });
+    state.pre.push(Atom::Bytes32 {
+        addr: r3v.clone(),
+        name: pid_name.clone(),
+    });
+    state.pre.push(Atom::Bytes32 {
+        addr: r4v.clone(),
+        name: out_name.clone(),
+    });
+    state.memset_blobs.push((seed_name.clone(), len_rendered.clone()));
+    state.bytearray_vars.push(pid_name.clone());
+    state.bytearray_vars.push(out_name.clone());
+    state.gen_exclude.push(len_expr.to_lean());
+
+    // Symbolic obligations the consumer discharges: program_id is 32 bytes, and
+    // the derivation is off the ed25519 curve (opaque FFI). These reference the
+    // blob params, so they go in `blob_side_hyps` (emitted AFTER the blob decls).
+    state.blob_side_hyps.push((hpid_sz.clone(), format!("{}.size = 32", pid_name)));
+    state.blob_side_hyps.push((hoff.clone(),
+        format!("¬ Curve25519.validateEdwards {} = true", payload)));
+
+    // Footprints: seed read + program_id read + 32-byte output write.
+    state.note_access(&ptr_expr, 0, len_val.max(1) as i64,
+        format!("pdaSeed:{}", ptr_expr.to_lean()));
+    state.note_access(&r3v, 0, 32, format!("pdaPid:{}", r3v.to_lean()));
+    state.note_access(&r4v, 0, 32, format!("pdaOut:{}", r4v.to_lean()));
+
+    // rr in the spec's left-assoc envelope order, ONE grouped fold-unit:
+    // `(((range pid 32 ∧ writable out 32) ∧ range vals 16) ∧ range ptr len)`.
+    let g0 = state.rr_walk.len();
+    state.rr_walk.push((
+        r3v.clone(), 0, Width::Byte, false, Some((r3v.clone(), Expr::Const(32))),
+    ));
+    state.rr_walk.push((
+        r4v.clone(), 0, Width::Byte, true, Some((r4v.clone(), Expr::Const(32))),
+    ));
+    state.rr_walk.push((
+        r1v.clone(), 0, Width::Byte, false, Some((r1v.clone(), Expr::Const(16))),
+    ));
+    state.rr_walk.push((
+        ptr_expr.clone(), 0, Width::Byte, false, Some((ptr_expr.clone(), len_expr.clone())),
+    ));
+    state.rr_continuations.insert(g0 + 1);
+    state.rr_continuations.insert(g0 + 2);
+    state.rr_continuations.insert(g0 + 3);
+
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(),
+        ".sol_create_program_address"));
+    state.syscall_pcs.insert(pc, ".sol_create_program_address");
+
+    // Post: output flips to the derived PDA; seed + pid + descriptor unchanged;
+    // r0 := 0.
+    state.bytes32_post.insert(r4v.to_lean(), payload);
+    state.write_reg(0, Expr::Const(0));
+
+    // call_sol_create_program_address_spec r0Old vals ptr len pid out a1 a2 n2
+    //   seedBytes pidBytes oldOut pc nCu ha1 ha2 hn2 hSeedSize hSeedLe hPidSize
+    //   hPtr hLen hOffCurve hDescSeed hDescPid hDescOut hSeedPid hSeedOut hPidOut hCu
+    let have_line = format!(
+        "have h_{pc} := call_sol_create_program_address_spec {r0} {vals} {ptr} \
+         ({len}) {pid} {out} ({a1}) ({a2}) {n2} {seed} {pidn} {oob} {pc} {ncu} \
+         (by decide) (by decide) (by decide) h{seed}_sz (by decide) {hpidsz} \
+         (by decide) (by decide) {hoff} (by decide) (by decide) (by decide) \
+         (by decide) (by decide) (by decide) {hcu}",
+        pc = pc,
+        r0 = r0v.atom_lean(),
+        vals = r1v.atom_lean(),
+        ptr = ptr_expr.atom_lean(),
+        len = len_rendered,
+        pid = r3v.atom_lean(),
+        out = r4v.atom_lean(),
+        a1 = a1,
+        a2 = a2,
+        n2 = r2v.atom_lean(),
+        seed = seed_name,
+        pidn = pid_name,
+        oob = out_name,
+        ncu = ncu_name,
+        hpidsz = hpid_sz,
+        hoff = hoff,
+        hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall {
+        hyp_name: format!("h_{}", pc),
+        have_line,
+    });
+    block_pcs.push(pc);
+    Ok(())
+}

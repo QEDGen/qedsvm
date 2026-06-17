@@ -61,6 +61,8 @@ pub(super) struct SymState {
     pub(super) gen_exclude: Vec<String>,
     /// `rr_walk` indices that CONTINUE the previous clause's rr group rather than start a new one. A multi-clause syscall rr (e.g. sha256's `((wOut ∧ rVals) ∧ rPtr)`) must stay a grouped fold-unit so the goal rr matches `sl_block_iter`'s per-instruction (`cuTripleWithinMem_seq`) composition; absent entries default to one-clause-per-group (the flat left-fold, unchanged for existing lifts).
     pub(super) rr_continuations: std::collections::BTreeSet<usize>,
+    /// `(hyp_name, prop)` side conditions that REFERENCE blob params (`↦Bytes`/`↦Bytes32` names), e.g. PDA's `pid.size = 32` + off-curve. Emitted in the signature AFTER the blob declarations (unlike `side_hyps`, which precede them and may only reference Nat/register vars), so the forward reference resolves.
+    pub(super) blob_side_hyps: Vec<(String, String)>,
 }
 
 impl SymState {

@@ -53,8 +53,8 @@ use isa::{
 use refinement::{emit_refinement, is_const_delta_arm};
 use state::SymState;
 use syscalls::{
-    emit_r0_syscall, emit_sol_get_sysvar, emit_sol_log, emit_sol_memcmp, emit_sol_memcpy,
-    emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
+    emit_r0_syscall, emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log,
+    emit_sol_memcmp, emit_sol_memcpy, emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
 };
 use witness::build_branch_witness;
 use qed_analysis::layout::AccountLayout;
@@ -321,6 +321,29 @@ mod layout_tests {
         let on_disk = std::fs::read_to_string(path).expect("read Sha256CallerLifted.lean");
         assert_eq!(result.lean, on_disk,
             "Sha256CallerLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
+    }
+
+    /// Pins the single-seed `sol_create_program_address` happy-path lift
+    /// (`call_sol_create_program_address_spec`): the program writes a one-entry
+    /// SliceDesc, derives a PDA from seed + program_id. Trace-driven.
+    #[test]
+    fn pda_create_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/pda_create.so");
+        let ctx = load_binary(so).expect("load pda_create.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse pda_create.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/pda_create.pcs"))
+            .expect("load pda_create trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("PdaCreate".to_string()),
+            Some(&trace), None, None, None).expect("lift pda_create.so");
+
+        let path = "../examples/lean/Generated/PdaCreateLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write PdaCreateLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read PdaCreateLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "PdaCreateLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
     }
 
@@ -1760,9 +1783,10 @@ struct LiftOutput {
 /// preamble is threaded); the small `decodeProgram` bridge and bare `sl_block_auto`
 /// can't handle a syscall. Mirrors the trace dispatch in `lift_one_with_layouts`.
 fn imm_is_modeled_syscall(imm: u32) -> bool {
-    const NAMES: [&[u8]; 10] = [
+    const NAMES: [&[u8]; 11] = [
         b"sol_memset_", b"sol_memcpy_", b"sol_memmove_", b"sol_memcmp_",
         b"sol_log_", b"sol_get_sysvar", b"sol_set_return_data", b"sol_sha256",
+        b"sol_create_program_address",
         b"sol_invoke_signed_rust", b"sol_invoke_signed_c",
     ];
     NAMES.iter().any(|name| imm == ebpf::hash_symbol_name(name))
@@ -2087,6 +2111,14 @@ fn lift_one_with_layouts(
                             // H6: single-slice hash — descriptor cells consumed
                             // from the program's stores, input/output introduced.
                             emit_sol_sha256(&mut state, &mut spec_calls,
+                                &mut block_pcs, pc_iter)?;
+                            ti += 1;
+                            continue;
+                        }
+                        if imm == ebpf::hash_symbol_name(b"sol_create_program_address") {
+                            // H6: single-seed PDA — descriptor from stores, seed +
+                            // program_id + output introduced; off-curve surfaced.
+                            emit_sol_create_program_address(&mut state, &mut spec_calls,
                                 &mut block_pcs, pc_iter)?;
                             ti += 1;
                             continue;
@@ -2479,6 +2511,11 @@ fn lift_one_with_layouts(
         syscall_sig.push_str(&format!("({} : ByteArray)\n    ", bs));
         syscall_sig.push_str(&format!("(h{}_sz : {}.size = {})\n    ", bs, bs, size));
     }
+    // Hyps referencing the blob params (e.g. PDA pid.size / off-curve) — after
+    // the blob decls so the forward references resolve.
+    for (name, prop) in &state.blob_side_hyps {
+        syscall_sig.push_str(&format!("({} : {})\n    ", name, prop));
+    }
     for (ncu, hcu, ctor) in &state.syscall_cu_vars {
         syscall_sig.push_str(&format!("({} : Nat)\n    ", ncu));
         syscall_sig.push_str(&format!(
@@ -2678,12 +2715,13 @@ fn lift_one_with_layouts(
         for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
         for (name, _) in &state.side_hyps { names.push(name.clone()); }
-        // Mirror `syscall_sig` order: bytearray_vars, then memset blobs, then CU.
+        // Mirror `syscall_sig` order: bytearray_vars, memset blobs, blob hyps, CU.
         for ba in &state.bytearray_vars { names.push(ba.clone()); }
         for (bs, _) in &state.memset_blobs {
             names.push(bs.clone());
             names.push(format!("h{}_sz", bs));
         }
+        for (name, _) in &state.blob_side_hyps { names.push(name.clone()); }
         for (ncu, hcu, _) in &state.syscall_cu_vars {
             names.push(ncu.clone());
             names.push(hcu.clone());
@@ -2769,12 +2807,13 @@ fn lift_one_with_layouts(
         for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
         for (name, _) in &state.side_hyps { names.push(name.clone()); }
-        // Mirror `syscall_sig` order: bytearray_vars, then memset blobs, then CU.
+        // Mirror `syscall_sig` order: bytearray_vars, memset blobs, blob hyps, CU.
         for ba in &state.bytearray_vars { names.push(ba.clone()); }
         for (bs, _) in &state.memset_blobs {
             names.push(bs.clone());
             names.push(format!("h{}_sz", bs));
         }
+        for (name, _) in &state.blob_side_hyps { names.push(name.clone()); }
         for (ncu, hcu, _) in &state.syscall_cu_vars {
             names.push(ncu.clone());
             names.push(hcu.clone());
