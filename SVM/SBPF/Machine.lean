@@ -335,6 +335,27 @@ theorem State.guardSlices_eq (s : State) (descsAddr count : Nat) (k : State → 
     · rw [State.guardRead_pos _ _ _ _ hc]; exact ih
     · rw [State.guardRead_neg _ _ _ _ hc]; left; rfl
 
+/-- SUCCESS direction of the descriptor walk: if EVERY slice `[ptr_i, ptr_i+len_i)`
+    (read from the descriptor array) is empty or in a mapped region, the walk runs
+    its continuation `k s` (no fault). The keystone the retired hash/PDA SUCCESS
+    specs need (the fault lemmas use `guardSlices_eq`'s other branch). Reads never
+    mutate `s`, so the per-slice region checks are all against the original
+    `s.mem`/`s.regions`. -/
+theorem State.guardSlices_pos (s : State) (descsAddr count : Nat) (k : State → State)
+    (h : ∀ i ∈ List.range count,
+      Memory.readU64 s.mem (descsAddr + i * 16 + 8) = 0 ∨
+      s.regions.containsRange (Memory.readU64 s.mem (descsAddr + i * 16))
+        (Memory.readU64 s.mem (descsAddr + i * 16 + 8)) = true) :
+    s.guardSlices descsAddr count k = k s := by
+  simp only [State.guardSlices]
+  generalize List.range count = l at h
+  induction l with
+  | nil => rfl
+  | cons i t ih =>
+    rw [List.foldr_cons,
+        State.guardRead_pos _ _ _ _ (h i (List.mem_cons.mpr (Or.inl rfl)))]
+    exact ih (fun j hj => h j (List.mem_cons.mpr (Or.inr hj)))
+
 /-- A register predicate holding on `s.regs` and `(k s).regs` holds on a guarded
     read's result (fault keeps `s.regs`). The `Bounded` `regs`-bound closer. -/
 theorem State.guardRead_regs_of_k {motive : RegFile → Prop} (s : State)
@@ -694,6 +715,30 @@ theorem State.hashWrite_regs_of_k {motive : RegFile → Prop} (s : State)
   apply State.guardRead_regs_of_k (motive := motive) (h0 := h0)
   apply State.guardSlices_regs_of_k (motive := motive) (h0 := h0)
   exact hk
+
+/-- SUCCESS direction of `hashWrite` (`sol_sha256`/`sol_keccak256`/… envelope):
+    when the output `[outPtr, outPtr+outLen)` is writable, the descriptor array
+    `[inPtr, inPtr+inN*16)` is readable, AND every input slice is in region, the
+    whole guarded envelope reduces to a single write — `r0 := 0` and `outLen`
+    bytes of `digest` to `*outPtr`. The keystone the retired hashing/PDA SUCCESS
+    triples compose (the fault lemmas take the complementary branch). Composes
+    the three guards' `_pos` lemmas (`guardWrite_pos`, `guardRead_pos`,
+    `guardSlices_pos`); reads never mutate `s`, so all region checks are against
+    the original `s`. -/
+theorem State.hashWrite_success (s : State) (outPtr outLen inPtr inN : Nat)
+    (digest : ByteArray)
+    (hOut : outLen = 0 ∨ s.regions.containsWritable outPtr outLen = true)
+    (hArr : inN * 16 = 0 ∨ s.regions.containsRange inPtr (inN * 16) = true)
+    (hSlices : ∀ i ∈ List.range inN,
+      Memory.readU64 s.mem (inPtr + i * 16 + 8) = 0 ∨
+      s.regions.containsRange (Memory.readU64 s.mem (inPtr + i * 16))
+        (Memory.readU64 s.mem (inPtr + i * 16 + 8)) = true) :
+    s.hashWrite outPtr outLen inPtr inN digest =
+      { s with regs := s.regs.set .r0 0,
+               mem := writeBytes s.mem outPtr outLen digest } := by
+  simp only [State.hashWrite]
+  rw [State.guardWrite_pos _ _ _ _ hOut, State.guardRead_pos _ _ _ _ hArr,
+      State.guardSlices_pos _ _ _ _ hSlices]
 
 /-- Commit an `Option ByteArray`: `some` writes to `*out` (sized `outSize`) +
     `r0 := 0`; `none` sets `r0 := 1`, mem unchanged. The 0/1 convention matches
