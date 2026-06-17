@@ -55,6 +55,12 @@ pub(super) struct SymState {
     pub(super) new_blob_splits: Vec<(String, i64, i64)>,
     /// Per-slot alias equations for the current instruction (a hot wide access whose byte slots live under foreign renderings). Each `(lhs, rhs)` becomes `h_alias_<pc>_<i> : lhs = rhs`, rewritten into the spec hypothesis.
     pub(super) pending_slot_aliases: Vec<(String, String)>,
+    /// Post-state value (rendered Lean term) of a `↦Bytes32` atom, keyed by rendered address. Set by `emit_sol_sha256` (output flips to `Sha256.hash inputBytes`); read by `post_atoms`. Default = read-only (pre name unchanged), e.g. `sol_get_sysvar`'s id read.
+    pub(super) bytes32_post: std::collections::BTreeMap<String, String>,
+    /// Rendered values a syscall spec PINS concretely (e.g. `sol_sha256`'s descriptor `len`), so they must NOT be `generalizing`-abstracted — the hand-written spec call passes them literally and would not match an abstracted goal.
+    pub(super) gen_exclude: Vec<String>,
+    /// `rr_walk` indices that CONTINUE the previous clause's rr group rather than start a new one. A multi-clause syscall rr (e.g. sha256's `((wOut ∧ rVals) ∧ rPtr)`) must stay a grouped fold-unit so the goal rr matches `sl_block_iter`'s per-instruction (`cuTripleWithinMem_seq`) composition; absent entries default to one-clause-per-group (the flat left-fold, unchanged for existing lifts).
+    pub(super) rr_continuations: std::collections::BTreeSet<usize>,
 }
 
 impl SymState {

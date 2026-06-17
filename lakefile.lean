@@ -138,6 +138,10 @@ lean_lib Examples where
     -- (call_sol_set_return_data_spec), returnData ← input blob, r0 := 0.
     -- Wires the return-data syscall family into the lift emitter (Stage C).
     `Generated.SetReturnDataLifted,
+    -- Single-slice sol_sha256 (call_sol_sha256_spec): program writes a
+    -- one-entry SliceDesc, hashes the input slice into a 32-byte output
+    -- (↦Bytes32 ← Sha256.hash inputBytes). Wires the hashing family (Stage D).
+    `Generated.Sha256CallerLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

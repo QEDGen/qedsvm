@@ -24,8 +24,16 @@ the post heap is well-formed. Direct proof in the `call_sol_get_sysvar_spec` /
 
 set_option maxHeartbeats 1600000 in
 theorem call_sol_sha256_spec
-    (r0Old vals ptr len out : Nat)
+    (r0Old vals ptr len out a1 a2 n2 : Nat)
     (inputBytes oldOut : ByteArray) (pc : Nat) (nCu : Nat)
+    -- The two descriptor cells are addressed as `a1`/`a2`, bridged to the
+    -- canonical `vals`/`vals+8`. Lets the lift pass the `effectiveAddr` forms
+    -- its `stdw` posts produce; discharged by `decide` for concrete addresses.
+    (ha1 : a1 = vals)
+    (ha2 : a2 = vals + 8)
+    -- `n2` is the slice count register value (= 1), bridged so the lift can pass
+    -- the `toU64 1` form its `mov64` walk produces.
+    (hn2 : n2 = 1)
     (hInSize : inputBytes.size = len)
     (hPtr : ptr < 2 ^ 64)
     (hLen : len < 2 ^ 64)
@@ -38,15 +46,16 @@ theorem call_sol_sha256_spec
         (step (.call .sol_sha256) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_sha256))
-      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ vals) ** (.r2 ↦ᵣ 1) ** (.r3 ↦ᵣ out) **
-        (vals ↦U64 ptr) ** (vals + 8 ↦U64 len) **
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ vals) ** (.r2 ↦ᵣ n2) ** (.r3 ↦ᵣ out) **
+        (a1 ↦U64 ptr) ** (a2 ↦U64 len) **
         (ptr ↦Bytes inputBytes) ** (out ↦Bytes32 oldOut))
-      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ vals) ** (.r2 ↦ᵣ 1) ** (.r3 ↦ᵣ out) **
-        (vals ↦U64 ptr) ** (vals + 8 ↦U64 len) **
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ vals) ** (.r2 ↦ᵣ n2) ** (.r3 ↦ᵣ out) **
+        (a1 ↦U64 ptr) ** (a2 ↦U64 len) **
         (ptr ↦Bytes inputBytes) ** (out ↦Bytes32 (Sha256.hash inputBytes)))
       (fun rt => (rt.containsWritable out 32 = true ∧
                   rt.containsRange vals 16 = true) ∧
                  rt.containsRange ptr len = true) := by
+  subst a1; subst a2; subst n2
   intro R hRfree fetch hcr s hPR hpc hex hbud h_region
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat

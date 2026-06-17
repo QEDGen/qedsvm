@@ -54,7 +54,7 @@ use refinement::{emit_refinement, is_const_delta_arm};
 use state::SymState;
 use syscalls::{
     emit_r0_syscall, emit_sol_get_sysvar, emit_sol_log, emit_sol_memcmp, emit_sol_memcpy,
-    emit_sol_memset, emit_sol_set_return_data,
+    emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
 };
 use witness::build_branch_witness;
 use qed_analysis::layout::AccountLayout;
@@ -298,6 +298,29 @@ mod layout_tests {
         let on_disk = std::fs::read_to_string(path).expect("read MemcpyLifted.lean");
         assert_eq!(result.lean, on_disk,
             "MemcpyLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
+    }
+
+    /// Pins the single-slice `sol_sha256` happy-path lift
+    /// (`call_sol_sha256_spec`): the program writes a one-entry SliceDesc, then
+    /// hashes the input slice into a 32-byte output. Trace-driven.
+    #[test]
+    fn sha256_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/sha256_caller.so");
+        let ctx = load_binary(so).expect("load sha256_caller.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse sha256_caller.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/sha256_caller.pcs"))
+            .expect("load sha256 trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("Sha256Caller".to_string()),
+            Some(&trace), None, None, None).expect("lift sha256_caller.so");
+
+        let path = "../examples/lean/Generated/Sha256CallerLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write Sha256CallerLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read Sha256CallerLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "Sha256CallerLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, re-bless with QEDLIFT_BLESS=1)");
     }
 
@@ -1737,9 +1760,9 @@ struct LiftOutput {
 /// preamble is threaded); the small `decodeProgram` bridge and bare `sl_block_auto`
 /// can't handle a syscall. Mirrors the trace dispatch in `lift_one_with_layouts`.
 fn imm_is_modeled_syscall(imm: u32) -> bool {
-    const NAMES: [&[u8]; 9] = [
+    const NAMES: [&[u8]; 10] = [
         b"sol_memset_", b"sol_memcpy_", b"sol_memmove_", b"sol_memcmp_",
-        b"sol_log_", b"sol_get_sysvar", b"sol_set_return_data",
+        b"sol_log_", b"sol_get_sysvar", b"sol_set_return_data", b"sol_sha256",
         b"sol_invoke_signed_rust", b"sol_invoke_signed_c",
     ];
     NAMES.iter().any(|name| imm == ebpf::hash_symbol_name(name))
@@ -2057,6 +2080,14 @@ fn lift_one_with_layouts(
                         if imm == ebpf::hash_symbol_name(b"sol_set_return_data") {
                             emit_sol_set_return_data(&mut state, &mut spec_calls,
                                 &mut block_pcs, pc_iter);
+                            ti += 1;
+                            continue;
+                        }
+                        if imm == ebpf::hash_symbol_name(b"sol_sha256") {
+                            // H6: single-slice hash — descriptor cells consumed
+                            // from the program's stores, input/output introduced.
+                            emit_sol_sha256(&mut state, &mut spec_calls,
+                                &mut block_pcs, pc_iter)?;
                             ti += 1;
                             continue;
                         }
@@ -2508,7 +2539,9 @@ fn lift_one_with_layouts(
                 // Skip address abstractions: generalizing an address rewrites it everywhere, breaking post/rr matching.
                 let is_addr_abs = abs_subst.contains_key(&r)
                     || abs_subst.values().any(|p| *p == r);
-                if !is_addr_abs && seen.insert(r.clone()) {
+                // Skip values a syscall spec pins concretely (e.g. sha256's `len`).
+                let is_pinned = state.gen_exclude.contains(&r);
+                if !is_addr_abs && !is_pinned && seen.insert(r.clone()) {
                     gens.push(r);
                 }
             }
@@ -2645,6 +2678,8 @@ fn lift_one_with_layouts(
         for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
         for (name, _) in &state.side_hyps { names.push(name.clone()); }
+        // Mirror `syscall_sig` order: bytearray_vars, then memset blobs, then CU.
+        for ba in &state.bytearray_vars { names.push(ba.clone()); }
         for (bs, _) in &state.memset_blobs {
             names.push(bs.clone());
             names.push(format!("h{}_sz", bs));
@@ -2734,6 +2769,8 @@ fn lift_one_with_layouts(
         for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
         for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
         for (name, _) in &state.side_hyps { names.push(name.clone()); }
+        // Mirror `syscall_sig` order: bytearray_vars, then memset blobs, then CU.
+        for ba in &state.bytearray_vars { names.push(ba.clone()); }
         for (bs, _) in &state.memset_blobs {
             names.push(bs.clone());
             names.push(format!("h{}_sz", bs));

@@ -1,4 +1,4 @@
-use super::core::{canon_addr, const_of_expr, Atom, BytesVal, Expr, MemCell, Width};
+use super::core::{canon_addr, const_of_expr, eval_expr, Atom, BytesVal, Expr, MemCell, Width};
 use super::input::BinaryCtx;
 use super::{SpecCall, SymState};
 
@@ -829,4 +829,137 @@ pub(super) fn emit_sol_set_return_data(
         have_line,
     });
     block_pcs.push(pc);
+}
+
+/// Emit single-slice `sol_sha256(r1 = vals, r2 = 1, r3 = out)` (H6). The one
+/// 16-byte `SliceDesc { ptr, len }` at `vals` was written by the program, so
+/// its two `↦U64` cells are already in the precondition (consumed from the
+/// post-store state); their `effectiveAddr` renderings are passed as `a1`/`a2`
+/// (bridged to `vals`/`vals+8` by `decide`). The input slice `[ptr, ptr+len)`
+/// (read-only `↦Bytes`) and the 32-byte output `[out, out+32)` (`↦Bytes32`,
+/// flipping to `Sha256.hash inputBytes` in the post) are introduced here.
+/// Shaped to `call_sol_sha256_spec`. Fail-closed on a symbolic descriptor /
+/// n ≠ 1. CU is the data-dependent hash cost, surfaced as `nCu`/`hCu`.
+pub(super) fn emit_sol_sha256(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let r0v = state.read_reg(0);
+    let r1v = state.read_reg(1); // vals (descriptor array)
+    let r2v = state.read_reg(2); // n_vals
+    let r3v = state.read_reg(3); // out (32-byte digest)
+
+    let n = const_of_expr(&r2v)
+        .ok_or_else(|| format!("sha256 at pc {pc}: symbolic n_vals"))?;
+    if n != 1 {
+        return Err(format!(
+            "sha256 at pc {pc}: only the single-slice (n_vals = 1) shape is \
+             modelled so far, got {n}").into());
+    }
+
+    // The two descriptor cells, written by the program before the call. Read
+    // their (concrete) ptr/len and the `effectiveAddr` renderings the spec
+    // consumes as `a1`/`a2`.
+    let env = std::collections::BTreeMap::new();
+    let (i_ptr, _) = state.lookup_cell_aliased(&r1v, 0, Width::Dword).ok_or_else(|| {
+        format!("sha256 at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
+                 — the slice descriptor must be written before the call")
+    })?;
+    let (i_len, _) = state.lookup_cell_aliased(&r1v, 8, Width::Dword).ok_or_else(|| {
+        format!("sha256 at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]")
+    })?;
+    let a1 = SymState::cell_render(&state.mem[i_ptr]);
+    let a2 = SymState::cell_render(&state.mem[i_len]);
+    let ptr_expr = state.mem[i_ptr].value.clone();
+    let len_expr = state.mem[i_len].value.clone();
+    if eval_expr(&ptr_expr, &env).is_none() {
+        return Err(format!("sha256 at pc {pc}: symbolic descriptor.ptr").into());
+    }
+    let len_val = eval_expr(&len_expr, &env)
+        .ok_or_else(|| format!("sha256 at pc {pc}: symbolic descriptor.len"))?;
+
+    let idx = state.fresh;
+    state.fresh += 1;
+    let in_name = format!("sha256In_{}", idx);
+    let out_name = format!("sha256OldOut_{}", idx);
+    let ncu_name = format!("nCuSha256{}", idx);
+    let hcu_name = format!("hCuSha256{}", idx);
+    let len_rendered = len_expr.atom_lean();
+
+    // Pre atoms (spec order, AFTER the descriptor cells already present from the
+    // stores): `(ptr ↦Bytes inputBytes) ** (out ↦Bytes32 oldOut)`.
+    state.pre.push(Atom::Bytes {
+        addr: ptr_expr.clone(),
+        value: BytesVal::Sym(in_name.clone()),
+    });
+    state.pre.push(Atom::Bytes32 {
+        addr: r3v.clone(),
+        name: out_name.clone(),
+    });
+    state.memset_blobs.push((in_name.clone(), len_rendered.clone()));
+    state.bytearray_vars.push(out_name.clone());
+    // The descriptor `len` is pinned concretely in the spec call (it is the
+    // input-blob size + the descriptor cell value), so it must not be
+    // `generalizing`-abstracted (would desync the hand-written `h_<pc>`).
+    state.gen_exclude.push(len_expr.to_lean());
+
+    // Footprints: input read + 32-byte output write (disjoint from the
+    // descriptor and each other; overlap ⇒ vacuous, fail closed).
+    state.note_access(&ptr_expr, 0, len_val.max(1) as i64,
+        format!("sha256In:{}", ptr_expr.to_lean()));
+    state.note_access(&r3v, 0, 32, format!("sha256Out:{}", r3v.to_lean()));
+
+    // rr in the spec's left-assoc order, kept as ONE grouped fold-unit (the 2nd
+    // and 3rd clauses CONTINUE the group) so the goal matches sl_block_iter's
+    // per-instruction composition `(prior_stores) ∧ ((wOut ∧ rVals) ∧ rPtr)`:
+    let g0 = state.rr_walk.len();
+    state.rr_walk.push((
+        r3v.clone(), 0, Width::Byte, true, Some((r3v.clone(), Expr::Const(32))),
+    ));
+    state.rr_walk.push((
+        r1v.clone(), 0, Width::Byte, false, Some((r1v.clone(), Expr::Const(16))),
+    ));
+    state.rr_walk.push((
+        ptr_expr.clone(), 0, Width::Byte, false, Some((ptr_expr.clone(), len_expr.clone())),
+    ));
+    state.rr_continuations.insert(g0 + 1);
+    state.rr_continuations.insert(g0 + 2);
+
+    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_sha256"));
+    state.syscall_pcs.insert(pc, ".sol_sha256");
+
+    // Post: output flips to `Sha256.hash inputBytes`; input + descriptor
+    // unchanged; r0 := 0.
+    state.bytes32_post.insert(r3v.to_lean(), format!("(Sha256.hash {})", in_name));
+    state.write_reg(0, Expr::Const(0));
+
+    // call_sol_sha256_spec r0Old vals ptr len out a1 a2 n2 inputBytes oldOut pc
+    //   nCu ha1 ha2 hn2 hInSize hPtr hLen hDescIn hDescOut hInOut hCu
+    let have_line = format!(
+        "have h_{pc} := call_sol_sha256_spec {r0} {vals} {ptr} ({len}) {out} \
+         ({a1}) ({a2}) {n2} {inb} {oob} {pc} {ncu} \
+         (by decide) (by decide) (by decide) h{inb}_sz (by decide) (by decide) \
+         (by decide) (by decide) (by decide) {hcu}",
+        pc = pc,
+        r0 = r0v.atom_lean(),
+        vals = r1v.atom_lean(),
+        ptr = ptr_expr.atom_lean(),
+        len = len_rendered,
+        out = r3v.atom_lean(),
+        a1 = a1,
+        a2 = a2,
+        n2 = r2v.atom_lean(),
+        inb = in_name,
+        oob = out_name,
+        ncu = ncu_name,
+        hcu = hcu_name,
+    );
+    spec_calls.push(SpecCall {
+        hyp_name: format!("h_{}", pc),
+        have_line,
+    });
+    block_pcs.push(pc);
+    Ok(())
 }

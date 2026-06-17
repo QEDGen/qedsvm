@@ -118,7 +118,14 @@ fn const_blob_size(s: &str) -> Option<u64> {
         return Some(n);
     }
     let inner = t.strip_prefix('(')?.strip_suffix(')')?.trim();
-    inner.strip_prefix("toU64")?.trim().parse::<u64>().ok()
+    let after = inner.strip_prefix("toU64")?.trim();
+    // Plain `toU64 N`.
+    if let Ok(n) = after.parse::<u64>() {
+        return Some(n);
+    }
+    // `toU64 N % 2 ^ (8 * 8)` — a dword store-immediate (`ST_DW_IMM`) render;
+    // `% 2^64` is a no-op for the in-range immediate, so the size is N.
+    after.strip_suffix("% 2 ^ (8 * 8)")?.trim().parse::<u64>().ok()
 }
 
 /// Build the H8 satisfiability-witness: a concrete variable assignment proving the precondition
@@ -259,7 +266,16 @@ pub(super) fn build_sat_witness(
             Atom::Bytes32 { addr, name } => {
                 let a = eval_expr(addr, &env).ok_or_else(|| format!(
                     "cannot evaluate Bytes32 address `{}`", addr.to_lean()))?;
-                sat_atoms.push(format!(".bytes32 {} {}", a, name));
+                // A fresh symbolic 32-byte blob (e.g. sha256's old output) is
+                // grounded to a concrete witness + substituted; a named constant
+                // (a sysvar id) is used verbatim.
+                if state.bytearray_vars.iter().any(|v| v == name) {
+                    let repl = "(replicateByte 0 32)".to_string();
+                    sat_atoms.push(format!(".bytes32 {} {}", a, repl));
+                    blob_subst.push((name.clone(), repl));
+                } else {
+                    sat_atoms.push(format!(".bytes32 {} {}", a, name));
+                }
                 feet.push(Foot { mem: Some((a, 32)), reg: None, cs: false,
                                  desc: format!("`{}` at {}", name, a) });
             }
@@ -435,8 +451,12 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                 out.push(Atom::Bytes { addr: addr.clone(), value: post_val });
             }
             Atom::Bytes32 { addr, name } => {
-                // Read-only named constant (sysvar id) — unchanged.
-                out.push(Atom::Bytes32 { addr: addr.clone(), name: name.clone() });
+                // Default read-only (sysvar id) — unchanged. A digest-writing
+                // syscall (sol_sha256) flips the post via `bytes32_post`.
+                let post_name = state.bytes32_post.get(&addr.to_lean())
+                    .cloned()
+                    .unwrap_or_else(|| name.clone());
+                out.push(Atom::Bytes32 { addr: addr.clone(), name: post_name });
             }
             Atom::ReturnData { value } => {
                 // returnData flips to the syscall-set value (`returndata_post`).
@@ -456,6 +476,18 @@ pub(super) fn region_req(
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
     let mut clauses = Vec::new();
+    // Per-clause group id: a fresh group at every index NOT in `rr_continuations`
+    // (default = one clause per group = the flat left-fold). A multi-clause
+    // syscall rr stays grouped so the goal matches `sl_block_iter`'s
+    // per-instruction (`cuTripleWithinMem_seq`) composition.
+    let mut group_ids: Vec<usize> = Vec::with_capacity(state.rr_walk.len());
+    let mut gid = 0usize;
+    for i in 0..state.rr_walk.len() {
+        if i != 0 && !state.rr_continuations.contains(&i) {
+            gid += 1;
+        }
+        group_ids.push(gid);
+    }
     // Walk-order: load -> containsRange, store -> containsWritable; left-fold order matches slBlockIter.
     for (addr_base, addr_off, width, writable, raw) in &state.rr_walk {
         // H6 variable-length: `contains{Writable,Range} addr count` with raw (subst-folded, no
@@ -480,11 +512,24 @@ pub(super) fn region_req(
     if clauses.is_empty() {
         "True".to_string()
     } else {
-        // Left-associative `((A ∧ B) ∧ C) ∧ D` — matches sl_block_iter's left-fold shape so the
-        // goal is isDefEq to the chain without extra rewrites.
-        let mut out = clauses[0].clone();
-        for c in clauses.iter().skip(1) {
-            out = format!("({}) ∧\n                  {}", out, c);
+        // Fold within each group left-assoc, then left-fold the groups — matches
+        // sl_block_iter's per-instruction composition (`(prior) ∧ (syscall_rr)`),
+        // which is isDefEq to the goal without extra rewrites. With no
+        // continuations every clause is its own group = the flat left-fold.
+        let mut groups: Vec<String> = Vec::new();
+        let mut cur = clauses[0].clone();
+        for i in 1..clauses.len() {
+            if group_ids[i] == group_ids[i - 1] {
+                cur = format!("({}) ∧\n                  {}", cur, clauses[i]);
+            } else {
+                groups.push(cur);
+                cur = clauses[i].clone();
+            }
+        }
+        groups.push(cur);
+        let mut out = groups[0].clone();
+        for g in groups.iter().skip(1) {
+            out = format!("({}) ∧\n                  {}", out, g);
         }
         out
     }
