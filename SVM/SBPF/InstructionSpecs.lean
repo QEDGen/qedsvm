@@ -16,6 +16,7 @@ import SVM.SBPF.InstructionSpecs.Syscalls.ReturnData
 import SVM.SBPF.InstructionSpecs.Syscalls.Pda
 import SVM.SBPF.InstructionSpecs.Syscalls.Mem
 import SVM.SBPF.InstructionSpecs.Syscalls.Sysvar
+import SVM.SBPF.InstructionSpecs.Syscalls.Hash
 import SVM.SBPF.InstructionSpecs.Terminating
 import SVM.SBPF.InstructionSpecs.CallReturn
 import SVM.SBPF.InstructionSpecs.Crypto
