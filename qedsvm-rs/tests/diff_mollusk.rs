@@ -43,6 +43,11 @@ const MEMCPY_CALLER_SO: &[u8] = include_bytes!("fixtures/memcpy_caller.so");
 /// disjoint and mapped read+write. Success-direction counterpart to
 /// `oob_sha256`; the trace source for `Sha256CallerLifted`.
 const SHA256_CALLER_SO: &[u8] = include_bytes!("fixtures/sha256_caller.so");
+/// Happy-path single-seed `sol_create_program_address`: writes a one-entry
+/// SliceDesc { ptr = base+0x100, len = 8 } to the heap, derives a PDA from the
+/// 8-byte seed + 32-byte program_id into a 32-byte heap output. Disjoint,
+/// in-bounds heap regions. The trace source for `PdaCreateLifted`.
+const PDA_CREATE_SO: &[u8] = include_bytes!("fixtures/pda_create.so");
 /// Happy-path `sol_memmove_`: same disjoint-heap-slice shape as
 /// `memcpy_caller`, exercising the `is_move` arm of the lift emitter.
 const MEMMOVE_CALLER_SO: &[u8] = include_bytes!("fixtures/memmove_caller.so");
@@ -804,6 +809,59 @@ fn sha256_caller_program_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for sha256_caller: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// H6 happy path: single-seed `sol_create_program_address` over disjoint,
+/// in-bounds heap regions (descriptor + 8-byte seed + 32-byte program_id +
+/// 32-byte output) succeeds on both engines with matching CU and return_data.
+/// The success direction to `oob_create_pda_*`, and the trace source for
+/// `PdaCreateLifted`.
+#[test]
+fn pda_create_program_matches_mollusk() {
+    let program_id = pid(61);
+    let acct_key = pid(62);
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, PDA_CREATE_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs pda_create");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        PDA_CREATE_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for pda_create: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }
