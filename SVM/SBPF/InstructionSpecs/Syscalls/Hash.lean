@@ -820,3 +820,69 @@ theorem call_sol_sha256_spec
         exact hva
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
+
+/-! ## Syscall: `sol_create_program_address` — single-seed reduction lemmas
+
+`sol_create_program_address(r1 = *SliceDesc seeds, r2 = n_seeds, r3 = *program_id,
+r4 = *mut [u8;32] out)`: hash `seed* ‖ program_id ‖ "ProgramDerivedAddress"`,
+reject if the digest is on the ed25519 curve, else write it to `*r4` + `r0 := 0`.
+
+The genuinely-new reasoning for the (forthcoming) `n = 1` success triple, factored
+out and proven here: the derived PDA is the pure-`Sha256.hash` of
+`seedBytes ++ pidBytes ++ PDA_MARKER`; off-curve is opaque FFI
+(`Curve25519.validateEdwards`), so it is a HYPOTHESIS the consumer discharges.
+
+The full `call_sol_create_program_address_spec` (`cuTripleWithinMem` over 10 owned
+atoms — r0/r1=seeds/r2=1/r3=pid/r4=out, the two `↦U64` descriptor cells, the seed
+`↦Bytes`, the read-only program_id `↦Bytes32`, the output `↦Bytes32`) then composes
+these with the `call_sol_sha256_spec` post-heap machinery (+1 register, +1 read
+region). Statement validated; proof body deferred. -/
+
+/-- Single-seed `createProgramAddress` collapse: within limits + off curve, it
+    returns `some` of the pure SHA-256 derivation. -/
+theorem Pda.createProgramAddress_single (seedBytes pidBytes : ByteArray)
+    (hSeedLe : seedBytes.size ≤ 32) (hPidSize : pidBytes.size = 32)
+    (hOff : ¬ Curve25519.validateEdwards
+              (Sha256.hash (seedBytes ++ pidBytes ++ Pda.PDA_MARKER)) = true) :
+    Pda.createProgramAddress [seedBytes] pidBytes
+      = some (Sha256.hash (seedBytes ++ pidBytes ++ Pda.PDA_MARKER)) := by
+  unfold Pda.createProgramAddress
+  simp only [List.length_singleton, Pda.MAX_SEEDS, Pda.MAX_SEED_LEN,
+             List.any_cons, List.any_nil, Bool.or_false]
+  rw [if_neg (by decide), if_neg (by simp [hSeedLe]), if_neg (by simp [hPidSize])]
+  simp only [List.foldl_cons, List.foldl_nil, ByteArray.empty_append]
+  rw [if_neg hOff]
+
+/-- `readSeeds … 1` is the single dereferenced descriptor slice (n = 1). -/
+theorem Pda.readSeeds_one (mem : Memory.Mem) (vals : Nat) :
+    Pda.readSeeds mem vals 1
+      = [readBytes mem (Memory.readU64 mem vals) (Memory.readU64 mem (vals + 8))] := by
+  simp only [Pda.readSeeds, List.range_one, List.map_cons, List.map_nil,
+             Nat.zero_mul, Nat.add_zero]
+
+/-- SUCCESS reduction of `execCreate` (single seed): program_id readable, output
+    writable, descriptor readable, seed slice in region, and the derivation
+    returns `some pda` ⇒ the whole two-level guarded envelope is one write +
+    `r0 := 0`. Composes `guardRead_pos` (program_id) with `guardedCommit_success`. -/
+theorem Pda.execCreate_success_single (s : State) (pidA out vals : Nat)
+    (pda : ByteArray)
+    (hr3 : s.regs.r3 = pidA) (hr4 : s.regs.r4 = out) (hr1 : s.regs.r1 = vals)
+    (hr2 : s.regs.r2 = 1)
+    (hcpa : Pda.createProgramAddress (Pda.readSeeds s.mem vals 1)
+              (readBytes s.mem pidA 32) = some pda)
+    (hPid : s.regions.containsRange pidA 32 = true)
+    (hOut : s.regions.containsWritable out 32 = true)
+    (hArr : s.regions.containsRange vals 16 = true)
+    (hSlices : ∀ i ∈ List.range 1,
+      Memory.readU64 s.mem (vals + i * 16 + 8) = 0 ∨
+      s.regions.containsRange (Memory.readU64 s.mem (vals + i * 16))
+        (Memory.readU64 s.mem (vals + i * 16 + 8)) = true) :
+    Pda.execCreate s
+      = { s with regs := s.regs.set .r0 0, mem := writeBytes s.mem out 32 pda } := by
+  show s.guardRead s.regs.r3 32 (fun s => s.guardedCommit s.regs.r4 32 s.regs.r1 s.regs.r2
+        (Pda.createProgramAddress (Pda.readSeeds s.mem s.regs.r1 s.regs.r2)
+          (readBytes s.mem s.regs.r3 32))) = _
+  rw [State.guardRead_pos _ _ _ _ (Or.inr (by rw [hr3]; exact hPid))]
+  rw [hr1, hr2, hr3, hr4, hcpa]
+  exact s.guardedCommit_success out 32 vals 1 pda (Or.inr hOut)
+    (Or.inr (by rw [Nat.one_mul]; exact hArr)) hSlices
