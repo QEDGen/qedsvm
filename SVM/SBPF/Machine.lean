@@ -866,4 +866,27 @@ theorem State.guardedCommit_regs_of_k {motive : RegFile → Prop} (s : State)
   · exact hk1
   · exact hk0
 
+/-- SUCCESS direction of `guardedCommit` on a `some` result (the PDA / poseidon
+    envelope): when the output `[outPtr, outPtr+outLen)` is writable, the
+    descriptor array `[inPtr, inPtr+inN*16)` is readable, AND every input slice is
+    in region, the whole guarded commit reduces to a single write — `r0 := 0` and
+    `outLen` bytes of `pda` to `*outPtr`. The keystone the PDA / poseidon SUCCESS
+    triples compose (mirrors `hashWrite_success`; the `none` result and the guard
+    misses take the fault branches). Composes the three guards' `_pos` lemmas. -/
+theorem State.guardedCommit_success (s : State) (outPtr outLen inPtr inN : Nat)
+    (pda : ByteArray)
+    (hOut : outLen = 0 ∨ s.regions.containsWritable outPtr outLen = true)
+    (hArr : inN * 16 = 0 ∨ s.regions.containsRange inPtr (inN * 16) = true)
+    (hSlices : ∀ i ∈ List.range inN,
+      Memory.readU64 s.mem (inPtr + i * 16 + 8) = 0 ∨
+      s.regions.containsRange (Memory.readU64 s.mem (inPtr + i * 16))
+        (Memory.readU64 s.mem (inPtr + i * 16 + 8)) = true) :
+    s.guardedCommit outPtr outLen inPtr inN (some pda) =
+      { s with regs := s.regs.set .r0 0,
+               mem := writeBytes s.mem outPtr outLen pda } := by
+  simp only [State.guardedCommit]
+  rw [State.guardWrite_pos _ _ _ _ hOut, State.guardRead_pos _ _ _ _ hArr,
+      State.guardSlices_pos _ _ _ _ hSlices]
+  rfl
+
 end SVM.SBPF
