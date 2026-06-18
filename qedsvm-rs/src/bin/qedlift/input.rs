@@ -47,6 +47,11 @@ pub(super) struct Args {
     pub(super) qedmeta: Option<PathBuf>,
     /// Restrict a `--qedmeta` run to a single instruction by name.
     pub(super) target_name: Option<String>,
+    /// Spec-driven refinement descriptor (`*.descriptor.json`). When given
+    /// (single-arm mode), qedlift builds the layout-general
+    /// `AsmRefinesFieldUpdate` obligation from the descriptor instead of the
+    /// hardcoded `refine_registry` arm match. The seam to qedspec.
+    pub(super) descriptor: Option<PathBuf>,
 }
 
 // qedmeta sidecar (#41 Phase 4): v2 adds [instruction.recovered] arm
@@ -147,6 +152,147 @@ pub(super) fn resolve_layout(
     sidecar
         .and_then(|ls| ls.iter().find(|l| l.name == name).cloned())
         .or_else(|| idl.and_then(|v| parse_account_layout(v, name).ok()))
+}
+
+// ════════════════════════════════════════════════════════════════
+// Refinement descriptor (spec-driven obligation, prototype) — the seam to qedspec.
+//
+// A `.descriptor.json` is the shape qedgen *would* emit from a `.qedspec`: the
+// account's field layout (its `State` projected to byte offsets), which field a
+// handler mutates, and how. When qedlift is given one (`--descriptor`), it builds
+// the layout-general `AsmRefinesFieldUpdate` obligation straight from the descriptor
+// — NOT from the hardcoded `refine_registry` arm match and NOT by resolving the
+// layout off a fixed role string. A new program then costs a descriptor, not a Rust
+// edit. See docs/DEVEX_QEDSPEC_GAP.md.
+// ════════════════════════════════════════════════════════════════
+
+/// Newest refinement-descriptor schema this qedlift understands. The descriptor is a
+/// cross-tool contract (qedgen produces it, qedlift consumes it), so it is versioned and
+/// fail-closed exactly like `qedmeta` (`QEDMETA_SCHEMA_MAX`): a newer schema may carry
+/// semantics we'd silently mis-consume, so we refuse it rather than guess. See
+/// docs/REFINEMENT_DESCRIPTOR.md.
+const DESCRIPTOR_SCHEMA_MAX: u32 = 1;
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct RefinementDescriptor {
+    /// Contract version. Absent (0) = pre-versioning, accepted; `> DESCRIPTOR_SCHEMA_MAX`
+    /// is refused at load (fail-closed). Bump in lockstep with the producer (qedgen).
+    #[serde(default)]
+    pub(super) schema_version: u32,
+    /// Account name. When `layout` is omitted (the IDL-driven default), this is the IDL
+    /// account whose shape is resolved via `resolve_layout` — the same `qed-analysis` path
+    /// the registry lift uses, so qedgen never needs its own layout parser. When `layout` is
+    /// given inline, this is just a label.
+    pub(super) account: String,
+    /// qedspec handler this obligation comes from. Provenance only (rendered in the comment).
+    #[serde(default)]
+    pub(super) handler: Option<String>,
+    /// Mutated field NAME. Its offset/kind come from the resolved layout (IDL or inline) —
+    /// the seam is name-level; offsets are the IDL's job, not the descriptor's.
+    pub(super) mutated: String,
+    /// The mutation. Only `{ "add_const": 1 }` is wired today (matches the lift's
+    /// `wrapAdd_one_of_lt` cleaning); other deltas/ops are a follow-up.
+    pub(super) op: DescriptorOp,
+    /// OPTIONAL explicit layout. ABSENT (the default) = resolve the shape from the IDL by
+    /// `account` (the principled, IDL-driven form). PRESENT = hand-authored fallback for
+    /// sBPF specs / fixtures with no IDL (e.g. the degenerate counter.so).
+    #[serde(default)]
+    pub(super) layout: Vec<DescriptorField>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct DescriptorField {
+    pub(super) offset: usize,
+    /// "pubkey" | "u64" | "byte" | "bytes" (mirrors `qed_analysis::layout::FieldKind`).
+    pub(super) kind: String,
+    pub(super) name: String,
+    /// Region width; required for `kind = "bytes"`, ignored otherwise.
+    #[serde(default)]
+    pub(super) width_bytes: Option<usize>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct DescriptorOp {
+    pub(super) add_const: i64,
+}
+
+fn descriptor_field_kind(kind: &str, width_bytes: Option<usize>) -> FieldKind {
+    match kind {
+        "pubkey" => FieldKind::Pubkey,
+        "u64" => FieldKind::U64,
+        "byte" => FieldKind::Byte,
+        // "bytes" (or any unknown) -> opaque region; width_bytes carries the size.
+        _ => FieldKind::Bytes(width_bytes.unwrap_or(0)),
+    }
+}
+
+fn descriptor_field_width(kind: &FieldKind) -> usize {
+    match kind {
+        FieldKind::Pubkey => 32,
+        FieldKind::U64 => 8,
+        FieldKind::Byte => 1,
+        FieldKind::Bytes(n) => *n,
+    }
+}
+
+impl RefinementDescriptor {
+    /// The inline layout, if the descriptor carries one (the no-IDL fallback). `None` means
+    /// the shape is resolved from the IDL by `account` instead (see `resolve_layout`).
+    pub(super) fn explicit_layout(&self) -> Option<AccountLayout> {
+        if self.layout.is_empty() {
+            return None;
+        }
+        let fields: Vec<AccountField> = self
+            .layout
+            .iter()
+            .map(|f| AccountField {
+                name: f.name.clone(),
+                offset: f.offset,
+                kind: descriptor_field_kind(&f.kind, f.width_bytes),
+            })
+            .collect();
+        let size = fields
+            .iter()
+            .map(|f| f.offset + descriptor_field_width(&f.kind))
+            .max()
+            .unwrap_or(0);
+        Some(AccountLayout {
+            name: self.account.clone(),
+            size,
+            fields,
+        })
+    }
+}
+
+pub(super) fn load_descriptor(
+    path: &Path,
+) -> Result<RefinementDescriptor, Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(path)?;
+    let desc: RefinementDescriptor = serde_json::from_str(&text)?;
+    // Fail closed on a newer schema we might mis-consume (mirrors `load_qedmeta`).
+    if desc.schema_version > DESCRIPTOR_SCHEMA_MAX {
+        return Err(format!(
+            "--descriptor {}: schema_version {} is newer than this qedlift understands \
+             (max {})",
+            path.display(),
+            desc.schema_version,
+            DESCRIPTOR_SCHEMA_MAX
+        )
+        .into());
+    }
+    // With an inline layout, the mutated field must be in it. Without one, the shape comes
+    // from the IDL and the field is checked at emit time (the IDL isn't available here).
+    if let Some(layout) = desc.explicit_layout() {
+        if !layout.fields.iter().any(|f| f.name == desc.mutated) {
+            return Err(format!(
+                "--descriptor {}: mutated field {:?} is not in the inline layout",
+                path.display(),
+                desc.mutated
+            )
+            .into());
+        }
+    }
+    Ok(desc)
 }
 
 pub(super) fn load_qedmeta(path: &Path) -> Result<QedMeta, Box<dyn std::error::Error>> {
@@ -288,6 +434,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
     let mut arm_name: Option<String> = None;
     let mut qedmeta: Option<PathBuf> = None;
     let mut target_name: Option<String> = None;
+    let mut descriptor: Option<PathBuf> = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -310,6 +457,9 @@ pub(super) fn parse_args() -> Result<Args, String> {
             "--arm-name" => arm_name = Some(it.next().ok_or("--arm-name needs a name")?),
             "--qedmeta" => qedmeta = Some(it.next().ok_or("--qedmeta needs a path")?.into()),
             "--target-name" => target_name = Some(it.next().ok_or("--target-name needs a name")?),
+            "--descriptor" => {
+                descriptor = Some(it.next().ok_or("--descriptor needs a path")?.into())
+            }
             other => return Err(format!("unknown arg: {}", other)),
         }
     }
@@ -324,6 +474,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
         arm_name,
         qedmeta,
         target_name,
+        descriptor,
     })
 }
 

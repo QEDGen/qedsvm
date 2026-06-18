@@ -152,6 +152,19 @@ lean_lib Examples where
     -- is layout-general, not SPL-token-shaped.
     `Generated.CounterTracedLifted,
     `Generated.CounterRefinement,
+    -- Same counter.so, but the refinement is SPEC-DRIVEN: built from a
+    -- qedspec-shaped `*.descriptor.json` (layout + mutated field + op),
+    -- bypassing the hardcoded `refine_registry`. Targets the layout-general
+    -- `AsmRefinesFieldUpdate` (not the bespoke `AsmRefinesCounterIncrement`).
+    -- The prototype seam to qedspec — see docs/DEVEX_QEDSPEC_GAP.md.
+    `Generated.CounterDescriptorTracedLifted,
+    `Generated.CounterDescriptorRefinement,
+    -- Same vault.so, but SPEC-DRIVEN from a descriptor (no refine_registry,
+    -- no IDL). Exercises the layout-general multi-field framing (pubkey +
+    -- byte) — the proof body is byte-identical to VaultRefinement above,
+    -- confirming the descriptor path is layout-general, not counter-shaped.
+    `Generated.VaultDescriptorTracedLifted,
+    `Generated.VaultDescriptorRefinement,
     -- Vault: a multi-field NON-token account ({owner:Pubkey, total:u64,
     -- bump:u8}). The refinement (AsmRefinesFieldUpdate) reshapes the codec
     -- via the layout-general `account_agg` and frames the untouched

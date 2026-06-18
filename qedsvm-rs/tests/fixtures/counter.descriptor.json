@@ -1,0 +1,11 @@
+{
+  "_comment": "Spec-driven refinement descriptor (the seam to qedspec). Carries SEMANTICS: which named field a handler mutates, by what op, plus the account name. counter.so is the degenerate single-u64 fixture and has NO Codama IDL, so its shape is given inline here (the no-IDL fallback). The principled, IDL-driven form omits `layout` entirely and resolves the shape from the IDL by account name; see vault.descriptor.json. The real qedgen Counter spec ({ owner: Pubkey@0, counter: U64@32 }) would also be IDL-resolved. Schema: docs/REFINEMENT_DESCRIPTOR.md.",
+  "schema_version": 1,
+  "account": "Counter",
+  "handler": "increment",
+  "mutated": "counter",
+  "op": { "add_const": 1 },
+  "layout": [
+    { "offset": 0, "kind": "u64", "name": "counter" }
+  ]
+}

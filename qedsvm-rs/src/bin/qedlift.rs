@@ -45,14 +45,14 @@ use aggregation::write_aggregation;
 use aggregation::{render_mint_agg_module, render_token_agg_module};
 use branch::{BranchHyp, BranchKind};
 use input::{
-    BinaryCtx, load_binary, load_idl, load_idl_value, load_qedmeta, load_trace, parse_args,
-    pascal_case, sidecar_account_layouts,
+    BinaryCtx, RefinementDescriptor, load_binary, load_descriptor, load_idl, load_idl_value,
+    load_qedmeta, load_trace, parse_args, pascal_case, sidecar_account_layouts,
 };
 use isa::{
     function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full,
     render_callstack, resolve_call_target_logical, resolve_jump_target,
 };
-use refinement::{emit_refinement, is_const_delta_arm};
+use refinement::{emit_descriptor_refinement, emit_refinement, is_const_delta_arm};
 use state::SymState;
 use syscalls::{
     emit_r0_syscall, emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log,
@@ -121,6 +121,63 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// Spec-driven descriptor path (the qedspec seam): the refinement is built from a
+    /// `*.descriptor.json` (layout + mutated field + op), bypassing `refine_registry`, and
+    /// targets the layout-general `AsmRefinesFieldUpdate`. Two fixtures pin both shapes:
+    /// counter (single u64 @ 0, empty frame) and vault (multi-field, pubkey + byte framing).
+    #[test]
+    fn descriptor_refinement_is_mechanically_emitted() {
+        // (a) counter.so — single u64 field at offset 0, empty frame (no refine_registry entry).
+        let desc = load_descriptor(std::path::Path::new("tests/fixtures/counter.descriptor.json"))
+            .expect("load counter descriptor");
+        let so = std::path::Path::new("tests/fixtures/counter.so");
+        let ctx = load_binary(so).expect("load counter.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse counter.so");
+        let result = lift_one_with_layouts(so, &ctx, &analysis, None,
+            Some("CounterDescriptor".to_string()), None, None, None, None, None, Some(&desc))
+            .expect("lift counter.so via descriptor");
+        let (_, rlean) = result.refinement.expect("descriptor refinement emitted (counter)");
+        let on_disk = std::fs::read_to_string(
+            "../examples/lean/Generated/CounterDescriptorRefinement.lean")
+            .expect("read CounterDescriptorRefinement.lean");
+        assert_eq!(rlean, on_disk,
+            "CounterDescriptorRefinement.lean is out of sync with the qedlift descriptor \
+             emitter (mechanically emitted, do not hand-edit)");
+
+        // (b) vault.so — multi-field {owner:Pubkey, total:u64, bump:u8}; `total` mutated.
+        // Name-level descriptor (no inline layout, no registry entry): the shape is resolved
+        // from the IDL by account name, exactly the path `resolve_layout` uses.
+        let vdesc = load_descriptor(std::path::Path::new("tests/fixtures/vault.descriptor.json"))
+            .expect("load vault descriptor");
+        let vidl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+                .expect("read vault.codama.json")).expect("parse vault IDL");
+        let vso = std::path::Path::new("tests/fixtures/vault.so");
+        let vctx = load_binary(vso).expect("load vault.so");
+        let vanalysis = Analysis::from_executable(&vctx.executable).expect("analyse vault.so");
+        let vresult = lift_one_with_layouts(vso, &vctx, &vanalysis, None,
+            Some("VaultDescriptor".to_string()), None, None, Some(&vidl), None, None, Some(&vdesc))
+            .expect("lift vault.so via descriptor");
+        let (_, vrlean) = vresult.refinement.expect("descriptor refinement emitted (vault)");
+        let von_disk = std::fs::read_to_string(
+            "../examples/lean/Generated/VaultDescriptorRefinement.lean")
+            .expect("read VaultDescriptorRefinement.lean");
+        assert_eq!(vrlean, von_disk,
+            "VaultDescriptorRefinement.lean is out of sync with the qedlift descriptor \
+             emitter (mechanically emitted, do not hand-edit)");
+    }
+
+    /// The descriptor is a versioned cross-tool contract: a schema newer than this qedlift
+    /// understands must be refused fail-closed (mirrors `load_qedmeta`), never silently consumed.
+    #[test]
+    fn descriptor_rejects_newer_schema() {
+        let err = load_descriptor(std::path::Path::new(
+            "tests/fixtures/descriptor_future_schema.json"))
+            .expect_err("a future descriptor schema must be refused");
+        assert!(err.to_string().contains("schema_version"),
+            "fail-closed error should name the schema_version mismatch, got: {err}");
+    }
+
     /// Diffs the emitter output on `vault.so` + `vault.codama.json` against both on-disk artifacts, guarding the layout-general account-codec path.
     #[test]
     fn vault_refinement_is_mechanically_emitted() {
@@ -165,16 +222,16 @@ mod layout_tests {
 
         // (a) IDL path — the existing, blessed behaviour.
         let via_idl = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
-            None, Some("VaultIncrement"), Some(&idl), None, None).expect("lift via idl");
+            None, Some("VaultIncrement"), Some(&idl), None, None, None).expect("lift via idl");
 
         // (b) Sidecar path — layout supplied as qedrecover emits it; NO `--idl`.
         let layouts = vec![parse_account_layout(&idl, "vault").expect("vault layout")];
         let via_sidecar = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
-            None, Some("VaultIncrement"), None, None, Some(&layouts)).expect("lift via sidecar");
+            None, Some("VaultIncrement"), None, None, Some(&layouts), None).expect("lift via sidecar");
 
         // (c) No layout source at all.
         let via_none = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
-            None, Some("VaultIncrement"), None, None, None).expect("lift with no layout");
+            None, Some("VaultIncrement"), None, None, None, None).expect("lift with no layout");
 
         assert_eq!(via_idl.refinement, via_sidecar.refinement,
             "sidecar-supplied layout must reproduce the IDL-derived vault refinement");
@@ -1806,9 +1863,10 @@ fn lift_one(
     arm_entry:       Option<usize>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     lift_one_with_layouts(so_path, ctx, analysis, target_disc, module_override,
-        trace, arm_name, idl, arm_entry, None)
+        trace, arm_name, idl, arm_entry, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lift_one_with_layouts(
     so_path:         &Path,
     ctx:             &BinaryCtx,
@@ -1824,6 +1882,10 @@ fn lift_one_with_layouts(
     // qedrecover-emitted account layouts (#41 loop closure): preferred over `idl` in the
     // refinement codegen. `None` = resolve layouts from `idl` (the wrapper's behaviour).
     sidecar_layouts: Option<&[AccountLayout]>,
+    // Spec-driven refinement descriptor (the seam to qedspec). When `Some`, the refinement
+    // codegen builds `AsmRefinesFieldUpdate` from the descriptor and IGNORES `arm_name` /
+    // `refine_registry`. `None` = the registry-driven path (unchanged).
+    descriptor:      Option<&RefinementDescriptor>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let executable  = &ctx.executable;
     let text_offset = ctx.text_offset;
@@ -2627,8 +2689,9 @@ fn lift_one_with_layouts(
         }
         None
     };
-    // Only counter/vault arms (is_const_delta_arm) get the constant +k cleaning; others stay wrapAdd.
-    let counter_arm = is_const_delta_arm(arm_name);
+    // Only counter/vault arms (is_const_delta_arm) — or a spec-driven descriptor, whose
+    // `op.add_const` is exactly this const-delta case — get the constant +k cleaning; others stay wrapAdd.
+    let counter_arm = is_const_delta_arm(arm_name) || descriptor.is_some();
     let mut shifts: Vec<Shift> = Vec::new();
     let mut post_clean: Vec<Atom> = Vec::with_capacity(post.len());
     for atom in &post {
@@ -2741,9 +2804,17 @@ fn lift_one_with_layouts(
     out.push_str(&render::end_namespace(&module_name));
 
     // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
-    let refine_emit = arm_name.and_then(|arm| emit_refinement(
-        arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc, idl,
-        sidecar_layouts));
+    // Spec-driven descriptor wins when present (the qedspec seam): build the
+    // layout-general `AsmRefinesFieldUpdate` straight from the descriptor,
+    // bypassing the hardcoded `refine_registry`. Otherwise the registry path.
+    let refine_emit = match descriptor {
+        Some(desc) => emit_descriptor_refinement(
+            desc, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc,
+            idl, sidecar_layouts),
+        None => arm_name.and_then(|arm| emit_refinement(
+            arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc, idl,
+            sidecar_layouts)),
+    };
     let aggregation = refine_emit.as_ref().and_then(|(_, _, a)| a.clone());
     let refinement = refine_emit.map(|(m, l, _)| (m, l));
 
@@ -2769,6 +2840,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let trace: Option<Vec<usize>> = match args.trace.as_ref() {
         Some(p) => Some(load_trace(p)?),
+        None => None,
+    };
+
+    // Spec-driven refinement descriptor (single-arm only). The seam to qedspec.
+    let descriptor: Option<RefinementDescriptor> = match args.descriptor.as_ref() {
+        Some(p) => Some(load_descriptor(p)?),
         None => None,
     };
 
@@ -2807,7 +2884,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let result = lift_one_with_layouts(&args.so, &ctx, &analysis,
                 Some(ix.discriminator.value), Some(module_name.clone()),
                 trace.as_deref(), Some(&arm), idl_value.as_ref(), arm_entry,
-                Some(&sidecar_layouts))?;
+                Some(&sidecar_layouts), None)?;
 
             // Cross-check: cu_budget is upper bound; result.cu is the exact discharged CU.
             let budget_note = match ix.cu_budget {
@@ -2895,8 +2972,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let result = lift_one(&args.so, &ctx, &analysis, args.target_disc, args.module.clone(),
-                          trace.as_deref(), args.arm_name.as_deref(), idl_value.as_ref(), None)?;
+    let result = lift_one_with_layouts(&args.so, &ctx, &analysis, args.target_disc,
+                          args.module.clone(), trace.as_deref(), args.arm_name.as_deref(),
+                          idl_value.as_ref(), None, None, descriptor.as_ref())?;
     match args.output {
         Some(path) => {
             if let Some(parent) = path.parent() {

@@ -1,0 +1,10 @@
+{
+  "_comment": "Negative fixture: a schema_version far in the future. load_descriptor must refuse it fail-closed (mirrors qedmeta's QEDMETA_SCHEMA_MAX gate). Exercised by descriptor_rejects_newer_schema.",
+  "schema_version": 999,
+  "account": "counter",
+  "mutated": "counter",
+  "op": { "add_const": 1 },
+  "layout": [
+    { "offset": 0, "kind": "u64", "name": "counter" }
+  ]
+}
