@@ -1,0 +1,8 @@
+{
+  "_comment": "Spec-driven, IDL-driven refinement descriptor — the principled name-level form. NO inline layout: the shape (owner:Pubkey@0, total:u64@32, bump:u8@40) is resolved from vault.codama.json by account name `vault`, via the same qed-analysis path the registry lift uses. The seam carries only semantics (which named field a handler mutates, by what op); offsets are the IDL's job, not the descriptor's. The emitted proof body is byte-identical to the registry-driven VaultRefinement.lean, but produced with no refine_registry entry. Schema: docs/REFINEMENT_DESCRIPTOR.md.",
+  "schema_version": 1,
+  "account": "vault",
+  "handler": "increment",
+  "mutated": "total",
+  "op": { "add_const": 1 }
+}
