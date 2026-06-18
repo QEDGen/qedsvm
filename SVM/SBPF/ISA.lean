@@ -131,7 +131,8 @@ inductive Insn
   | arsh64 (dst : Reg) (src : Src)
   | mov64  (dst : Reg) (src : Src)
   | neg64  (dst : Reg)
-  -- ALU 32-bit (result zero-extended to 64 bits)
+  -- ALU 32-bit. add/sub/mul SIGN-extend the 32-bit result into the 64-bit
+  -- register (agave V0); the rest zero-extend. See `Execute.lean`.
   | add32  (dst : Reg) (src : Src)
   | sub32  (dst : Reg) (src : Src)
   | mul32  (dst : Reg) (src : Src)

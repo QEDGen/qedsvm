@@ -232,7 +232,11 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .neg64 dst =>
     { s with regs := rf.set dst (wrapNeg (rf.get dst)), pc := pc' }
 
-  -- 32-bit ALU: result zero-extended to 64 bits
+  -- 32-bit ALU: add/sub/mul SIGN-extend the 32-bit result into the 64-bit
+  -- register (agave V0, see `wrapAdd32`/`wrapSub32`/`wrapMul32` and the C1
+  -- pin in Machine.lean); the logical/shift/div/mod/mov/neg ops zero-extend
+  -- (explicit `% U32_MODULUS`). Cross-checked against solanalib's
+  -- OOPSLA-derived model (spike/solanalib-diff-oracle).
   | .add32 dst src =>
     { s with regs := rf.set dst (wrapAdd32 (rf.get dst) (resolveSrc rf src)), pc := pc' }
   | .sub32 dst src =>
