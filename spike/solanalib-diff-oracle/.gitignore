@@ -1,0 +1,6 @@
+# Reproducible via build_solanalib.sh — don't commit the 12M clone + artifacts.
+vendor/
+# Generated corpora + oracle outputs — reproducible via gen_corpus.py / run_both.sh.
+corpus_*.txt
+*.out
+__pycache__/

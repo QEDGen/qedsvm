@@ -55,6 +55,14 @@ lean_lib SVM where
   roots := #[`SVM]
   precompileModules := true
 
+-- SPIKE (spike/solanalib-diff-oracle): qedsvm side of the solanalib
+-- differential oracle. Reads solanalib's `sbpf-oracle` line contract
+-- and emits matching `ok <r0>` / `fault` / `reject` outcomes. Not part
+-- of the production build; `lake build qedsvm-oracle`.
+lean_exe «qedsvm-oracle» where
+  srcDir := "spike/solanalib-diff-oracle"
+  root := `DiffOracle
+
 -- Examples — standalone proofs demonstrating the verification chain
 -- on real hand-written sBPF programs. Not part of the core library;
 -- build with `lake build Examples` to type-check the proofs.
