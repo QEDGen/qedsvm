@@ -7,6 +7,7 @@ docs/*
 !docs/PIPELINE.md
 !docs/COVERAGE.md
 !docs/REFINEMENT_DESCRIPTOR.md
+!docs/SOLANA_PATTERNS_LIBRARY.md
 rust-bridge/target/
 .agents/
 .claude/
