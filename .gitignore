@@ -6,6 +6,7 @@ docs/*
 !docs/API.md
 !docs/PIPELINE.md
 !docs/COVERAGE.md
+!docs/SOLANA_PATTERNS_LIBRARY.md
 rust-bridge/target/
 .agents/
 .claude/
