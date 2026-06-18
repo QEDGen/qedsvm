@@ -126,7 +126,8 @@ semantic boundary, surfaced by the oracle. No semantics changed.
 The differential oracle is **cheap and worth keeping**: both sides build in
 ~1 minute, the contract is 3 lines, and it cross-validates our step semantics
 against an independent, academically-grounded model. The headline result is
-reassuring (2394/2394 agreement including the sign-extension boundary), which
+reassuring (0 divergences across 3000 vectors: 2394 agree on an exact r0, 606 on
+faulting, including the sign-extension boundary), which
 is exactly what you want from a second oracle: it found no semantic hole, and
 the one thing it did surface (the comments) is now fixed.
 
