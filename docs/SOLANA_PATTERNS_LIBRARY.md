@@ -24,6 +24,58 @@ generic library of abstract invariants):
 3. **The qedgen target.** A `.qedspec` that says "owner check dominates the write"
    only means something if the library defines and can prove or refute it.
 
+## Why grounded primitives, not an abstract interface library (the Solana shape)
+
+A reasonable instinct is to mirror Ethereum: an abstract verified library of
+high-level interface invariants (the OpenZeppelin / ERC model), against which many
+implementations are checked. That model rests on **fan-out**: one interface
+(ERC-20), one reference implementation, thousands of contracts implementing the
+same interface, so verifying "what the interface means" once amortizes over every
+conformer, and the EVM's typed ABIs make "conforms to the interface" well-defined.
+
+Solana breaks that assumption three ways:
+
+1. **Composition is CPI-into-canonical, not implement-the-interface.** You do not
+   write your own token program; you CPI to the one SPL Token program. For things
+   that have a "standard," there is effectively a single implementation everyone
+   depends on, not many conformers. No fan-out to amortize an abstract spec over.
+2. **Accounts are untyped byte blobs.** There is no language-level ABI for account
+   *contents*. Each program defines and enforces its own serialization and
+   ownership. So "conforms to a shared state interface" is not even well-defined
+   for most programs.
+3. **The IDL is generated from the implementation.** The interface is downstream
+   of the code, co-defined with it, not a contract the code is written against.
+
+So an abstract interface-invariant library is aimed at a fan-out Solana mostly
+lacks. The conclusion that falls out:
+
+- **Prove the canonical primitive programs directly.** SPL Token, ATA, System,
+  Stake, the loaders: one implementation the whole ecosystem rides on, the program
+  *is* the standard, and a direct byte-level proof benefits everyone who CPIs into
+  it. (This is the existing `AsmRefinesToken*` work.)
+- **Put the reusable layer one level down, in the checks, not the interface.**
+  Every program (canonical or bespoke) does owner / signer / PDA / discriminator /
+  balance checks. *That* has universal fan-out. So the Solana-native analog of a
+  "verified standard library" is the proven canonical programs plus a grounded
+  vocabulary of the low-level checks they are built from. The library's role is
+  "primitives the direct proofs compose from," not "an interface above them."
+
+Two practical payoffs of this shape:
+
+- **Partial guarantees before full correctness.** Fully proving a primitive program
+  is a large proof; the check recognizers let us ship meaningful, composable partial
+  assurances ("this path performs the owner check, the balance never underflows")
+  well before full functional correctness.
+- **The bespoke long tail is covered by the same vocabulary.** Custom programs have
+  no shared interface to verify against, but they all use the same checks, so the
+  grounded primitives are the one thing reusable across them.
+
+Watch item: the emerging Token-2022 / SPL token interface (multiple token programs
+sharing a common transfer surface) is the one place an ETH-style fan-out is
+appearing. A thin shared transfer spec could pay off there. It is a handful of
+programs, not thousands, so it is a watch item, not a reason to build the abstract
+layer first.
+
 ## Architecture: three layers
 
 Value climbs steeply from L1 to L3.
