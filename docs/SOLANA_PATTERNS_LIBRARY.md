@@ -100,7 +100,17 @@ Soundness side-conditions baked in: flag predicates pin the exact byte (`↦ₘ 
 since `memByteIs` stores raw; `lamportsAtLeast`/`balanceAtLeast` are existential
 over the cell value with a `≤` bound (a real lower bound, not a degenerate one).
 
-## L2 recognizer sketch (future)
+## Status
+
+- **L1 Predicates**: implemented, `Patterns/Predicates.lean`, builds clean.
+- **L2 Recognizers**: started, `Patterns/Recognizers.lean`. First batch harvests
+  the SPL-token balance: `balanceAtLeast_of_amountCell` (core), `balanceAtLeast_weaken`,
+  and `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
+  `AsmRefinesTokenTransfer` carries entails the same account with its `amount`
+  conjunct weakened to `balanceAtLeast`). All depend on **no axioms**.
+- **L3 Guards**: not started.
+
+## L2 recognizer sketch
 
 Each pattern ships a lemma of the shape "this code window establishes the
 predicate," e.g. (illustrative):
