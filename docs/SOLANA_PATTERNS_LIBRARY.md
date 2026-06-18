@@ -76,28 +76,57 @@ appearing. A thin shared transfer spec could pay off there. It is a handful of
 programs, not thousands, so it is a watch item, not a reason to build the abstract
 layer first.
 
-## Architecture: three layers
+## Architecture: checks-as-guards, with predicates as substrate
 
-Value climbs steeply from L1 to L3.
+The security-relevant unit on Solana is not a state predicate but a GUARD: the
+program reads a field, compares it, and FAULTS (does not perform the effect) when
+the check is violated, on every path. The dominant exploit class is a missing or
+wrong guard. So the library's center of gravity is Layer 3; Layers 1 and 2 are the
+vocabulary the guards are stated and proven in.
 
-- **L1 Predicates** (`Patterns/Predicates.lean`, this skeleton): reusable state
-  predicates. `Assertion := PartialState → Prop`. Cheap, immediately useful as
-  spec vocabulary for hand-written and qedgen specs. Low risk.
-- **L2 Recognizers** (`Patterns/Recognizers.lean`, future): lemmas that a bytecode
-  idiom *refines* a predicate. This is the part that depends on having a grounded
-  execution model under the predicates, and where our refinement machinery pays
-  off. Critical design rule: **recognize
-  semantically, not syntactically.** A discriminator check or pubkey-eq compiles
-  to many sequences (inlined loop, `memcmp` syscall, unrolled). Matching exact
-  bytes is brittle and unsound; instead prove the sequence *computes* the
-  predicate, reusing `account_agg` / `memBytesIs_segs` / `codecCoarse_eq_fine` and
-  the `cuTripleWithinMem` / `AsmRefinesFieldUpdate` obligations.
-- **L3 Guards / domination** (`Patterns/Guards.lean`, future): the security
-  property is rarely a data fact, it is control flow: "the write to `acct` is
-  dominated by an owner check on every path," "no debit without a preceding
-  sufficient-balance check." Needs a domination relation over the CFG, leaning on
-  the dispatch substrate (`dispatch_routing_complete`). This is the bug-finding
-  layer: it detects *missing* checks.
+(An earlier framing front-loaded the predicates and parked the guards as "future."
+Re-evaluated against the Solana lens, that put the weight one rung too high:
+predicates describe states, but the bug-relevant, reusable unit is the guard. A
+predicate-only library documents what correct states look like while proving no
+checks, which is the same one-rung-too-high mistake, one level down. The guards are
+the product.)
+
+- **L1 Predicates** (`Patterns/Predicates.lean`): field-level state predicates
+  (`ownedByProgram`, `isSigner`, `balanceAtLeast`, `hasDiscriminator`, ...). Spec
+  vocabulary; the easy, low-risk layer.
+- **L2 Recognizers** (`Patterns/Recognizers.lean`): a bytecode idiom *refines* a
+  predicate, proven SEMANTICALLY (the sequence *computes* the predicate), never by
+  byte-matching. A discriminator check or pubkey-eq compiles to many sequences
+  (inlined loop, `memcmp` syscall, unrolled); matching exact bytes is brittle and
+  unsound. Reuse `account_agg` / `memBytesIs_segs` / `codecCoarse_eq_fine` and the
+  `cuTripleWithinMem` obligations.
+- **L3 Guards** (`Patterns/Guards.lean`): the product. A check is ENFORCED if, from
+  a state where it is violated, the verified window FAULTS (typed `VmError`) instead
+  of reaching the effect. Expressed over the `cuTripleFaultsWithin*` triples;
+  all-paths domination builds on the dispatch/CFG substrate
+  (`dispatch_routing_complete`, currently on a parked branch) incrementally.
+
+### Requires vs enforces (the distinction that matters)
+
+Two properties are easy to conflate, and the gap between them IS the bug class:
+
+- **REQUIRES**: a refinement's precondition assumes the check passed. The proven
+  `AsmRefinesToken*` arms are exactly this: they state the data transformation on
+  the happy path and assume nothing faults. They carry NO check content.
+- **ENFORCES**: the program itself diverts to a fault when the check is violated.
+  This is the security property.
+
+A missing check is precisely REQUIRES-without-ENFORCES: a path that reaches the
+effect without the check. A library that only states predicates and refinement
+preconditions documents correct states but proves no checks. The guards close that.
+
+Canonical recipe for a guard: show the violated check ROUTES from the window entry
+to the program's error handler (a `cuTripleWithinMem` to the error PC), then reuse
+the handler's own fault spec (a `cuTripleFaultsWithin` from the error PC). The two
+compose into `EnforcedFault` via `enforcedFault_of_routes_then_handler` (a thin
+wrapper over `cuTripleWithinMem_seq_fault_pure`). The routing half is the
+substantive, program-specific obligation; the handler-fault half is a generic,
+reusable fact about the shared error exit.
 
 ## Two address-space views (do not conflate)
 
@@ -122,7 +151,11 @@ The map of the codebase revealed two distinct places "account fields" live.
 
   First block is at `INPUT_START + 8` (`INPUT_START = 0x400000000`); subsequent
   blocks stride by `nonDupBlockSize` (`Runner.lean`). A multi-account locator is an
-  open item (below).
+  open item (below). CONFIRMED against the proven p_token bytecode: pinocchio reads
+  these input-region offsets directly (no `AccountInfo` pointer-deref), e.g. the
+  authority signer byte loads as `.ldx .byte .r0 .r1 0xa8`. Note the loads use
+  *absolute* block offsets (the authority block is not the first), so a guard
+  instantiates the block base for the specific account rather than assuming `+1`.
 
 - **Account-data view.** What lives inside the account's `data` bytes:
   discriminator / state byte, token fields. SPL token data layout
@@ -154,35 +187,41 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
 
 ## Status
 
-- **L1 Predicates**: implemented, `Patterns/Predicates.lean`, builds clean.
-- **L2 Recognizers**: started, `Patterns/Recognizers.lean`. First batch harvests
-  the SPL-token balance: `balanceAtLeast_of_amountCell` (core), `balanceAtLeast_weaken`,
-  and `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
+- **L1 Predicates**: implemented (`Patterns/Predicates.lean`), builds clean.
+- **L2 Recognizers**: started (`Patterns/Recognizers.lean`). Balance bridge:
+  `balanceAtLeast_of_amountCell` (core), `balanceAtLeast_weaken`,
+  `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
   `AsmRefinesTokenTransfer` carries entails the same account with its `amount`
-  conjunct weakened to `balanceAtLeast`). All depend on **no axioms**.
-- **L3 Guards**: not started.
-
-## L2 recognizer sketch
-
-Each pattern ships a lemma of the shape "this code window establishes the
-predicate," e.g. (illustrative):
-
-```
-theorem recognize_owner_check
-    (cr : CodeReq) (entry exit b : Nat) (prog : Pubkey) ... :
-  cuTripleWithinMem nSteps nCu entry exit cr
-    (ownedByProgram b prog ** P) (ownedByProgram b prog ** P) rr
-```
-
-proven by the existing aggregation/refinement reshaping, not by byte-matching.
+  conjunct weakened to `balanceAtLeast`). Depend on **no axioms**.
+- **L3 Guards**: started. Notion `EnforcedFault` + composition
+  `enforcedFault_of_routes_then_handler` (`Patterns/Guards.lean`, SVM lib). First
+  concrete guard, harvested from the proven p_token balance check
+  (`examples/lean/PToken/TransferArm/H3dBalanceGuard.lean`):
+  `p_token_balance_insufficient_routes_to_error` proves that on real bytecode,
+  insufficient balance ROUTES to the error handler PC instead of the effect (the
+  substantive enforcement half). Standard-axiom clean. Full `EnforcedFault` =
+  compose the handler fault spec at the error PC (next).
 
 ## Catalog roadmap
 
-1. **SPL Token first**, seeded by harvest: re-express the owner/balance reasoning
-   already inside `AsmRefinesToken*` in terms of L1 predicates. This gives a real,
-   grounded catalog entry by construction and validates the predicate shapes
-   against actual bytecode before generalizing.
-2. ATA, System program, Token-2022, common Anchor patterns.
+Driven bottom-up: prove a guard on a proven arm, let it dictate the predicate /
+recognizer shapes.
+
+1. **SPL Token (in progress).** Balance enforcement is the live thread:
+   `balanceAtLeast` (L1) → recognizer (L2) → routing guard (L3). Next: compose the
+   handler fault for full `EnforcedFault`, then the frozen-state check (`H3c`, also
+   a clean fault-dominating check).
+2. **Signer/owner DEFERRED, with reason.** The p_token signer check is NOT a clean
+   guard: its proven non-signer branch *continues to the effect* (pinocchio's
+   delegate-authority path, `H3fSignerExit`), so a naive "signer enforced" guard is
+   false. An honest signer guard must model the delegate alternative and is
+   materially deeper. p_token also performs no program-owner check (the runtime /
+   caller owns that). So balance and frozen checks come first.
+3. ATA, System program, Token-2022, common Anchor patterns.
+
+Lib boundary: the guard *notion* lives in the SVM lib (`Patterns/Guards.lean`);
+concrete guards reusing proven arms live in the Examples lib
+(`examples/lean/PToken/...`), since Examples imports SVM, not the reverse.
 
 ## Soundness discipline
 
@@ -205,8 +244,14 @@ proven by the existing aggregation/refinement reshaping, not by byte-matching.
 
 ## Open items
 
+- **Full `EnforcedFault` for the balance check**: compose the routing guard with a
+  fault spec for the error handler at `h3dErrPc` (the shared `mov r0,err; ja; exit`
+  exit, via `errorExit*` in `Terminating.lean`). Needs the handler CodeReq and a
+  check of abort-vs-fault typing.
+- CFG domination for L3 all-paths enforcement (build on `dispatch_routing_complete`,
+  currently on the parked `dispatch-completeness` branch).
+- An honest signer guard that models the pinocchio delegate-authority path.
 - `Pubkey ↔ ByteArray` bridge, to give a `Pubkey`-typed `isPdaPubkey`
   (`SVM/Solana/Pda.lean:16` notes this is not yet built).
-- CFG domination substrate for L3 (build on `dispatch_routing_complete`).
 - Multi-account input-block locator (the `nonDupBlockSize` stride walk) if
   predicates need to address the Nth account rather than a caller-supplied base.
