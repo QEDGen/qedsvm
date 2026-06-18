@@ -12,8 +12,8 @@ on balances. qedsvm today proves layout-level refinement of real bytecode
 those checks. This library is the "altitude" layer we have been deferring, aimed
 at the right target.
 
-It is deliberately different from solanalib's Finance/Numeric library, in three
-ways that matter:
+Three properties make this library worth building (and distinguish it from a
+generic library of abstract invariants):
 
 1. **Grounded.** Each predicate is defined over qedsvm's agave-faithful `State`
    and serialized-account model, so it means something on the real chain, not over
@@ -32,8 +32,9 @@ Value climbs steeply from L1 to L3.
   predicates. `Assertion := PartialState → Prop`. Cheap, immediately useful as
   spec vocabulary for hand-written and qedgen specs. Low risk.
 - **L2 Recognizers** (`Patterns/Recognizers.lean`, future): lemmas that a bytecode
-  idiom *refines* a predicate. THE part solanalib structurally cannot do, and
-  where our refinement machinery pays off. Critical design rule: **recognize
+  idiom *refines* a predicate. This is the part that depends on having a grounded
+  execution model under the predicates, and where our refinement machinery pays
+  off. Critical design rule: **recognize
   semantically, not syntactically.** A discriminator check or pubkey-eq compiles
   to many sequences (inlined loop, `memcmp` syscall, unrolled). Matching exact
   bytes is brittle and unsound; instead prove the sequence *computes* the
@@ -121,11 +122,12 @@ proven by the existing aggregation/refinement reshaping, not by byte-matching.
    against actual bytecode before generalizing.
 2. ATA, System program, Token-2022, common Anchor patterns.
 
-## Soundness discipline (lessons from the solanalib review)
+## Soundness discipline
 
 - Define predicates over the *grounded* state (real serialized flags and offsets),
   never a convenient abstraction. This is what avoids the "over-trust from labels"
-  trap the solanalib Finance layer fell into.
+  trap, where a verified library's names promise a stronger guarantee than its
+  theorems actually establish.
 - Recognizers must be semantic and non-vacuous. A recognizer that matches one
   compiler's exact output is near-useless.
 - Stay Mathlib-free: every predicate here is a concrete byte/`Nat` operation.
