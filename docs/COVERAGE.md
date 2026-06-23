@@ -60,9 +60,11 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. |
 | `sol_invoke_signed_rust` | Triple only | Modeled as an effect-free CPI envelope for the lifted caller path; callee effects are not verified by this theorem. |
 | `sol_invoke_signed_c` | Triple only | Same CPI limitation as the Rust ABI form. |
-| Hashing syscalls | Unsupported | ISA/runtime support may exist, but no lifted proof obligation is emitted. |
-| Curve/precompile syscalls | Unsupported | Same boundary as hashing. |
-| PDA syscalls | Unsupported | Same boundary as hashing. |
+| `sol_sha256` | Mechanical | Single-slice success path: descriptor cells recover `(ptr, len)`, the digest is written to a framed `↦Bytes32` atom, `r0 := 0` (`call_sol_sha256_spec`). |
+| Other hashing syscalls (`keccak256`, `blake3`) | Unsupported | No lifted proof obligation is emitted. |
+| Curve/precompile syscalls | Unsupported | Same boundary as the unsupported hashing syscalls. |
+| `sol_create_program_address` | Mechanical | Single-seed success path (`call_sol_create_program_address_spec`); the off-curve case is a surfaced honest-conditional hypothesis, not a hidden assumption. |
+| Other PDA syscalls (`sol_try_find_program_address`, multi-seed) | Unsupported | Same boundary. |
 | `memcpy`, `memmove` | Mechanical | Two `↦Bytes` atoms (src readable, dst writable, disjoint); dst blob ← src, `r0 := 0` (`call_sol_mem{cpy,move}_spec`). |
 | `memcmp` | Mechanical | Two `↦Bytes` inputs + a 4-byte `↦U32` output; result `memcmpResultU32 p1 p2 n` (`call_sol_memcmp_spec`). |
 | `sol_set_return_data` | Mechanical | One `↦Bytes` input (`[r1, r1+r2)` readable, `r2 ≤ MAX_RETURN_DATA`) copied into the framed `↦ReturnData` atom; `r0 := 0` (`call_sol_set_return_data_spec`). |
@@ -89,6 +91,8 @@ Raw triples prove a selected bytecode path. Abstract refinements additionally co
 | SPL `CloseAccount` | Raw traced triple + generated balance-style corollary | Triple only |
 | SPL `InitializeMint2` | Raw traced triple | Triple only |
 | New operation semantics | New predicate/spec required | Manual |
+
+Predicate selection can be **spec-driven**, not only registry-driven: a versioned, name-level `RefinementDescriptor` (`--descriptor`, see [REFINEMENT_DESCRIPTOR.md](REFINEMENT_DESCRIPTOR.md)) builds the layout-general `AsmRefinesFieldUpdate` for a single-field constant `+/- k` update, resolving field offsets from the IDL and bypassing the hardcoded 6-entry registry. Same proof, driven by a spec obligation rather than a Rust edit. The descriptor path currently covers the constant single-field delta class; parameter deltas and multi-field writes are not yet emitted on this path.
 
 ## Account Layouts
 
