@@ -92,7 +92,7 @@ Raw triples prove a selected bytecode path. Abstract refinements additionally co
 | SPL `InitializeMint2` | Raw traced triple | Triple only |
 | New operation semantics | New predicate/spec required | Manual |
 
-Predicate selection can be **spec-driven**, not only registry-driven: a versioned, name-level `RefinementDescriptor` (`--descriptor`, see [REFINEMENT_DESCRIPTOR.md](REFINEMENT_DESCRIPTOR.md)) builds the layout-general `AsmRefinesFieldUpdate` for a single-field constant `+/- k` update, resolving field offsets from the IDL and bypassing the hardcoded 6-entry registry. Same proof, driven by a spec obligation rather than a Rust edit. The descriptor path currently covers the constant single-field delta class; parameter deltas and multi-field writes are not yet emitted on this path.
+Predicate selection can be **spec-driven**, not only registry-driven: a versioned, name-level `RefinementDescriptor` (`--descriptor`, see [REFINEMENT_DESCRIPTOR.md](REFINEMENT_DESCRIPTOR.md)) builds the layout-general `AsmRefinesFieldUpdate`, resolving field offsets from the IDL and bypassing the hardcoded 6-entry registry. Same proof, driven by a spec obligation rather than a Rust edit. The descriptor path covers a single-field `u64` credited by a positive constant (`add_const: k`) or a runtime parameter (`add_param: name`, the latter matched as `field += <runtime read>`); subtraction, multi-field writes, and split-blob layouts are not yet emitted on this path.
 
 ## Account Layouts
 

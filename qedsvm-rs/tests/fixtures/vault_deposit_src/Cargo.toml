@@ -1,0 +1,21 @@
+[package]
+name = "qedsvm-vault-deposit"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# Same multi-field NON-token vault as vault_src ({ owner:[u8;32]@0, total:u64@32,
+# bump:u8@40 }), but the handler credits `total` by a runtime PARAMETER `amount`
+# read from the input region at offset 48 (modeling an instruction-data arg).
+# Exercises the descriptor seam's parameter-delta path (op.add_param = "amount"):
+# the lift adds two memory reads (wrapAdd of total + amount), cleaned to
+# `total + amount` by the existing `wrapAdd_of_lt`, no constant involved.
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

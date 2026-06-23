@@ -171,6 +171,12 @@ lean_lib Examples where
     -- `wrapAdd_one_of_lt`. First descriptor refinement off the `+1` class.
     `Generated.VaultAdd5TracedLifted,
     `Generated.VaultAdd5Refinement,
+    -- Same vault shape, but a PARAMETER delta (`total += amount`): the lift adds
+    -- two memory reads (total + amount), cleaned by `wrapAdd_of_lt`, and the
+    -- descriptor's `op.add_param` matches the second read as the credited amount.
+    -- First descriptor refinement with a runtime (non-constant) delta.
+    `Generated.VaultDepositTracedLifted,
+    `Generated.VaultDepositRefinement,
     -- Vault: a multi-field NON-token account ({owner:Pubkey, total:u64,
     -- bump:u8}). The refinement (AsmRefinesFieldUpdate) reshapes the codec
     -- via the layout-general `account_agg` and frames the untouched

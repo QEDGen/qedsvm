@@ -1,0 +1,8 @@
+{
+  "_comment": "Parameter-delta descriptor (schema v2): the deposit handler credits `total` by a runtime parameter `amount`, not a constant. Account shape (owner:Pubkey@0, total:u64@32, bump:u8@40) is resolved from vault.codama.json by account name `vault`. The lift adds two memory reads (total + amount), cleaned to `total + amount` by `wrapAdd_of_lt`; the emitter matches the second read as the parameter (inline first-cut: the param's identity is labeled by `add_param`, not yet pinned to an IDL instruction-arg offset). Schema: docs/REFINEMENT_DESCRIPTOR.md.",
+  "schema_version": 2,
+  "account": "vault",
+  "handler": "deposit",
+  "mutated": "total",
+  "op": { "add_param": "amount" }
+}

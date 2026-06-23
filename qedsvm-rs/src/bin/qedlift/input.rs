@@ -171,7 +171,7 @@ pub(super) fn resolve_layout(
 /// fail-closed exactly like `qedmeta` (`QEDMETA_SCHEMA_MAX`): a newer schema may carry
 /// semantics we'd silently mis-consume, so we refuse it rather than guess. See
 /// docs/REFINEMENT_DESCRIPTOR.md.
-const DESCRIPTOR_SCHEMA_MAX: u32 = 1;
+const DESCRIPTOR_SCHEMA_MAX: u32 = 2;
 
 #[derive(Debug, serde::Deserialize)]
 pub(super) struct RefinementDescriptor {
@@ -190,8 +190,9 @@ pub(super) struct RefinementDescriptor {
     /// Mutated field NAME. Its offset/kind come from the resolved layout (IDL or inline) —
     /// the seam is name-level; offsets are the IDL's job, not the descriptor's.
     pub(super) mutated: String,
-    /// The mutation. Only `{ "add_const": 1 }` is wired today (matches the lift's
-    /// `wrapAdd_one_of_lt` cleaning); other deltas/ops are a follow-up.
+    /// The mutation. `{ "add_const": k }` credits the field by a constant literal
+    /// (k >= 1, schema v1); `{ "add_param": "name" }` credits it by a runtime parameter
+    /// (schema v2). Subtraction / multi-field writes are a follow-up.
     pub(super) op: DescriptorOp,
     /// OPTIONAL explicit layout. ABSENT (the default) = resolve the shape from the IDL by
     /// `account` (the principled, IDL-driven form). PRESENT = hand-authored fallback for
@@ -211,9 +212,17 @@ pub(super) struct DescriptorField {
     pub(super) width_bytes: Option<usize>,
 }
 
+/// The field mutation a descriptor claims. Untagged: the JSON object's key picks the
+/// variant (`{add_const: k}` vs `{add_param: "name"}`), mirroring the qedgen producer.
 #[derive(Debug, serde::Deserialize)]
-pub(super) struct DescriptorOp {
-    pub(super) add_const: i64,
+#[serde(untagged)]
+pub(super) enum DescriptorOp {
+    /// `{ "add_const": k }`: credit the named field by a constant literal k (k >= 1 wired).
+    AddConst { add_const: i64 },
+    /// `{ "add_param": "name" }`: credit the named field by a runtime parameter (schema v2).
+    /// The param's source cell is matched from the lift's reads (inline first-cut; the
+    /// IDL instruction-args resolution that maps `name` to a serialized offset is a follow-on).
+    AddParam { add_param: String },
 }
 
 fn descriptor_field_kind(kind: &str, width_bytes: Option<usize>) -> FieldKind {

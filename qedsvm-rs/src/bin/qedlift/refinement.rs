@@ -3,7 +3,7 @@ use qed_analysis::layout::{AccountLayout, FieldKind};
 use super::aggregation::{render_mint_agg_module, render_token_agg_module};
 use super::core::{Atom, Expr, Width};
 use super::emit::{atoms_to_lean, fold_abstractions};
-use super::input::{resolve_layout, RefinementDescriptor};
+use super::input::{resolve_layout, DescriptorOp, RefinementDescriptor};
 
 // ════════════════════════════════════════════════════════════════
 // Refinement codegen — mechanically emit the per-arm `AsmRefines…` obligation theorem.
@@ -1046,44 +1046,116 @@ pub(super) fn emit_descriptor_refinement(
         }
     };
 
-    // Positive constant deltas are wired: the lift cleans `+1` via `wrapAdd_one_of_lt`
-    // and any other positive literal via `wrapAdd_const_of_lt`. Zero is a no-op and
-    // subtraction / parameter deltas are not yet on the descriptor path.
-    if desc.op.add_const < 1 {
-        eprintln!(
-            "descriptor: only a positive constant op.add_const is wired (got {}); skipping refinement",
-            desc.op.add_const
-        );
-        return None;
-    }
+    // Determine the mutated cell and the delta expression, by op kind. `delta_expr` is what
+    // the field is credited by, rendered as Lean: a literal `k` (add_const) or the
+    // parameter's binder name (add_param). `param_binder` is Some only for a parameter
+    // delta — it is a lift binder that must also appear in the standalone `ensures` theorem.
+    let is_initmem = |e: &Expr| matches!(e, Expr::InitMem(_));
+    // Folded Lean value of the Dword cell at (base, off) in the pre — used to tell the
+    // mutated field's own pre-value apart from the parameter operand in `field += param`.
+    let pre_dword_val = |b: &str, off: i64| -> Option<String> {
+        pre.iter().find_map(|a| match a {
+            Atom::Mem { addr_base, addr_off, width, value, .. }
+                if addr_base.to_lean() == b && *addr_off == off
+                    && matches!(width, Width::Dword) => Some(fold(value)),
+            _ => None,
+        })
+    };
 
-    // Detect the updated `u64` cell in the post (`NatAdd(InitMem, Const)`).
-    let mut updated: Option<(Expr, i64, Expr, i64)> = None;
-    for atom in post_clean {
-        if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
-            if matches!(width, Width::Dword) {
-                if let Expr::NatAdd(a, b) = value {
-                    if let (Expr::InitMem(_), Expr::Const(k)) = (a.as_ref(), b.as_ref()) {
-                        updated = Some(((*addr_base).clone(), *addr_off, (**a).clone(), *k));
+    let base: Expr;
+    let upd_off: i64;
+    let upd_pre: Expr;
+    let delta_expr: String;
+    let param_binder: Option<String>;
+
+    match &desc.op {
+        DescriptorOp::AddConst { add_const } => {
+            // Positive constant deltas: `+1` cleans via `wrapAdd_one_of_lt`, any other
+            // positive literal via `wrapAdd_const_of_lt`. Zero / negative are out of scope.
+            if *add_const < 1 {
+                eprintln!(
+                    "descriptor: only a positive constant op.add_const is wired (got {}); \
+                     skipping refinement",
+                    add_const
+                );
+                return None;
+            }
+            // The updated `u64` cell: `NatAdd(InitMem, Const)`.
+            let mut found: Option<(Expr, i64, Expr, i64)> = None;
+            for atom in post_clean {
+                if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
+                    if matches!(width, Width::Dword) {
+                        if let Expr::NatAdd(a, b) = value {
+                            if let (Expr::InitMem(_), Expr::Const(k)) = (a.as_ref(), b.as_ref()) {
+                                found = Some(((*addr_base).clone(), *addr_off, (**a).clone(), *k));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            let (b, off, pre_e, k) = found?;
+            // Soundness: the bytes' delta must match the descriptor's claimed constant.
+            if k != *add_const {
+                eprintln!(
+                    "descriptor: op claims +{} but the lift increments the field by {}; \
+                     refusing to emit a refinement that misdescribes the bytes",
+                    add_const, k
+                );
+                return None;
+            }
+            base = b; upd_off = off; upd_pre = pre_e;
+            delta_expr = k.to_string();
+            param_binder = None;
+        }
+        DescriptorOp::AddParam { add_param } => {
+            // The updated cell is `field += param`: `NatAdd(InitMem_field, InitMem_param)`,
+            // where one operand is the cell's own pre-value and the other is a distinct
+            // runtime read. Inline first-cut: the param is matched as that other read; the
+            // IDL instruction-args resolution that pins `add_param` to a serialized offset
+            // is a follow-on (so this labels, but does not yet verify, the param's identity).
+            let mut found: Option<(Expr, i64, Expr, String)> = None;
+            for atom in post_clean {
+                if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
+                    if !matches!(width, Width::Dword) { continue; }
+                    if let Expr::NatAdd(a, b) = value {
+                        if !(is_initmem(a) && is_initmem(b)) { continue; }
+                        let bl = addr_base.to_lean();
+                        let pre_val = match pre_dword_val(&bl, *addr_off) {
+                            Some(v) => v,
+                            None => continue,
+                        };
+                        let (a_l, b_l) = (fold(a), fold(b));
+                        let (field_e, param_l) = if a_l == pre_val {
+                            ((**a).clone(), b_l)
+                        } else if b_l == pre_val {
+                            ((**b).clone(), a_l)
+                        } else {
+                            continue;
+                        };
+                        found = Some(((*addr_base).clone(), *addr_off, field_e, param_l));
                         break;
                     }
                 }
             }
+            let (b, off, pre_e, param_l) = match found {
+                Some(t) => t,
+                None => {
+                    eprintln!(
+                        "descriptor: op.add_param {:?} but the lift has no `field += <runtime \
+                         read>` cell; skipping refinement",
+                        add_param
+                    );
+                    return None;
+                }
+            };
+            base = b; upd_off = off; upd_pre = pre_e;
+            delta_expr = param_l.clone();
+            param_binder = Some(param_l);
         }
     }
-    let (base, upd_off, upd_pre, delta) = updated?;
 
-    // Soundness check: the bytes' delta must match the descriptor's claimed `op`.
-    if delta != desc.op.add_const {
-        eprintln!(
-            "descriptor: op claims +{} but the lift increments the field by {}; \
-             refusing to emit a refinement that misdescribes the bytes",
-            desc.op.add_const, delta
-        );
-        return None;
-    }
-
-    // Soundness check: the bytes must mutate the field the descriptor names.
+    // Soundness: the bytes must mutate the field the descriptor names.
     if upd_off != mutated_off {
         eprintln!(
             "descriptor: field {:?} is at offset {} but the lift mutates offset {}; \
@@ -1110,7 +1182,7 @@ pub(super) fn emit_descriptor_refinement(
             FieldKind::U64 if off == upd_off => {
                 updated_seen = true;
                 pre_fields.push(format!("({}, .u64 {})", off, upd_pre_l));
-                post_fields.push(format!("({}, .u64 ({} + {}))", off, upd_pre_l, delta));
+                post_fields.push(format!("({}, .u64 ({} + {}))", off, upd_pre_l, delta_expr));
             }
             FieldKind::Pubkey => {
                 let limbs: Vec<String> = (0..4)
@@ -1178,7 +1250,7 @@ pub(super) fn emit_descriptor_refinement(
     let lean = render_descriptor_refinement(
         desc, &module, &base_l, &pre_fields, &post_fields, &frame, &params, &ba_params,
         pre, post_clean, &setup_pre, &setup_post, abs_subst, vars, n_cu, start_pc, exit_pc,
-        upd_off, delta, &upd_pre_l,
+        upd_off, &delta_expr, param_binder.as_deref(), &upd_pre_l,
     );
     Some((module, lean, None))
 }
@@ -1191,13 +1263,15 @@ fn render_descriptor_refinement(
     pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
     abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
     n_cu: usize, start_pc: usize, exit_pc: usize,
-    upd_off: i64, delta: i64, upd_pre_l: &str,
+    upd_off: i64, delta_expr: &str, param_binder: Option<&str>, upd_pre_l: &str,
 ) -> String {
     let mut nat_params = vars.join(" ");
     for p in params { nat_params.push(' '); nat_params.push_str(p); }
-    // `ensures` corollary binders: only the field-list params (no unused binders).
+    // `ensures` corollary binders: the field-list params, plus the runtime parameter binder
+    // for a parameter delta (the const case adds none).
     let mut ens_nat = upd_pre_l.to_string();
     for p in params { ens_nat.push(' '); ens_nat.push_str(p); }
+    if let Some(pb) = param_binder { ens_nat.push(' '); ens_nat.push_str(pb); }
     let mut ensures_binders = format!("({ens_nat} : Nat)");
     if !ba_params.is_empty() {
         ensures_binders.push_str(&format!("\n    ({} : ByteArray)", ba_params.join(" ")));
@@ -1306,7 +1380,7 @@ end Examples.{module}
         module = module,
         binders = binders,
         ensures_binders = ensures_binders,
-        upd_off = upd_off, delta = delta,
+        upd_off = upd_off, delta = delta_expr,
         valid_tac = valid_tac,
         fine_simp = fine_simp,
         n = n_cu, entry = start_pc, exit = exit_pc,

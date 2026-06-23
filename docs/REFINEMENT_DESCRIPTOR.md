@@ -1,7 +1,8 @@
 # Refinement descriptor (the qedgen <-> qedsvm seam)
 
-Status: **v1, prototype**. The single-field `+1` update class is wired end to end; the
-schema is versioned so the surface can grow without silent mis-consumption.
+Status: **v2, prototype**. Single-field constant deltas (any positive literal) and single-field
+parameter deltas are wired end to end; the schema is versioned so the surface can grow without
+silent mis-consumption.
 
 A refinement descriptor is the declarative obligation that crosses the seam between qedgen
 (the producer, which lowers a `.qedspec` to it) and qedlift (the consumer, which discharges it
@@ -30,7 +31,8 @@ Lean tactic text either: qedlift *generates* the Lean from the descriptor.
   "account": "vault",           // IDL account name; its shape is resolved from the IDL
   "handler": "increment",       // optional: qedspec handler, provenance only
   "mutated": "total",           // a field NAME (not an offset); resolved via the IDL
-  "op": { "add_const": 1 }      // the mutation; only add_const:1 is wired in v1
+  "op": { "add_const": 1 }      // constant credit (v1; any positive literal k)
+  // or: "op": { "add_param": "amount" }   // runtime-parameter credit (v2)
 
   // OPTIONAL fallback for fixtures / sBPF specs with no IDL: an inline layout. When present,
   // the shape is taken from here instead of the IDL. Field kinds: "pubkey" | "u64" | "byte" |
@@ -45,7 +47,7 @@ Lean tactic text either: qedlift *generates* the Lean from the descriptor.
 | `account` | yes | IDL account name to resolve the shape from (or a label when `layout` is inline). |
 | `handler` | no | qedspec handler this obligation came from. Rendered in the proof's provenance comment; drives nothing. |
 | `mutated` | yes | Name of the mutated field. Resolved to an offset/kind via the layout (IDL or inline). |
-| `op` | yes | The mutation. v1: `{ "add_const": 1 }` only. |
+| `op` | yes | The mutation. `{ "add_const": k }` (k >= 1, schema v1) or `{ "add_param": "name" }` (schema v2). |
 | `layout` | no | Inline shape fallback when no IDL exists. Absent = resolve from the IDL by `account`. |
 
 ## Consumer behavior (qedlift)
@@ -73,14 +75,17 @@ consumer would silently mis-handle, so it fails closed. The qedsvm version pinne
 consumer's lakefile is effectively the contract version; bump `schema_version` in lockstep with
 the producer (qedgen) when the surface below changes.
 
-## v1 scope and roadmap
+## Scope and roadmap
 
-In scope (v1): single mutated `u64` field, `add_const: 1`, multi-field framing of untouched
-`pubkey` / `u64` / `byte` fields, whole-`bytes` framing as one opaque gap.
+In scope: a single mutated `u64` field credited by a positive constant (`add_const: k`, schema
+v1) or a runtime parameter (`add_param: name`, schema v2), with multi-field framing of untouched
+`pubkey` / `u64` / `byte` fields and whole-`bytes` framing as one opaque gap.
 
-Not yet (will bump the schema): deltas other than `+1`, subtraction, multi-field writes;
-split-blob layouts in the descriptor path (the registry path has it); quantified / conservation
-/ liveness properties (no byte-level path yet).
+Not yet (will bump the schema): subtraction; multi-field writes; split-blob layouts in the
+descriptor path (the registry path has it); quantified / conservation / liveness properties
+(no byte-level path yet). The `add_param` path is an inline first-cut: it matches the credited
+parameter as the second operand of the `field += <runtime read>` cell and labels it with the
+descriptor's name, but does not yet pin that name to an IDL instruction-arg offset.
 
 **Producer + driver:** the `qedgen descriptor` subcommand (qedgen repo,
 `crates/qedgen/src/descriptor.rs`) emits this JSON from a real `.qedspec`, and `qedgen discharge`

@@ -193,6 +193,32 @@ mod layout_tests {
              emitter (mechanically emitted, do not hand-edit)");
     }
 
+    /// Descriptor path with a PARAMETER delta (`total += amount`, schema v2): the first
+    /// refinement with a runtime (non-constant) delta. The lift adds two memory reads,
+    /// cleaned by `wrapAdd_of_lt`; `op.add_param` matches the second read as the credited
+    /// amount and binds it in the `ensures`. Pins the parameter path is mechanically emitted.
+    #[test]
+    fn descriptor_param_delta_is_mechanically_emitted() {
+        let desc = load_descriptor(std::path::Path::new("tests/fixtures/vault_deposit.descriptor.json"))
+            .expect("load vault_deposit descriptor");
+        let idl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+                .expect("read vault.codama.json")).expect("parse vault IDL");
+        let so = std::path::Path::new("tests/fixtures/vault_deposit.so");
+        let ctx = load_binary(so).expect("load vault_deposit.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_deposit.so");
+        let result = lift_one_with_layouts(so, &ctx, &analysis, None,
+            Some("VaultDeposit".to_string()), None, None, Some(&idl), None, None, Some(&desc))
+            .expect("lift vault_deposit.so via descriptor");
+        let (_, rlean) = result.refinement.expect("descriptor refinement emitted (vault_deposit)");
+        let on_disk = std::fs::read_to_string(
+            "../examples/lean/Generated/VaultDepositRefinement.lean")
+            .expect("read VaultDepositRefinement.lean");
+        assert_eq!(rlean, on_disk,
+            "VaultDepositRefinement.lean is out of sync with the qedlift descriptor \
+             emitter (mechanically emitted, do not hand-edit)");
+    }
+
     /// The descriptor is a versioned cross-tool contract: a schema newer than this qedlift
     /// understands must be refused fail-closed (mirrors `load_qedmeta`), never silently consumed.
     #[test]
