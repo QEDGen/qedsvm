@@ -165,6 +165,12 @@ lean_lib Examples where
     -- confirming the descriptor path is layout-general, not counter-shaped.
     `Generated.VaultDescriptorTracedLifted,
     `Generated.VaultDescriptorRefinement,
+    -- Same vault shape, descriptor-driven, but with a NON-1 constant delta
+    -- (`total += 5`). Exercises the arbitrary-literal path: the lift cleans
+    -- the +5 via `wrapAdd_const_of_lt` rather than the +1-specialized
+    -- `wrapAdd_one_of_lt`. First descriptor refinement off the `+1` class.
+    `Generated.VaultAdd5TracedLifted,
+    `Generated.VaultAdd5Refinement,
     -- Vault: a multi-field NON-token account ({owner:Pubkey, total:u64,
     -- bump:u8}). The refinement (AsmRefinesFieldUpdate) reshapes the codec
     -- via the layout-general `account_agg` and frames the untouched

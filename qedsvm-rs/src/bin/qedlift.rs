@@ -167,6 +167,32 @@ mod layout_tests {
              emitter (mechanically emitted, do not hand-edit)");
     }
 
+    /// Descriptor path with a NON-1 constant delta (`total += 5`): the first refinement
+    /// off the `+1` class. Same vault shape (IDL-resolved), but `op.add_const = 5`, so the
+    /// lift cleans the credit via `wrapAdd_const_of_lt` instead of `wrapAdd_one_of_lt`.
+    /// Pins that the arbitrary-literal path is mechanically emitted.
+    #[test]
+    fn descriptor_literal_delta_is_mechanically_emitted() {
+        let desc = load_descriptor(std::path::Path::new("tests/fixtures/vault_add5.descriptor.json"))
+            .expect("load vault_add5 descriptor");
+        let idl: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+                .expect("read vault.codama.json")).expect("parse vault IDL");
+        let so = std::path::Path::new("tests/fixtures/vault_add5.so");
+        let ctx = load_binary(so).expect("load vault_add5.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_add5.so");
+        let result = lift_one_with_layouts(so, &ctx, &analysis, None,
+            Some("VaultAdd5".to_string()), None, None, Some(&idl), None, None, Some(&desc))
+            .expect("lift vault_add5.so via descriptor");
+        let (_, rlean) = result.refinement.expect("descriptor refinement emitted (vault_add5)");
+        let on_disk = std::fs::read_to_string(
+            "../examples/lean/Generated/VaultAdd5Refinement.lean")
+            .expect("read VaultAdd5Refinement.lean");
+        assert_eq!(rlean, on_disk,
+            "VaultAdd5Refinement.lean is out of sync with the qedlift descriptor \
+             emitter (mechanically emitted, do not hand-edit)");
+    }
+
     /// The descriptor is a versioned cross-tool contract: a schema newer than this qedlift
     /// understands must be refused fail-closed (mirrors `load_qedmeta`), never silently consumed.
     #[test]
@@ -2767,11 +2793,17 @@ fn lift_one_with_layouts(
                     rw_terms.push(format!("← wrapAdd_of_lt h_noovf{}", k));
                 }
                 Shift::AddConst(a, c) => {
-                    // wrapAdd_one_of_lt cleans wrapAdd a (toU64 1) → a+1; only +1 delta wired.
-                    debug_assert_eq!(*c, 1, "only a +1 constant delta is supported");
+                    // Clean `wrapAdd a (toU64 k) → a + k` under the no-overflow hyp.
+                    // `+1` keeps the specialized `wrapAdd_one_of_lt` so every existing
+                    // +1 lift stays byte-identical; any other positive literal uses the
+                    // general `wrapAdd_const_of_lt`.
                     let al = fold_abstractions(a.to_lean(), &abs_subst);
                     extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
-                    rw_terms.push(format!("← wrapAdd_one_of_lt h_noovf{}", k));
+                    if *c == 1 {
+                        rw_terms.push(format!("← wrapAdd_one_of_lt h_noovf{}", k));
+                    } else {
+                        rw_terms.push(format!("← wrapAdd_const_of_lt h_noovf{}", k));
+                    }
                 }
             }
         }

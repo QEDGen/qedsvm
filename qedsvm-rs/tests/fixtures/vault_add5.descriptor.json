@@ -1,0 +1,8 @@
+{
+  "_comment": "Arbitrary-literal-delta variant of vault.descriptor.json: the handler bumps `total` by a constant 5, not 1. Shape (owner:Pubkey@0, total:u64@32, bump:u8@40) is resolved from vault.codama.json by account name `vault` (same account layout as vault.so). Exercises the descriptor seam's positive-literal path: the lift cleans the +5 via `wrapAdd_const_of_lt` instead of the +1-specialized `wrapAdd_one_of_lt`. Schema: docs/REFINEMENT_DESCRIPTOR.md.",
+  "schema_version": 1,
+  "account": "vault",
+  "handler": "deposit_const",
+  "mutated": "total",
+  "op": { "add_const": 5 }
+}

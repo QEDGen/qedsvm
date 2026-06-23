@@ -1046,10 +1046,12 @@ pub(super) fn emit_descriptor_refinement(
         }
     };
 
-    // Only a `+1` delta is wired (matches the lift's `wrapAdd_one_of_lt` cleaning).
-    if desc.op.add_const != 1 {
+    // Positive constant deltas are wired: the lift cleans `+1` via `wrapAdd_one_of_lt`
+    // and any other positive literal via `wrapAdd_const_of_lt`. Zero is a no-op and
+    // subtraction / parameter deltas are not yet on the descriptor path.
+    if desc.op.add_const < 1 {
         eprintln!(
-            "descriptor: only op.add_const = 1 is wired (got {}); skipping refinement",
+            "descriptor: only a positive constant op.add_const is wired (got {}); skipping refinement",
             desc.op.add_const
         );
         return None;

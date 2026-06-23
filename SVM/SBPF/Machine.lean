@@ -487,6 +487,17 @@ theorem wrapAdd_one_of_lt {a : Nat} (h : a + 1 < 2 ^ 64) :
     wrapAdd a (toU64 1) = a + 1 := by
   rw [toU64_one]; exact wrapAdd_of_lt h
 
+/-- No-overflow constant `wrapAdd` is ordinary `· + k` for ANY literal delta.
+    Generalizes `wrapAdd_one_of_lt`; used by the constant-delta balance-corollary
+    codegen when the delta is not 1 (the descriptor seam's `op.add_const = k`). -/
+theorem wrapAdd_const_of_lt {a k : Nat} (h : a + k < 2 ^ 64) :
+    wrapAdd a (toU64 (k : Int)) = a + k := by
+  have hkmod : ((k : Int) % (2 ^ 64 : Int)) = (k : Int) :=
+    Int.emod_eq_of_lt (by exact_mod_cast Nat.zero_le k)
+      (by exact_mod_cast (show k < 2 ^ 64 by omega))
+  simp only [toU64, hkmod, Int.toNat_natCast]
+  exact wrapAdd_of_lt h
+
 def U32_MODULUS : Nat := 2 ^ 32
 
 /-- Sign-extend a value reduced mod 2^32 into a 64-bit register. sBPF V0/V1

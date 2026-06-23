@@ -1,0 +1,19 @@
+[package]
+name = "qedsvm-vault-add5"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+# Same multi-field NON-token vault as vault_src ({ owner:[u8;32]@0, total:u64@32,
+# bump:u8@40 }), but the handler bumps `total` by a constant 5 instead of 1. This
+# exercises the descriptor seam's arbitrary-literal-delta path (op.add_const = 5),
+# cleaned by `wrapAdd_const_of_lt` rather than the +1-specialized `wrapAdd_one_of_lt`.
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
