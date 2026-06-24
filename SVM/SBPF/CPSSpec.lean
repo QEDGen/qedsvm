@@ -1088,6 +1088,21 @@ theorem cuTripleFaultsWithinMem_toAborts {nSteps nCu : Nat} {entry : Nat}
   obtain ⟨k, hk, hexit, _, hcu⟩ := h R hR fetch hcr s hPR hpc hex hbud h_reg
   exact ⟨k, hk, hexit, hcu⟩
 
+/-- Frame rule (right) for typed-fault Mem triples: add pc-free `F` on the
+    right of the pre (mirror of `cuTripleAbortsWithin_frame_right`). The
+    `*_fault_correct` emitter uses this to extend a single-register fault-spec
+    pre (`.r1 ↦ᵣ r1V`) to a real prefix's multi-atom post. `rr` is unchanged
+    (it constrains only `s.regions`, untouched by the frame). -/
+theorem cuTripleFaultsWithinMem_frame_right (F : Assertion) (hF : F.pcFree)
+    {N M : Nat} {entry : Nat} {cr : CodeReq} {P : Assertion}
+    {rr : Memory.RegionTable → Prop} {e : VmError}
+    (h : cuTripleFaultsWithinMem N M entry cr P rr e) :
+    cuTripleFaultsWithinMem N M entry cr (P ** F) rr e := by
+  intro R hR fetch hcr s hPFR hpc hex hbud h_reg
+  have hFR_pcfree : (F ** R).pcFree := pcFree_sepConj hF hR
+  have hP_FR : (P ** (F ** R)).holdsFor s := holdsFor_sepConj_assoc.mp hPFR
+  exact h (F ** R) hFR_pcfree fetch hcr s hP_FR hpc hex hbud h_reg
+
 /-- Memory-aware sequencing into a typed fault — the `vmError`-carrying
     mirror of `cuTripleWithinMem_seq_abort`. -/
 theorem cuTripleWithinMem_seq_fault {N1 N2 M1 M2 : Nat} {pc1 pc2 : Nat}
