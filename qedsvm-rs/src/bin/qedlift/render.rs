@@ -271,6 +271,47 @@ pub(super) fn cu_triple_theorem(t: &TripleTheorem<'_>) -> String {
     )
 }
 
+/// A `cuTripleFaultsWithinMem` theorem — the typed-fault corollary shape
+/// (Phase 7 sub-item 3). No post-state (the run is stuck once it faults); the
+/// terminal carries a `VmError` (`vm_error`, e.g. `.abort`) instead.
+pub(super) struct FaultsTriple<'a> {
+    pub name: &'a str,
+    pub binders: &'a str,
+    /// Step bound, rendered (`N1 + N2`, e.g. `"2 + 1"`).
+    pub n_steps: &'a str,
+    /// CU bound, rendered (`M1 + M2`, e.g. `"0 + nCuAbort"`).
+    pub n_cu: &'a str,
+    pub entry: usize,
+    pub cr: &'a str,
+    pub pre: &'a str,
+    pub rr: &'a str,
+    pub vm_error: &'a str,
+    pub proof: &'a str,
+}
+
+pub(super) fn faults_triple_theorem(t: &FaultsTriple<'_>) -> String {
+    format!(
+        "open Memory in\n\
+         theorem {}\n    {}: \
+         cuTripleFaultsWithinMem ({}) ({}) {}\n      \
+         ({})\n      \
+         ({})\n      \
+         (fun rt => {})\n      \
+         {} := by\n\
+         {}\n\n",
+        t.name,
+        t.binders,
+        t.n_steps,
+        t.n_cu,
+        t.entry,
+        t.cr,
+        t.pre,
+        t.rr,
+        t.vm_error,
+        t.proof,
+    )
+}
+
 pub(super) fn end_namespace(module_name: &str) -> String {
     format!("end Examples.Lifted.{}\n", module_name)
 }

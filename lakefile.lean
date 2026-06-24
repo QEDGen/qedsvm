@@ -146,6 +146,14 @@ lean_lib Examples where
     -- derives a PDA from seed + program_id (↦Bytes32 ← Sha256.hash(seed ‖ pid ‖
     -- PDA_MARKER)); off-curve is a surfaced hypothesis. Wires the PDA family (Stage E).
     `Generated.PdaCreateLifted,
+    -- AbortCaller: a happy path that ends in the `abort` syscall. Beyond the
+    -- running-prefix `cuTripleWithinMem`, the lift emits a mechanized
+    -- `AbortCaller_fault_correct` typed-fault corollary
+    -- (`cuTripleFaultsWithinMem … .abort`), composing the prefix with
+    -- `call_abort_faults_spec` via `cuTripleWithinMem_seq_fault_pure`. The
+    -- emitter half of Phase 7 sub-item 3 (error corollaries via vmError) —
+    -- surfaces `vmError = .abort` (audit L1's typed fault channel).
+    `Generated.AbortCallerLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen
