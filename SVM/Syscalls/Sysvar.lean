@@ -133,6 +133,20 @@ theorem zeroFillR1_faults_oob (s : State) (n : Nat) (hne : n ≠ 0)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 
+/-- Companion to `zeroFillR1_faults_oob`: the same out-of-region output pins the
+    `exitCode` sentinel (guardWrite sets both). Lets a `cuTripleFaultsWithin`
+    corollary discharge its exitCode AND vmError conjuncts (used by the lifted
+    clock/last_restart_slot/fees/epoch_rewards getters). -/
+theorem zeroFillR1_faults_oob_exitCode (s : State) (n : Nat) (hne : n ≠ 0)
+    (hoob : s.regions.containsWritable s.regs.r1 n = false) :
+    (zeroFillR1 s n).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [zeroFillR1, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
 /-! `execRent`/`execEpochSchedule` field lemmas (they're not `@[simp]`; their
 multi-`if` `mem'` chokes the blanket sweeps). These + the `regs_of_k` closers
 discharge the sweeps with the exec folded. -/

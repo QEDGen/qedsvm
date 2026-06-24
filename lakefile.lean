@@ -162,6 +162,12 @@ lean_lib Examples where
     -- `cuTripleWithinMem_seq_fault` — combined rr = prefixRR ∧ OOB. The H6
     -- (accessViolation) arm of the Phase 7 sub-item 3 fault-corollary emitter.
     `Generated.OobSecp256k1Lifted,
+    -- OobClockSysvar: an out-of-bounds `sol_get_clock_sysvar` (r1 output points
+    -- past the writable region). Same OOB fault emitter as OobSecp256k1 but
+    -- exercises the WRITE region guard (`rr` uses `containsWritable`, not
+    -- `containsRange`) and a single-atom prefix post (the fault spec applies
+    -- bare, no `frame_right`). Shows the OOB arm scales across syscall families.
+    `Generated.OobClockSysvarLifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

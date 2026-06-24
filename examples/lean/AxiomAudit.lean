@@ -13,6 +13,7 @@ import Generated.VaultRefinement
 import Generated.CounterRefinement
 import Generated.AbortCallerLifted
 import Generated.OobSecp256k1Lifted
+import Generated.OobClockSysvarLifted
 
 open Lean Elab Command
 
@@ -51,6 +52,8 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.mov_r1_then_secp_oob_fault_correct
 #assert_std_axioms Examples.Lifted.OobSecp256k1.OobSecp256k1_lifted_spec
 #assert_std_axioms Examples.Lifted.OobSecp256k1.OobSecp256k1_fault_correct
+#assert_std_axioms SVM.SBPF.call_sol_get_clock_sysvar_faults_oob_spec
+#assert_std_axioms Examples.Lifted.OobClockSysvar.OobClockSysvar_fault_correct
 
 -- StateBounded invariant (audit L5 + L3): must remain decide-only, never sorry/native_decide.
 -- step_bounded = per-insn preservation (incl. r10 discipline); executeFn_bounded = multi-step

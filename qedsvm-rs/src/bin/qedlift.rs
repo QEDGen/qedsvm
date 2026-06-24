@@ -440,6 +440,30 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// Pins the WRITE-region OOB fault corollary (Phase 7 sub-item 3): an
+    /// out-of-bounds `sol_get_clock_sysvar`. Exercises `containsWritable` (vs the
+    /// secp read-region's `containsRange`) and the single-atom prefix post (the
+    /// fault spec applies bare, no `frame_right`) — the OOB arm across families.
+    #[test]
+    fn oob_clock_sysvar_fault_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/oob_clock_sysvar.so");
+        let ctx = load_binary(so).expect("load oob_clock_sysvar.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_clock_sysvar.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/oob_clock_sysvar.pcs"))
+            .expect("load oob_clock_sysvar trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("OobClockSysvar".to_string()),
+            Some(&trace), None, None, None).expect("lift oob_clock_sysvar.so");
+
+        let path = "../examples/lean/Generated/OobClockSysvarLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write OobClockSysvarLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read OobClockSysvarLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "OobClockSysvarLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).
@@ -2012,6 +2036,10 @@ struct OobSyscall {
     region_reg: u8,
     /// The guarded region length in bytes (e.g. 32 for the secp hash input).
     region_size: i64,
+    /// `true` if the guard is a WRITE check (`containsWritable`, e.g. a sysvar
+    /// output); `false` for a READ check (`containsRange`, e.g. the secp input).
+    /// Must match the `rr` of the syscall's `faults_oob` triple.
+    region_writable: bool,
 }
 
 impl OobSyscall {
@@ -2023,6 +2051,15 @@ impl OobSyscall {
                 faults_spec: "call_sol_secp256k1_recover_faults_oob_spec",
                 region_reg: 1,
                 region_size: 32,
+                region_writable: false,
+            })
+        } else if imm == ebpf::hash_symbol_name(b"sol_get_clock_sysvar") {
+            Some(OobSyscall {
+                ctor: ".sol_get_clock_sysvar",
+                faults_spec: "call_sol_get_clock_sysvar_faults_oob_spec",
+                region_reg: 1,
+                region_size: 40,
+                region_writable: true,
             })
         } else {
             None
@@ -3146,9 +3183,12 @@ fn lift_one_with_layouts(
                      (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuOob)\n    ",
                     theorem_binders, oob.ctor,
                 );
-                // Combined rr: prefix region requirement ∧ the OOB condition.
+                // Combined rr: prefix region requirement ∧ the OOB condition
+                // (write guard → `containsWritable`, read guard → `containsRange`;
+                // must match the syscall's `faults_oob` triple).
+                let region_pred = if oob.region_writable { "containsWritable" } else { "containsRange" };
                 let combined_rr = format!(
-                    "({}) ∧ rt.containsRange ({}) {} = false", rr, r1v, oob.region_size,
+                    "({}) ∧ rt.{} ({}) {} = false", rr, region_pred, r1v, oob.region_size,
                 );
                 let proof = format!(
                     "  refine cuTripleWithinMem_seq_fault ?_ ({lifted} {names}) {tail}\n  \
