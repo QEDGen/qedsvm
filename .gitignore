@@ -10,3 +10,5 @@ docs/*
 rust-bridge/target/
 .agents/
 .claude/
+# Local research spikes (e.g. solanalib-diff-oracle) — not tracked.
+spike/
