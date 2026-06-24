@@ -103,20 +103,19 @@ theorem mov_then_abort_fault_correct_mem (vR0Old : Nat) (nCu : Nat)
 
 /-- `.call .sol_panic_`: unconditional abort logging the message at r1/r2
     (r3/r4/r5 file/line are diagnostic, silent at SL). Sets
-    `exitCode := some ERR_ABORT`. Same `emp` precondition as `abort`: the
-    message-pointer registers are unconstrained and the `log` entry is silent
-    in `PartialState`. -/
-theorem call_sol_panic_faults_spec (pc : Nat) (nCu : Nat)
+    `exitCode := some ERR_ABORT`, `vmError := some .abort`. PRE-PARAMETRIC over
+    `P` (like `call_abort_faults_spec`): the message-pointer registers are
+    unconstrained and the `log` entry is silent in `PartialState`, so the panic
+    faults from ANY precondition — letting a per-lift `*_fault_correct`
+    corollary flow the prefix's post `Q` straight into the panic tail. -/
+theorem call_sol_panic_faults_spec (P : Assertion) (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_panic_))
-      emp .abort := by
+      P .abort := by
   intro R hRfree fetch hcr s hPR hpc hex hbud
-  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
-  rw [hP1, PartialState.union_empty_left] at hu
-  rw [hP1] at hd
-  clear hP1 h1
+  -- The panic ignores its pre, so `hPR` is not destructured.
   have hfetch : fetch s.pc = some (.call .sol_panic_) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .sol_panic_) s) := by
@@ -150,7 +149,24 @@ theorem call_sol_panic_aborts_spec (pc : Nat) (nCu : Nat)
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_panic_))
       emp ERR_ABORT :=
-  cuTripleFaultsWithin_toAborts (call_sol_panic_faults_spec pc nCu hCu)
+  cuTripleFaultsWithin_toAborts (call_sol_panic_faults_spec emp pc nCu hCu)
+
+/-- Panic analog of `mov_then_abort_fault_correct_mem`: validates the
+    `*_fault_correct` emitter output shape for a `.call .sol_panic_` terminal
+    (no `.so` fixture is buildable — the no_std panic handler is `loop {}`, so
+    a Rust `panic!` never reaches `sol_panic_`). The emitter renders exactly
+    this composition, differing only in the syscall constructor. -/
+theorem mov_then_panic_fault_correct_mem (vR0Old : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithinMem (1 + 1) (0 + nCu) 0
+      ((CodeReq.singleton 0 (.mov64 .r0 (.imm 5))).union
+        (CodeReq.singleton 1 (.call .sol_panic_)))
+      (.r0 ↦ᵣ vR0Old) (fun _ => True) .abort :=
+  cuTripleWithinMem_seq_fault_pure
+    (CodeReq.singleton_disjoint_singleton _ _ (by decide))
+    (mov64_imm_spec .r0 5 vR0Old 0 (by decide)).toMem
+    (call_sol_panic_faults_spec (.r0 ↦ᵣ toU64 5) 1 nCu hCu)
 
 /-- `Insn.exit` with empty callStack: success-exit, sets `exitCode := some (r0)`.
 

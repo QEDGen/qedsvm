@@ -184,10 +184,24 @@ pub(super) fn insn_to_lean_full(
             format!(".jset {} (.imm ({})) {}", reg(dst), imm, t)
         }
         // call_local imm is a Murmur3 hash, not an offset; caller must pre-resolve via Analysis::cfg_nodes.
-        CALL_IMM => match call_target {
-            Some(t) => format!(".call_local {}", t),
-            None => ".call_local TARGET_PC_NOT_RESOLVED".to_string(),
-        },
+        // Mirror Decode.lean (0x85): `SyscallHash.fromHash` is consulted FIRST,
+        // then the function registry. The fault-terminal syscalls
+        // (abort / sol_panic_) are the only host syscalls a small-decode lift
+        // carries (Phase 7 sub-item 3 emitter), so render them as `.call <ctor>`
+        // to match `decodeProgram`; everything else is an internal `.call_local`.
+        CALL_IMM => {
+            let himm = imm as u32;
+            if himm == hash_symbol_name(b"abort") {
+                ".call .abort".to_string()
+            } else if himm == hash_symbol_name(b"sol_panic_") {
+                ".call .sol_panic_".to_string()
+            } else {
+                match call_target {
+                    Some(t) => format!(".call_local {}", t),
+                    None => ".call_local TARGET_PC_NOT_RESOLVED".to_string(),
+                }
+            }
+        }
         opc => return Err(format!("opcode 0x{:02x} not yet lifted to Lean", opc)),
     })
 }

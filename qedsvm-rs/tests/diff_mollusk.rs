@@ -153,6 +153,14 @@ const PDA_FINDER_SO: &[u8] = include_bytes!("fixtures/pda_finder.so");
 /// with `AccessViolation` and returns Failure. Source in
 /// `oob_read_src/`.
 const OOB_READ_SO: &[u8] = include_bytes!("fixtures/oob_read.so");
+/// Typed-fault terminal (Phase 7 sub-item 3): a happy path that runs a
+/// small straight-line prefix and then invokes the `abort` syscall.
+/// agave's `SyscallAbort` traps; program-runtime reports
+/// `ProgramFailedToComplete`. qedsvm sets `exitCode = ERR_ABORT` /
+/// `vmError = .abort`, surfaced as a VM fault. Both engines fault.
+/// Source in `abort_caller_src/`; lifted as `Generated.AbortCallerLifted`
+/// with a mechanized `AbortCaller_fault_correct` typed-fault corollary.
+const ABORT_CALLER_SO: &[u8] = include_bytes!("fixtures/abort_caller.so");
 /// Out-of-bounds SYSCALL write (audit H6). Calls `sol_memset_` with a
 /// destination 256 MiB past the input pointer; agave's
 /// `translate_slice_mut` traps with `AccessViolation`. Pre-fix qedsvm
@@ -2668,6 +2676,37 @@ fn oob_read_fails_on_both() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB read, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_read");
+}
+
+/// Phase 7 sub-item 3: a program that calls the `abort` syscall faults on
+/// both engines (qedsvm `vmError = .abort` → VmFault; agave
+/// `ProgramFailedToComplete`). The diff-side counterpart to the lifted
+/// `AbortCaller_fault_correct` typed-fault corollary.
+#[test]
+fn abort_caller_fails_on_both() {
+    let program_id = pid(58);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, ABORT_CALLER_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs abort_caller");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        ABORT_CALLER_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result = {:?}", m_r.program_result);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on the abort syscall, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "abort_caller");
 }
 
 /// H6: sol_memset_ with dst 256 MiB OOB; pre-fix wrote through, post-fix guardWrite VM-faults on both.

@@ -11,6 +11,7 @@ import PToken.TransferRefinement
 import PToken.TransferArm.FullHappyPath
 import Generated.VaultRefinement
 import Generated.CounterRefinement
+import Generated.AbortCallerLifted
 
 open Lean Elab Command
 
@@ -35,6 +36,12 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms Examples.VaultRefinement.ensures
 #assert_std_axioms Examples.CounterRefinement.refines_asm
 #assert_std_axioms Examples.CounterRefinement.ensures
+
+-- Phase 7 sub-item 3 (emitter half): the typed-fault corollary and its running
+-- prefix must stay axiom-clean (no sorry/native_decide leaking into the
+-- abort-path proof — the disjointness is `decide`, the prefix `sl_block_auto`).
+#assert_std_axioms Examples.Lifted.AbortCaller.AbortCaller_lifted_spec
+#assert_std_axioms Examples.Lifted.AbortCaller.AbortCaller_fault_correct
 
 -- StateBounded invariant (audit L5 + L3): must remain decide-only, never sorry/native_decide.
 -- step_bounded = per-insn preservation (incl. r10 discipline); executeFn_bounded = multi-step

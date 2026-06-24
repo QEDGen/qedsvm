@@ -389,6 +389,30 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// Pins the typed-fault corollary emitter (Phase 7 sub-item 3): a happy
+    /// path ending in `.call .abort`. Beyond the running-prefix
+    /// `cuTripleWithinMem`, the lift emits `AbortCaller_fault_correct`
+    /// (`cuTripleFaultsWithinMem … .abort`), composing the prefix with
+    /// `call_abort_faults_spec` via `cuTripleWithinMem_seq_fault_pure`. Static
+    /// lift (the abort terminates the straight-line walk; no trace needed).
+    #[test]
+    fn abort_caller_fault_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/abort_caller.so");
+        let ctx = load_binary(so).expect("load abort_caller.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse abort_caller.so");
+        let result = lift_one(so, &ctx, &analysis, None, Some("AbortCaller".to_string()),
+            None, None, None, None).expect("lift abort_caller.so");
+
+        let path = "../examples/lean/Generated/AbortCallerLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write AbortCallerLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read AbortCallerLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "AbortCallerLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).
@@ -1903,6 +1927,47 @@ fn imm_is_modeled_syscall(imm: u32) -> bool {
     NAMES.iter().any(|name| imm == ebpf::hash_symbol_name(name))
 }
 
+/// A typed-fault terminal syscall a happy-path walk can end on (Phase 7
+/// sub-item 3). Both halt with `exitCode := ERR_ABORT` and `vmError := .abort`
+/// (audit L1's typed channel); they differ only in the `Syscall` constructor
+/// and the library terminal-fault spec the `*_fault_correct` corollary composes.
+#[derive(Clone, Copy)]
+enum AbortKind {
+    /// `.call .abort` — unconditional abort (`Abort.execAbort`).
+    Abort,
+    /// `.call .sol_panic_` — panic (logs a message, same `.abort` fault).
+    SolPanic,
+}
+
+impl AbortKind {
+    /// Resolve a relocated `call_imm` immediate (a Murmur3 syscall hash) to a
+    /// fault terminal, or `None` if it is not abort/sol_panic_.
+    fn from_hash(imm: u32) -> Option<AbortKind> {
+        if imm == ebpf::hash_symbol_name(b"abort") {
+            Some(AbortKind::Abort)
+        } else if imm == ebpf::hash_symbol_name(b"sol_panic_") {
+            Some(AbortKind::SolPanic)
+        } else {
+            None
+        }
+    }
+    /// The Lean `Syscall` constructor (CodeReq singleton + `step`/`hCu` term).
+    fn ctor(self) -> &'static str {
+        match self {
+            AbortKind::Abort => ".abort",
+            AbortKind::SolPanic => ".sol_panic_",
+        }
+    }
+    /// The library terminal-fault spec the corollary composes with (both
+    /// pre-parametric over the prefix post, faulting as `.abort`).
+    fn faults_spec(self) -> &'static str {
+        match self {
+            AbortKind::Abort => "call_abort_faults_spec",
+            AbortKind::SolPanic => "call_sol_panic_faults_spec",
+        }
+    }
+}
+
 fn lift_one(
     so_path:         &Path,
     ctx:             &BinaryCtx,
@@ -2020,7 +2085,7 @@ fn lift_one_with_layouts(
     let mut blob_splits: std::collections::BTreeMap<(String, i64), i64> =
         Default::default();
     let mut walk_attempts = 0usize;
-    let (mut state, spec_calls, block_pcs, exit_pc) = loop {
+    let (mut state, spec_calls, block_pcs, exit_pc, abort_terminal) = loop {
     walk_attempts += 1;
     if walk_attempts > 8 {
         return Err("qedlift: hot-region demotion did not converge after 8 \
@@ -2033,6 +2098,12 @@ fn lift_one_with_layouts(
     // Starts at ELF entrypoint (NOT analysis PC 0: linker may place helpers before it).
     let mut block_pcs: Vec<usize> = Vec::new();
     let exit_pc: usize;
+    // Phase 7 sub-item 3: when the walked happy-path terminates in a typed
+    // fault syscall (`.call .abort` / `.call .sol_panic_`), record its kind
+    // here so the emitter renders a `*_fault_correct` corollary
+    // (`cuTripleFaultsWithinMem … .abort`) instead of only a success triple.
+    // `None` = ordinary `exit` terminator (the success-trace case).
+    let mut abort_terminal: Option<AbortKind> = None;
     let mut state = SymState::default();
     state.hot_regions = hot_regions.clone();
     state.blob_splits = blob_splits.clone();
@@ -2090,6 +2161,21 @@ fn lift_one_with_layouts(
                     // Trace: next PC from trace; static: jump to callpc+1.
                     if trace.is_some() { ti += 1; } else { pc_iter = call_pc + 1; }
                     continue;
+                }
+            }
+
+            // Typed-fault terminal (Phase 7 sub-item 3): `.call .abort` /
+            // `.call .sol_panic_` never return, so they end the walk like
+            // `exit` — but with `exitCode := ERR_ABORT` AND `vmError := .abort`
+            // (audit L1's typed channel). The terminal is NOT pushed to
+            // `block_pcs` (it is the abort tail, composed by the emitter via
+            // `call_<kind>_faults_spec`, not part of the running prefix).
+            if ins.opc == ebpf::CALL_IMM {
+                let imm = ins.imm as u32;
+                if let Some(kind) = AbortKind::from_hash(imm) {
+                    abort_terminal = Some(kind);
+                    exit_pc = pc_iter;
+                    break;
                 }
             }
 
@@ -2336,7 +2422,7 @@ fn lift_one_with_layouts(
              docs/QEDLIFT_ALIASING_DESIGN.md):\n  - {}",
             state.overlap_errors.join("\n  - ")).into());
     }
-    break (state, spec_calls, block_pcs, exit_pc);
+    break (state, spec_calls, block_pcs, exit_pc, abort_terminal);
     };
     let out_patched = out.replace("@@HEARTBEATS@@",
         if state.hot_regions.is_empty() { "4000000" } else { "16000000" });
@@ -2519,8 +2605,15 @@ fn lift_one_with_layouts(
     // residual side goal. `<;> assumption` closes them against the
     // theorem's `h_branchK` hypotheses, alongside any u64-load
     // `< 2^64` residuals.
+    // A reloaded dword (store-then-reload to the same cell, e.g. a stack
+    // spill) surfaces an `hReloadLt_<pc> : v < 2^64` side hyp that
+    // `sl_block_auto` leaves as a residual — `<;> assumption` discharges it
+    // against the binder. Existing reload-using lifts already trip
+    // `u64_load_vars`/`use_block_iter`, so this only flips the reload-only case.
+    let has_reload_hyp = state.side_hyps.iter().any(|(n, _)| n.starts_with("hReloadLt"));
     let needs_assumption = !state.branch_hyps.is_empty()
-                        || !state.u64_load_vars.is_empty();
+                        || !state.u64_load_vars.is_empty()
+                        || has_reload_hyp;
     // Use sl_block_iter when: call_local crossed (sl_block_auto diverges on wrapAdd addresses),
     // any cond-jump taken (SpecGen.mkSpec only has _not_taken; taken arms need explicit spec calls),
     // or a syscall was walked (SpecGen has no `.call <Syscall>` dispatch — the effect is supplied by
@@ -2856,6 +2949,78 @@ fn lift_one_with_layouts(
             post: &balance_post,
             rr: &rr,
             proof: &balance_proof,
+        }));
+    }
+
+    // Typed-fault corollary (Phase 7 sub-item 3): the walked happy path ends
+    // in `.call .abort` / `.call .sol_panic_`. Compose the running prefix
+    // (`<module>_lifted_spec`, a `cuTripleWithinMem`) with the terminal fault
+    // spec via `cuTripleWithinMem_seq_fault_pure`, surfacing `vmError = .abort`
+    // (audit L1's typed channel — distinct from a clean exit of the same
+    // ERR_ABORT sentinel). The abort PC is the walk's `exit_pc` (the terminal
+    // is NOT in `block_pcs`); disjointness of the prefix CodeReq from the
+    // singleton abort CodeReq folds `Disjoint_union_left` over
+    // `singleton_disjoint_singleton` (every prefix PC ≠ the abort PC).
+    if let Some(kind) = abort_terminal {
+        // Param names in `_lifted_spec` signature order (mirrors heap/balance).
+        let mut names: Vec<String> = vars.clone();
+        if use_block_iter && !abstractions.is_empty() {
+            for (p, _, _) in &abstractions { names.push(p.clone()); }
+            for (_, h, _) in &abstractions { names.push(h.clone()); }
+        }
+        for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
+        for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
+        for (name, _) in &state.side_hyps { names.push(name.clone()); }
+        for ba in &state.bytearray_vars { names.push(ba.clone()); }
+        for (bs, _) in &state.memset_blobs {
+            names.push(bs.clone());
+            names.push(format!("h{}_sz", bs));
+        }
+        for (name, _) in &state.blob_side_hyps { names.push(name.clone()); }
+        for (ncu, hcu, _) in &state.syscall_cu_vars {
+            names.push(ncu.clone());
+            names.push(hcu.clone());
+        }
+
+        let ctor = kind.ctor();
+        // The abort tail carries its own CU bound + cost assumption (it is the
+        // terminal, not a walked prefix syscall, so it gets fresh binders).
+        let fault_binders = format!(
+            "{}(nCuAbort : Nat)\n    (hCuAbort : ∀ s : State,\n        \
+             (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuAbort)\n    ",
+            theorem_binders, ctor,
+        );
+        let n_steps = format!("{} + 1", n);
+        let n_cu = format!("{} + nCuAbort", m_bound);
+        let cr_fault = format!(
+            "({}).union\n        (CodeReq.singleton {} (.call {}))",
+            cr_lean, exit_pc, ctor,
+        );
+        // `cuTripleWithinMem_seq_fault_pure (hd) (prefix) (tail)`: `?_` is the
+        // CodeReq disjointness, discharged structurally over the prefix union.
+        let fault_proof = format!(
+            "  refine cuTripleWithinMem_seq_fault_pure ?_ ({lifted} {names}) \
+             ({spec} ({post}) {pc} nCuAbort hCuAbort)\n  \
+             repeat' apply CodeReq.Disjoint_union_left\n  \
+             all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
+            lifted = lifted_name,
+            names = names.join(" "),
+            spec = kind.faults_spec(),
+            post = lifted_post,
+            pc = exit_pc,
+        );
+        let fault_name = format!("{}_fault_correct", module_name);
+        out.push_str(&render::faults_triple_theorem(&render::FaultsTriple {
+            name: &fault_name,
+            binders: &fault_binders,
+            n_steps: &n_steps,
+            n_cu: &n_cu,
+            entry: start_pc,
+            cr: &cr_fault,
+            pre: &lifted_pre,
+            rr: &rr,
+            vm_error: ".abort",
+            proof: &fault_proof,
         }));
     }
 
