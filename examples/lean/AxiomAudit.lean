@@ -43,6 +43,12 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms Examples.Lifted.AbortCaller.AbortCaller_lifted_spec
 #assert_std_axioms Examples.Lifted.AbortCaller.AbortCaller_fault_correct
 
+-- H6 OOB-fault library half (accessViolation family): the typed-fault syscall
+-- triple + its composition shape must stay axiom-clean (the foundation the
+-- OOB `*_fault_correct` emitter half will compose).
+#assert_std_axioms SVM.SBPF.call_sol_secp256k1_recover_faults_oob_spec
+#assert_std_axioms SVM.SBPF.mov_r1_then_secp_oob_fault_correct
+
 -- StateBounded invariant (audit L5 + L3): must remain decide-only, never sorry/native_decide.
 -- step_bounded = per-insn preservation (incl. r10 discipline); executeFn_bounded = multi-step
 -- closure; initialState_bounded = runner base case; mem_byte_canonical = L3 fence.
