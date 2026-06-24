@@ -62,18 +62,31 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | `sol_invoke_signed_c` | Triple only | Same CPI limitation as the Rust ABI form. |
 | `sol_sha256` | Mechanical | Single-slice success path: descriptor cells recover `(ptr, len)`, the digest is written to a framed `↦Bytes32` atom, `r0 := 0` (`call_sol_sha256_spec`). |
 | Other hashing syscalls (`keccak256`, `blake3`) | Unsupported | No lifted proof obligation is emitted. |
-| Curve/precompile syscalls | Unsupported | Same boundary as the unsupported hashing syscalls. |
+| Curve/precompile syscalls | Unsupported (success) | No success triple. The OOB fault direction of `sol_secp256k1_recover` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
 | `sol_create_program_address` | Mechanical | Single-seed success path (`call_sol_create_program_address_spec`); the off-curve case is a surfaced honest-conditional hypothesis, not a hidden assumption. |
 | Other PDA syscalls (`sol_try_find_program_address`, multi-seed) | Unsupported | Same boundary. |
 | `memcpy`, `memmove` | Mechanical | Two `↦Bytes` atoms (src readable, dst writable, disjoint); dst blob ← src, `r0 := 0` (`call_sol_mem{cpy,move}_spec`). |
 | `memcmp` | Mechanical | Two `↦Bytes` inputs + a 4-byte `↦U32` output; result `memcmpResultU32 p1 p2 n` (`call_sol_memcmp_spec`). |
 | `sol_set_return_data` | Mechanical | One `↦Bytes` input (`[r1, r1+r2)` readable, `r2 ≤ MAX_RETURN_DATA`) copied into the framed `↦ReturnData` atom; `r0 := 0` (`call_sol_set_return_data_spec`). |
 | `sol_get_return_data` | Unsupported | Only the fault direction (`execGet_faults_oob`) is modeled; no success triple. |
-| Dedicated sysvar getters | Unsupported | Only the generic `sol_get_sysvar` proof path is modeled by the lift. |
+| Dedicated sysvar getters | Unsupported (success) | Only the generic `sol_get_sysvar` success path is modeled. The OOB fault direction of `sol_get_clock_sysvar` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
 | Introspection syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
 | `sol_alloc_free_` | Unsupported | Heap proofs use ordinary memory predicates instead. |
 
 Unsupported here means "not verified by the lift", not "cannot execute". Diff tests can still run programs that use unverified runtime behavior.
+
+## Typed-Fault Corollaries (termination)
+
+When a lifted path terminates in a typed fault rather than a clean `exit`, the lift emits a `*_fault_correct` corollary of shape `cuTripleFaultsWithinMem … <VmError>`. This carries audit L1's typed fault channel (`exitCode = some e.toSentinel ∧ vmError = some e`), distinguishing a real VM fault from a clean exit that happens to return the same numeric sentinel. The corollary composes the running prefix (`<module>_lifted_spec`) with the terminal fault spec.
+
+| Terminal | VmError | Status | Notes |
+| --- | --- | --- | --- |
+| `abort` / `sol_panic_` | `.abort` | Mechanical | Unconditional fault from any precondition; composed via `cuTripleWithinMem_seq_fault_pure` (`AbortCaller`). |
+| OOB `sol_secp256k1_recover` | `.accessViolation` | Mechanical | Read-region guard (`containsRange r1 32 = false`); the prefix post is framed into the single-register fault-spec pre and composed via the Mem-aware `cuTripleWithinMem_seq_fault` (`OobSecp256k1`). |
+| OOB `sol_get_clock_sysvar` | `.accessViolation` | Mechanical | Write-region guard (`containsWritable r1 40 = false`); single-atom prefix, fault spec applied directly (`OobClockSysvar`). |
+| Other OOB syscalls | `.accessViolation` | Manual | Same recipe: a per-syscall `*_faults_oob` triple plus an emitter registry entry. Register-sized regions (e.g. `[r1, r1+r2)`) and a region register that is not the first post atom fall closed for now. |
+
+OOB terminals are detected trace-side: a guarded syscall that does not return to `pc+1` on the trace is treated as the faulting terminal (static mode cannot distinguish success from fault).
 
 ## Abstract Refinement / Codec Coverage
 
