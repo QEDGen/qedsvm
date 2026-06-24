@@ -197,6 +197,8 @@ pub(super) fn insn_to_lean_full(
                 ".call .sol_panic_".to_string()
             } else if himm == hash_symbol_name(b"sol_secp256k1_recover") {
                 ".call .sol_secp256k1_recover".to_string()
+            } else if himm == hash_symbol_name(b"sol_get_clock_sysvar") {
+                ".call .sol_get_clock_sysvar".to_string()
             } else {
                 match call_target {
                     Some(t) => format!(".call_local {}", t),
