@@ -77,5 +77,19 @@ theorem exec_faults_oob (s : State)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 
+/-- Companion to `exec_faults_oob`: the same OOB input also pins the
+    `exitCode` sentinel (the `guardRead` fault sets both fields). The pair lets
+    a `cuTripleFaultsWithin` corollary discharge its exitCode AND vmError
+    conjuncts. -/
+theorem exec_faults_oob_exitCode (s : State)
+    (hoob : s.regions.containsRange s.regs.r1 32 = false) :
+    (exec s).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [exec, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
 end Secp256k1
 end SVM.SBPF

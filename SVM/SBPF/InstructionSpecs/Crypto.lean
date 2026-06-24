@@ -249,4 +249,81 @@ PartialState proofs they are retired in favour of the model-side
 syscall. See docs/SOUNDNESS_AUDIT_* (H6).
 -/
 
+/-! ## H6 OOB-fault triple (Phase 7 sub-item 3, accessViolation family)
+
+The `cuTripleFaultsWithinMem` analog of `call_abort_faults_spec`, but for an
+out-of-bounds SYSCALL: `sol_secp256k1_recover` reads its 32-byte hash input
+`[r1, r1+32)` through `State.guardRead`, so an out-of-region `r1` traps with a
+typed `.accessViolation` (`Secp256k1.exec_faults_oob{,_exitCode}`). Unlike
+abort/panic (which fault from ANY precondition), this fault DEPENDS on `r1`: the
+pre pins `r1 = r1V` and the region requirement `rr` says `[r1V, r1V+32)` is out
+of bounds. The `*_fault_correct` emitter composes a running prefix into this
+tail via `cuTripleWithinMem_seq_fault` (the Mem-Mem variant: the combined `rr`
+is `fun rt => prefixRR rt ∧ rt.containsRange r1V 32 = false`). -/
+
+theorem call_sol_secp256k1_recover_faults_oob_spec (r1V : Nat) (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_secp256k1_recover) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithinMem 1 nCu pc
+      (CodeReq.singleton pc (.call .sol_secp256k1_recover))
+      (.r1 ↦ᵣ r1V)
+      (fun rt => rt.containsRange r1V 32 = false)
+      .accessViolation := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  -- Extract `s.regs.r1 = r1V` from the single-atom precondition.
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_pred, h_R_sat⟩ := hPR
+  have hcr_regs := hcompat.regs
+  have h_P_regs_r1 : h_P.regs .r1 = some r1V := by
+    rw [h_P_pred]; exact PartialState.singletonReg_regs_self
+  have hp_regs_r1 : hp.regs .r1 = some r1V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r1
+  have hr1 : s.regs.r1 = r1V := hcr_regs .r1 r1V hp_regs_r1
+  -- Specialise the OOB region condition to this state's `r1`.
+  have hoob : s.regions.containsRange s.regs.r1 32 = false := by rw [hr1]; exact h_region
+  have hfetch : fetch s.pc = some (.call .sol_secp256k1_recover) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1
+      = chargeCu (step (.call .sol_secp256k1_recover) s) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      chargeCu { (Secp256k1.exec s) with
+                 pc := s.pc + 1
+                 cuConsumed := (Secp256k1.exec s).cuConsumed
+                   + syscallCu .sol_secp256k1_recover s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  · rw [hexec]
+    -- VmError.accessViolation.toSentinel = ERR_ACCESS_VIOLATION
+    show (Secp256k1.exec s).exitCode = some VmError.accessViolation.toSentinel
+    exact Secp256k1.exec_faults_oob_exitCode s hoob
+  · rw [hexec]
+    show (Secp256k1.exec s).vmError = some .accessViolation
+    exact Secp256k1.exec_faults_oob s hoob
+  · rw [hstep_eq]
+    show (step (.call .sol_secp256k1_recover) s).cuConsumed + 1
+      ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
+
+/-- The per-lift fault-corollary shape for the OOB family (mirrors
+    `mov_then_abort_fault_correct_mem`): a register-setup prefix sequenced into
+    the OOB syscall fault via `cuTripleWithinMem_seq_fault`. The combined `rr`
+    carries the prefix requirement (`True` here) AND the OOB condition. This is
+    the shape the `*_fault_correct` emitter mechanizes for an OOB terminal. -/
+theorem mov_r1_then_secp_oob_fault_correct (vR1Old : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_secp256k1_recover) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithinMem (1 + 1) (0 + nCu) 0
+      ((CodeReq.singleton 0 (.mov64 .r1 (.imm 5))).union
+        (CodeReq.singleton 1 (.call .sol_secp256k1_recover)))
+      (.r1 ↦ᵣ vR1Old)
+      (fun rt => True ∧ rt.containsRange (toU64 5) 32 = false)
+      .accessViolation :=
+  cuTripleWithinMem_seq_fault
+    (CodeReq.singleton_disjoint_singleton _ _ (by decide))
+    (mov64_imm_spec .r1 5 vR1Old 0 (by decide)).toMem
+    (call_sol_secp256k1_recover_faults_oob_spec (toU64 5) 1 nCu hCu)
+
 end SVM.SBPF
