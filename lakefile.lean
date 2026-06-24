@@ -154,6 +154,14 @@ lean_lib Examples where
     -- emitter half of Phase 7 sub-item 3 (error corollaries via vmError) —
     -- surfaces `vmError = .abort` (audit L1's typed fault channel).
     `Generated.AbortCallerLifted,
+    -- OobSecp256k1: a happy path that ends in an OUT-OF-BOUNDS `sol_secp256k1_recover`
+    -- (r1 hash input points 256 MiB past the input region). The lift emits
+    -- `OobSecp256k1_fault_correct : cuTripleFaultsWithinMem … .accessViolation`,
+    -- composing the prefix with `call_sol_secp256k1_recover_faults_oob_spec`
+    -- (frame_right-extended to the prefix post) via the Mem-Mem
+    -- `cuTripleWithinMem_seq_fault` — combined rr = prefixRR ∧ OOB. The H6
+    -- (accessViolation) arm of the Phase 7 sub-item 3 fault-corollary emitter.
+    `Generated.OobSecp256k1Lifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

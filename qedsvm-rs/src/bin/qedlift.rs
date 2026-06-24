@@ -413,6 +413,33 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// Pins the OOB (H6) typed-fault corollary emitter (Phase 7 sub-item 3): a
+    /// happy path ending in an out-of-bounds `sol_secp256k1_recover`. The lift
+    /// emits `OobSecp256k1_fault_correct`
+    /// (`cuTripleFaultsWithinMem … .accessViolation`), composing the prefix with
+    /// `call_sol_secp256k1_recover_faults_oob_spec` (frame_right-extended to the
+    /// prefix post) via the Mem-Mem `cuTripleWithinMem_seq_fault`. Trace-driven
+    /// (the OOB terminal is detected by the syscall NOT returning to pc+1).
+    #[test]
+    fn oob_secp256k1_fault_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/oob_secp256k1.so");
+        let ctx = load_binary(so).expect("load oob_secp256k1.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_secp256k1.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/oob_secp256k1.pcs"))
+            .expect("load oob_secp256k1 trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("OobSecp256k1".to_string()),
+            Some(&trace), None, None, None).expect("lift oob_secp256k1.so");
+
+        let path = "../examples/lean/Generated/OobSecp256k1Lifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write OobSecp256k1Lifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read OobSecp256k1Lifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "OobSecp256k1Lifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).
@@ -1968,6 +1995,50 @@ impl AbortKind {
     }
 }
 
+/// An out-of-bounds (H6) syscall fault terminal (Phase 7 sub-item 3, the
+/// `.accessViolation` family). Unlike abort/panic, the fault is CONDITIONAL on
+/// the syscall's input region being out of bounds, so the corollary carries a
+/// region requirement `rr` over the region register (`region_reg`, e.g. r1) and
+/// `region_size`. Detected only on a trace where the syscall does NOT return
+/// (the OOB execution is stuck), and composed via the Mem-Mem
+/// `cuTripleWithinMem_seq_fault` (combined `rr = prefixRR ∧ OOB`).
+#[derive(Clone, Copy)]
+struct OobSyscall {
+    /// Lean `Syscall` constructor (CodeReq singleton).
+    ctor: &'static str,
+    /// The library OOB fault triple (`cuTripleFaultsWithinMem … .accessViolation`).
+    faults_spec: &'static str,
+    /// The register whose value addresses the guarded region (1 = r1).
+    region_reg: u8,
+    /// The guarded region length in bytes (e.g. 32 for the secp hash input).
+    region_size: i64,
+}
+
+impl OobSyscall {
+    /// Resolve a syscall hash to its OOB fault descriptor, or `None`.
+    fn from_hash(imm: u32) -> Option<OobSyscall> {
+        if imm == ebpf::hash_symbol_name(b"sol_secp256k1_recover") {
+            Some(OobSyscall {
+                ctor: ".sol_secp256k1_recover",
+                faults_spec: "call_sol_secp256k1_recover_faults_oob_spec",
+                region_reg: 1,
+                region_size: 32,
+            })
+        } else {
+            None
+        }
+    }
+}
+
+/// What terminated the walked happy path with a typed fault (Phase 7 sub-item
+/// 3). `Abort` = unconditional `.abort`/`.sol_panic_`; `Oob` = a conditional
+/// out-of-bounds syscall (`.accessViolation`).
+#[derive(Clone, Copy)]
+enum FaultTerminal {
+    Abort(AbortKind),
+    Oob(OobSyscall),
+}
+
 fn lift_one(
     so_path:         &Path,
     ctx:             &BinaryCtx,
@@ -2085,7 +2156,7 @@ fn lift_one_with_layouts(
     let mut blob_splits: std::collections::BTreeMap<(String, i64), i64> =
         Default::default();
     let mut walk_attempts = 0usize;
-    let (mut state, spec_calls, block_pcs, exit_pc, abort_terminal) = loop {
+    let (mut state, spec_calls, block_pcs, exit_pc, fault_terminal) = loop {
     walk_attempts += 1;
     if walk_attempts > 8 {
         return Err("qedlift: hot-region demotion did not converge after 8 \
@@ -2099,11 +2170,11 @@ fn lift_one_with_layouts(
     let mut block_pcs: Vec<usize> = Vec::new();
     let exit_pc: usize;
     // Phase 7 sub-item 3: when the walked happy-path terminates in a typed
-    // fault syscall (`.call .abort` / `.call .sol_panic_`), record its kind
-    // here so the emitter renders a `*_fault_correct` corollary
-    // (`cuTripleFaultsWithinMem … .abort`) instead of only a success triple.
-    // `None` = ordinary `exit` terminator (the success-trace case).
-    let mut abort_terminal: Option<AbortKind> = None;
+    // fault (`.call .abort`/`.sol_panic_` ⇒ `.abort`, or an out-of-bounds
+    // syscall ⇒ `.accessViolation`), record it here so the emitter renders a
+    // `*_fault_correct` corollary (`cuTripleFaultsWithinMem`) instead of only a
+    // success triple. `None` = ordinary `exit` terminator (the success case).
+    let mut fault_terminal: Option<FaultTerminal> = None;
     let mut state = SymState::default();
     state.hot_regions = hot_regions.clone();
     state.blob_splits = blob_splits.clone();
@@ -2173,9 +2244,21 @@ fn lift_one_with_layouts(
             if ins.opc == ebpf::CALL_IMM {
                 let imm = ins.imm as u32;
                 if let Some(kind) = AbortKind::from_hash(imm) {
-                    abort_terminal = Some(kind);
+                    fault_terminal = Some(FaultTerminal::Abort(kind));
                     exit_pc = pc_iter;
                     break;
+                }
+                // OOB (H6) syscall fault: a known guard-checked syscall that, on
+                // this trace, does NOT return to pc+1 (the OOB access is stuck).
+                // Trace-only: in static mode the same syscall might succeed.
+                if let Some(oob) = OobSyscall::from_hash(imm) {
+                    if let Some(t) = trace {
+                        if t.get(ti + 1).copied() != Some(pc_iter + 1) {
+                            fault_terminal = Some(FaultTerminal::Oob(oob));
+                            exit_pc = pc_iter;
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -2422,7 +2505,7 @@ fn lift_one_with_layouts(
              docs/QEDLIFT_ALIASING_DESIGN.md):\n  - {}",
             state.overlap_errors.join("\n  - ")).into());
     }
-    break (state, spec_calls, block_pcs, exit_pc, abort_terminal);
+    break (state, spec_calls, block_pcs, exit_pc, fault_terminal);
     };
     let out_patched = out.replace("@@HEARTBEATS@@",
         if state.hot_regions.is_empty() { "4000000" } else { "16000000" });
@@ -2952,16 +3035,19 @@ fn lift_one_with_layouts(
         }));
     }
 
-    // Typed-fault corollary (Phase 7 sub-item 3): the walked happy path ends
-    // in `.call .abort` / `.call .sol_panic_`. Compose the running prefix
-    // (`<module>_lifted_spec`, a `cuTripleWithinMem`) with the terminal fault
-    // spec via `cuTripleWithinMem_seq_fault_pure`, surfacing `vmError = .abort`
-    // (audit L1's typed channel — distinct from a clean exit of the same
-    // ERR_ABORT sentinel). The abort PC is the walk's `exit_pc` (the terminal
-    // is NOT in `block_pcs`); disjointness of the prefix CodeReq from the
-    // singleton abort CodeReq folds `Disjoint_union_left` over
-    // `singleton_disjoint_singleton` (every prefix PC ≠ the abort PC).
-    if let Some(kind) = abort_terminal {
+    // Typed-fault corollary (Phase 7 sub-item 3): the walked happy path ends in
+    // a typed fault. Compose the running prefix (`<module>_lifted_spec`, a
+    // `cuTripleWithinMem`) with the terminal fault spec, surfacing `vmError`
+    // (audit L1's typed channel). The fault PC is the walk's `exit_pc` (the
+    // terminal is NOT in `block_pcs`); disjointness of the prefix CodeReq from
+    // the singleton fault CodeReq folds `Disjoint_union_left` over
+    // `singleton_disjoint_singleton` (every prefix PC ≠ the fault PC).
+    //   - Abort/panic: unconditional `.abort`, pre-parametric tail, `seq_fault_pure`.
+    //   - OOB syscall: conditional `.accessViolation`; the tail reads the region
+    //     register, so the single-register fault-spec pre is `frame_right`-extended
+    //     to the prefix post and sequenced via the Mem-Mem `seq_fault` (combined
+    //     `rr = prefixRR ∧ OOB`).
+    if let Some(terminal) = fault_terminal {
         // Param names in `_lifted_spec` signature order (mirrors heap/balance).
         let mut names: Vec<String> = vars.clone();
         if use_block_iter && !abstractions.is_empty() {
@@ -2981,35 +3067,99 @@ fn lift_one_with_layouts(
             names.push(ncu.clone());
             names.push(hcu.clone());
         }
+        let fault_name = format!("{}_fault_correct", module_name);
 
-        let ctor = kind.ctor();
-        // The abort tail carries its own CU bound + cost assumption (it is the
-        // terminal, not a walked prefix syscall, so it gets fresh binders).
-        let fault_binders = format!(
-            "{}(nCuAbort : Nat)\n    (hCuAbort : ∀ s : State,\n        \
-             (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuAbort)\n    ",
-            theorem_binders, ctor,
-        );
-        let n_steps = format!("{} + 1", n);
-        let n_cu = format!("{} + nCuAbort", m_bound);
+        let fault_ctor = match terminal {
+            FaultTerminal::Abort(k) => k.ctor(),
+            FaultTerminal::Oob(o) => o.ctor,
+        };
         let cr_fault = format!(
             "({}).union\n        (CodeReq.singleton {} (.call {}))",
-            cr_lean, exit_pc, ctor,
+            cr_lean, exit_pc, fault_ctor,
         );
-        // `cuTripleWithinMem_seq_fault_pure (hd) (prefix) (tail)`: `?_` is the
-        // CodeReq disjointness, discharged structurally over the prefix union.
-        let fault_proof = format!(
-            "  refine cuTripleWithinMem_seq_fault_pure ?_ ({lifted} {names}) \
-             ({spec} ({post}) {pc} nCuAbort hCuAbort)\n  \
-             repeat' apply CodeReq.Disjoint_union_left\n  \
-             all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
-            lifted = lifted_name,
-            names = names.join(" "),
-            spec = kind.faults_spec(),
-            post = lifted_post,
-            pc = exit_pc,
-        );
-        let fault_name = format!("{}_fault_correct", module_name);
+        let (n_cu, fault_binders, fault_rr, vm_error, fault_proof) = match terminal {
+            FaultTerminal::Abort(kind) => {
+                let ctor = kind.ctor();
+                let binders = format!(
+                    "{}(nCuAbort : Nat)\n    (hCuAbort : ∀ s : State,\n        \
+                     (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuAbort)\n    ",
+                    theorem_binders, ctor,
+                );
+                let proof = format!(
+                    "  refine cuTripleWithinMem_seq_fault_pure ?_ ({lifted} {names}) \
+                     ({spec} ({post}) {pc} nCuAbort hCuAbort)\n  \
+                     repeat' apply CodeReq.Disjoint_union_left\n  \
+                     all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
+                    lifted = lifted_name, names = names.join(" "),
+                    spec = kind.faults_spec(), post = lifted_post, pc = exit_pc,
+                );
+                let _ = ctor;
+                (format!("{} + nCuAbort", m_bound), binders, rr.clone(), ".abort", proof)
+            }
+            FaultTerminal::Oob(oob) => {
+                // OOB needs the prefix post free of a callStack atom (no
+                // call_local) so the frame's `rest` is exactly the non-region
+                // post atoms, and the region register must be the FIRST post
+                // atom (frame_right adds `rest` on the right).
+                if !cs_atom.is_empty() {
+                    return Err("qedlift: OOB fault terminal with a callStack atom \
+                                (call_local prefix) is not yet supported".into());
+                }
+                let region_value = post.iter().find_map(|a| match a {
+                    Atom::Reg(r, v) if *r == oob.region_reg => Some(v.clone()),
+                    _ => None,
+                }).ok_or_else(|| format!(
+                    "qedlift: OOB fault terminal reads r{} but it is absent from \
+                     the lifted post", oob.region_reg))?;
+                if !matches!(post.first(), Some(Atom::Reg(r, _)) if *r == oob.region_reg) {
+                    return Err(format!(
+                        "qedlift: OOB fault terminal needs r{} as the first post \
+                         atom (frame_right arrangement)", oob.region_reg).into());
+                }
+                let r1v = fold_abstractions(region_value.to_lean(), &abs_subst);
+                let rest_atoms: Vec<Atom> = post.iter()
+                    .filter(|a| !matches!(a, Atom::Reg(r, _) if *r == oob.region_reg))
+                    .cloned().collect();
+                // The fault tail spec, framed to the prefix post when there is a
+                // non-region remainder (else applied bare — pre is exactly r1).
+                let tail = if rest_atoms.is_empty() {
+                    format!("({spec} ({r1v}) {pc} nCuOob hCuOob)",
+                        spec = oob.faults_spec, r1v = r1v, pc = exit_pc)
+                } else {
+                    let rest_lean = atoms_to_lean(&rest_atoms, &abs_subst);
+                    format!(
+                        "(cuTripleFaultsWithinMem_frame_right ({rest})\n      \
+                         (by repeat' apply pcFree_sepConj\n          \
+                         all_goals first\n            | exact pcFree_regIs _ _\n            \
+                         | exact pcFree_memU64Is _ _\n            \
+                         | exact pcFree_memU32Is _ _\n            \
+                         | exact pcFree_memU16Is _ _\n            \
+                         | exact pcFree_memByteIs _ _\n            \
+                         | exact pcFree_memBytes32Is _ _\n            \
+                         | exact pcFree_memBytesIs _ _)\n      \
+                         ({spec} ({r1v}) {pc} nCuOob hCuOob))",
+                        rest = rest_lean, spec = oob.faults_spec, r1v = r1v, pc = exit_pc,
+                    )
+                };
+                let binders = format!(
+                    "{}(nCuOob : Nat)\n    (hCuOob : ∀ s : State,\n        \
+                     (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuOob)\n    ",
+                    theorem_binders, oob.ctor,
+                );
+                // Combined rr: prefix region requirement ∧ the OOB condition.
+                let combined_rr = format!(
+                    "({}) ∧ rt.containsRange ({}) {} = false", rr, r1v, oob.region_size,
+                );
+                let proof = format!(
+                    "  refine cuTripleWithinMem_seq_fault ?_ ({lifted} {names}) {tail}\n  \
+                     repeat' apply CodeReq.Disjoint_union_left\n  \
+                     all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
+                    lifted = lifted_name, names = names.join(" "), tail = tail,
+                );
+                (format!("{} + nCuOob", m_bound), binders, combined_rr, ".accessViolation", proof)
+            }
+        };
+        let n_steps = format!("{} + 1", n);
         out.push_str(&render::faults_triple_theorem(&render::FaultsTriple {
             name: &fault_name,
             binders: &fault_binders,
@@ -3018,8 +3168,8 @@ fn lift_one_with_layouts(
             entry: start_pc,
             cr: &cr_fault,
             pre: &lifted_pre,
-            rr: &rr,
-            vm_error: ".abort",
+            rr: &fault_rr,
+            vm_error,
             proof: &fault_proof,
         }));
     }
