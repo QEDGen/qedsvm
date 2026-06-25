@@ -285,6 +285,283 @@ theorem holdsFor_codecCoarse_field {base : Nat} {s : State} :
       exact holdsFor_sepConj_left h
     · exact ih (holdsFor_sepConj_right h) htl
 
+/-! ## codecCoarse reverse reassembly (issue #48, Option A: scalar layouts)
+
+The "build the pre from `encodeState`" direction: given the per-field reads, byte
+canonicality, and a pairwise offset-non-overlap predicate, rebuild
+`holdsFor (codecCoarse base fields) s`.  Restricted here to scalar fields
+(`byte`/`u64`/`pubkey`); blob support is Option B.
+
+Strategy: every field's canonical witness is `singletonMemBytes (base+off)
+fv.bytes` (uniform), so the `**` chain's split is a fold of byte-blobs.
+Disjointness reduces to one range lemma + the existing `Disjoint_union_of_both`;
+the satisfaction side is `fv.coarse = ↦Bytes fv.bytes`; compatibility rewrites
+each block back to its native singleton and reuses the per-atom builders. -/
+
+/-- Canonical LE byte encoding a field's coarse atom owns (right-associated so the
+    pubkey blob peels cleanly under `singletonMemBytes_union_adj`). -/
+def FieldVal.bytes : FieldVal → ByteArray
+  | .byte v    => byteBA v
+  | .u64 v     => u64LE v
+  | .pubkey p  => u64LE p.c0 ++ (u64LE p.c1 ++ (u64LE p.c2 ++ u64LE p.c3))
+  | .blob segs => segsBytes segs
+
+/-- Byte width of a field. -/
+def FieldVal.width : FieldVal → Nat
+  | .byte _    => 1
+  | .u64 _     => 8
+  | .pubkey _  => 32
+  | .blob segs => (segsBytes segs).size
+
+theorem FieldVal.bytes_size (fv : FieldVal) : fv.bytes.size = fv.width := by
+  cases fv <;> simp [FieldVal.bytes, FieldVal.width, u64LE_size, byteBA_size]
+
+/-- A field is scalar (Option A handles these; blob is Option B). -/
+def FieldVal.isScalar : FieldVal → Prop
+  | .blob _ => False
+  | _       => True
+
+/-- Byte fields must be canonical (`< 256`) for the `↦ₘ`↔`↦Bytes` bridge. -/
+def FieldVal.byteWF : FieldVal → Prop
+  | .byte v => v < 256
+  | _       => True
+
+/-- The per-field read hypotheses `encodeState` supplies (one per scalar kind). -/
+def fieldRead (s : State) (addr : Nat) : FieldVal → Prop
+  | .byte v   => readU8 s.mem addr = v
+  | .u64 v    => readU64 s.mem addr = v % 2 ^ 64
+  | .pubkey p => pubkeyAt s.mem addr p
+  | .blob _   => True
+
+/-- Build a union's `CompatibleWith` from both halves (left-biased union, no
+    disjointness needed: whichever side owns a cell agrees with `s`). -/
+theorem compatibleWith_union_of {h1 h2 : PartialState} {s : State}
+    (c1 : h1.CompatibleWith s) (c2 : h2.CompatibleWith s) :
+    (h1.union h2).CompatibleWith s where
+  regs := fun r v hr => by
+    rcases hx : h1.regs r with _ | v1
+    · rw [union_regs_of_left_none hx] at hr; exact c2.regs r v hr
+    · rw [union_regs_of_left_some hx] at hr; injection hr with e; exact e ▸ c1.regs r v1 hx
+  mem := fun a v hr => by
+    rcases hx : h1.mem a with _ | v1
+    · rw [union_mem_of_left_none hx] at hr; exact c2.mem a v hr
+    · rw [union_mem_of_left_some hx] at hr; injection hr with e; exact e ▸ c1.mem a v1 hx
+  pc := fun v hr => by
+    rcases hx : h1.pc with _ | v1
+    · rw [union_pc_of_left_none hx] at hr; exact c2.pc v hr
+    · rw [union_pc_of_left_some hx] at hr; injection hr with e; exact e ▸ c1.pc v1 hx
+  returnData := fun rd hr => by
+    rcases hx : h1.returnData with _ | v1
+    · rw [union_returnData_of_left_none hx] at hr; exact c2.returnData rd hr
+    · rw [union_returnData_of_left_some hx] at hr; injection hr with e; exact e ▸ c1.returnData v1 hx
+  callStack := fun cs hr => by
+    rcases hx : h1.callStack with _ | v1
+    · rw [union_callStack_of_left_none hx] at hr; exact c2.callStack cs hr
+    · rw [union_callStack_of_left_some hx] at hr; injection hr with e; exact e ▸ c1.callStack v1 hx
+
+/-- Two byte blobs at non-overlapping ranges own disjoint memory (general
+    sibling of `singletonMemBytes_disjoint_adj`). -/
+theorem singletonMemBytes_disjoint_of_ranges {a1 a2 : Nat} {bs1 bs2 : ByteArray}
+    (h : a1 + bs1.size ≤ a2 ∨ a2 + bs2.size ≤ a1) :
+    (singletonMemBytes a1 bs1).Disjoint (singletonMemBytes a2 bs2) where
+  regs := fun _ => Or.inl rfl
+  mem := fun a => by
+    by_cases hin : a1 ≤ a ∧ a < a1 + bs1.size
+    · right; exact singletonMemBytes_mem_outside a2 bs2 a (by omega)
+    · left; exact singletonMemBytes_mem_outside a1 bs1 a (by omega)
+  pc := Or.inl rfl
+  returnData := Or.inl rfl
+  callStack := Or.inl rfl
+
+/-- Empty owns nothing, so it is compatible with any state. -/
+theorem compatibleWith_empty {s : State} : PartialState.empty.CompatibleWith s where
+  regs := fun _ _ h => by simp at h
+  mem := fun _ _ h => by simp at h
+  pc := fun _ h => by simp at h
+  returnData := fun _ h => by simp at h
+  callStack := fun _ h => by simp at h
+
+/-- Assertion-level form of `memBytesIs_append` (for `rw` under `**`). -/
+theorem memBytesIs_append_eq (addr : Nat) (bs1 bs2 : ByteArray) :
+    memBytesIs addr (bs1 ++ bs2) = (memBytesIs addr bs1 ** memBytesIs (addr + bs1.size) bs2) :=
+  funext fun h => propext (memBytesIs_append addr bs1 bs2 h)
+
+/-- Assertion-level form of `memU64Is_eq_memBytesIs`. -/
+theorem memU64Is_eq_bytes_eq (a v : Nat) : memU64Is a v = memBytesIs a (u64LE v) :=
+  funext fun h => propext (memU64Is_eq_memBytesIs a v h)
+
+/-- A pubkey atom is the byte-blob of its four LE limbs. -/
+theorem pubkeyIs_eq_bytes (addr : Nat) (p : Pubkey) :
+    pubkeyIs addr p
+      = memBytesIs addr (u64LE p.c0 ++ (u64LE p.c1 ++ (u64LE p.c2 ++ u64LE p.c3))) := by
+  simp only [pubkeyIs]
+  rw [memBytesIs_append_eq addr (u64LE p.c0), u64LE_size,
+      memBytesIs_append_eq (addr + 8) (u64LE p.c1), u64LE_size,
+      memBytesIs_append_eq (addr + 8 + 8) (u64LE p.c2) (u64LE p.c3), u64LE_size,
+      show addr + 8 + 8 = addr + 16 from by omega,
+      show addr + 16 + 8 = addr + 24 from by omega,
+      ← memU64Is_eq_bytes_eq addr p.c0, ← memU64Is_eq_bytes_eq (addr + 8) p.c1,
+      ← memU64Is_eq_bytes_eq (addr + 16) p.c2, ← memU64Is_eq_bytes_eq (addr + 24) p.c3]
+
+/-- A scalar field's coarse atom holds on its canonical byte-blob witness. -/
+theorem fieldCoarse_on_bytes (addr : Nat) (fv : FieldVal) (hwf : fv.byteWF) :
+    (fv.coarse addr) (singletonMemBytes addr fv.bytes) := by
+  cases fv with
+  | byte v =>
+    exact (memByteIs_eq_memBytesIs addr v hwf (singletonMemBytes addr (byteBA v))).mpr rfl
+  | u64 v =>
+    exact (memU64Is_eq_memBytesIs addr v (singletonMemBytes addr (u64LE v))).mpr rfl
+  | pubkey p =>
+    show pubkeyIs addr p
+      (singletonMemBytes addr (u64LE p.c0 ++ (u64LE p.c1 ++ (u64LE p.c2 ++ u64LE p.c3))))
+    rw [pubkeyIs_eq_bytes addr p]; rfl
+  | blob segs => exact rfl
+
+/-- A scalar field's canonical byte-blob witness is compatible with `s`, given the
+    field read and byte canonicality. -/
+theorem fieldCompat (addr : Nat) (fv : FieldVal) (hsc : fv.isScalar)
+    (hc : ∀ x, s.mem x < 256) (hr : fieldRead s addr fv) :
+    (singletonMemBytes addr fv.bytes).CompatibleWith s := by
+  cases fv with
+  | byte v =>
+    simp only [fieldRead, readU8] at hr
+    have hb := hc addr
+    rw [show (FieldVal.byte v).bytes = byteBA v from rfl, ← singletonMem_eq_bytes addr v (by omega)]
+    exact compatibleWith_singletonMem (by omega)
+  | u64 v =>
+    rw [show (FieldVal.u64 v).bytes = u64LE v from rfl, ← singletonMemU64_eq_bytes]
+    have c0 := hc addr; have c1 := hc (addr + 1); have c2 := hc (addr + 2)
+    have c3 := hc (addr + 3); have c4 := hc (addr + 4); have c5 := hc (addr + 5)
+    have c6 := hc (addr + 6); have c7 := hc (addr + 7)
+    simp only [fieldRead, readU64] at hr
+    exact compatibleWith_singletonMemU64 (by omega) (by omega) (by omega) (by omega)
+      (by omega) (by omega) (by omega) (by omega)
+  | pubkey p =>
+    simp only [fieldRead, pubkeyAt] at hr
+    obtain ⟨r0, r1, r2, r3⟩ := hr
+    show (singletonMemBytes addr (u64LE p.c0 ++ (u64LE p.c1 ++ (u64LE p.c2 ++ u64LE p.c3)))).CompatibleWith s
+    rw [← singletonMemBytes_union_adj addr (u64LE p.c0) _, u64LE_size,
+        ← singletonMemBytes_union_adj (addr + 8) (u64LE p.c1) _, u64LE_size,
+        ← singletonMemBytes_union_adj (addr + 8 + 8) (u64LE p.c2) (u64LE p.c3), u64LE_size]
+    rw [show addr + 8 + 8 = addr + 16 from by omega, show addr + 16 + 8 = addr + 24 from by omega]
+    rw [← singletonMemU64_eq_bytes, ← singletonMemU64_eq_bytes,
+        ← singletonMemU64_eq_bytes, ← singletonMemU64_eq_bytes]
+    refine compatibleWith_union_of ?_ (compatibleWith_union_of ?_ (compatibleWith_union_of ?_ ?_))
+    · have c0 := hc addr; have c1 := hc (addr+1); have c2 := hc (addr+2); have c3 := hc (addr+3)
+      have c4 := hc (addr+4); have c5 := hc (addr+5); have c6 := hc (addr+6); have c7 := hc (addr+7)
+      simp only [readU64] at r0
+      exact compatibleWith_singletonMemU64 (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega)
+    · have c0 := hc (addr+8); have c1 := hc (addr+8+1); have c2 := hc (addr+8+2); have c3 := hc (addr+8+3)
+      have c4 := hc (addr+8+4); have c5 := hc (addr+8+5); have c6 := hc (addr+8+6); have c7 := hc (addr+8+7)
+      simp only [readU64] at r1
+      exact compatibleWith_singletonMemU64 (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega)
+    · have c0 := hc (addr+16); have c1 := hc (addr+16+1); have c2 := hc (addr+16+2); have c3 := hc (addr+16+3)
+      have c4 := hc (addr+16+4); have c5 := hc (addr+16+5); have c6 := hc (addr+16+6); have c7 := hc (addr+16+7)
+      simp only [readU64] at r2
+      exact compatibleWith_singletonMemU64 (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega)
+    · have c0 := hc (addr+24); have c1 := hc (addr+24+1); have c2 := hc (addr+24+2); have c3 := hc (addr+24+3)
+      have c4 := hc (addr+24+4); have c5 := hc (addr+24+5); have c6 := hc (addr+24+6); have c7 := hc (addr+24+7)
+      simp only [readU64] at r3
+      exact compatibleWith_singletonMemU64 (by omega) (by omega) (by omega) (by omega)
+        (by omega) (by omega) (by omega) (by omega)
+  | blob segs => exact absurd hsc (by simp [FieldVal.isScalar])
+
+/-- Pairwise offset-non-overlap of a layout (a separate predicate — `codecValid`
+    deliberately does not carry this). -/
+def layoutDisjoint : List (Nat × FieldVal) → Prop
+  | [] => True
+  | (off, fv) :: rest =>
+      (∀ p ∈ rest, off + fv.width ≤ p.1 ∨ p.1 + p.2.width ≤ off) ∧ layoutDisjoint rest
+
+/-- The canonical witness partial state for a layout: a fold of byte-blobs. -/
+def codecState (base : Nat) : List (Nat × FieldVal) → PartialState
+  | [] => PartialState.empty
+  | (off, fv) :: rest =>
+      (singletonMemBytes (base + off) fv.bytes).union (codecState base rest)
+
+/-- The head byte-blob is disjoint from the rest of the layout's witness. -/
+theorem singletonMemBytes_disjoint_codecState {base off : Nat} {fv : FieldVal}
+    {rest : List (Nat × FieldVal)}
+    (h : ∀ p ∈ rest, off + fv.width ≤ p.1 ∨ p.1 + p.2.width ≤ off) :
+    (singletonMemBytes (base + off) fv.bytes).Disjoint (codecState base rest) := by
+  induction rest with
+  | nil => exact Disjoint_empty_right
+  | cons hd tl ih =>
+    obtain ⟨o2, f2⟩ := hd
+    show (singletonMemBytes (base + off) fv.bytes).Disjoint
+      ((singletonMemBytes (base + o2) f2.bytes).union (codecState base tl))
+    have hhead : off + fv.width ≤ o2 ∨ o2 + f2.width ≤ off := h (o2, f2) ((List.mem_cons.2 (Or.inl rfl)))
+    have d1 : (singletonMemBytes (base + off) fv.bytes).Disjoint
+        (singletonMemBytes (base + o2) f2.bytes) :=
+      singletonMemBytes_disjoint_of_ranges (by
+        rw [fv.bytes_size, f2.bytes_size]; omega)
+    have d2 : (singletonMemBytes (base + off) fv.bytes).Disjoint (codecState base tl) :=
+      ih (fun p hp => h p ((List.mem_cons.2 (Or.inr hp))))
+    exact (Disjoint_union_of_both d1.symm d2.symm).symm
+
+/-- The canonical witness satisfies the coarse codec (the `**` split is the fold),
+    given byte-WF fields and a non-overlapping layout. -/
+theorem codecState_sat {base : Nat} :
+    ∀ (fields : List (Nat × FieldVal)),
+      (∀ p ∈ fields, p.2.byteWF) → layoutDisjoint fields →
+      (codecCoarse base fields) (codecState base fields) := by
+  intro fields
+  induction fields with
+  | nil => intro _ _; exact rfl
+  | cons hd rest ih =>
+    obtain ⟨off, fv⟩ := hd
+    intro hwf hdisj
+    obtain ⟨hd_disj, hrest_disj⟩ := hdisj
+    refine ⟨singletonMemBytes (base + off) fv.bytes, codecState base rest, ?_, rfl, ?_, ?_⟩
+    · exact singletonMemBytes_disjoint_codecState hd_disj
+    · exact fieldCoarse_on_bytes (base + off) fv (hwf (off, fv) ((List.mem_cons.2 (Or.inl rfl))))
+    · exact ih (fun p hp => hwf p ((List.mem_cons.2 (Or.inr hp)))) hrest_disj
+
+/-- The canonical witness is compatible with `s`, given per-field reads. -/
+theorem codecState_compat {base : Nat} {s : State} (hc : ∀ x, s.mem x < 256) :
+    ∀ (fields : List (Nat × FieldVal)),
+      (∀ p ∈ fields, p.2.isScalar) → (∀ p ∈ fields, fieldRead s (base + p.1) p.2) →
+      (codecState base fields).CompatibleWith s := by
+  intro fields
+  induction fields with
+  | nil => intro _ _; exact compatibleWith_empty
+  | cons hd rest ih =>
+    obtain ⟨off, fv⟩ := hd
+    intro hsc hr
+    refine compatibleWith_union_of ?_ ?_
+    · exact fieldCompat (base + off) fv (hsc (off, fv) ((List.mem_cons.2 (Or.inl rfl)))) hc
+        (hr (off, fv) ((List.mem_cons.2 (Or.inl rfl))))
+    · exact ih (fun p hp => hsc p ((List.mem_cons.2 (Or.inr hp))))
+        (fun p hp => hr p ((List.mem_cons.2 (Or.inr hp))))
+
+/-- **Reverse codec reassembly (Option A).** Given the per-field reads, byte
+    canonicality, byte-WF, and a non-overlapping scalar layout, rebuild
+    `holdsFor (codecCoarse base fields) s` — the "build the pre from `encodeState`"
+    direction of the discharge bridge. -/
+theorem holdsFor_codecCoarse_of_reads {base : Nat} {s : State}
+    {fields : List (Nat × FieldVal)}
+    (hc : ∀ x, s.mem x < 256)
+    (hsc : ∀ p ∈ fields, p.2.isScalar)
+    (hwf : ∀ p ∈ fields, p.2.byteWF)
+    (hdisj : layoutDisjoint fields)
+    (hr : ∀ p ∈ fields, fieldRead s (base + p.1) p.2) :
+    (codecCoarse base fields).holdsFor s :=
+  ⟨codecState base fields, codecState_compat hc fields hsc hr, codecState_sat fields hwf hdisj⟩
+
+/-- `StateBounded` wrapper for the reverse codec reassembly. -/
+theorem holdsFor_codecCoarse_of_reads_bounded {base : Nat} {s : State}
+    {fields : List (Nat × FieldVal)}
+    (hb : StateBounded s)
+    (hsc : ∀ p ∈ fields, p.2.isScalar)
+    (hwf : ∀ p ∈ fields, p.2.byteWF)
+    (hdisj : layoutDisjoint fields)
+    (hr : ∀ p ∈ fields, fieldRead s (base + p.1) p.2) :
+    (codecCoarse base fields).holdsFor s :=
+  holdsFor_codecCoarse_of_reads hb.mem_lt hsc hwf hdisj hr
+
 /-! ## Validation — the bridges compose
 
 Forward then reverse round-trips the atom through its read form, and the codec
@@ -303,5 +580,47 @@ example {base amount : Nat} {s : State}
   have hf : ((FieldVal.u64 amount).coarse (base + 64)).holdsFor s :=
     holdsFor_codecCoarse_field _ h (by simp)
   exact readU64_of_holdsFor_memU64Is hf
+
+-- Reverse (Option A): per-field reads + canonicality + non-overlap rebuild the
+-- codec `holdsFor` — a single-`u64` layout.
+example {base amount : Nat} {s : State} (hc : ∀ x, s.mem x < 256)
+    (hr : readU64 s.mem (base + 64) = amount % 2 ^ 64) :
+    (codecCoarse base [(64, FieldVal.u64 amount)]).holdsFor s := by
+  refine holdsFor_codecCoarse_of_reads hc ?_ ?_ ?_ ?_
+  · intro p hp; simp only [List.mem_singleton] at hp; subst hp; trivial
+  · intro p hp; simp only [List.mem_singleton] at hp; subst hp; trivial
+  · simp [layoutDisjoint]
+  · intro p hp; simp only [List.mem_singleton] at hp; subst hp; exact hr
+
+-- Reverse with a pubkey field (exercises the 4-limb blob path) + a u64, with a
+-- genuine inter-field non-overlap obligation.
+example {base amount : Nat} {owner : Pubkey} {s : State} (hc : ∀ x, s.mem x < 256)
+    (h0 : pubkeyAt s.mem (base + 0) owner)
+    (h1 : readU64 s.mem (base + 32) = amount % 2 ^ 64) :
+    (codecCoarse base [(0, FieldVal.pubkey owner), (32, FieldVal.u64 amount)]).holdsFor s := by
+  refine holdsFor_codecCoarse_of_reads hc ?_ ?_ ?_ ?_
+  · intro p hp
+    rcases List.mem_cons.mp hp with rfl | hp
+    · trivial
+    · rcases List.mem_cons.mp hp with rfl | hp
+      · trivial
+      · simp at hp
+  · intro p hp
+    rcases List.mem_cons.mp hp with rfl | hp
+    · trivial
+    · rcases List.mem_cons.mp hp with rfl | hp
+      · trivial
+      · simp at hp
+  · refine ⟨?_, by simp [layoutDisjoint]⟩
+    intro p hp
+    rcases List.mem_cons.mp hp with rfl | hp
+    · left; simp [FieldVal.width]
+    · simp at hp
+  · intro p hp
+    rcases List.mem_cons.mp hp with rfl | hp
+    · exact h0
+    · rcases List.mem_cons.mp hp with rfl | hp
+      · exact h1
+      · simp at hp
 
 end SVM.SBPF

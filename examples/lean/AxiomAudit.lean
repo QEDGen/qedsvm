@@ -76,3 +76,10 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.holdsFor_memByteIs_of_read_bounded
 #assert_std_axioms SVM.SBPF.holdsFor_memU64Is_of_read_bounded
 #assert_std_axioms SVM.SBPF.holdsFor_codecCoarse_field
+
+-- Issue #48 Option A: reverse codec reassembly (read-conjunction → holdsFor
+-- codec) for scalar layouts. The "build the pre from encodeState" direction.
+-- Transitively covers fieldCompat/fieldCoarse_on_bytes/codecState_*/the union +
+-- range-disjoint helpers. Must stay axiom-clean (omega/simp, never sorry).
+#assert_std_axioms SVM.SBPF.holdsFor_codecCoarse_of_reads
+#assert_std_axioms SVM.SBPF.holdsFor_codecCoarse_of_reads_bounded
