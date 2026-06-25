@@ -6,6 +6,7 @@ legitimately belongs — add it to the per-theorem allow-list with justification
 -/
 import Lean
 import SVM.SBPF.Bounded
+import SVM.SBPF.CodecRead
 import Generated.PTokenTransferTracedLifted
 import PToken.TransferRefinement
 import PToken.TransferArm.FullHappyPath
@@ -62,3 +63,16 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.executeFn_bounded
 #assert_std_axioms SVM.SBPF.initialState_bounded
 #assert_std_axioms SVM.SBPF.mem_byte_canonical
+
+-- Issue #48: holdsFor↔read bridges for codecCoarse field atoms. The qedgen
+-- discharge-bridge glue (encodeState read-conjunction ↔ holdsFor codec). Forward
+-- bridges are unconditional; reverse bridges are byte-canonicality-gated. All
+-- must stay axiom-clean — they bottom out at omega/simp, never sorry.
+#assert_std_axioms SVM.SBPF.readU8_of_holdsFor_memByteIs
+#assert_std_axioms SVM.SBPF.readU64_of_holdsFor_memU64Is
+#assert_std_axioms SVM.SBPF.pubkeyAt_of_holdsFor_pubkeyIs
+#assert_std_axioms SVM.SBPF.holdsFor_memByteIs_of_read
+#assert_std_axioms SVM.SBPF.holdsFor_memU64Is_of_read
+#assert_std_axioms SVM.SBPF.holdsFor_memByteIs_of_read_bounded
+#assert_std_axioms SVM.SBPF.holdsFor_memU64Is_of_read_bounded
+#assert_std_axioms SVM.SBPF.holdsFor_codecCoarse_field
