@@ -756,6 +756,36 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// #40 OOB-fault-path variant: guarded_oob's guard-fail path performs an
+    /// out-of-bounds `sol_get_clock_sysvar` write, so its path corollary is
+    /// an `AsmRefinesTransitionFault … .accessViolation` composed via the
+    /// Mem-Mem `cuTripleWithinMem_seq_fault` (combined rr = prefix ∧ OOB).
+    #[test]
+    fn guarded_oob_transition_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/guarded_oob.so");
+        let ctx = load_binary(so).expect("load guarded_oob.so");
+        let analysis = Analysis::from_executable(&ctx.executable)
+            .expect("analyse guarded_oob.so");
+        let desc = load_descriptor(std::path::Path::new(
+            "tests/fixtures/guarded_oob.descriptor.json")).expect("descriptor");
+        let (paths, (bmod, blean)) = run_transition(so, &ctx, &analysis, &desc, None)
+            .expect("transition emission");
+        assert_eq!(paths.len(), 2, "expected the oob + success paths");
+        let mut artifacts: Vec<(String, String)> = paths.iter()
+            .map(|(m, l)| (format!("../examples/lean/Generated/{}Lifted.lean", m), l.clone()))
+            .collect();
+        artifacts.push((format!("../examples/lean/Generated/{}.lean", bmod), blean));
+        for (path, lean) in &artifacts {
+            if std::env::var("QEDLIFT_BLESS").is_ok() {
+                std::fs::write(path, lean).expect("write artifact");
+            }
+            let on_disk = std::fs::read_to_string(path).expect("read artifact");
+            assert_eq!(lean, &on_disk,
+                "{path} is out of sync with the qedlift transition emitter \
+                 (mechanically emitted, do not hand-edit)");
+        }
+    }
+
     /// #40 fault-path variant: guarded_abort's guard-fail path ends in the
     /// `abort` syscall, so its path corollary is `AsmRefinesTransitionFault`
     /// (typed `.abort`, codecs owned in the pre) composed via
@@ -2047,6 +2077,9 @@ enum AbortKind {
     /// envelope the caller hands the syscall is a claim about that
     /// prefix's post (`SVM.Solana.cpiEnvelope`).
     Invoke,
+    /// `.call .sol_invoke_signed_c` — the C-ABI CPI, same fail-closed stub
+    /// (envelope predicate: `SVM.Solana.cpiEnvelopeC`).
+    InvokeC,
 }
 
 impl AbortKind {
@@ -2059,6 +2092,8 @@ impl AbortKind {
             Some(AbortKind::SolPanic)
         } else if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
             Some(AbortKind::Invoke)
+        } else if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_c") {
+            Some(AbortKind::InvokeC)
         } else {
             None
         }
@@ -2069,13 +2104,14 @@ impl AbortKind {
             AbortKind::Abort => ".abort",
             AbortKind::SolPanic => ".sol_panic_",
             AbortKind::Invoke => ".sol_invoke_signed",
+            AbortKind::InvokeC => ".sol_invoke_signed_c",
         }
     }
     /// The typed `VmError` the terminal faults with.
     fn vm_error(self) -> &'static str {
         match self {
             AbortKind::Abort | AbortKind::SolPanic => ".abort",
-            AbortKind::Invoke => ".unsupportedInstruction",
+            AbortKind::Invoke | AbortKind::InvokeC => ".unsupportedInstruction",
         }
     }
     /// The library terminal-fault spec the corollary composes with (both
@@ -2085,6 +2121,7 @@ impl AbortKind {
             AbortKind::Abort => "call_abort_faults_spec",
             AbortKind::SolPanic => "call_sol_panic_faults_spec",
             AbortKind::Invoke => "call_sol_invoke_signed_faults_spec",
+            AbortKind::InvokeC => "call_sol_invoke_signed_c_faults_spec",
         }
     }
 }
@@ -3295,11 +3332,13 @@ fn lift_one_with_layouts(
             && state.blob_side_hyps.is_empty()
             && state.syscall_cu_vars.is_empty();
         let terminal_fault = matches!(fault_terminal,
-            Some(FaultTerminal::Abort(k)) if !matches!(k, AbortKind::Invoke));
+            Some(FaultTerminal::Abort(k))
+                if !matches!(k, AbortKind::Invoke | AbortKind::InvokeC));
+        let terminal_oob = matches!(fault_terminal, Some(FaultTerminal::Oob(_)));
         let terminal_exit = wired_binders
             && fault_terminal.is_none()
             && insns.get(exit_pc).map(|i| i.opc == ebpf::EXIT).unwrap_or(false);
-        if terminal_exit || (wired_binders && terminal_fault) {
+        if terminal_exit || (wired_binders && (terminal_fault || terminal_oob)) {
             // Binder metadata + positional args in `_lifted_spec` signature order.
             let mut bitems: Vec<BItem> = vars.iter().cloned().map(BItem::Val).collect();
             let mut names: Vec<String> = vars.clone();
@@ -3367,18 +3406,20 @@ fn lift_one_with_layouts(
                 (format!("{}_balance_correct", module_name),
                  format!("{}{}", theorem_binders, extra), &post_clean)
             };
-            let emitted = if terminal_fault {
-                let kind = match fault_terminal {
-                    Some(FaultTerminal::Abort(k)) => k,
-                    _ => unreachable!("terminal_fault implies an Abort terminal"),
-                };
+            let emitted = if terminal_fault || terminal_oob {
                 let t_post_s = format!("{}{}",
                     atoms_to_lean(t_post, &abs_subst), cs_atom);
+                let (ctor, spec, oob_info) = match fault_terminal {
+                    Some(FaultTerminal::Abort(k)) => (k.ctor(), k.faults_spec(), None),
+                    Some(FaultTerminal::Oob(o)) => (o.ctor, o.faults_spec,
+                        Some((o.region_reg, o.region_size, o.region_writable))),
+                    _ => unreachable!("gated on a fault terminal"),
+                };
                 emit_transition_fault(
-                    desc, &module_name, &pre, &abs_subst,
+                    desc, &module_name, &pre, t_post, &abs_subst,
                     &t_name, &names.join(" "), &t_binders, &t_post_s, bitems,
                     n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
-                    kind.ctor(), kind.faults_spec(),
+                    ctor, spec, oob_info,
                     idl, sidecar_layouts,
                 )
             } else {

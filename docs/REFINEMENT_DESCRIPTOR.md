@@ -137,9 +137,15 @@ typed `.abort` error channel, tracked codecs owned in the pre, no post (a
 faulted instruction is rolled back wholesale). The bundle mixes obligation
 kinds freely.
 
-Fail-closed: blob/owned-pubkey tracked fields, call-local prefixes, OOB
-fault terminals, and cross-path binder conflicts skip emission with a stderr
-note. Worked fixtures: `guarded_counter.descriptor.json` (+
-`guarded_counter_{abort,success}.pcs`) and the fault-path
-`guarded_abort.descriptor.json` (+ `guarded_abort_{panic,success}.pcs`),
-pinned by `guarded_{counter,abort}_transition_is_mechanically_emitted`.
+A path ending in an OOB syscall fault gets the `.accessViolation` variant:
+the tail is the per-syscall `*_faults_oob` triple, frame_right-extended to
+the prefix remainder and composed via the Mem-Mem `cuTripleWithinMem_seq_fault`
+— the bundle conjunct's region requirement is `prefix rr ∧ region OOB`.
+
+Fail-closed: blob/owned-pubkey tracked fields, call-local prefixes, and
+cross-path binder conflicts skip emission with a stderr note. Worked
+fixtures: `guarded_counter.descriptor.json` (+
+`guarded_counter_{abort,success}.pcs`), the fault-path
+`guarded_abort.descriptor.json` (+ `guarded_abort_{panic,success}.pcs`), and
+the OOB-path `guarded_oob.descriptor.json` (+ `guarded_oob_{oob,success}.pcs`),
+pinned by `guarded_{counter,abort,oob}_transition_is_mechanically_emitted`.

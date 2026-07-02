@@ -1775,6 +1775,8 @@ pub(super) fn emit_transition_fault(
     desc: &RefinementDescriptor,
     module_name: &str,
     pre: &[Atom],
+    // The target triple's post ATOMS (for the OOB region-register split).
+    post_atoms: &[Atom],
     abs_subst: &std::collections::BTreeMap<String, String>,
     target_name: &str,
     target_args: &str,
@@ -1784,6 +1786,11 @@ pub(super) fn emit_transition_fault(
     n: usize, m_bound: &str, start_pc: usize, exit_pc: usize,
     cr: &str, rr: &str,
     fault_ctor: &str, fault_spec: &str,
+    // OOB tail (region_reg, region_size, region_writable): the fault is
+    // CONDITIONAL on the region register's range being unmapped, composed
+    // via the Mem-Mem `cuTripleWithinMem_seq_fault` with combined rr.
+    // `None` = the unconditional abort/panic tail (`seq_fault_pure`).
+    oob: Option<(u8, i64, bool)>,
     idl: Option<&serde_json::Value>,
     sidecar_layouts: Option<&[AccountLayout]>,
 ) -> Option<(String, TransitionPathInfo)> {
@@ -1896,6 +1903,26 @@ pub(super) fn emit_transition_fault(
         prop: format!("∀ s : State,\n        (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuAbort",
             fault_ctor) });
 
+    // OOB tail: the region register's post value (the fault condition's
+    // address) and the post remainder framed into the tail spec's pre.
+    let fold2 = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
+    let oob_parts: Option<(String, String, &'static str, i64)> = match oob {
+        None => None,
+        Some((reg, size, writable)) => {
+            let r1v = post_atoms.iter().find_map(|a| match a {
+                Atom::Reg(r, v) if *r == reg => Some(fold2(v)),
+                _ => None,
+            })?;
+            let rest: Vec<Atom> = post_atoms.iter()
+                .filter(|a| !matches!(a, Atom::Reg(r, _) if *r == reg))
+                .cloned().collect();
+            let rest_s = atoms_to_lean(&rest, abs_subst);
+            let pred: &'static str =
+                if writable { "containsWritable" } else { "containsRange" };
+            Some((r1v, rest_s, pred, size))
+        }
+    };
+
     let owned_set: std::collections::HashSet<(String, i64, bool)> =
         owned.iter().cloned().collect();
     let is_owned = |a: &Atom| match a {
@@ -1925,32 +1952,57 @@ pub(super) fn emit_transition_fault(
 
     let handler = desc.handler.as_ref()
         .map(|h| format!(" (handler {})", h)).unwrap_or_default();
+    // Combined rr for an OOB tail: prefix requirement ∧ the region condition.
+    let (vm_error, rr_full) = match &oob_parts {
+        None => (".abort", format!("fun rt => {}", rr)),
+        Some((r1v, _, pred, size)) => (".accessViolation",
+            format!("fun rt => ({}) ∧ rt.{} ({}) {} = false", rr, pred, r1v, size)),
+    };
     let stmt = format!(
 "      (({cr}).union
         (CodeReq.singleton {exit_pc} (.call {ctor})))
       ({n} + 1) ({m_bound} + nCuAbort) {start_pc}
-      (fun rt => {rr})
-      (.abort)
+      ({rr_full})
+      ({vm_error})
       [({base_arg},
         [{pre_list}],
         [{pre_list}])]
       ({setup_pre})",
         cr = cr, exit_pc = exit_pc, ctor = fault_ctor, n = n, m_bound = m_bound,
-        start_pc = start_pc, rr = rr, base_arg = base_arg,
+        start_pc = start_pc, rr_full = rr_full, vm_error = vm_error,
+        base_arg = base_arg,
         pre_list = pre_fields.join(", "), setup_pre = setup_pre_s);
 
     let corollary = format!("{}_transition_fault", module_name);
+    // Tail composition: unconditional abort/panic = `seq_fault_pure` with the
+    // P-parametric spec applied at the prefix post; OOB = the Mem-Mem
+    // `seq_fault` with the single-register spec frame_right-extended to the
+    // post remainder (+ framed tracked cells), prefix reshaped to lead with
+    // the region register.
+    let (tail_refine, h1_post) = match &oob_parts {
+        None => (format!(
+            "refine cuTripleWithinMem_seq_fault_pure ?_ ?_\n    ({spec} {prefix_post} {pc} nCuAbort hCuAbort)",
+            spec = fault_spec, prefix_post = prefix_post, pc = exit_pc), None),
+        Some((r1v, rest_s, _, _)) => {
+            let rest_full = if frame.is_empty() { format!("({})", rest_s) }
+                else { format!("(({}) **\n       ({}))", rest_s, frame.join(" **\n      ")) };
+            (format!(
+                "refine cuTripleWithinMem_seq_fault ?_ ?_\n    (cuTripleFaultsWithinMem_frame_right\n      {rest}\n      (by repeat' apply pcFree_sepConj\n          all_goals first\n            | exact pcFree_regIs _ _\n            | exact pcFree_memU64Is _ _\n            | exact pcFree_memU32Is _ _\n            | exact pcFree_memU16Is _ _\n            | exact pcFree_memByteIs _ _\n            | exact pcFree_memBytes32Is _ _\n            | exact pcFree_memBytesIs _ _)\n      ({spec} ({r1v}) {pc} nCuAbort hCuAbort))",
+                rest = rest_full, spec = fault_spec, r1v = r1v, pc = exit_pc),
+             Some(rest_full.clone()))
+        }
+    };
+    let _ = h1_post;
     let text = format!(
 "
 /-! ## Whole-transition FAULT-path corollary (#40)
 
 One fault PATH of the account {account}{handler} transition: the running
-prefix (`{target}`) composed with the terminal `{ctor}` fault via
-`cuTripleWithinMem_seq_fault_pure` — the program FAULTS with the typed
-`.abort` (`exitCode = some toSentinel ∧ vmError = some .abort`), the
-tracked account codec owned in the pre (no post: a faulted instruction is
-rolled back wholesale; tracked cells outside the prefix footprint are
-framed through it). -/
+prefix (`{target}`) composed with the terminal `{ctor}` fault — the program
+FAULTS with the typed `{vm_error}` (`exitCode = some toSentinel ∧ vmError =
+some {vm_error}`), the tracked account codec owned in the pre (no post: a
+faulted instruction is rolled back wholesale; tracked cells outside the
+prefix footprint are framed through it). -/
 
 open Memory in
 set_option maxHeartbeats 1600000 in
@@ -1963,8 +2015,7 @@ theorem {corollary}
   unfold SVM.Solana.Abstract.AsmRefinesTransitionFault
   simp only [SVM.Solana.Abstract.codecsPre,
              codecCoarse, FieldVal.coarse, sepConj_emp_right_eq, Nat.add_zero]
-  refine cuTripleWithinMem_seq_fault_pure ?_ ?_
-    ({spec} {prefix_post} {exit_pc} nCuAbort hCuAbort)
+  {tail_refine}
   · repeat' apply CodeReq.Disjoint_union_left
     all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)
   · {prefix_have}
@@ -1972,8 +2023,8 @@ theorem {corollary}
 ",
         account = desc.account, handler = handler, target = target_name,
         ctor = fault_ctor, corollary = corollary, binders = target_binders,
-        binders_extra = binders_extra, stmt = stmt, spec = fault_spec,
-        prefix_post = prefix_post, exit_pc = exit_pc, prefix_have = prefix_have);
+        binders_extra = binders_extra, stmt = stmt, vm_error = vm_error,
+        tail_refine = tail_refine, prefix_have = prefix_have);
 
     Some((text, TransitionPathInfo {
         namespace: format!("Examples.Lifted.{}", module_name),

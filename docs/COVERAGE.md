@@ -59,7 +59,7 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. |
 | `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. |
 | `sol_invoke_signed_rust` | Terminal | The proof-facing CPI is the fail-closed `Cpi.exec` stub (audit C5), so an invoke ENDS the walk (`.unsupportedInstruction` typed-fault terminal); the lifted prefix's post owns the caller-side envelope cells (`cpiEnvelope`, see below). |
-| `sol_invoke_signed_c` | Unsupported | Falls closed (no walker terminal registered for the C ABI yet). |
+| `sol_invoke_signed_c` | Terminal | Same fail-closed walk terminal as the Rust ABI (`cpiEnvelopeC` is the C-ABI envelope encoding; no fixture yet). |
 | `sol_sha256` | Mechanical | Single-slice success path: descriptor cells recover `(ptr, len)`, the digest is written to a framed `↦Bytes32` atom, `r0 := 0` (`call_sol_sha256_spec`). |
 | Other hashing syscalls (`keccak256`, `blake3`) | Unsupported | No lifted proof obligation is emitted. |
 | Curve/precompile syscalls | Unsupported (success) | No success triple. The OOB fault direction of `sol_secp256k1_recover` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
@@ -101,7 +101,7 @@ Raw triples prove a selected bytecode path. Abstract refinements additionally co
 | Counter increment | `AsmRefinesCounterIncrement` | Mechanical |
 | Vault constant field update | `AsmRefinesFieldUpdate` | Mechanical |
 | Whole-transition path (terminating, exit code + field pre→post/preservation) | `AsmRefinesTransitionPath` (#40) | Mechanical (`--transition`: discovered `<stem>_<path>.pcs` traces + descriptor → per-path `*_transition_path` corollaries + the bundle theorem; validated on `guarded_counter`) |
-| Whole-transition FAULT path (typed abort/panic, codecs owned in the pre) | `AsmRefinesTransitionFault` (#40) | Mechanical (`*_transition_fault` via `cuTripleWithinMem_seq_fault_pure`; validated on `guarded_abort`, whose bundle mixes obligation kinds; OOB fault terminals fall closed) |
+| Whole-transition FAULT path (typed abort/panic/OOB, codecs owned in the pre) | `AsmRefinesTransitionFault` (#40) | Mechanical (abort/panic via `seq_fault_pure`, validated on `guarded_abort`; OOB `.accessViolation` via the Mem-Mem `seq_fault` with combined region rr, validated on `guarded_oob`; bundles mix obligation kinds) |
 | Heap bump allocation | Heap corollary over `heapBumpPtr` / `heapBlock*` | Mechanical |
 | SPL `CloseAccount` | Raw traced triple + generated balance-style corollary | Triple only |
 | SPL `InitializeMint2` | Raw traced triple | Triple only |
@@ -122,9 +122,11 @@ bytecode: `cpi_envelope_caller.so` (diff-tested CU-exact, invoking noop with
 the callee program account passed — its instruction data sits at
 `instrDataOff [0]`) lifts to a prefix ending AT the invoke, and
 `CpiEnvelopeDemo.cpi_envelope_at_call_site` reshapes the prefix post into
-`cpiEnvelope` — the invoke event stated against the binary. Remaining: the
-32-byte pid byte-fold ↔ `pubkeyAt` limb bridge (ties `cpiEnvelope_reads` to
-`cpiCallNextState`'s literal fold), and the C-ABI variant.
+`cpiEnvelope` — the invoke event stated against the binary. The runner's
+program-id read is four `readU64` limbs (refactored from the byte-wise fold,
+diff-pinned identical), so `cpiEnvelope_pid_read` ties the envelope to the
+runner's LITERAL pid expression; `cpiEnvelopeC`/`cpiEnvelopeC_reads`/
+`cpiEnvelopeC_pid_read` cover the C ABI (terminal wired; no C fixture yet).
 
 ## Account Layouts
 

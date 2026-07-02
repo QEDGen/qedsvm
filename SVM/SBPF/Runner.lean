@@ -558,8 +558,15 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
     | .sol_invoke_signed_c =>                     -- pointer @ +0
       Memory.readU64 s.mem s.regs.r1
     | _ => s.regs.r1
-  let pid := (List.range 32).foldl
-    (fun acc i => acc + (s.mem (pubkeyAddr + i) % 256) * 256^i) 0
+  -- Little-endian 32-byte program id, read as four u64 limbs. Same value as
+  -- the byte-wise `(List.range 32).foldl … 256^i` fold (LE composition), but
+  -- kernel-friendly: a deep `foldl` is exponentially slow to whnf in the
+  -- kernel (no memoization), which blocked the `cpiEnvelope_pid_fold` bridge
+  -- (#40 gap 4). Behavioral identity is pinned by the CPI diff fixtures.
+  let pid := Memory.readU64 s.mem pubkeyAddr
+    + Memory.readU64 s.mem (pubkeyAddr + 8) * 2 ^ 64
+    + Memory.readU64 s.mem (pubkeyAddr + 16) * 2 ^ 128
+    + Memory.readU64 s.mem (pubkeyAddr + 24) * 2 ^ 192
   let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
   -- Account-info layout differs by ABI: Rust = 48B `AccountInfo` with
   -- Rc/RefCell-chained lamports/data (`parseAccountInfo` chases it); C =
