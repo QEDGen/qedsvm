@@ -109,4 +109,99 @@ theorem cpiEnvelope_reads
         (holdsFor_sepConj_right (holdsFor_sepConj_right
           (holdsFor_sepConj_right (holdsFor_sepConj_right h)))))))
 
+/-! ## C-ABI variant (`sol_invoke_signed_c`)
+
+`SolInstruction`: program-id POINTER at +0 (the 32 bytes live behind it),
+accounts ptr/len at +8/+16, data ptr/len at +24/+32 — exactly the fields
+`Runner.cpiCallNextState` decodes on the C path. Meta CONTENT there comes
+from the account-infos array, not the instruction, so it is not encoded
+here (the count is). -/
+
+def cpiEnvelopeC (instrAddr pidPtr metasPtr dataPtr : Nat)
+    (ix : Cpi.CpiInstruction) : Assertion :=
+  (instrAddr ↦U64 pidPtr) **
+  ((instrAddr + 8) ↦U64 metasPtr) **
+  ((instrAddr + 16) ↦U64 ix.accounts.length) **
+  ((instrAddr + 24) ↦U64 dataPtr) **
+  ((instrAddr + 32) ↦U64 ix.data.length) **
+  pubkeyIs pidPtr ix.programId **
+  memBytesIs dataPtr (dataBA ix.data)
+
+/-- **C-ABI envelope → runner reads** (mirror of `cpiEnvelope_reads`): the
+    program-id pointer at +0, meta count at +16, data pointer at +24, data
+    length at +32, and the pointed-to program id at `pubkeyAt` granularity. -/
+theorem cpiEnvelopeC_reads
+    (instrAddr pidPtr metasPtr dataPtr : Nat)
+    (ix : Cpi.CpiInstruction) {s : State}
+    (hb0 : ix.programId.c0 < 2 ^ 64) (hb1 : ix.programId.c1 < 2 ^ 64)
+    (hb2 : ix.programId.c2 < 2 ^ 64) (hb3 : ix.programId.c3 < 2 ^ 64)
+    (h : (cpiEnvelopeC instrAddr pidPtr metasPtr dataPtr ix).holdsFor s) :
+    readU64 s.mem instrAddr = pidPtr % 2 ^ 64 ∧
+    readU64 s.mem (instrAddr + 16) = ix.accounts.length % 2 ^ 64 ∧
+    readU64 s.mem (instrAddr + 24) = dataPtr % 2 ^ 64 ∧
+    readU64 s.mem (instrAddr + 32) = ix.data.length % 2 ^ 64 ∧
+    pubkeyAt s.mem pidPtr ix.programId := by
+  unfold cpiEnvelopeC at h
+  refine ⟨?_, ?_, ?_, ?_, ?_⟩
+  · exact readU64_of_holdsFor_memU64Is (holdsFor_sepConj_left h)
+  · exact readU64_of_holdsFor_memU64Is
+      (holdsFor_sepConj_left (holdsFor_sepConj_right (holdsFor_sepConj_right h)))
+  · exact readU64_of_holdsFor_memU64Is
+      (holdsFor_sepConj_left (holdsFor_sepConj_right (holdsFor_sepConj_right
+        (holdsFor_sepConj_right h))))
+  · exact readU64_of_holdsFor_memU64Is
+      (holdsFor_sepConj_left (holdsFor_sepConj_right (holdsFor_sepConj_right
+        (holdsFor_sepConj_right (holdsFor_sepConj_right h)))))
+  · exact pubkeyAt_of_holdsFor_pubkeyIs hb0 hb1 hb2 hb3
+      (holdsFor_sepConj_left (holdsFor_sepConj_right (holdsFor_sepConj_right
+        (holdsFor_sepConj_right (holdsFor_sepConj_right
+          (holdsFor_sepConj_right h))))))
+
+/-! ## The runner's literal pid read (#40 gap 4, last bridge)
+
+`Runner.cpiCallNextState` reads the program id as four little-endian u64
+limbs combined with `2^64`-powers (the byte-wise fold was refactored to this
+kernel-friendly shape). `cpiEnvelope_pid_read` composes `cpiEnvelope_reads`
+with that exact expression: an envelope-owning state makes the runner's
+`pid` variable LITERALLY the encoded `ix.programId` — closing the last gap
+between the SL envelope and the runner's decode. -/
+
+/-- **Envelope → the runner's pid.** The runner's program-id read (four
+    `readU64` limbs at the inline id cells, combined little-endian) recovers
+    exactly the encoded `ix.programId`. -/
+theorem cpiEnvelope_pid_read
+    (instrAddr metasPtr metasCap dataPtr dataCap : Nat)
+    (ix : Cpi.CpiInstruction) {s : State}
+    (hb0 : ix.programId.c0 < 2 ^ 64) (hb1 : ix.programId.c1 < 2 ^ 64)
+    (hb2 : ix.programId.c2 < 2 ^ 64) (hb3 : ix.programId.c3 < 2 ^ 64)
+    (h : (cpiEnvelope instrAddr metasPtr metasCap dataPtr dataCap ix).holdsFor s) :
+    readU64 s.mem (instrAddr + 48)
+      + readU64 s.mem (instrAddr + 48 + 8) * 2 ^ 64
+      + readU64 s.mem (instrAddr + 48 + 16) * 2 ^ 128
+      + readU64 s.mem (instrAddr + 48 + 24) * 2 ^ 192
+      = ix.programId.c0 + ix.programId.c1 * 2 ^ 64
+        + ix.programId.c2 * 2 ^ 128 + ix.programId.c3 * 2 ^ 192 := by
+  obtain ⟨p0, p1, p2, p3⟩ :=
+    (cpiEnvelope_reads instrAddr metasPtr metasCap dataPtr dataCap ix
+      hb0 hb1 hb2 hb3 h).2.2.2
+  rw [p0, p1, p2, p3]
+
+/-- The C-ABI analog: the pid read at the POINTED-TO address. -/
+theorem cpiEnvelopeC_pid_read
+    (instrAddr pidPtr metasPtr dataPtr : Nat)
+    (ix : Cpi.CpiInstruction) {s : State}
+    (hb0 : ix.programId.c0 < 2 ^ 64) (hb1 : ix.programId.c1 < 2 ^ 64)
+    (hb2 : ix.programId.c2 < 2 ^ 64) (hb3 : ix.programId.c3 < 2 ^ 64)
+    (h : (cpiEnvelopeC instrAddr pidPtr metasPtr dataPtr ix).holdsFor s) :
+    readU64 s.mem pidPtr
+      + readU64 s.mem (pidPtr + 8) * 2 ^ 64
+      + readU64 s.mem (pidPtr + 16) * 2 ^ 128
+      + readU64 s.mem (pidPtr + 24) * 2 ^ 192
+      = ix.programId.c0 + ix.programId.c1 * 2 ^ 64
+        + ix.programId.c2 * 2 ^ 128 + ix.programId.c3 * 2 ^ 192 := by
+  obtain ⟨p0, p1, p2, p3⟩ :=
+    (cpiEnvelopeC_reads instrAddr pidPtr metasPtr dataPtr ix
+      hb0 hb1 hb2 hb3 h).2.2.2.2
+  rw [p0, p1, p2, p3]
+
 end SVM.Solana

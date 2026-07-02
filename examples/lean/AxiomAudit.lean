@@ -19,6 +19,7 @@ import Generated.OobSecp256k1Lifted
 import Generated.OobClockSysvarLifted
 import Generated.GuardedCounterTransition
 import Generated.GuardedAbortTransition
+import Generated.GuardedOobTransition
 
 open Lean Elab Command
 
@@ -59,13 +60,23 @@ elab "#assert_std_axioms " id:ident : command => do
 -- (typed .abort via `cuTripleWithinMem_seq_fault_pure`), mixed with the
 -- success `AsmRefinesTransitionPath` in one bundle.
 #assert_std_axioms Examples.GuardedAbortTransition.guarded_abort_transition
+-- The OOB variant: the guard-fail conjunct is an `AsmRefinesTransitionFault
+-- … .accessViolation` via the Mem-Mem `cuTripleWithinMem_seq_fault`
+-- (combined rr = prefix ∧ OOB region condition).
+#assert_std_axioms Examples.GuardedOobTransition.guarded_oob_transition
+-- The C-ABI invoke terminal's typed-fault spec.
+#assert_std_axioms SVM.SBPF.call_sol_invoke_signed_c_faults_spec
 -- Gap 3: the loader-serialization offset algebra must reproduce the
 -- diff-tested p_token lift anchors decide-only.
 #assert_std_axioms SVM.Solana.p_token_transfer_input_layout
--- Gap 4: the CPI envelope encoding answers the runner's exact decode reads
--- (count/dataPtr/dataLen/programId) from a holdsFor witness — axiom-clean
--- via the #48 forward bridges.
+-- Gap 4: the CPI envelope encodings (Rust + C ABI) answer the runner's exact
+-- decode reads from a holdsFor witness — axiom-clean via the #48 forward
+-- bridges — and the pid_read bridges make the runner's program-id read
+-- LITERALLY the encoded limbs (the runner's pid is read as four u64 limbs).
 #assert_std_axioms SVM.Solana.cpiEnvelope_reads
+#assert_std_axioms SVM.Solana.cpiEnvelopeC_reads
+#assert_std_axioms SVM.Solana.cpiEnvelope_pid_read
+#assert_std_axioms SVM.Solana.cpiEnvelopeC_pid_read
 -- The per-call-site envelope event (`CpiEnvelopeDemo.cpi_envelope_at_call_site`)
 -- carries its own in-module assertion: the ExamplesCpi lib is deliberately
 -- non-precompiled (lakefile note), and importing it here would re-trigger the

@@ -242,6 +242,13 @@ lean_lib Examples where
     `Generated.GuardedAbortPanicLifted,
     `Generated.GuardedAbortSuccessLifted,
     `Generated.GuardedAbortTransition,
+    -- The OOB-fault-path variant: guarded_oob's guard-fail path performs an
+    -- out-of-bounds sol_get_clock_sysvar write, so its path corollary is an
+    -- `AsmRefinesTransitionFault … .accessViolation` (combined rr = prefix
+    -- ∧ OOB region condition).
+    `Generated.GuardedOobOobLifted,
+    `Generated.GuardedOobSuccessLifted,
+    `Generated.GuardedOobTransition,
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
     `Generated.TwoOpDecrementLifted,

@@ -37,6 +37,10 @@ const GUARDED_COUNTER_SO: &[u8] = include_bytes!("fixtures/guarded_counter.so");
 /// `abort` syscall (typed `.abort` fault) instead of returning an error
 /// code. Trace sources for the `GuardedAbort{Panic,Success}` path lifts.
 const GUARDED_ABORT_SO: &[u8] = include_bytes!("fixtures/guarded_abort.so");
+/// The OOB-FAULT-path variant (#40): same guard, but amount == 0 performs an
+/// out-of-bounds `sol_get_clock_sysvar` write (typed `.accessViolation`).
+/// Trace sources for the `GuardedOob{Oob,Success}` path lifts.
+const GUARDED_OOB_SO: &[u8] = include_bytes!("fixtures/guarded_oob.so");
 /// Per-call-site CPI envelope fixture (#40 gap 4): hand-builds a Rust-ABI
 /// `StableInstruction` on the heap (target pubkey from its instruction
 /// data) and invokes it. Lifted as `Generated.CpiEnvelopeCallerLifted`;
@@ -788,6 +792,87 @@ fn guarded_abort_panic_matches_mollusk() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on the abort syscall, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "guarded_abort");
+}
+
+/// guarded_oob SUCCESS path (#40): one account → `amount` = 1 ≠ 0, guard
+/// passes, counter credited, returns 0. Trace source for
+/// `GuardedOobSuccessLifted`.
+#[test]
+fn guarded_oob_success_matches_mollusk() {
+    let program_id = pid(98);
+    let acct_key = pid(99);
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, GUARDED_OOB_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs guarded_oob (success)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        GUARDED_OOB_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    let (_, fs_acct) = &fs_r.resulting_accounts[0];
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(fs_acct.data(), m_acct.data.as_slice(), "data diverged");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for guarded_oob success: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// guarded_oob OOB path (#40): zero accounts → `amount` = 0, the guard fails
+/// into an out-of-bounds `sol_get_clock_sysvar` write — both engines fault
+/// (qedsvm `vmError = .accessViolation` → VmFault; agave AccessViolation →
+/// ProgramFailedToComplete). Trace source for `GuardedOobOobLifted`.
+#[test]
+fn guarded_oob_oob_matches_mollusk() {
+    let program_id = pid(100);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, GUARDED_OOB_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs guarded_oob (oob)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        GUARDED_OOB_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on the OOB clock write, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "guarded_oob");
 }
 
 /// cpi_envelope_caller (#40 gap 4): builds the StableInstruction on the heap
