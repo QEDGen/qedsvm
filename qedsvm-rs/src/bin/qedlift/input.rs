@@ -52,6 +52,11 @@ pub(super) struct Args {
     /// `AsmRefinesFieldUpdate` obligation from the descriptor instead of the
     /// hardcoded `refine_registry` arm match. The seam to qedspec.
     pub(super) descriptor: Option<PathBuf>,
+    /// Whole-transition mode (#40): discover one trace per path
+    /// (`<stem>_<path>.pcs` beside the .so), lift each with the descriptor,
+    /// and emit the per-path modules + the bundle theorem. Needs
+    /// `--descriptor` and `--output-dir`.
+    pub(super) transition: bool,
 }
 
 // qedmeta sidecar (#41 Phase 4): v2 adds [instruction.recovered] arm
@@ -444,6 +449,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
     let mut qedmeta: Option<PathBuf> = None;
     let mut target_name: Option<String> = None;
     let mut descriptor: Option<PathBuf> = None;
+    let mut transition = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -469,6 +475,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
             "--descriptor" => {
                 descriptor = Some(it.next().ok_or("--descriptor needs a path")?.into())
             }
+            "--transition" => transition = true,
             other => return Err(format!("unknown arg: {}", other)),
         }
     }
@@ -484,6 +491,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
         qedmeta,
         target_name,
         descriptor,
+        transition,
     })
 }
 

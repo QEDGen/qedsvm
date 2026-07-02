@@ -18,6 +18,7 @@ import SVM.SBPF.Decode
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.Macros
 import SVM.SBPF.SatWitness
+import SVM.Solana.Abstract.Transition
 
 set_option maxRecDepth 65536
 set_option maxHeartbeats 4000000
@@ -183,4 +184,59 @@ theorem GuardedCounterSuccess_balance_correct
   rw [← wrapAdd_of_lt h_noovf0]
   exact h
 
+
+/-! ## Whole-transition path corollary (#40)
+
+One PATH of the account GuardedCounter (handler credit) transition: composed from the
+running triple (`GuardedCounterSuccess_balance_correct`) and the shared `.exit` via
+`cuTripleWithinMem_seq_exit` — the program TERMINATES with
+`exitCode = some (toU64 0)` and the tracked account codec goes
+preFields → postFields (a preservation path has them equal, with cells
+outside the path's footprint framed through the lift). -/
+
+open Memory in
+set_option maxHeartbeats 1600000 in
+theorem GuardedCounterSuccess_transition_path
+    (baseAddr oldMemD_0 vR2Old oldMemD_1 vR3Old vR0Old : Nat)
+    (holdMemD_0_lt : oldMemD_0 < 2 ^ 64)
+    (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
+    (h_branch0 : oldMemD_0 ≠ toU64 0)
+    (h_noovf0 : oldMemD_1 + oldMemD_0 < 2 ^ 64)
+    : SVM.Solana.Abstract.AsmRefinesTransitionPath
+      (((((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 0)).union
+        (CodeReq.singleton 1 (.jeq .r2 (.imm (0)) 7))).union
+        (CodeReq.singleton 2 (.ldx .dword .r3 .r1 8))).union
+        (CodeReq.singleton 3 (.add64 .r3 (.reg .r2)))).union
+        (CodeReq.singleton 4 (.stx .dword .r1 8 .r3))).union
+        (CodeReq.singleton 5 (.mov64 .r0 (.imm (0))))).union
+        (CodeReq.singleton 6 (.ja 8)))).union
+        (CodeReq.singleton 8 .exit))
+      (7 + 1) (0) 0
+      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 8) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr baseAddr 8) 8 = true)
+      (toU64 0)
+      [(baseAddr,
+        [(8, .u64 oldMemD_1)],
+        [(8, .u64 (oldMemD_1 + oldMemD_0))])]
+      (((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
+      (.r2 ↦ᵣ vR2Old) **
+      (.r3 ↦ᵣ vR3Old) **
+      (.r0 ↦ᵣ vR0Old)) **
+       callStackIs [])
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 oldMemD_0) **
+      (.r2 ↦ᵣ oldMemD_0) **
+      (.r3 ↦ᵣ wrapAdd oldMemD_1 oldMemD_0)) := by
+  unfold SVM.Solana.Abstract.AsmRefinesTransitionPath
+  simp only [SVM.Solana.Abstract.codecsPre, SVM.Solana.Abstract.codecsPost,
+             codecCoarse, FieldVal.coarse, sepConj_emp_right_eq, Nat.add_zero]
+  refine cuTripleWithinMem_seq_exit ?_ ?_
+  · repeat' apply CodeReq.Disjoint_union_left
+    all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)
+  · have framed := cuTripleWithinMem_frame_right
+      ( callStackIs [] )
+      (by sl_pcfree) (GuardedCounterSuccess_balance_correct baseAddr oldMemD_0 vR2Old oldMemD_1 vR3Old vR0Old holdMemD_0_lt holdMemD_1_lt h_branch0 h_noovf0)
+    sl_exact framed
 end Examples.Lifted.GuardedCounterSuccess
