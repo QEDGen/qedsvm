@@ -113,3 +113,25 @@ Inline-layout fallback (no IDL, e.g. the degenerate `counter.so`):
 
 Worked fixtures: `qedsvm-rs/tests/fixtures/{vault,counter}.descriptor.json`, pinned by
 `descriptor_refinement_is_mechanically_emitted` and `descriptor_rejects_newer_schema`.
+
+## Whole-transition mode (#40)
+
+`--transition --descriptor <json> --output-dir <dir>` lifts every PATH of the
+program — one discovered `<stem>_<path>.pcs` trace per path, captured from
+real runs beside the `.so` — and emits:
+
+- one lift module per path, each carrying a mechanically-emitted
+  `*_transition_path` corollary (`AsmRefinesTransitionPath`): the running
+  triple composed with the shared `.exit` via `cuTripleWithinMem_seq_exit`,
+  terminating with that path's exit code, the descriptor's tracked account
+  codec going preFields → postFields (a preservation path has them equal,
+  with cells outside the path's footprint framed through the lift);
+- the bundle theorem (`<Stem>Transition.lean`): ONE statement covering every
+  path under its branch guards, binders canonically renamed (tracked cells →
+  descriptor field names, the `add_param` operand cell → the param name).
+
+Fail-closed: blob/owned-pubkey tracked fields, call-local prefixes, fault
+terminals, and cross-path binder conflicts skip emission with a stderr note.
+Worked fixture: `guarded_counter.descriptor.json` + the
+`guarded_counter_{abort,success}.pcs` traces, pinned by
+`guarded_counter_transition_is_mechanically_emitted`.

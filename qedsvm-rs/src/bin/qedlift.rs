@@ -47,7 +47,8 @@ use isa::{
     function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full,
     render_callstack, resolve_call_target_logical, resolve_jump_target,
 };
-use refinement::{emit_descriptor_refinement, emit_refinement, is_const_delta_arm};
+use refinement::{emit_descriptor_refinement, emit_refinement, emit_transition_bundle,
+    emit_transition_path, is_const_delta_arm, BItem, TransitionPathInfo};
 use state::SymState;
 use syscalls::{
     emit_r0_syscall, emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log,
@@ -730,41 +731,35 @@ mod layout_tests {
             Some("../examples/lean/PToken/BurnRefinement.lean"));
     }
 
-    /// #40 whole-transition fixture: one trace-guided lift per guarded_counter
-    /// path (success updates the counter, lands r0 = 0; abort leaves memory
-    /// untouched, lands r0 = 1). The transition theorem in
-    /// `examples/lean/GuardedCounterTransition.lean` composes each with the
-    /// shared `.exit` via `cuTripleWithinMem_seq_exit`.
-    fn pin_guarded_counter_path(pcs: &str, module: &str, lift_path: &str) {
+    /// #40: the whole-transition emission, end-to-end — trace DISCOVERY
+    /// (`guarded_counter_{abort,success}.pcs` beside the .so), descriptor-driven
+    /// per-path lifts (each carrying its `*_transition_path` corollary) and the
+    /// bundle theorem, all pinned.
+    #[test]
+    fn guarded_counter_transition_is_mechanically_emitted() {
         let so = std::path::Path::new("tests/fixtures/guarded_counter.so");
         let ctx = load_binary(so).expect("load guarded_counter.so");
         let analysis = Analysis::from_executable(&ctx.executable)
             .expect("analyse guarded_counter.so");
-        let trace = load_trace(std::path::Path::new(pcs)).expect("load trace");
-        let result = lift_one(so, &ctx, &analysis, None,
-            Some(module.to_string()), Some(&trace), None, None, None)
-            .expect("lift guarded_counter path");
-        if std::env::var("QEDLIFT_BLESS").is_ok() {
-            std::fs::write(lift_path, &result.lean).expect("write lift");
+        let desc = load_descriptor(std::path::Path::new(
+            "tests/fixtures/guarded_counter.descriptor.json")).expect("descriptor");
+        let (paths, (bmod, blean)) = run_transition(so, &ctx, &analysis, &desc, None)
+            .expect("transition emission");
+        assert_eq!(paths.len(), 2, "expected the abort + success paths");
+        let mut artifacts: Vec<(String, String)> = paths.iter()
+            .map(|(m, l)| (format!("../examples/lean/Generated/{}Lifted.lean", m), l.clone()))
+            .collect();
+        artifacts.push((format!("../examples/lean/Generated/{}.lean", bmod), blean));
+        for (path, lean) in &artifacts {
+            // QEDLIFT_BLESS=1 re-blesses artifacts after an intentional emitter change.
+            if std::env::var("QEDLIFT_BLESS").is_ok() {
+                std::fs::write(path, lean).expect("write artifact");
+            }
+            let on_disk = std::fs::read_to_string(path).expect("read artifact");
+            assert_eq!(lean, &on_disk,
+                "{path} is out of sync with the qedlift transition emitter \
+                 (mechanically emitted, do not hand-edit)");
         }
-        let on_disk = std::fs::read_to_string(lift_path).expect("read lift");
-        assert_eq!(result.lean, on_disk,
-            "{lift_path} is out of sync with the qedlift emitter \
-             (mechanically emitted, do not hand-edit)");
-    }
-
-    #[test]
-    fn guarded_counter_success_is_mechanically_emitted() {
-        pin_guarded_counter_path("tests/fixtures/guarded_counter_success.pcs",
-            "GuardedCounterSuccess",
-            "../examples/lean/Generated/GuardedCounterSuccessLifted.lean");
-    }
-
-    #[test]
-    fn guarded_counter_abort_is_mechanically_emitted() {
-        pin_guarded_counter_path("tests/fixtures/guarded_counter_abort.pcs",
-            "GuardedCounterAbort",
-            "../examples/lean/Generated/GuardedCounterAbortLifted.lean");
     }
 }
 
@@ -1955,6 +1950,9 @@ struct LiftOutput {
     /// Optional asm-refines-intrinsic theorem `(module_name, lean)`,
     /// emitted when the arm matches the refinement registry.
     refinement:  Option<(String, String)>,
+    /// Whole-transition path metadata (#40): present when the lift emitted a
+    /// `*_transition_path` corollary; feeds `emit_transition_bundle`.
+    transition:  Option<TransitionPathInfo>,
 }
 
 /// Lift without a qedrecover layout sidecar (tests, batch, single-arm `--idl`): refinement
@@ -3211,6 +3209,107 @@ fn lift_one_with_layouts(
         }));
     }
 
+    // ── Whole-transition path corollary (#40 gap 1) ─────────────────
+    // Trace-guided + descriptor-driven walk landing on the shared `.exit`:
+    // compose the running triple (`*_balance_correct` when the mutated cell
+    // was overflow-cleaned, else `*_lifted_spec`) with the `.exit` into an
+    // `AsmRefinesTransitionPath` obligation over the descriptor's layout.
+    // Fail-closed: binder kinds outside {vars, abstraction bridges, u64
+    // bounds, branch guards, side hyps, shift guards} skip the corollary,
+    // as does a call_local prefix (callStack atom) or a fault terminal.
+    let mut transition: Option<TransitionPathInfo> = None;
+    if let Some(desc) = descriptor {
+        let terminal_exit = trace.is_some()
+            && fault_terminal.is_none()
+            && cs_atom.is_empty()
+            && insns.get(exit_pc).map(|i| i.opc == ebpf::EXIT).unwrap_or(false)
+            && state.bytearray_vars.is_empty()
+            && state.memset_blobs.is_empty()
+            && state.blob_side_hyps.is_empty()
+            && state.syscall_cu_vars.is_empty();
+        if terminal_exit {
+            // Binder metadata + positional args in `_lifted_spec` signature order.
+            let mut bitems: Vec<BItem> = vars.iter().cloned().map(BItem::Val).collect();
+            let mut names: Vec<String> = vars.clone();
+            if use_block_iter && !abstractions.is_empty() {
+                for (p, _, _) in &abstractions {
+                    bitems.push(BItem::Val(p.clone()));
+                    names.push(p.clone());
+                }
+                for (i, (param, h, _)) in abstractions.iter().enumerate() {
+                    bitems.push(BItem::Hyp { name: h.clone(),
+                        prop: format!("{} = {}", param, folded_rhs[i]) });
+                    names.push(h.clone());
+                }
+            }
+            for (v, k) in &state.u64_load_vars {
+                bitems.push(BItem::Hyp { name: format!("h{}_lt", v),
+                    prop: format!("{} < 2 ^ {}", v, k) });
+                names.push(format!("h{}_lt", v));
+            }
+            for (i, bh) in state.branch_hyps.iter().enumerate() {
+                bitems.push(BItem::Guard { prop: bh.lean_hyp() });
+                names.push(bh.name(i));
+            }
+            for (name, prop) in &state.side_hyps {
+                bitems.push(BItem::Hyp { name: name.clone(), prop: prop.clone() });
+                names.push(name.clone());
+            }
+            // Target: the balance-corrected triple when shifts were cleaned
+            // (its post carries the clean `+`/`-` field value).
+            let (t_name, t_binders, t_post) = if shifts.is_empty() {
+                (lifted_name.clone(), theorem_binders.clone(), &post)
+            } else {
+                let mut extra = String::new();
+                for (k, sh) in shifts.iter().enumerate() {
+                    match sh {
+                        Shift::Sub(a, b) => {
+                            let al = fold_abstractions(a.to_lean(), &abs_subst);
+                            let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                            extra.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
+                            extra.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
+                            bitems.push(BItem::Hyp { name: format!("h_funds{}", k),
+                                prop: format!("{} ≤ {}", bl, al) });
+                            bitems.push(BItem::Hyp { name: format!("h_src_lt{}", k),
+                                prop: format!("{} < 2 ^ 64", al) });
+                            names.push(format!("h_funds{}", k));
+                            names.push(format!("h_src_lt{}", k));
+                        }
+                        Shift::Add(a, b) => {
+                            let al = fold_abstractions(a.to_lean(), &abs_subst);
+                            let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                            extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
+                            bitems.push(BItem::Hyp { name: format!("h_noovf{}", k),
+                                prop: format!("{} + {} < 2 ^ 64", al, bl) });
+                            names.push(format!("h_noovf{}", k));
+                        }
+                        Shift::AddConst(a, c) => {
+                            let al = fold_abstractions(a.to_lean(), &abs_subst);
+                            extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
+                            bitems.push(BItem::Hyp { name: format!("h_noovf{}", k),
+                                prop: format!("{} + {} < 2 ^ 64", al, c) });
+                            names.push(format!("h_noovf{}", k));
+                        }
+                    }
+                }
+                (format!("{}_balance_correct", module_name),
+                 format!("{}{}", theorem_binders, extra), &post_clean)
+            };
+            if let Some((text, info)) = emit_transition_path(
+                desc, &module_name, &pre, t_post, &abs_subst,
+                &t_name, &names.join(" "), &t_binders, bitems,
+                n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
+                idl, sidecar_layouts,
+            ) {
+                out.push_str(&text);
+                out = out.replace(
+                    "import SVM.SBPF.SatWitness",
+                    "import SVM.SBPF.SatWitness\nimport SVM.Solana.Abstract.Transition");
+                transition = Some(info);
+            }
+        }
+    }
+
     out.push_str(&render::end_namespace(&module_name));
 
     // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
@@ -3233,7 +3332,74 @@ fn lift_one_with_layouts(
         insn_count: insns.len(),
         cu: n,
         refinement,
+        transition,
     })
+}
+
+/// Discover per-path traces beside the .so: `<stem>_<path>.pcs`, sorted by
+/// path label (deterministic bundle order). Each discovered trace is one
+/// PATH of the program's transition (#40).
+fn discover_path_traces(so: &Path) -> Vec<(String, std::path::PathBuf)> {
+    let stem = so.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let dir = so.parent().unwrap_or_else(|| Path::new("."));
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("pcs") { continue; }
+            if let Some(fs) = p.file_stem().and_then(|x| x.to_str()) {
+                if let Some(label) = fs.strip_prefix(&format!("{}_", stem)) {
+                    if !label.is_empty() {
+                        out.push((label.to_string(), p.clone()));
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Whole-transition emission (#40): lift every discovered path of `so`
+/// (descriptor-driven, trace-guided; each lift carries its
+/// `*_transition_path` corollary) and emit the bundle theorem. Returns the
+/// per-path `(module, lean)` files and the `(module, lean)` bundle.
+#[allow(clippy::type_complexity)]
+fn run_transition(
+    so: &Path, ctx: &BinaryCtx, analysis: &Analysis<'_>,
+    descriptor: &RefinementDescriptor,
+    idl: Option<&serde_json::Value>,
+) -> Result<(Vec<(String, String)>, (String, String)), Box<dyn std::error::Error>> {
+    let traces = discover_path_traces(so);
+    if traces.len() < 2 {
+        return Err(format!(
+            "--transition: need ≥ 2 discovered `<stem>_<path>.pcs` traces \
+             beside {}, found {}", so.display(), traces.len()).into());
+    }
+    let stem_snake = so.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "lifted".to_string());
+    let stem_pascal = pascal_case(&stem_snake);
+    let mut path_files: Vec<(String, String)> = Vec::new();
+    let mut modules: Vec<String> = Vec::new();
+    let mut infos: Vec<TransitionPathInfo> = Vec::new();
+    for (label, pcs) in &traces {
+        let module = format!("{}{}", stem_pascal, pascal_case(label));
+        let trace = load_trace(pcs)?;
+        let r = lift_one_with_layouts(so, ctx, analysis, None, Some(module.clone()),
+            Some(&trace), None, idl, None, None, Some(descriptor))?;
+        let info = r.transition.ok_or_else(|| format!(
+            "--transition: path {:?} produced no transition corollary \
+             (see stderr for the fail-closed reason)", label))?;
+        path_files.push((module.clone(), r.lean));
+        modules.push(module);
+        infos.push(info);
+    }
+    let bundle = emit_transition_bundle(&stem_pascal, &stem_snake, &modules, &infos)
+        .ok_or("transition bundle emission failed (binder conflict — see stderr)")?;
+    Ok((path_files, bundle))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -3255,6 +3421,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(p) => Some(load_descriptor(p)?),
         None => None,
     };
+
+    // --transition mode (#40): discovered per-path traces + descriptor →
+    // per-path lifts (each with a `*_transition_path` corollary) + the bundle.
+    if args.transition {
+        let desc = descriptor.as_ref()
+            .ok_or("--transition needs --descriptor")?;
+        let out_dir = args.output_dir.as_ref()
+            .ok_or("--transition needs --output-dir")?;
+        std::fs::create_dir_all(out_dir)?;
+        let (paths, (bmod, blean)) =
+            run_transition(&args.so, &ctx, &analysis, desc, idl_value.as_ref())?;
+        println!("=== qedlift (transition) ===");
+        println!("  input  : {}", args.so.display());
+        for (m, lean) in &paths {
+            let p = out_dir.join(format!("{}Lifted.lean", m));
+            std::fs::write(&p, lean)?;
+            println!("  ✔ path   {:<26} → {}", m, p.display());
+        }
+        let bp = out_dir.join(format!("{}.lean", bmod));
+        std::fs::write(&bp, &blean)?;
+        println!("  ✔ bundle {:<26} → {}", bmod, bp.display());
+        return Ok(());
+    }
 
     // --qedmeta mode: targeting from qedrecover sidecar (disc + name), CU cross-check, optional --target-name filter.
     if let Some(meta_path) = args.qedmeta.as_ref() {

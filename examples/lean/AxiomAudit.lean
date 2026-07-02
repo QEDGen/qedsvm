@@ -15,7 +15,7 @@ import Generated.CounterRefinement
 import Generated.AbortCallerLifted
 import Generated.OobSecp256k1Lifted
 import Generated.OobClockSysvarLifted
-import GuardedCounterTransition
+import Generated.GuardedCounterTransition
 
 open Lean Elab Command
 
@@ -46,11 +46,11 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms Examples.CounterRefinement.refines_asm
 #assert_std_axioms Examples.CounterRefinement.ensures
 
--- #40 gap 1: the whole-transition bundle (success + abort paths of
--- guarded_counter, each a post-carrying terminating triple composed with the
--- shared `.exit` via `cuTripleWithinMem_seq_exit`) must stay axiom-clean —
--- transitively covering the new ExitTriple/Transition library layer and both
--- per-path trace-guided lifts.
+-- #40 gap 1: the MECHANICALLY-EMITTED whole-transition bundle (success +
+-- abort paths of guarded_counter, each a post-carrying terminating triple
+-- composed with the shared `.exit` via `cuTripleWithinMem_seq_exit`) must
+-- stay axiom-clean — transitively covering the ExitTriple/Transition library
+-- layer and both per-path trace-guided lifts.
 #assert_std_axioms Examples.GuardedCounterTransition.guarded_counter_transition
 
 -- Phase 7 sub-item 3 (emitter half): the typed-fault corollary and its running

@@ -1,0 +1,11 @@
+{
+  "_comment": "Whole-transition descriptor (#40): guarded_counter.so credits the u64 `counter` at offset 8 by the runtime `amount` read at offset 0, guarded by amount != 0 (the abort path returns 1 and preserves the account). The tracked account is the counter field; `amount` is an instruction argument, so it stays a setup cell (naming the add_param lets the bundle call its binder `amount`). No IDL, so the shape is inline. Schema: docs/REFINEMENT_DESCRIPTOR.md.",
+  "schema_version": 2,
+  "account": "GuardedCounter",
+  "handler": "credit",
+  "mutated": "counter",
+  "op": { "add_param": "amount" },
+  "layout": [
+    { "offset": 8, "kind": "u64", "name": "counter" }
+  ]
+}
