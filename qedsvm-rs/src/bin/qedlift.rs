@@ -1,7 +1,7 @@
 //! qedlift — takes a compiled `.so`, symbolically executes the decoded eBPF,
 //! and emits a Lean `cuTripleWithinMem` Hoare triple with pre/post conditions
 //! derived from the execution, discharged by `sl_block_auto`. Also emits
-//! aggregation modules and asm-refines theorems for known program shapes.
+//! asm-refines theorems for known program shapes.
 
 use std::path::Path;
 
@@ -12,8 +12,6 @@ use solana_sbpf::{
 
 #[path = "qedlift/input.rs"]
 mod input;
-#[path = "qedlift/aggregation.rs"]
-mod aggregation;
 #[path = "qedlift/branch.rs"]
 mod branch;
 #[path = "qedlift/core.rs"]
@@ -40,9 +38,6 @@ use emit::{
     atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
     post_atoms, region_req,
 };
-use aggregation::write_aggregation;
-#[cfg(test)]
-use aggregation::{render_mint_agg_module, render_token_agg_module};
 use branch::{BranchHyp, BranchKind};
 use input::{
     BinaryCtx, RefinementDescriptor, load_binary, load_descriptor, load_idl, load_idl_value,
@@ -66,35 +61,6 @@ use qed_analysis::layout::{parse_account_layout, FieldKind};
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-
-    #[test]
-    fn transfer_aggregation_is_mechanically_emitted() {
-        let m = render_token_agg_module(
-            "Examples.PTokenTransferAggregation",
-            &[("src_account_eq", true,  vec![72, 108, 109]),
-              ("dst_account_eq", false, vec![108])],
-            72, 165);
-        let path = "../examples/lean/PToken/TransferAggregation.lean";
-        // QEDLIFT_BLESS=1 re-blesses after an intentional emitter change (e.g. comment drift).
-        if std::env::var("QEDLIFT_BLESS").is_ok() {
-            std::fs::write(path, &m).expect("write TransferAggregation.lean");
-        }
-        let on_disk = std::fs::read_to_string(path).expect("read TransferAggregation.lean");
-        assert_eq!(m, on_disk,
-            "TransferAggregation.lean is out of sync with the qedlift emitter — \
-             regenerate it (the file is mechanically emitted, do not hand-edit)");
-    }
-
-    #[test]
-    fn mint_aggregation_is_mechanically_emitted() {
-        let m = render_mint_agg_module(
-            "Examples.PTokenMintAggregation", 36, 44, 82, 72, 165);
-        let on_disk = std::fs::read_to_string("../examples/lean/PToken/MintAggregation.lean")
-            .expect("read MintAggregation.lean");
-        assert_eq!(m, on_disk,
-            "MintAggregation.lean is out of sync with the qedlift emitter \
-             (mechanically emitted, do not hand-edit)");
-    }
 
     /// Diffs the emitter output on `counter.so` against both on-disk artifacts, guarding the counter-codec (non-token) path.
     #[test]
@@ -287,7 +253,6 @@ mod layout_tests {
 
         assert_eq!(via_idl.refinement, via_sidecar.refinement,
             "sidecar-supplied layout must reproduce the IDL-derived vault refinement");
-        assert_eq!(via_idl.aggregation, via_sidecar.aggregation);
         assert!(via_sidecar.refinement.is_some(),
             "sidecar layout must drive the vault refinement codegen");
         assert!(via_none.refinement.is_none(),
@@ -1953,11 +1918,6 @@ struct LiftOutput {
     /// Optional asm-refines-intrinsic theorem `(module_name, lean)`,
     /// emitted when the arm matches the refinement registry.
     refinement:  Option<(String, String)>,
-    /// Optional aggregation module `(import_module, lean)` the refinement
-    /// imports (e.g. `PToken.TransferAggregation`), mechanically emitted
-    /// from the lift's owned-byte pattern. Written to its canonical
-    /// `examples/lean/<module-path>.lean` location.
-    aggregation: Option<(String, String)>,
 }
 
 /// Lift without a qedrecover layout sidecar (tests, batch, single-arm `--idl`): refinement
@@ -3220,7 +3180,7 @@ fn lift_one_with_layouts(
     // Spec-driven descriptor wins when present (the qedspec seam): build the
     // layout-general `AsmRefinesFieldUpdate` straight from the descriptor,
     // bypassing the hardcoded `refine_registry`. Otherwise the registry path.
-    let refine_emit = match descriptor {
+    let refinement = match descriptor {
         Some(desc) => emit_descriptor_refinement(
             desc, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc,
             idl, sidecar_layouts),
@@ -3228,8 +3188,6 @@ fn lift_one_with_layouts(
             arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc, idl,
             sidecar_layouts)),
     };
-    let aggregation = refine_emit.as_ref().and_then(|(_, _, a)| a.clone());
-    let refinement = refine_emit.map(|(m, l, _)| (m, l));
 
     Ok(LiftOutput {
         lean: out,
@@ -3238,7 +3196,6 @@ fn lift_one_with_layouts(
         insn_count: insns.len(),
         cu: n,
         refinement,
-        aggregation,
     })
 }
 
@@ -3323,9 +3280,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 std::fs::write(&rpath, rlean)?;
                 " (+refinement)"
             } else { "" };
-            let agg = write_aggregation(&result.aggregation)?;
-            println!("  ✔ {:<20} disc={:<4}{} → {}{}{}",
-                ix.name, ix.discriminator.value, budget_note, out_path.display(), refined, agg);
+            println!("  ✔ {:<20} disc={:<4}{} → {}{}",
+                ix.name, ix.discriminator.value, budget_note, out_path.display(), refined);
         }
         if budget_fail {
             return Err("one or more lifted triples exceeded the claimed cu_budget".into());
@@ -3368,9 +3324,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         std::fs::write(&rpath, rlean)?;
                         " (+refinement)"
                     } else { "" };
-                    let agg = write_aggregation(&result.aggregation)?;
-                    println!("  ✔ {:<24} disc={:<4} {} insns → {}{}{}",
-                        ix.name, ix.discriminator, result.insn_count, out_path.display(), refined, agg);
+                    println!("  ✔ {:<24} disc={:<4} {} insns → {}{}",
+                        ix.name, ix.discriminator, result.insn_count, out_path.display(), refined);
                     lifted += 1;
                 }
                 Err(e) => {
@@ -3403,11 +3358,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let rpath = path.with_file_name(format!("{}.lean", rmod));
                 std::fs::write(&rpath, rlean)?;
                 println!("  refine : {}", rpath.display());
-            }
-            if write_aggregation(&result.aggregation)? == " (+agg)" {
-                if let Some((m, _)) = &result.aggregation {
-                    println!("  agg    : examples/lean/{}.lean", m.replace('.', "/"));
-                }
             }
         }
         None => {

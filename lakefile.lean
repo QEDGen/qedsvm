@@ -96,10 +96,8 @@ lean_lib Examples where
     `PToken.TransferArm.H4aDestMintCheck,
     `PToken.TransferArm.H4bBalanceMutation,
     `PToken.TransferArm.FullHappyPath,
-    `PToken.TransferAggregation,
     `PToken.TransferRefinement,
     `PToken.TransferCheckedRefinement,
-    `PToken.MintAggregation,
     -- MintTo / Burn refinements: RESTORED 2026-06-12 on the
     -- regenerated (satisfiable-precondition) lifts — see the H8 note
     -- at the end of this list.

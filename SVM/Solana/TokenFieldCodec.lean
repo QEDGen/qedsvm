@@ -23,8 +23,8 @@ def tokenFields (mint owner : SVM.Pubkey) (amount : Nat) (rest : ByteArray) :
   [(0, .pubkey mint), (32, .pubkey owner), (64, .u64 amount), (72, .blob [.gap rest])]
 
 /-- **Convergence keystone.** The byte-level token predicate is the coarse codec
-    of its field list, so `AsmRefinesTokenTransfer` is a field-list obligation
-    and the accessor projection applies. -/
+    of its field list, so a `tokenAcctBalance`-shaped obligation is a field-list
+    obligation and the accessor projection applies. -/
 theorem tokenAcctBalance_codec (ata : Nat) (mint owner : SVM.Pubkey) (amount : Nat) (rest : ByteArray) :
     tokenAcctBalance ata mint owner amount rest
       = codecCoarse ata (tokenFields mint owner amount rest) := by
@@ -48,5 +48,22 @@ theorem token_ensures_credit (mint owner : SVM.Pubkey) (balance amount : Nat) (r
     u64FieldAt 64 (tokenFields mint owner (balance + amount) rest)
       = u64FieldAt 64 (tokenFields mint owner balance rest) + amount := by
   qedsvm_discharge
+
+/-! ## Obligation-strength witness (#25)
+
+The N-account route emits the token account with its rest region SPLIT into
+owned-byte/gap segments (`.blob [.byte …, .gap …, …]`). At the coarse level —
+what the `AsmRefinesFieldUpdates` obligation states — that field list is EQUAL
+to `tokenFields` with the concatenated rest (`segsBytes`), i.e. exactly the
+obligation the retired derived `refines_field` corollary carried. -/
+
+example (base c0 c1 c2 c3 o0 o1 o2 o3 amount b72 b108 b109 : Nat) (g1 g2 : ByteArray) :
+    codecCoarse base
+      [ (0, .pubkey ⟨c0, c1, c2, c3⟩), (32, .pubkey ⟨o0, o1, o2, o3⟩), (64, .u64 amount),
+        (72, .blob [.byte b72, .gap g1, .byte b108, .byte b109, .gap g2]) ]
+  = codecCoarse base
+      (tokenFields ⟨c0, c1, c2, c3⟩ ⟨o0, o1, o2, o3⟩ amount
+        (PartialState.byteBA b72 ++ (g1 ++ (PartialState.byteBA b108 ++ (PartialState.byteBA b109 ++ g2))))) := by
+  simp [tokenFields, codecCoarse, FieldVal.coarse, segsBytes, FieldSeg.bytes]
 
 end SVM.Solana

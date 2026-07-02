@@ -24,8 +24,8 @@ def mintFields (preAuth : ByteArray) (supply : Nat) (rest : ByteArray) :
   [(0, .blob [.gap preAuth]), (36, .u64 supply), (44, .blob [.gap rest])]
 
 /-- **Convergence keystone.** The byte-level mint predicate is the coarse codec
-    of its field list, so `AsmRefinesTokenMintTo`/`AsmRefinesTokenBurn` are
-    field-list obligations and the accessor projection applies. -/
+    of its field list, so a `mintAcctSupply`-shaped obligation is a field-list
+    obligation and the accessor projection applies. -/
 theorem mintSupply_codec (base : Nat) (preAuth : ByteArray) (supply : Nat) (rest : ByteArray) :
     mintAcctSupply base preAuth supply rest
       = codecCoarse base (mintFields preAuth supply rest) := by
