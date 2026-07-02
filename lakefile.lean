@@ -220,6 +220,13 @@ lean_lib Examples where
     `Generated.GuardedCounterSuccessLifted,
     `Generated.GuardedCounterAbortLifted,
     `Generated.GuardedCounterTransition,
+    -- The FAULT-path variant: guarded_abort's guard-fail path ends in the
+    -- `abort` syscall, so its path corollary is `AsmRefinesTransitionFault`
+    -- (typed .abort, codecs owned in the pre) and the bundle mixes
+    -- obligation kinds.
+    `Generated.GuardedAbortPanicLifted,
+    `Generated.GuardedAbortSuccessLifted,
+    `Generated.GuardedAbortTransition,
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
     `Generated.TwoOpDecrementLifted,

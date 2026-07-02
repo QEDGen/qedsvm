@@ -101,12 +101,24 @@ Raw triples prove a selected bytecode path. Abstract refinements additionally co
 | Counter increment | `AsmRefinesCounterIncrement` | Mechanical |
 | Vault constant field update | `AsmRefinesFieldUpdate` | Mechanical |
 | Whole-transition path (terminating, exit code + field pre→post/preservation) | `AsmRefinesTransitionPath` (#40) | Mechanical (`--transition`: discovered `<stem>_<path>.pcs` traces + descriptor → per-path `*_transition_path` corollaries + the bundle theorem; validated on `guarded_counter`) |
+| Whole-transition FAULT path (typed abort/panic, codecs owned in the pre) | `AsmRefinesTransitionFault` (#40) | Mechanical (`*_transition_fault` via `cuTripleWithinMem_seq_fault_pure`; validated on `guarded_abort`, whose bundle mixes obligation kinds; OOB fault terminals fall closed) |
 | Heap bump allocation | Heap corollary over `heapBumpPtr` / `heapBlock*` | Mechanical |
 | SPL `CloseAccount` | Raw traced triple + generated balance-style corollary | Triple only |
 | SPL `InitializeMint2` | Raw traced triple | Triple only |
 | New operation semantics | New predicate/spec required | Manual |
 
 Predicate selection can be **spec-driven**, not only registry-driven: a versioned, name-level `RefinementDescriptor` (`--descriptor`, see [REFINEMENT_DESCRIPTOR.md](REFINEMENT_DESCRIPTOR.md)) builds the layout-general `AsmRefinesFieldUpdate`, resolving field offsets from the IDL and bypassing the hardcoded 6-entry registry. Same proof, driven by a spec obligation rather than a Rust edit. The descriptor path covers a single-field `u64` credited by a positive constant (`add_const: k`) or a runtime parameter (`add_param: name`, the latter matched as `field += <runtime read>`); subtraction, multi-field writes, and split-blob layouts are not yet emitted on this path.
+
+Input-region positions come from the loader-serialization offset algebra
+(`SVM/Solana/InputLayout.lean`, #40 gap 3): `acctDataOff`/`acctFieldAddr`/
+`instrDataOff` over the accounts' data lengths, decide-validated against the
+diff-tested p_token lift anchors (`96`/`10600`/`21024`), with
+`inputAccounts` stating transition accounts by account index. The CPI
+envelope a caller hands `sol_invoke_signed` is `SVM/Solana/CpiEnvelope.lean`
+(#40 gap 4): `cpiEnvelope` encodes the Rust-ABI `StableInstruction` cells and
+`cpiEnvelope_reads` bridges a `holdsFor` witness to the runner's exact decode
+reads. Per-call-site envelope theorems against binaries additionally need an
+invoke walker terminal + the 32-byte pid fold↔limb bridge (open).
 
 ## Account Layouts
 

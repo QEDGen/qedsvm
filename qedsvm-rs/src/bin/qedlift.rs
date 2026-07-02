@@ -48,7 +48,7 @@ use isa::{
     render_callstack, resolve_call_target_logical, resolve_jump_target,
 };
 use refinement::{emit_descriptor_refinement, emit_refinement, emit_transition_bundle,
-    emit_transition_path, is_const_delta_arm, BItem, TransitionPathInfo};
+    emit_transition_fault, emit_transition_path, is_const_delta_arm, BItem, TransitionPathInfo};
 use state::SymState;
 use syscalls::{
     emit_r0_syscall, emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log,
@@ -729,6 +729,36 @@ mod layout_tests {
             "PTokenBurn", Some("Burn"),
             "../examples/lean/Generated/PTokenBurnTracedLifted.lean",
             Some("../examples/lean/PToken/BurnRefinement.lean"));
+    }
+
+    /// #40 fault-path variant: guarded_abort's guard-fail path ends in the
+    /// `abort` syscall, so its path corollary is `AsmRefinesTransitionFault`
+    /// (typed `.abort`, codecs owned in the pre) composed via
+    /// `cuTripleWithinMem_seq_fault_pure`; the bundle mixes obligation kinds.
+    #[test]
+    fn guarded_abort_transition_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/guarded_abort.so");
+        let ctx = load_binary(so).expect("load guarded_abort.so");
+        let analysis = Analysis::from_executable(&ctx.executable)
+            .expect("analyse guarded_abort.so");
+        let desc = load_descriptor(std::path::Path::new(
+            "tests/fixtures/guarded_abort.descriptor.json")).expect("descriptor");
+        let (paths, (bmod, blean)) = run_transition(so, &ctx, &analysis, &desc, None)
+            .expect("transition emission");
+        assert_eq!(paths.len(), 2, "expected the panic + success paths");
+        let mut artifacts: Vec<(String, String)> = paths.iter()
+            .map(|(m, l)| (format!("../examples/lean/Generated/{}Lifted.lean", m), l.clone()))
+            .collect();
+        artifacts.push((format!("../examples/lean/Generated/{}.lean", bmod), blean));
+        for (path, lean) in &artifacts {
+            if std::env::var("QEDLIFT_BLESS").is_ok() {
+                std::fs::write(path, lean).expect("write artifact");
+            }
+            let on_disk = std::fs::read_to_string(path).expect("read artifact");
+            assert_eq!(lean, &on_disk,
+                "{path} is out of sync with the qedlift transition emitter \
+                 (mechanically emitted, do not hand-edit)");
+        }
     }
 
     /// #40: the whole-transition emission, end-to-end — trace DISCOVERY
@@ -3219,15 +3249,19 @@ fn lift_one_with_layouts(
     // as does a call_local prefix (callStack atom) or a fault terminal.
     let mut transition: Option<TransitionPathInfo> = None;
     if let Some(desc) = descriptor {
-        let terminal_exit = trace.is_some()
-            && fault_terminal.is_none()
+        // Terminal kind: a clean `.exit` (error/success return) or a typed
+        // abort/panic fault. OOB fault terminals fall closed for now.
+        let wired_binders = trace.is_some()
             && cs_atom.is_empty()
-            && insns.get(exit_pc).map(|i| i.opc == ebpf::EXIT).unwrap_or(false)
             && state.bytearray_vars.is_empty()
             && state.memset_blobs.is_empty()
             && state.blob_side_hyps.is_empty()
             && state.syscall_cu_vars.is_empty();
-        if terminal_exit {
+        let terminal_fault = matches!(fault_terminal, Some(FaultTerminal::Abort(_)));
+        let terminal_exit = wired_binders
+            && fault_terminal.is_none()
+            && insns.get(exit_pc).map(|i| i.opc == ebpf::EXIT).unwrap_or(false);
+        if terminal_exit || (wired_binders && terminal_fault) {
             // Binder metadata + positional args in `_lifted_spec` signature order.
             let mut bitems: Vec<BItem> = vars.iter().cloned().map(BItem::Val).collect();
             let mut names: Vec<String> = vars.clone();
@@ -3295,12 +3329,29 @@ fn lift_one_with_layouts(
                 (format!("{}_balance_correct", module_name),
                  format!("{}{}", theorem_binders, extra), &post_clean)
             };
-            if let Some((text, info)) = emit_transition_path(
-                desc, &module_name, &pre, t_post, &abs_subst,
-                &t_name, &names.join(" "), &t_binders, bitems,
-                n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
-                idl, sidecar_layouts,
-            ) {
+            let emitted = if terminal_fault {
+                let kind = match fault_terminal {
+                    Some(FaultTerminal::Abort(k)) => k,
+                    _ => unreachable!("terminal_fault implies an Abort terminal"),
+                };
+                let t_post_s = format!("{}{}",
+                    atoms_to_lean(t_post, &abs_subst), cs_atom);
+                emit_transition_fault(
+                    desc, &module_name, &pre, &abs_subst,
+                    &t_name, &names.join(" "), &t_binders, &t_post_s, bitems,
+                    n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
+                    kind.ctor(), kind.faults_spec(),
+                    idl, sidecar_layouts,
+                )
+            } else {
+                emit_transition_path(
+                    desc, &module_name, &pre, t_post, &abs_subst,
+                    &t_name, &names.join(" "), &t_binders, bitems,
+                    n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
+                    idl, sidecar_layouts,
+                )
+            };
+            if let Some((text, info)) = emitted {
                 out.push_str(&text);
                 out = out.replace(
                     "import SVM.SBPF.SatWitness",

@@ -43,4 +43,22 @@ def AsmRefinesTransitionPath
     ((.r0 ↦ᵣ code) ** callStackIs [] ** setupPost ** codecsPost accts)
     rr code
 
+/-- One FAULT path of a whole-transition refinement: under this path's guard
+    hypotheses the program faults with the typed `e` — `exitCode =
+    some e.toSentinel` AND `vmError = some e` (audit L1's channel) — from a
+    pre owning the tracked account codecs. `cuTripleFaultsWithinMem`
+    deliberately carries no partial-state post: at the chain level a faulted
+    instruction is rolled back wholesale, so a fault path's meaningful
+    content is the typed error channel, not the final VM memory. Compose a
+    lifted running prefix with the terminal fault spec via
+    `cuTripleWithinMem_seq_fault_pure` to discharge it. -/
+def AsmRefinesTransitionFault
+    (cr : CodeReq) (nSteps nCu entry : Nat)
+    (rr : Memory.RegionTable → Prop) (e : VmError)
+    (accts : List AccountFields)
+    (setupPre : Assertion) : Prop :=
+  cuTripleFaultsWithinMem nSteps nCu entry cr
+    (setupPre ** codecsPre accts)
+    rr e
+
 end SVM.Solana.Abstract

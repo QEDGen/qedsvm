@@ -7,6 +7,8 @@ legitimately belongs — add it to the per-theorem allow-list with justification
 import Lean
 import SVM.SBPF.Bounded
 import SVM.SBPF.CodecRead
+import SVM.Solana.InputLayout
+import SVM.Solana.CpiEnvelope
 import Generated.PTokenTransferTracedLifted
 import PToken.TransferRefinement
 import PToken.TransferArm.FullHappyPath
@@ -16,6 +18,7 @@ import Generated.AbortCallerLifted
 import Generated.OobSecp256k1Lifted
 import Generated.OobClockSysvarLifted
 import Generated.GuardedCounterTransition
+import Generated.GuardedAbortTransition
 
 open Lean Elab Command
 
@@ -52,6 +55,17 @@ elab "#assert_std_axioms " id:ident : command => do
 -- stay axiom-clean — transitively covering the ExitTriple/Transition library
 -- layer and both per-path trace-guided lifts.
 #assert_std_axioms Examples.GuardedCounterTransition.guarded_counter_transition
+-- The fault-path variant: the panic conjunct is an `AsmRefinesTransitionFault`
+-- (typed .abort via `cuTripleWithinMem_seq_fault_pure`), mixed with the
+-- success `AsmRefinesTransitionPath` in one bundle.
+#assert_std_axioms Examples.GuardedAbortTransition.guarded_abort_transition
+-- Gap 3: the loader-serialization offset algebra must reproduce the
+-- diff-tested p_token lift anchors decide-only.
+#assert_std_axioms SVM.Solana.p_token_transfer_input_layout
+-- Gap 4: the CPI envelope encoding answers the runner's exact decode reads
+-- (count/dataPtr/dataLen/programId) from a holdsFor witness — axiom-clean
+-- via the #48 forward bridges.
+#assert_std_axioms SVM.Solana.cpiEnvelope_reads
 
 -- Phase 7 sub-item 3 (emitter half): the typed-fault corollary and its running
 -- prefix must stay axiom-clean (no sorry/native_decide leaking into the

@@ -1382,7 +1382,10 @@ pub(super) enum BItem {
 pub(super) struct TransitionPathInfo {
     /// `Examples.Lifted.<Module>` — where the path corollary lives.
     pub(super) namespace: String,
-    /// `<Module>_transition_path`.
+    /// The obligation head: `AsmRefinesTransitionPath` (clean error/success
+    /// exit) or `AsmRefinesTransitionFault` (typed-fault terminal).
+    pub(super) pred: &'static str,
+    /// `<Module>_transition_path` / `<Module>_transition_fault`.
     pub(super) corollary: String,
     /// Fully-rendered `AsmRefinesTransitionPath` argument block (lift-local names).
     pub(super) stmt: String,
@@ -1751,11 +1754,235 @@ theorem {corollary}
 
     Some((text, TransitionPathInfo {
         namespace: format!("Examples.Lifted.{}", module_name),
+        pred: "AsmRefinesTransitionPath",
         corollary,
         stmt,
         bitems,
         renames,
         param_cell,
+    }))
+}
+
+/// Emit the per-path whole-transition FAULT corollary: the running prefix
+/// (`*_balance_correct`/`*_lifted_spec`) composed with the terminal
+/// abort/panic fault spec via `cuTripleWithinMem_seq_fault_pure`, stated as
+/// `AsmRefinesTransitionFault` — typed fault channel, tracked account codecs
+/// owned in the PRE (no post: a faulted instruction is rolled back
+/// wholesale). Tracked cells outside the prefix footprint are framed as
+/// field-named params. Fail-closed (`None`) outside the wired shapes.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn emit_transition_fault(
+    desc: &RefinementDescriptor,
+    module_name: &str,
+    pre: &[Atom],
+    abs_subst: &std::collections::BTreeMap<String, String>,
+    target_name: &str,
+    target_args: &str,
+    target_binders: &str,
+    target_post: &str,
+    bitems_in: Vec<BItem>,
+    n: usize, m_bound: &str, start_pc: usize, exit_pc: usize,
+    cr: &str, rr: &str,
+    fault_ctor: &str, fault_spec: &str,
+    idl: Option<&serde_json::Value>,
+    sidecar_layouts: Option<&[AccountLayout]>,
+) -> Option<(String, TransitionPathInfo)> {
+    let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
+    let layout = match desc.explicit_layout() {
+        Some(l) => l,
+        None => resolve_layout(sidecar_layouts, idl, &desc.account)?,
+    };
+
+    // A fault path owns no mutated cell: anchor the account at r1's entry
+    // value (the same v1 convention as preservation exit paths).
+    let r1 = pre.iter().find_map(|a| match a {
+        Atom::Reg(1, v) => Some(v.clone()),
+        _ => None,
+    })?;
+    let (base_raw, base_expr, base_off) = (r1.to_lean(), fold(&r1), 0i64);
+    let base_arg = base_expr.clone();
+
+    // ── Walk the layout PRE-only: owned scalars flow through, unowned are
+    //    framed as field-named params. ──
+    let mut bitems = bitems_in;
+    let mut binders_extra = String::new();
+    let mut pre_fields: Vec<String> = Vec::new();
+    let mut frame: Vec<String> = Vec::new();
+    let mut owned: Vec<(String, i64, bool)> = Vec::new();
+    let mut renames: Vec<(String, String)> = Vec::new();
+    let taken = |name: &str, bitems: &[BItem]| bitems.iter().any(|b| match b {
+        BItem::Val(v) => v == name,
+        BItem::Hyp { name: n2, .. } => n2 == name,
+        BItem::Guard { .. } => false,
+    });
+    for f in &layout.fields {
+        let off = f.offset as i64;
+        let abs = base_off + off;
+        match &f.kind {
+            FieldKind::U64 => {
+                if let Some(v) = cell_val_dword(pre, &base_raw, abs) {
+                    let pv = fold(v);
+                    pre_fields.push(format!("({}, .u64 {})", off, pv));
+                    owned.push((base_raw.clone(), abs, false));
+                    renames.push((pv, f.name.clone()));
+                } else {
+                    if taken(&f.name, &bitems) { return None; }
+                    binders_extra.push_str(&format!("({} : Nat)\n    ", f.name));
+                    bitems.push(BItem::Val(f.name.clone()));
+                    pre_fields.push(format!("({}, .u64 {})", off, f.name));
+                    frame.push(format!("(effectiveAddr {} {} ↦U64 {})",
+                        base_expr, abs, f.name));
+                }
+            }
+            FieldKind::Byte => {
+                if let Some(v) = cell_val(pre, &base_raw, abs, true) {
+                    let pv = fold(v);
+                    pre_fields.push(format!("({}, .byte {})", off, pv));
+                    owned.push((base_raw.clone(), abs, true));
+                    renames.push((pv, f.name.clone()));
+                } else {
+                    if taken(&f.name, &bitems) { return None; }
+                    binders_extra.push_str(&format!("({} : Nat)\n    ", f.name));
+                    bitems.push(BItem::Val(f.name.clone()));
+                    pre_fields.push(format!("({}, .byte {})", off, f.name));
+                    frame.push(format!("(effectiveAddr {} {} ↦ₘ {})",
+                        base_expr, abs, f.name));
+                }
+            }
+            FieldKind::Pubkey => {
+                if (0..4).any(|i| cell_val(pre, &base_raw, abs + 8 * i, false).is_some()) {
+                    eprintln!("transition: owned pubkey field {:?} not wired; \
+                               skipping fault-path corollary", f.name);
+                    return None;
+                }
+                let limbs: Vec<String> =
+                    (0..4).map(|i| format!("{}{}", f.name, i)).collect();
+                for limb in &limbs {
+                    if taken(limb, &bitems) { return None; }
+                    binders_extra.push_str(&format!("({} : Nat)\n    ", limb));
+                    bitems.push(BItem::Val(limb.clone()));
+                }
+                let rec = format!("⟨{}⟩", limbs.join(", "));
+                pre_fields.push(format!("({}, .pubkey {})", off, rec));
+                for (i, limb) in limbs.iter().enumerate() {
+                    frame.push(format!("(effectiveAddr {} {} ↦U64 {})",
+                        base_expr, abs + 8 * i as i64, limb));
+                }
+            }
+            FieldKind::Bytes(_) => {
+                eprintln!("transition: blob field {:?} not wired in the \
+                           transition walker; skipping fault-path corollary", f.name);
+                return None;
+            }
+        }
+    }
+    // Canonical names for untracked cells on the account base.
+    for a in pre {
+        if let Atom::Mem { addr_base, addr_off, value, .. } = a {
+            if addr_base.to_lean() == base_raw
+                && !owned.iter().any(|(b, o, _)| *b == addr_base.to_lean() && o == addr_off) {
+                let v = fold(value);
+                let rel = addr_off - base_off;
+                if bitems.iter().any(|b| matches!(b, BItem::Val(x) if *x == v))
+                    && !renames.iter().any(|(from, _)| *from == v) {
+                    renames.push((v, format!("m{}", rel)));
+                }
+            }
+        }
+    }
+    // nCu binders for the fault terminal (mirrors the fault-correct corollary).
+    bitems.push(BItem::Val("nCuAbort".to_string()));
+    bitems.push(BItem::Hyp { name: "hCuAbort".to_string(),
+        prop: format!("∀ s : State,\n        (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuAbort",
+            fault_ctor) });
+
+    let owned_set: std::collections::HashSet<(String, i64, bool)> =
+        owned.iter().cloned().collect();
+    let is_owned = |a: &Atom| match a {
+        Atom::Mem { addr_base, addr_off, width, .. } =>
+            owned_set.contains(&(addr_base.to_lean(), *addr_off,
+                matches!(width, Width::Byte))),
+        _ => false,
+    };
+    let setup_pre: Vec<Atom> = pre.iter().filter(|a| !is_owned(a)).cloned().collect();
+    let setup_pre_s = atoms_to_lean(&setup_pre, abs_subst);
+
+    // Prefix post = the target triple's post, frame_right-extended by the
+    // framed tracked cells; the terminal fault spec is P-parametric, so it is
+    // applied at exactly that assertion.
+    let (frame_s, prefix_post, prefix_have) = if frame.is_empty() {
+        (String::new(),
+         format!("({})", target_post),
+         format!("have framed := {} {}", target_name, target_args))
+    } else {
+        let fr = frame.join(" **\n      ");
+        (fr.clone(),
+         format!("(({}) **\n       ({}))", target_post, fr),
+         format!("have framed := cuTripleWithinMem_frame_right\n      ( {} )\n      (by sl_pcfree) ({} {})",
+            fr, target_name, target_args))
+    };
+    let _ = frame_s;
+
+    let handler = desc.handler.as_ref()
+        .map(|h| format!(" (handler {})", h)).unwrap_or_default();
+    let stmt = format!(
+"      (({cr}).union
+        (CodeReq.singleton {exit_pc} (.call {ctor})))
+      ({n} + 1) ({m_bound} + nCuAbort) {start_pc}
+      (fun rt => {rr})
+      (.abort)
+      [({base_arg},
+        [{pre_list}],
+        [{pre_list}])]
+      ({setup_pre})",
+        cr = cr, exit_pc = exit_pc, ctor = fault_ctor, n = n, m_bound = m_bound,
+        start_pc = start_pc, rr = rr, base_arg = base_arg,
+        pre_list = pre_fields.join(", "), setup_pre = setup_pre_s);
+
+    let corollary = format!("{}_transition_fault", module_name);
+    let text = format!(
+"
+/-! ## Whole-transition FAULT-path corollary (#40)
+
+One fault PATH of the account {account}{handler} transition: the running
+prefix (`{target}`) composed with the terminal `{ctor}` fault via
+`cuTripleWithinMem_seq_fault_pure` — the program FAULTS with the typed
+`.abort` (`exitCode = some toSentinel ∧ vmError = some .abort`), the
+tracked account codec owned in the pre (no post: a faulted instruction is
+rolled back wholesale; tracked cells outside the prefix footprint are
+framed through it). -/
+
+open Memory in
+set_option maxHeartbeats 1600000 in
+theorem {corollary}
+    {binders}{binders_extra}(nCuAbort : Nat)
+    (hCuAbort : ∀ s : State,
+        (step (.call {ctor}) s).cuConsumed ≤ s.cuConsumed + nCuAbort)
+    : SVM.Solana.Abstract.AsmRefinesTransitionFault
+{stmt} := by
+  unfold SVM.Solana.Abstract.AsmRefinesTransitionFault
+  simp only [SVM.Solana.Abstract.codecsPre,
+             codecCoarse, FieldVal.coarse, sepConj_emp_right_eq, Nat.add_zero]
+  refine cuTripleWithinMem_seq_fault_pure ?_ ?_
+    ({spec} {prefix_post} {exit_pc} nCuAbort hCuAbort)
+  · repeat' apply CodeReq.Disjoint_union_left
+    all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)
+  · {prefix_have}
+    sl_exact framed
+",
+        account = desc.account, handler = handler, target = target_name,
+        ctor = fault_ctor, corollary = corollary, binders = target_binders,
+        binders_extra = binders_extra, stmt = stmt, spec = fault_spec,
+        prefix_post = prefix_post, exit_pc = exit_pc, prefix_have = prefix_have);
+
+    Some((text, TransitionPathInfo {
+        namespace: format!("Examples.Lifted.{}", module_name),
+        pred: "AsmRefinesTransitionFault",
+        corollary,
+        stmt,
+        bitems,
+        renames,
+        param_cell: None,
     }))
 }
 
@@ -1835,7 +2062,7 @@ pub(super) fn emit_transition_bundle(
         }).collect();
         let stmt = rename_all(p, &p.stmt);
         let obligation = format!(
-            "SVM.Solana.Abstract.AsmRefinesTransitionPath\n{}", stmt);
+            "SVM.Solana.Abstract.{}\n{}", p.pred, stmt);
         let conjunct = if guards.is_empty() {
             obligation
         } else {
@@ -1877,8 +2104,9 @@ pub(super) fn emit_transition_bundle(
   by qedlift from the per-path trace-guided lifts (one discovered
   `{stem_snake}_<path>.pcs` trace per path) + the refinement descriptor. ONE
   statement covering every path: under each path's branch guards the program
-  TERMINATES with that path's exit code and the tracked account codec
-  transitions accordingly (preservation paths have preFields = postFields).
+  TERMINATES with that path's exit code (or FAULTS with its typed error) and
+  the tracked account codec transitions accordingly (preservation and fault
+  paths hold it fixed).
 -/
 
 {imports}
