@@ -33,6 +33,10 @@ const INCREMENTER_SO: &[u8] = include_bytes!("fixtures/incrementer.so");
 /// r0 = 1 when zero, else adds it to the u64 at input[8]. The two tests
 /// below are the trace sources for the success/abort path lifts.
 const GUARDED_COUNTER_SO: &[u8] = include_bytes!("fixtures/guarded_counter.so");
+/// The FAULT-path variant (#40): same guard, but amount == 0 invokes the
+/// `abort` syscall (typed `.abort` fault) instead of returning an error
+/// code. Trace sources for the `GuardedAbort{Panic,Success}` path lifts.
+const GUARDED_ABORT_SO: &[u8] = include_bytes!("fixtures/guarded_abort.so");
 /// Embedded-bump-allocator demo: reads/commits the heap bump slot at
 /// 0x300000000 and writes + reads an allocated block. Exercises the
 /// program heap as ordinary memory (no syscall allocator).
@@ -697,6 +701,87 @@ fn guarded_counter_abort_matches_mollusk() {
         "CU diverged for guarded_counter abort: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
+}
+
+/// guarded_abort SUCCESS path (#40): one account → `amount` = 1 ≠ 0, the
+/// guard passes, counter credited, returns 0. Trace source for
+/// `GuardedAbortSuccessLifted`.
+#[test]
+fn guarded_abort_success_matches_mollusk() {
+    let program_id = pid(93);
+    let acct_key = pid(94);
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, GUARDED_ABORT_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs guarded_abort (success)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        GUARDED_ABORT_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    let (_, fs_acct) = &fs_r.resulting_accounts[0];
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(fs_acct.data(), m_acct.data.as_slice(), "data diverged");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for guarded_abort success: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// guarded_abort PANIC path (#40): zero accounts → `amount` = 0, the guard
+/// fails into the `abort` syscall — both engines fault (qedsvm
+/// `vmError = .abort` → VmFault; agave ProgramFailedToComplete). Trace
+/// source for `GuardedAbortPanicLifted`.
+#[test]
+fn guarded_abort_panic_matches_mollusk() {
+    let program_id = pid(95);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, GUARDED_ABORT_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs guarded_abort (panic)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        GUARDED_ABORT_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on the abort syscall, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "guarded_abort");
 }
 
 /// 16-bit store coverage: ldxh/stxh increment (0x00ff→0x0100) + sth constant (0x1234). Only fixture exercising 16-bit stores.

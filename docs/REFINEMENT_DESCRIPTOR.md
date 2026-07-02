@@ -130,8 +130,16 @@ real runs beside the `.so` — and emits:
   path under its branch guards, binders canonically renamed (tracked cells →
   descriptor field names, the `add_param` operand cell → the param name).
 
-Fail-closed: blob/owned-pubkey tracked fields, call-local prefixes, fault
-terminals, and cross-path binder conflicts skip emission with a stderr note.
-Worked fixture: `guarded_counter.descriptor.json` + the
-`guarded_counter_{abort,success}.pcs` traces, pinned by
-`guarded_counter_transition_is_mechanically_emitted`.
+A path whose walk ends in a typed abort/panic fault (the `abort` /
+`sol_panic_` syscalls) gets an `AsmRefinesTransitionFault` corollary instead
+(`*_transition_fault`, composed via `cuTripleWithinMem_seq_fault_pure`):
+typed `.abort` error channel, tracked codecs owned in the pre, no post (a
+faulted instruction is rolled back wholesale). The bundle mixes obligation
+kinds freely.
+
+Fail-closed: blob/owned-pubkey tracked fields, call-local prefixes, OOB
+fault terminals, and cross-path binder conflicts skip emission with a stderr
+note. Worked fixtures: `guarded_counter.descriptor.json` (+
+`guarded_counter_{abort,success}.pcs`) and the fault-path
+`guarded_abort.descriptor.json` (+ `guarded_abort_{panic,success}.pcs`),
+pinned by `guarded_{counter,abort}_transition_is_mechanically_emitted`.
