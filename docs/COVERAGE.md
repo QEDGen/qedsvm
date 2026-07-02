@@ -58,8 +58,8 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | `sol_log_` | Mechanical | Models the log call shape and CU bound used by generated lifts. |
 | `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. |
 | `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. |
-| `sol_invoke_signed_rust` | Triple only | Modeled as an effect-free CPI envelope for the lifted caller path; callee effects are not verified by this theorem. |
-| `sol_invoke_signed_c` | Triple only | Same CPI limitation as the Rust ABI form. |
+| `sol_invoke_signed_rust` | Terminal | The proof-facing CPI is the fail-closed `Cpi.exec` stub (audit C5), so an invoke ENDS the walk (`.unsupportedInstruction` typed-fault terminal); the lifted prefix's post owns the caller-side envelope cells (`cpiEnvelope`, see below). |
+| `sol_invoke_signed_c` | Unsupported | Falls closed (no walker terminal registered for the C ABI yet). |
 | `sol_sha256` | Mechanical | Single-slice success path: descriptor cells recover `(ptr, len)`, the digest is written to a framed `↦Bytes32` atom, `r0 := 0` (`call_sol_sha256_spec`). |
 | Other hashing syscalls (`keccak256`, `blake3`) | Unsupported | No lifted proof obligation is emitted. |
 | Curve/precompile syscalls | Unsupported (success) | No success triple. The OOB fault direction of `sol_secp256k1_recover` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
@@ -117,8 +117,14 @@ diff-tested p_token lift anchors (`96`/`10600`/`21024`), with
 envelope a caller hands `sol_invoke_signed` is `SVM/Solana/CpiEnvelope.lean`
 (#40 gap 4): `cpiEnvelope` encodes the Rust-ABI `StableInstruction` cells and
 `cpiEnvelope_reads` bridges a `holdsFor` witness to the runner's exact decode
-reads. Per-call-site envelope theorems against binaries additionally need an
-invoke walker terminal + the 32-byte pid fold↔limb bridge (open).
+reads. The per-call-site envelope theorem is worked END-TO-END on real
+bytecode: `cpi_envelope_caller.so` (diff-tested CU-exact, invoking noop with
+the callee program account passed — its instruction data sits at
+`instrDataOff [0]`) lifts to a prefix ending AT the invoke, and
+`CpiEnvelopeDemo.cpi_envelope_at_call_site` reshapes the prefix post into
+`cpiEnvelope` — the invoke event stated against the binary. Remaining: the
+32-byte pid byte-fold ↔ `pubkeyAt` limb bridge (ties `cpiEnvelope_reads` to
+`cpiCallNextState`'s literal fold), and the C-ABI variant.
 
 ## Account Layouts
 

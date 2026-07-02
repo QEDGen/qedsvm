@@ -66,6 +66,10 @@ elab "#assert_std_axioms " id:ident : command => do
 -- (count/dataPtr/dataLen/programId) from a holdsFor witness — axiom-clean
 -- via the #48 forward bridges.
 #assert_std_axioms SVM.Solana.cpiEnvelope_reads
+-- The per-call-site envelope event (`CpiEnvelopeDemo.cpi_envelope_at_call_site`)
+-- carries its own in-module assertion: the ExamplesCpi lib is deliberately
+-- non-precompiled (lakefile note), and importing it here would re-trigger the
+-- poisoned-dylib path.
 
 -- Phase 7 sub-item 3 (emitter half): the typed-fault corollary and its running
 -- prefix must stay axiom-clean (no sorry/native_decide leaking into the

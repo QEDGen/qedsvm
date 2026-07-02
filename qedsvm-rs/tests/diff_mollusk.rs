@@ -37,6 +37,12 @@ const GUARDED_COUNTER_SO: &[u8] = include_bytes!("fixtures/guarded_counter.so");
 /// `abort` syscall (typed `.abort` fault) instead of returning an error
 /// code. Trace sources for the `GuardedAbort{Panic,Success}` path lifts.
 const GUARDED_ABORT_SO: &[u8] = include_bytes!("fixtures/guarded_abort.so");
+/// Per-call-site CPI envelope fixture (#40 gap 4): hand-builds a Rust-ABI
+/// `StableInstruction` on the heap (target pubkey from its instruction
+/// data) and invokes it. Lifted as `Generated.CpiEnvelopeCallerLifted`;
+/// the envelope theorem is `CpiEnvelopeDemo.cpi_envelope_at_call_site`.
+const CPI_ENVELOPE_CALLER_SO: &[u8] =
+    include_bytes!("fixtures/cpi_envelope_caller.so");
 /// Embedded-bump-allocator demo: reads/commits the heap bump slot at
 /// 0x300000000 and writes + reads an allocated block. Exercises the
 /// program heap as ordinary memory (no syscall allocator).
@@ -782,6 +788,60 @@ fn guarded_abort_panic_matches_mollusk() {
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on the abort syscall, got {:?}", fs_r.program_result);
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "guarded_abort");
+}
+
+/// cpi_envelope_caller (#40 gap 4): builds the StableInstruction on the heap
+/// and invokes the pubkey from its instruction data (= noop). One account —
+/// the callee program (agave requires the invoked program in the tx), so the
+/// instruction data sits at `instrDataOff [0]` = 10352. Success + CU parity
+/// on both engines.
+#[test]
+fn cpi_envelope_caller_matches_mollusk() {
+    let caller_id = pid(96);
+    let callee_id = pid(97);
+
+    let callee_program_shared = AccountSharedData::from(Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    });
+    let callee_program_mollusk = mollusk_account::Account {
+        lamports: 1, data: vec![],
+        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
+        executable: true, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id: caller_id,
+        accounts: vec![AccountMeta::new_readonly(callee_id, false)],
+        data: callee_id.to_bytes().to_vec(),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&caller_id, CPI_ENVELOPE_CALLER_SO);
+    fs.add_program(&callee_id, NOOP_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(callee_id, callee_program_shared)])
+        .expect("qedsvm runs cpi_envelope_caller");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        CPI_ENVELOPE_CALLER_SO);
+    m.add_program_with_loader_and_elf(
+        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        NOOP_SO);
+    let m_r = m.process_instruction(&ix, &[(callee_id, callee_program_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for cpi_envelope_caller: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
 }
 
 /// 16-bit store coverage: ldxh/stxh increment (0x00ff→0x0100) + sth constant (0x1234). Only fixture exercising 16-bit stores.

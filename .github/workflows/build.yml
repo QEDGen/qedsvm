@@ -33,6 +33,7 @@ jobs:
         run: |
           set -o pipefail
           lake build Examples 2>&1 | tee build-examples.log
+          lake build ExamplesCpi 2>&1 | tee build-examples-cpi.log
 
       - name: Verify no `sorry` reached the kernel
         # Lean emits "declaration uses 'sorry'" for any declaration that

@@ -101,6 +101,49 @@ theorem mov_then_abort_fault_correct_mem (vR0Old : Nat) (nCu : Nat)
     (mov64_imm_spec .r0 5 vR0Old 0 (by decide)).toMem
     (call_abort_faults_spec (.r0 ↦ᵣ toU64 5) 1 nCu hCu)
 
+/-- `.call .sol_invoke_signed`: the PROOF-facing CPI is the fail-closed
+    `Cpi.exec` stub (audit C4/C5) — it faults with `exitCode :=
+    some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction`
+    rather than fabricate an effect-free invoke. PRE-PARAMETRIC over `P` like
+    `call_abort_faults_spec`, so a per-lift corollary composes an
+    invoke-terminated prefix straight into this tail. The runner
+    (`executeFnCpiWithFuel`) executes the real CPI; the ENVELOPE the caller
+    hands the syscall is a claim about the prefix's post
+    (`SVM.Solana.cpiEnvelope`), independent of this stub. -/
+theorem call_sol_invoke_signed_faults_spec (P : Assertion) (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_invoke_signed) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithin 1 nCu pc
+      (CodeReq.singleton pc (.call .sol_invoke_signed))
+      P .unsupportedInstruction := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud
+  have hfetch : fetch s.pc = some (.call .sol_invoke_signed) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1
+      = chargeCu (step (.call .sol_invoke_signed) s) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      chargeCu { (Cpi.exec s) with
+                 pc := s.pc + 1
+                 cuConsumed := (Cpi.exec s).cuConsumed
+                   + syscallCu .sol_invoke_signed s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  · rw [hexec]
+    show (Cpi.exec s).exitCode = some VmError.unsupportedInstruction.toSentinel
+    rfl
+  · rw [hexec]
+    show (Cpi.exec s).vmError = some .unsupportedInstruction
+    rfl
+  · rw [hstep_eq]
+    show (step (.call .sol_invoke_signed) s).cuConsumed + 1
+        ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
+
 /-- `.call .sol_panic_`: unconditional abort logging the message at r1/r2
     (r3/r4/r5 file/line are diagnostic, silent at SL). Sets
     `exitCode := some ERR_ABORT`, `vmError := some .abort`. PRE-PARAMETRIC over
