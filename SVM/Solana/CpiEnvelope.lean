@@ -61,7 +61,8 @@ def metasSL (addr : Nat) : List Cpi.AccountMeta → Assertion
 
 /-- The Rust-ABI `StableInstruction` envelope at `instrAddr` (the syscall's
     `r1`), encoding `ix`: the two StableVec headers, the inline program id,
-    the metas array at `metasPtr`, the data bytes at `dataPtr`. `metasCap` /
+    the data bytes at `dataPtr`, the metas array at `metasPtr` (last, so the
+    zero-meta case reduces via `sepConj_emp_right_eq`). `metasCap` /
     `dataCap` are allocator artifacts the runner never reads — parameters,
     not claims. -/
 def cpiEnvelope (instrAddr metasPtr metasCap dataPtr dataCap : Nat)
@@ -73,8 +74,8 @@ def cpiEnvelope (instrAddr metasPtr metasCap dataPtr dataCap : Nat)
   ((instrAddr + 32) ↦U64 dataCap) **
   ((instrAddr + 40) ↦U64 ix.data.length) **
   pubkeyIs (instrAddr + 48) ix.programId **
-  metasSL metasPtr ix.accounts **
-  memBytesIs dataPtr (dataBA ix.data)
+  memBytesIs dataPtr (dataBA ix.data) **
+  metasSL metasPtr ix.accounts
 
 /-- **Envelope → runner reads.** A state satisfying the envelope answers the
     EXACT reads `Runner.cpiCallNextState` performs on the caller: the meta

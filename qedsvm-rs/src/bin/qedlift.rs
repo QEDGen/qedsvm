@@ -731,6 +731,31 @@ mod layout_tests {
             Some("../examples/lean/PToken/BurnRefinement.lean"));
     }
 
+    /// #40 gap 4: a caller that hand-builds the Rust-ABI `StableInstruction`
+    /// on the heap and invokes it. The walk TERMINATES at the invoke
+    /// (`AbortKind::Invoke` — proof-side CPI is the fail-closed `Cpi.exec`
+    /// stub), so the lifted prefix's post owns exactly the envelope cells;
+    /// `examples/lean/CpiEnvelopeDemo.lean` reshapes them into
+    /// `SVM.Solana.cpiEnvelope` — the per-call-site envelope theorem.
+    #[test]
+    fn cpi_envelope_caller_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/cpi_envelope_caller.so");
+        let ctx = load_binary(so).expect("load cpi_envelope_caller.so");
+        let analysis = Analysis::from_executable(&ctx.executable)
+            .expect("analyse cpi_envelope_caller.so");
+        let result = lift_one(so, &ctx, &analysis, None,
+            Some("CpiEnvelopeCaller".to_string()), None, None, None, None)
+            .expect("lift cpi_envelope_caller");
+        let path = "../examples/lean/Generated/CpiEnvelopeCallerLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write lift");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read lift");
+        assert_eq!(result.lean, on_disk,
+            "{path} is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
     /// #40 fault-path variant: guarded_abort's guard-fail path ends in the
     /// `abort` syscall, so its path corollary is `AsmRefinesTransitionFault`
     /// (typed `.abort`, codecs owned in the pre) composed via
@@ -2013,6 +2038,15 @@ enum AbortKind {
     Abort,
     /// `.call .sol_panic_` — panic (logs a message, same `.abort` fault).
     SolPanic,
+    /// `.call .sol_invoke_signed` — CPI. The PROOF-facing semantics is the
+    /// fail-closed `Cpi.exec` stub (audit C4/C5): it faults with
+    /// `.unsupportedInstruction` rather than fabricate an effect-free
+    /// invoke, so an invoke ends the walk like a terminal even though the
+    /// RUNNER's trace continues past it (the real CPI is executed by
+    /// `executeFnCpiWithFuel`). The lifted prefix ends AT the invoke — the
+    /// envelope the caller hands the syscall is a claim about that
+    /// prefix's post (`SVM.Solana.cpiEnvelope`).
+    Invoke,
 }
 
 impl AbortKind {
@@ -2023,6 +2057,8 @@ impl AbortKind {
             Some(AbortKind::Abort)
         } else if imm == ebpf::hash_symbol_name(b"sol_panic_") {
             Some(AbortKind::SolPanic)
+        } else if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
+            Some(AbortKind::Invoke)
         } else {
             None
         }
@@ -2032,6 +2068,14 @@ impl AbortKind {
         match self {
             AbortKind::Abort => ".abort",
             AbortKind::SolPanic => ".sol_panic_",
+            AbortKind::Invoke => ".sol_invoke_signed",
+        }
+    }
+    /// The typed `VmError` the terminal faults with.
+    fn vm_error(self) -> &'static str {
+        match self {
+            AbortKind::Abort | AbortKind::SolPanic => ".abort",
+            AbortKind::Invoke => ".unsupportedInstruction",
         }
     }
     /// The library terminal-fault spec the corollary composes with (both
@@ -2040,6 +2084,7 @@ impl AbortKind {
         match self {
             AbortKind::Abort => "call_abort_faults_spec",
             AbortKind::SolPanic => "call_sol_panic_faults_spec",
+            AbortKind::Invoke => "call_sol_invoke_signed_faults_spec",
         }
     }
 }
@@ -2299,10 +2344,12 @@ fn lift_one_with_layouts(
 
             // Typed-fault terminal (Phase 7 sub-item 3): `.call .abort` /
             // `.call .sol_panic_` never return, so they end the walk like
-            // `exit` — but with `exitCode := ERR_ABORT` AND `vmError := .abort`
-            // (audit L1's typed channel). The terminal is NOT pushed to
-            // `block_pcs` (it is the abort tail, composed by the emitter via
-            // `call_<kind>_faults_spec`, not part of the running prefix).
+            // `exit` — but with the typed `vmError` channel (audit L1).
+            // `sol_invoke_signed` ALSO terminates the walk (proof-side CPI is
+            // the fail-closed `Cpi.exec` stub → `.unsupportedInstruction`),
+            // even though the runner's trace continues past it. The terminal
+            // is NOT pushed to `block_pcs` (it is the fault tail, composed by
+            // the emitter via `call_<kind>_faults_spec`, not the prefix).
             if ins.opc == ebpf::CALL_IMM {
                 let imm = ins.imm as u32;
                 if let Some(kind) = AbortKind::from_hash(imm) {
@@ -2388,25 +2435,15 @@ fn lift_one_with_layouts(
                             ti += 1;
                             continue;
                         }
-                        // CPI: step-level stub (Cpi.exec = r0:=0) — effect-free on invoked accounts; callee writes not captured. See call_sol_invoke_signed_spec.
-                        if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
-                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter, "call_sol_invoke_signed_spec", ".sol_invoke_signed", "InvokeSigned");
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_c") {
-                            emit_r0_syscall(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter, "call_sol_invoke_signed_c_spec", ".sol_invoke_signed_c", "InvokeSignedC");
-                            ti += 1;
-                            continue;
-                        }
+                        // NOTE: sol_invoke_signed_rust never reaches here — it is an
+                        // AbortKind::Invoke walk TERMINAL (the proof-facing CPI is the
+                        // fail-closed `Cpi.exec` stub, so no running spec can cross it).
                         return Err(format!(
                             "call_imm at pc {} is a syscall (trace returns to {} \
                              without a frame push) with imm hash 0x{:08x}, but only \
                              sol_memset_ / sol_memcpy_ / sol_memmove_ / sol_memcmp_ / \
-                             sol_get_sysvar / sol_log_ / sol_set_return_data / \
-                             sol_invoke_signed{{,_c}} are modelled so far. \
+                             sol_get_sysvar / sol_log_ / sol_set_return_data are \
+                             modelled so far (sol_invoke_signed terminates the walk). \
                              This arm needs a syscall-effect spec for that hash.",
                             pc_iter, pc_iter + 1, imm).into());
                     }
@@ -3156,7 +3193,7 @@ fn lift_one_with_layouts(
                     spec = kind.faults_spec(), post = lifted_post, pc = exit_pc,
                 );
                 let _ = ctor;
-                (format!("{} + nCuAbort", m_bound), binders, rr.clone(), ".abort", proof)
+                (format!("{} + nCuAbort", m_bound), binders, rr.clone(), kind.vm_error(), proof)
             }
             FaultTerminal::Oob(oob) => {
                 // OOB needs the prefix post free of a callStack atom (no
@@ -3257,7 +3294,8 @@ fn lift_one_with_layouts(
             && state.memset_blobs.is_empty()
             && state.blob_side_hyps.is_empty()
             && state.syscall_cu_vars.is_empty();
-        let terminal_fault = matches!(fault_terminal, Some(FaultTerminal::Abort(_)));
+        let terminal_fault = matches!(fault_terminal,
+            Some(FaultTerminal::Abort(k)) if !matches!(k, AbortKind::Invoke));
         let terminal_exit = wired_binders
             && fault_terminal.is_none()
             && insns.get(exit_pc).map(|i| i.opc == ebpf::EXIT).unwrap_or(false);

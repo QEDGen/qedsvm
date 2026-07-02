@@ -55,6 +55,21 @@ lean_lib SVM where
   roots := #[`SVM]
   precompileModules := true
 
+-- #40 gap 4: the per-call-site CPI envelope pair — the walk terminates at
+-- the invoke (fail-closed proof-side CPI), the prefix post owns the
+-- StableInstruction cells, and CpiEnvelopeDemo reshapes them into
+-- `cpiEnvelope` (the envelope event, stated against the binary). Built in a
+-- NON-precompiled lib: precompiling Generated.CpiEnvelopeCallerLifted yields
+-- a module dylib whose load poisons downstream SL-statement elaboration
+-- (segfault in the compiled path; the same proofs build and replay fine
+-- interpreted — toolchain issue, not a proof issue).
+lean_lib ExamplesCpi where
+  srcDir := "examples/lean"
+  roots := #[
+    `Generated.CpiEnvelopeCallerLifted,
+    `CpiEnvelopeDemo,
+  ]
+
 -- Examples — standalone proofs demonstrating the verification chain
 -- on real hand-written sBPF programs. Not part of the core library;
 -- build with `lake build Examples` to type-check the proofs.
