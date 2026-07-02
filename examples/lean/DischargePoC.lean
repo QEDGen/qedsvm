@@ -7,7 +7,6 @@
 import SVM.Solana.Abstract.Refinement
 import Generated.VaultRefinement
 import SVM.SBPF.Tactic.Discharge
-import SVM.Solana.TokenFieldCodec
 
 namespace Examples.DischargePoC
 
@@ -49,27 +48,12 @@ example
   (vault_total_discharged cr rr baseAddr oldMemD_0 o0 o1 o2 o3 fb4 _ _
     (Examples.VaultRefinement.refines_asm cr rr baseAddr oldMemD_0 vR2Old vR0Old o0 o1 o2 o3 fb4 lift)).2
 
-/-! ## Token transfer: obligation reshape to field-list form
+/-! ## Token arms
 
-token_ensures_debit/credit and tokenAcctBalance_codec live in SVM.Solana.TokenFieldCodec.
-What remains here is the obligation-level reshape on a real AsmRefinesTokenTransfer. -/
-
-/-- Reshape AsmRefinesTokenTransfer to codecCoarse/tokenFields form via tokenAcctBalance_codec. -/
-theorem transfer_field_obligation
-    (cr : CodeReq) (nSteps nCu entry exit : Nat) (rr : Memory.RegionTable → Prop)
-    (srcAddr dstAddr : Nat) (tSrc tDst : TokenAccount) (amount : Nat)
-    (setupPre setupPost : Assertion)
-    (h : AsmRefinesTokenTransfer cr nSteps nCu entry exit rr srcAddr dstAddr
-          tSrc tDst amount setupPre setupPost) :
-    cuTripleWithinMem nSteps nCu entry exit cr
-      (setupPre ** codecCoarse srcAddr (tokenFields tSrc.mint tSrc.owner tSrc.amount tSrc.rest)
-               ** codecCoarse dstAddr (tokenFields tDst.mint tDst.owner tDst.amount tDst.rest))
-      (setupPost ** codecCoarse srcAddr (tokenFields tSrc.mint tSrc.owner (tSrc.amount - amount) tSrc.rest)
-                ** codecCoarse dstAddr (tokenFields tDst.mint tDst.owner (tDst.amount + amount) tDst.rest))
-      rr := by
-  unfold AsmRefinesTokenTransfer at h
-  simpa only [tokenAcctBalanceOf, tokenAcctBalance_codec,
-              TokenAccount.withAmount_amount, TokenAccount.withAmount_mint,
-              TokenAccount.withAmount_owner, TokenAccount.withAmount_rest] using h
+The token arms need no reshape PoC anymore: qedlift emits their
+`AsmRefinesFieldUpdates` obligation (one `(base, preFields, postFields)`
+triple per account) directly off the lift, with per-account `ensures_<role>`
+accessor corollaries discharged the same way as `vault_total_discharged`
+above — see `examples/lean/PToken/TransferRefinement.lean` (#25). -/
 
 end Examples.DischargePoC

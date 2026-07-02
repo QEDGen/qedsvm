@@ -33,6 +33,11 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms Examples.Lifted.PTokenTransfer.PTokenTransfer_lifted_spec
 #assert_std_axioms Examples.Lifted.PTokenTransfer.PTokenTransfer_balance_correct
 #assert_std_axioms Examples.PTokenTransferRefinement.refines_asm
+-- #25: the token arms' obligation is the layout-general N-account
+-- `AsmRefinesFieldUpdates`, with per-account accessor corollaries.
+#assert_std_axioms SVM.Solana.Abstract.asmRefinesFieldUpdates_singleton
+#assert_std_axioms Examples.PTokenTransferRefinement.ensures_src
+#assert_std_axioms Examples.PTokenTransferRefinement.ensures_dst
 #assert_std_axioms Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_spec
 #assert_std_axioms Examples.PTokenTransferFullHappyPath.p_token_transfer_full_happy_path_terminates
 #assert_std_axioms Examples.VaultRefinement.refines_asm

@@ -68,13 +68,11 @@ Generated abstract refinements target `SVM.Solana.Abstract.Refinement`.
 
 | Predicate | Current use |
 | --- | --- |
-| `AsmRefinesFieldUpdate` | Layout-general field update over `codecCoarse base fields`; preferred target for new non-token account shapes. |
-| `AsmRefinesTokenTransfer` | SPL token `Transfer` and `TransferChecked` generated refinements. |
-| `AsmRefinesTokenMintTo` | SPL token `MintTo` generated refinement. |
-| `AsmRefinesTokenBurn` | SPL token `Burn` generated refinement. |
+| `AsmRefinesFieldUpdate` | Layout-general single-account field update over `codecCoarse base fields`; the form qedgen's discharge adapter consumes. |
+| `AsmRefinesFieldUpdates` | N-account generalization (one `(base, preFields, postFields)` triple per account); target of the SPL `Transfer`/`TransferChecked`/`MintTo`/`Burn` generated refinements. |
 | `AsmRefinesCounterIncrement` | Counter increment generated refinement. |
 
-For new integrations, prefer field-codec obligations and accessors where possible. The token/mint/counter predicates are supported by current generated examples, but they are more shape-specific than `AsmRefinesFieldUpdate`.
+For new integrations, prefer field-codec obligations and accessors where possible. The record-keyed `AsmRefinesToken*` predicates are retired (#25): token arms emit the layout-general N-account obligation directly off the lift.
 
 ## Rust Surface
 

@@ -94,10 +94,10 @@ Raw triples prove a selected bytecode path. Abstract refinements additionally co
 
 | Arm / shape | Predicate | Status |
 | --- | --- | --- |
-| SPL `Transfer` | `AsmRefinesTokenTransfer` | Mechanical |
-| SPL `TransferChecked` | `AsmRefinesTokenTransfer` | Mechanical |
-| SPL `MintTo` | `AsmRefinesTokenMintTo` | Mechanical |
-| SPL `Burn` | `AsmRefinesTokenBurn` | Mechanical |
+| SPL `Transfer` | `AsmRefinesFieldUpdates` (2 accounts) | Mechanical |
+| SPL `TransferChecked` | `AsmRefinesFieldUpdates` (2 accounts) | Mechanical |
+| SPL `MintTo` | `AsmRefinesFieldUpdates` (2 accounts) | Mechanical |
+| SPL `Burn` | `AsmRefinesFieldUpdates` (2 accounts) | Mechanical |
 | Counter increment | `AsmRefinesCounterIncrement` | Mechanical |
 | Vault constant field update | `AsmRefinesFieldUpdate` | Mechanical |
 | Heap bump allocation | Heap corollary over `heapBumpPtr` / `heapBlock*` | Mechanical |
@@ -111,8 +111,8 @@ Predicate selection can be **spec-driven**, not only registry-driven: a versione
 
 | Layout feature | Status | Notes |
 | --- | --- | --- |
-| SPL token account | Mechanical | Token amount and owned rest-region bytes are handled by token-specific aggregation. |
-| SPL mint account | Mechanical | Mint supply and owned rest-region bytes are handled by mint-specific aggregation. |
+| SPL token account | Mechanical | Layout-general field list (mint/owner pubkeys, amount `u64`, split rest blob); no token-specific aggregation module (#25). |
+| SPL mint account | Mechanical | Layout-general field list (preAuth blob with owned `.u64` segs, supply `u64`, rest blob); no mint-specific aggregation module (#25). |
 | Counter account | Mechanical | Single `u64` field. |
 | Vault-style field list | Mechanical | IDL-driven `{Pubkey, u64, u8, blob}` field lists through `codecCoarse` and `account_agg`. |
 | Untouched blob fields | Mechanical | Framed as opaque `ByteArray` gaps. |
