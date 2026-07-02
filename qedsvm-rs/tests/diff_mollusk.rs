@@ -28,6 +28,11 @@ const LOGGER_SO: &[u8] = include_bytes!("fixtures/logger.so");
 /// verifies our `deserialize_account_writes` actually picks up the
 /// program's write, byte-for-byte against mollusk.
 const INCREMENTER_SO: &[u8] = include_bytes!("fixtures/incrementer.so");
+/// Guard-cascade fixture for the whole-transition obligation (#40): reads a
+/// u64 `amount` at input[0] (= the serialized account count), aborts with
+/// r0 = 1 when zero, else adds it to the u64 at input[8]. The two tests
+/// below are the trace sources for the success/abort path lifts.
+const GUARDED_COUNTER_SO: &[u8] = include_bytes!("fixtures/guarded_counter.so");
 /// Embedded-bump-allocator demo: reads/commits the heap bump slot at
 /// 0x300000000 and writes + reads an allocated block. Exercises the
 /// program heap as ordinary memory (no syscall allocator).
@@ -598,6 +603,98 @@ fn incrementer_program_matches_mollusk() {
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
         "CU diverged for incrementer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Guarded-counter SUCCESS path (#40): one account → serialized count u64 = 1
+/// = `amount` ≠ 0, so the guard passes and the program adds it to the u64 at
+/// input[8..16] (serialization metadata — ignored by post-deserialize, so the
+/// account round-trips unchanged) and returns 0. Trace source for
+/// `GuardedCounterSuccessLifted`.
+#[test]
+fn guarded_counter_success_matches_mollusk() {
+    let program_id = pid(90);
+    let acct_key = pid(91);
+    let lamports = 1_000_000u64;
+    let data: Vec<u8> = vec![0u8; 16];
+
+    let pre_shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_mollusk = mollusk_account::Account {
+        lamports, data: data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, GUARDED_COUNTER_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .expect("qedsvm runs guarded_counter (success)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        GUARDED_COUNTER_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success, got {:?}", fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success, got {:?}", m_r.program_result);
+
+    let (_, fs_acct) = &fs_r.resulting_accounts[0];
+    let (_, m_acct) = &m_r.resulting_accounts[0];
+    assert_eq!(fs_acct.data(), m_acct.data.as_slice(), "data diverged");
+    assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for guarded_counter success: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Guarded-counter ABORT path (#40): zero accounts → serialized count u64 = 0
+/// = `amount`, so the guard fails and the program returns 1 without touching
+/// memory. Exact error encoding diverges by design (raw r0 vs typed
+/// ProgramError) — assert non-Success on both + CU parity. Trace source for
+/// `GuardedCounterAbortLifted`.
+#[test]
+fn guarded_counter_abort_matches_mollusk() {
+    let program_id = pid(92);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, GUARDED_COUNTER_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .expect("qedsvm runs guarded_counter (abort)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        GUARDED_COUNTER_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Failure, got Success");
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Failure, got Success");
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for guarded_counter abort: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
 }

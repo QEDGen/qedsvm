@@ -729,6 +729,43 @@ mod layout_tests {
             "../examples/lean/Generated/PTokenBurnTracedLifted.lean",
             Some("../examples/lean/PToken/BurnRefinement.lean"));
     }
+
+    /// #40 whole-transition fixture: one trace-guided lift per guarded_counter
+    /// path (success updates the counter, lands r0 = 0; abort leaves memory
+    /// untouched, lands r0 = 1). The transition theorem in
+    /// `examples/lean/GuardedCounterTransition.lean` composes each with the
+    /// shared `.exit` via `cuTripleWithinMem_seq_exit`.
+    fn pin_guarded_counter_path(pcs: &str, module: &str, lift_path: &str) {
+        let so = std::path::Path::new("tests/fixtures/guarded_counter.so");
+        let ctx = load_binary(so).expect("load guarded_counter.so");
+        let analysis = Analysis::from_executable(&ctx.executable)
+            .expect("analyse guarded_counter.so");
+        let trace = load_trace(std::path::Path::new(pcs)).expect("load trace");
+        let result = lift_one(so, &ctx, &analysis, None,
+            Some(module.to_string()), Some(&trace), None, None, None)
+            .expect("lift guarded_counter path");
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(lift_path, &result.lean).expect("write lift");
+        }
+        let on_disk = std::fs::read_to_string(lift_path).expect("read lift");
+        assert_eq!(result.lean, on_disk,
+            "{lift_path} is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    #[test]
+    fn guarded_counter_success_is_mechanically_emitted() {
+        pin_guarded_counter_path("tests/fixtures/guarded_counter_success.pcs",
+            "GuardedCounterSuccess",
+            "../examples/lean/Generated/GuardedCounterSuccessLifted.lean");
+    }
+
+    #[test]
+    fn guarded_counter_abort_is_mechanically_emitted() {
+        pin_guarded_counter_path("tests/fixtures/guarded_counter_abort.pcs",
+            "GuardedCounterAbort",
+            "../examples/lean/Generated/GuardedCounterAbortLifted.lean");
+    }
 }
 
 /// One emitted `have h_<pc> := <spec_name> <args>` line; used by `sl_block_iter` proof bodies when `sl_block_auto` diverges (call_local programs).

@@ -100,6 +100,7 @@ Raw triples prove a selected bytecode path. Abstract refinements additionally co
 | SPL `Burn` | `AsmRefinesFieldUpdates` (2 accounts) | Mechanical |
 | Counter increment | `AsmRefinesCounterIncrement` | Mechanical |
 | Vault constant field update | `AsmRefinesFieldUpdate` | Mechanical |
+| Whole-transition path (terminating, exit code + field pre→post/preservation) | `AsmRefinesTransitionPath` (#40) | Manual (library + worked `guarded_counter` two-path instance; per-path emission not yet mechanized) |
 | Heap bump allocation | Heap corollary over `heapBumpPtr` / `heapBlock*` | Mechanical |
 | SPL `CloseAccount` | Raw traced triple + generated balance-style corollary | Triple only |
 | SPL `InitializeMint2` | Raw traced triple | Triple only |
