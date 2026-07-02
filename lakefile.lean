@@ -213,6 +213,12 @@ lean_lib Examples where
     `Generated.VaultSplitTracedLifted,
     `Generated.VaultSplitRefinement,
     `Generated.GuardedCounterLifted,
+    -- #40 gap 1: per-path trace-guided lifts of guarded_counter + the
+    -- whole-transition theorem composing each with the shared `.exit`
+    -- (success: counter credited, exit 0; abort: codec unchanged, exit 1).
+    `Generated.GuardedCounterSuccessLifted,
+    `Generated.GuardedCounterAbortLifted,
+    `GuardedCounterTransition,
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
     `Generated.TwoOpDecrementLifted,
