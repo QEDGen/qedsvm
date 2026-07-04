@@ -203,7 +203,7 @@ fn expr_vars(e: &Expr, out: &mut Vec<String>) {
         | Expr::NatAdd(a, b) | Expr::CleanSub(a, b) => { expr_vars(a, out); expr_vars(b, out); }
         Expr::ByteCombo(bs) => for b in bs { expr_vars(b, out); },
         Expr::Const(_) | Expr::StHalfImm(_) | Expr::StWordImm(_)
-        | Expr::StDwordImm(_) | Expr::Raw(_) => {}
+        | Expr::StDwordImm(_) | Expr::Raw(_) | Expr::RawConst(..) => {}
     }
 }
 
