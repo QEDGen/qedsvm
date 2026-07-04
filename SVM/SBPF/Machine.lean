@@ -900,4 +900,100 @@ theorem State.guardedCommit_success (s : State) (outPtr outLen inPtr inN : Nat)
       State.guardSlices_pos _ _ _ _ hSlices]
   rfl
 
+/-! ## Byte-boundedness primitives
+
+Every memory-write primitive keeps cells `< 256`. Homed here (not
+Bounded.lean) so the native-program modules (`SVM/Native/*`, which import
+only Machine) can prove their own `dispatch_bounded` sweeps over private
+helpers — the `hnative` leg of the runtime `StateBounded` closure. -/
+
+/-- `Mem.put` writes a reduced byte and preserves all other reads. -/
+theorem Mem.read_put_lt (m : Mem) (addr val : Nat)
+    (h : ∀ x, m x < 256) : ∀ a, (Mem.put m addr val) a < 256 := by
+  intro a
+  by_cases hx : a = addr
+  · subst hx
+    rw [Memory.Mem.read_put_self]
+    exact Nat.mod_lt _ (by decide)
+  · rw [Memory.Mem.read_put_other _ _ _ _ hx]
+    exact h a
+
+/-- Any `foldl` of `writeU8`s preserves byte-boundedness (the common
+    core of `loadBytesAt` and `writeBytes`). -/
+theorem foldl_writeU8_lt (addrF valF : Nat → Nat) (idxs : List Nat) :
+    ∀ (m : Mem), (∀ a, m a < 256) →
+      ∀ a, (idxs.foldl (fun acc i =>
+              Memory.writeU8 acc (addrF i) (valF i)) m) a < 256 := by
+  induction idxs with
+  | nil => intro m h a; simpa using h a
+  | cons i rest ih =>
+    intro m h a
+    simp only [List.foldl_cons]
+    exact ih _ (fun x => by
+      unfold Memory.writeU8
+      exact Mem.read_put_lt _ _ _ h x) a
+
+/-- `writeBytes` (syscall bulk output: hashes, PDA results, …)
+    preserves byte-boundedness. -/
+theorem writeBytes_lt (out len : Nat) (bs : ByteArray) (m : Mem)
+    (h : ∀ a, m a < 256) : ∀ a, (writeBytes m out len bs) a < 256 := by
+  unfold writeBytes
+  exact foldl_writeU8_lt _ _ _ m h
+
+/-- A real byte (`UInt8.toNat`, the shape every `ByteArray` read in a
+    syscall bulk-write lambda produces). -/
+theorem byte_toNat_lt (u : UInt8) : u.toNat < 256 := by
+  first
+    | exact u.toNat_lt_size
+    | exact u.toNat_lt
+    | exact Nat.lt_of_lt_of_le u.toBitVec.isLt (by decide)
+
+/-- Width-dispatched stores preserve byte-boundedness: every width is a
+    chain of `Mem.put`s. -/
+theorem writeByWidth_lt (m : Mem) (addr val : Nat) (w : Width)
+    (h : ∀ a, m a < 256) : ∀ a, (Memory.writeByWidth m addr val w) a < 256 := by
+  cases w <;>
+    simp only [Memory.writeByWidth, Memory.writeU8, Memory.writeU16,
+               Memory.writeU32, Memory.writeU64] <;>
+    repeat' first
+      | exact h
+      | apply Mem.read_put_lt
+
+/-- `Memory.writeU64` preserves byte-boundedness (defeq to `writeByWidth …
+    .dword`). The CPI write-back's length/lamport dual-writes and the native
+    handlers' u64 slot writes go through it. -/
+theorem writeU64_lt (m : Mem) (addr v : Nat) (h : ∀ a, m a < 256) :
+    ∀ a, (Memory.writeU64 m addr v) a < 256 :=
+  writeByWidth_lt m addr v .dword h
+
+/-- Reading a function-coerced `Mem` (`let mem' : Mem := fun a => …`) is the
+    function itself: the coercion installs it as `default`, empty overlay. -/
+theorem Mem.read_coe (f : Nat → Nat) (a : Nat) : ((f : Mem) : Nat → Nat) a = f a := by
+  show Mem.read { default := f } a = f a
+  unfold Mem.read
+  simp
+
+/-- Bound for reading ANY constructor-literal `Mem` (the syscall
+    `let mem' : Mem := fun a => …` coercion shape), overlay-agnostic: hit =
+    real `UInt8`, miss = default function. `apply`-unifies regardless of how
+    `{}` elaborated (a rewrite keyed on a specific `{}` does NOT reliably
+    match — learned the hard way). -/
+theorem Mem.read_mk_lt (f : Nat → Nat) (o : Std.HashMap Nat UInt8)
+    (a : Nat) (hf : ∀ x, f x < 256) : Mem.read ⟨f, o⟩ a < 256 := by
+  unfold Mem.read
+  split
+  · exact byte_toNat_lt _
+  · exact hf a
+
+/-- Peel one `ite` off a bound goal. WHY `repeat apply ite_lt` not `split`:
+    after `apply Mem.read_mk_lt; intro x` the goal is a BETA-REDEX
+    (`(fun a => if …) x < 256`) that `split` can't see through (syntactic
+    ite search) and `simp`/`dsimp` can't beta-normalize without max-stepping
+    on `Mem.read`'s `HashMap`; `apply` unifies up to defeq through it. -/
+theorem ite_lt {c : Prop} [Decidable c] {t e B : Nat}
+    (ht : t < B) (he : e < B) : (if c then t else e) < B := by
+  split
+  · exact ht
+  · exact he
+
 end SVM.SBPF

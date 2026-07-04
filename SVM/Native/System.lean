@@ -595,4 +595,57 @@ def dispatch (ixData : ByteArray) (accts : List AcctInput) (mem : Mem) :
     -- Unknown discriminant: deterministic failure, no fall-through.
     some ⟨mem, 1, CU_DEFAULT⟩
 
+/-! ## Boundedness — the System leg of the `hnative` discharge
+(`SVM/SBPF/BoundedCpi.lean`): every dispatch returns a u64 `r0` (always
+`0`/`1`) and byte-bounded caller memory (all writes go through
+`writeU64`/`writeBytes`/`writeU32`). In-file because the nonce arms write
+through the private `writeU32`. -/
+
+private theorem writeU32_lt (mem : Mem) (addr v : Nat)
+    (hm : ∀ a, mem a < 256) : ∀ a, writeU32 mem addr v a < 256 := by
+  intro a
+  apply SVM.SBPF.Mem.read_mk_lt
+  intro x
+  repeat first
+    | apply SVM.SBPF.ite_lt
+    | exact Nat.mod_lt _ (by decide)
+    | exact hm _
+
+set_option maxHeartbeats 8000000 in
+set_option maxRecDepth 65536 in
+set_option linter.unusedSimpArgs false in
+theorem dispatch_bounded {ixData : ByteArray} {accts : List AcctInput}
+    {mem : Mem} {nr : NativeResult} (hm : ∀ a, mem a < 256)
+    (h : dispatch ixData accts mem = some nr) :
+    nr.r0 < SVM.SBPF.U64_MODULUS ∧ ∀ a, nr.mem a < 256 := by
+  have hzero : (0 : Nat) < SVM.SBPF.U64_MODULUS := by decide
+  have hone : (1 : Nat) < SVM.SBPF.U64_MODULUS := by decide
+  unfold dispatch at h
+  repeat' split at h
+  all_goals (injection h with h; subst h)
+  all_goals
+    first
+      | exact ⟨hone, hm⟩
+      | exact ⟨hzero, hm⟩
+      | (simp only [execTransfer, execCreateAccount, execAllocate, execAssign,
+           execCreateAccountWithSeed, execAllocateWithSeed, execAssignWithSeed,
+           execTransferWithSeed, execAuthorizeNonceAccount,
+           execInitializeNonceAccount, execAdvanceNonceAccount,
+           execWithdrawNonceAccount, execUpgradeNonceAccount]
+         refine ⟨?_, ?_⟩
+         · repeat' split
+           all_goals first | exact hzero | exact hone
+         · intro a
+           repeat' split
+           all_goals
+             repeat first
+               | exact hm
+               | exact hm _
+               | (refine SVM.SBPF.writeU64_lt _ _ _ ?_)
+               | (refine SVM.SBPF.writeU64_lt _ _ _ ?_ _)
+               | (refine SVM.SBPF.writeBytes_lt _ _ _ _ ?_)
+               | (refine SVM.SBPF.writeBytes_lt _ _ _ _ ?_ _)
+               | (refine writeU32_lt _ _ _ ?_)
+               | (refine writeU32_lt _ _ _ ?_ _))
+
 end SVM.Native.System

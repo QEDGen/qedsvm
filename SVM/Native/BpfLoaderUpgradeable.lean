@@ -667,6 +667,20 @@ def execUpgrade (mem : Mem) (accts : List AcctInput) : NativeResult :=
       | _ => fail mem
   | _ => fail mem
 
+/-- Rent-gap CPI for `ExtendProgram`: System::Transfer from the payer when
+    the grown ProgramData needs lamports; `some (mem, 0)` (no-op) when it
+    already holds enough. Named (not an inline `let`) so the boundedness
+    sweep below sees a clean `extendRentCpi … = some …` case equation. -/
+private def extendRentCpi (rest : List AcctInput) (pdAcct : AcctInput)
+    (balanceRequired : Nat) (mem : Mem) : Option (Mem × Nat) :=
+  if pdAcct.lamports < balanceRequired then
+    match rest with
+    | _sys :: payer :: _ =>
+      invokeSystem (encodeSystemTransfer (balanceRequired - pdAcct.lamports))
+        [payer, pdAcct] mem
+    | _ => none
+  else some (mem, 0)
+
 /-- `ExtendProgram { additional_bytes }`. Accounts:
     0. `[writable]` ProgramData
     1. `[writable]` ProgramData's associated Program
@@ -706,18 +720,7 @@ def execExtendProgram (mem : Mem) (accts : List AcctInput)
                 else
                   -- Rent gap = max(1, rent_min(newLen)) = 1; no transfer if already ≥ 1.
                   let balanceRequired := Nat.max 1 (rentMin newLen)
-                  let needTransfer := pdAcct.lamports < balanceRequired
-                  -- CPI System::Transfer for the rent gap.
-                  let cpiResult : Option (Mem × Nat) :=
-                    if needTransfer then
-                      match rest with
-                      | _sys :: payer :: _ =>
-                        let required := balanceRequired - pdAcct.lamports
-                        let transferIx := encodeSystemTransfer required
-                        invokeSystem transferIx [payer, pdAcct] mem
-                      | _ => none
-                    else some (mem, 0)
-                  match cpiResult with
+                  match extendRentCpi rest pdAcct balanceRequired mem with
                   | none => fail mem
                   | some (baseMem, sysCu) =>
                     -- Grow programdata.dataLen to newLen.
@@ -747,5 +750,157 @@ def dispatch (ixData : ByteArray) (accts : List AcctInput) (mem : Mem) :
   | .extendProgram n        => some (execExtendProgram mem accts n)
   | .setAuthorityChecked   => some (execSetAuthorityChecked mem accts)
   | .unknown _             => some ⟨mem, 1, CU_DEFAULT⟩
+
+/-! ## Boundedness — the loader leg of the `hnative` discharge
+(`SVM/SBPF/BoundedCpi.lean`): every dispatch returns a u64 `r0` (always
+`0`/`1`) and byte-bounded caller memory. In-file because the state
+serializers (`writeU32`/`writeZeros`/`writeBufferState`/
+`writeProgramDataState`), `commonCloseAccount`, and the System sub-call
+(`invokeSystem`) are private. -/
+
+private theorem writeU32_lt (mem : Mem) (addr v : Nat)
+    (hm : ∀ a, mem a < 256) : ∀ a, writeU32 mem addr v a < 256 := by
+  intro a
+  apply SVM.SBPF.Mem.read_mk_lt
+  intro x
+  repeat first
+    | apply SVM.SBPF.ite_lt
+    | exact Nat.mod_lt _ (by decide)
+    | exact hm _
+
+private theorem writeZeros_lt (mem : Mem) (addr len : Nat)
+    (hm : ∀ a, mem a < 256) : ∀ a, writeZeros mem addr len a < 256 := by
+  intro a
+  apply SVM.SBPF.Mem.read_mk_lt
+  intro x
+  apply SVM.SBPF.ite_lt
+  · decide
+  · exact hm _
+
+private theorem writeBufferState_lt (mem : Mem) (dataPtr : Nat)
+    (auth : Option ByteArray) (hm : ∀ a, mem a < 256) :
+    ∀ a, writeBufferState mem dataPtr auth a < 256 := by
+  unfold writeBufferState
+  cases auth
+  · exact writeZeros_lt _ _ _ (writeU32_lt _ _ _ (writeU32_lt _ _ _ hm))
+  · refine SVM.SBPF.writeBytes_lt _ _ _ _ ?_
+    intro x
+    apply SVM.SBPF.Mem.read_mk_lt
+    intro y
+    apply SVM.SBPF.ite_lt
+    · decide
+    · exact writeU32_lt _ _ _ hm _
+
+private theorem writeProgramDataState_lt (mem : Mem) (dataPtr slot : Nat)
+    (auth : Option ByteArray) (hm : ∀ a, mem a < 256) :
+    ∀ a, writeProgramDataState mem dataPtr slot auth a < 256 := by
+  unfold writeProgramDataState
+  cases auth
+  · refine writeZeros_lt _ _ _ ?_
+    intro x
+    apply SVM.SBPF.Mem.read_mk_lt
+    intro y
+    apply SVM.SBPF.ite_lt
+    · decide
+    · exact SVM.SBPF.writeU64_lt _ _ _ (writeU32_lt _ _ _ hm) _
+  · refine SVM.SBPF.writeBytes_lt _ _ _ _ ?_
+    intro x
+    apply SVM.SBPF.Mem.read_mk_lt
+    intro y
+    apply SVM.SBPF.ite_lt
+    · decide
+    · exact SVM.SBPF.writeU64_lt _ _ _ (writeU32_lt _ _ _ hm) _
+
+private theorem invokeSystem_bounded {ixData : ByteArray}
+    {subAccts : List AcctInput} {mem m' : Mem} {cu' : Nat}
+    (h : invokeSystem ixData subAccts mem = some (m', cu'))
+    (hm : ∀ a, mem a < 256) : ∀ a, m' a < 256 := by
+  unfold invokeSystem at h
+  cases hd : System.dispatch ixData subAccts mem with
+  | none => rw [hd] at h; exact nomatch h
+  | some r =>
+    rw [hd] at h
+    simp only [] at h
+    split at h
+    · injection h with h
+      injection h with h1 h2
+      exact h1 ▸ (System.dispatch_bounded hm hd).2
+    · exact nomatch h
+
+private theorem extendRentCpi_bounded {rest : List AcctInput}
+    {pdAcct : AcctInput} {balanceRequired : Nat} {mem m' : Mem} {cu' : Nat}
+    (h : extendRentCpi rest pdAcct balanceRequired mem = some (m', cu'))
+    (hm : ∀ a, mem a < 256) : ∀ a, m' a < 256 := by
+  unfold extendRentCpi at h
+  split at h
+  · split at h
+    · exact invokeSystem_bounded h hm
+    · exact nomatch h
+  · injection h with h
+    injection h with h1 h2
+    exact h1 ▸ hm
+
+set_option maxHeartbeats 40000000 in
+set_option maxRecDepth 65536 in
+theorem dispatch_bounded {ixData : ByteArray} {accts : List AcctInput}
+    {mem : Mem} {nr : NativeResult} (hm : ∀ a, mem a < 256)
+    (h : dispatch ixData accts mem = some nr) :
+    nr.r0 < SVM.SBPF.U64_MODULUS ∧ ∀ a, nr.mem a < 256 := by
+  have hzero : (0 : Nat) < SVM.SBPF.U64_MODULUS := by decide
+  have hone : (1 : Nat) < SVM.SBPF.U64_MODULUS := by decide
+  unfold dispatch at h
+  repeat' split at h
+  all_goals (injection h with h; subst h)
+  -- Per-exec control-flow case analysis via `fun_cases` — NOT `split`, whose
+  -- internal branch simp max-steps on these zeta-inlined write-chain trees.
+  -- `fun_cases` keeps leaf calls (`commonCloseAccount`, the serializers,
+  -- `invokeSystem`) folded and names the CPI result equation, so the
+  -- `invokeSystem_bounded (by assumption)` closer can consume it.
+  all_goals
+    first
+      | exact ⟨hone, hm⟩
+      | exact ⟨hzero, hm⟩
+      | (first
+          | fun_cases execInitializeBuffer
+          | fun_cases execWrite
+          | fun_cases execSetAuthority
+          | fun_cases execSetAuthorityChecked
+          | fun_cases execClose
+          | fun_cases execDeployWithMaxDataLen
+          | fun_cases execUpgrade
+          | fun_cases execExtendProgram
+         all_goals try fun_cases commonCloseAccount
+         all_goals refine ⟨?_, ?_⟩
+         all_goals
+           first
+             | exact hzero
+             | exact hone
+             | (intro a
+                repeat first
+                  | exact hm
+                  | exact hm _
+                  | (refine SVM.SBPF.writeU64_lt _ _ _ ?_)
+                  | (refine SVM.SBPF.writeU64_lt _ _ _ ?_ _)
+                  | (refine SVM.SBPF.writeBytes_lt _ _ _ _ ?_)
+                  | (refine SVM.SBPF.writeBytes_lt _ _ _ _ ?_ _)
+                  | (refine writeU32_lt _ _ _ ?_)
+                  | (refine writeU32_lt _ _ _ ?_ _)
+                  | (refine writeZeros_lt _ _ _ ?_)
+                  | (refine writeZeros_lt _ _ _ ?_ _)
+                  | (refine writeBufferState_lt _ _ _ ?_)
+                  | (refine writeBufferState_lt _ _ _ ?_ _)
+                  | (refine writeProgramDataState_lt _ _ _ _ ?_)
+                  | (refine writeProgramDataState_lt _ _ _ _ ?_ _)
+                  | (refine invokeSystem_bounded (by assumption) ?_)
+                  | (refine invokeSystem_bounded (by assumption) ?_ _)
+                  | (refine extendRentCpi_bounded (by assumption) ?_)
+                  | (refine extendRentCpi_bounded (by assumption) ?_ _)
+                  -- Serializer bodies iota-reduce on concrete `some` args
+                  -- into raw `Mem` literals: open pointwise, keep peeling.
+                  | (apply SVM.SBPF.Mem.read_mk_lt; intro _)
+                  | apply SVM.SBPF.ite_lt
+                  | exact Nat.mod_lt _ (by decide)
+                  | omega
+                  | intro _))
 
 end SVM.Native.BpfLoaderUpgradeable

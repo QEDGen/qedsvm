@@ -80,18 +80,12 @@ theorem StateBounded.r10_le {s : State} (h : StateBounded s) :
   simp only [STACK_START, MAX_CALL_DEPTH] at *
   omega
 
-/-! ## Memory boundedness plumbing -/
+/-! ## Memory boundedness plumbing
 
-/-- `Mem.put` writes a reduced byte and preserves all other reads. -/
-theorem Mem.read_put_lt (m : Mem) (addr val : Nat)
-    (h : ∀ x, m x < 256) : ∀ a, (Mem.put m addr val) a < 256 := by
-  intro a
-  by_cases hx : a = addr
-  · subst hx
-    rw [Memory.Mem.read_put_self]
-    exact Nat.mod_lt _ (by decide)
-  · rw [Memory.Mem.read_put_other _ _ _ _ hx]
-    exact h a
+The write-primitive bounds (`Mem.read_put_lt`, `foldl_writeU8_lt`,
+`writeBytes_lt`, `writeByWidth_lt`, `writeU64_lt`, `Mem.read_mk_lt`,
+`ite_lt`, `byte_toNat_lt`) live in Machine.lean so the `SVM/Native/*`
+modules can reuse them for their `dispatch_bounded` sweeps. -/
 
 /-- The empty memory reads 0 everywhere. -/
 theorem emptyMem_lt : ∀ a, (Runner.emptyMem : Mem) a < 256 := by
@@ -186,28 +180,6 @@ theorem RegFile.set_get_lt {rf : RegFile} {B : Nat}
 
 /-! ## Memory-write boundedness plumbing -/
 
-/-- Any `foldl` of `writeU8`s preserves byte-boundedness (the common
-    core of `loadBytesAt` and `writeBytes`). -/
-theorem foldl_writeU8_lt (addrF valF : Nat → Nat) (idxs : List Nat) :
-    ∀ (m : Mem), (∀ a, m a < 256) →
-      ∀ a, (idxs.foldl (fun acc i =>
-              Memory.writeU8 acc (addrF i) (valF i)) m) a < 256 := by
-  induction idxs with
-  | nil => intro m h a; simpa using h a
-  | cons i rest ih =>
-    intro m h a
-    simp only [List.foldl_cons]
-    exact ih _ (fun x => by
-      unfold Memory.writeU8
-      exact Mem.read_put_lt _ _ _ h x) a
-
-/-- `writeBytes` (syscall bulk output: hashes, PDA results, …)
-    preserves byte-boundedness. -/
-theorem writeBytes_lt (out len : Nat) (bs : ByteArray) (m : Mem)
-    (h : ∀ a, m a < 256) : ∀ a, (writeBytes m out len bs) a < 256 := by
-  unfold writeBytes
-  exact foldl_writeU8_lt _ _ _ m h
-
 /-- `hashWrite`'s `mem` is `s.mem` (guard faulted) or `writeBytes …`
     (success), both byte-bounded; closes every hash arm with `guardSlices`
     folded. -/
@@ -284,14 +256,6 @@ theorem Poseidon_exec_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
     (Poseidon.exec s).mem a < 256 := by
   simp only [Poseidon.exec]; exact guardedCommit_mem_lt s _ _ _ _ _ h a
 
-/-- A real byte (`UInt8.toNat`, the shape every `ByteArray` read in a
-    syscall bulk-write lambda produces). -/
-theorem byte_toNat_lt (u : UInt8) : u.toNat < 256 := by
-  first
-    | exact u.toNat_lt_size
-    | exact u.toNat_lt
-    | exact Nat.lt_of_lt_of_le u.toBitVec.isLt (by decide)
-
 /-- `execCreate` = `guardRead` wrapping `guardedCommit`; `regs` is `s.regs`
     (guard miss) or `set .r0 {0,1}`. PDA `regs_lt` closer. -/
 theorem Pda_execCreate_regs_of_k {motive : RegFile → Prop} (s : State)
@@ -325,48 +289,6 @@ theorem Pda_execTryFind_regs_of_k {motive : RegFile → Prop} (s : State)
     exact hk0
   · exact hk1
 
-
-/-- Width-dispatched stores preserve byte-boundedness: every width is a
-    chain of `Mem.put`s. -/
-theorem writeByWidth_lt (m : Mem) (addr val : Nat) (w : Width)
-    (h : ∀ a, m a < 256) : ∀ a, (Memory.writeByWidth m addr val w) a < 256 := by
-  cases w <;>
-    simp only [Memory.writeByWidth, Memory.writeU8, Memory.writeU16,
-               Memory.writeU32, Memory.writeU64] <;>
-    repeat' first
-      | exact h
-      | apply Mem.read_put_lt
-
-/-- Reading a function-coerced `Mem` (`let mem' : Mem := fun a => …`) is the
-    function itself: the coercion installs it as `default`, empty overlay. -/
-theorem Mem.read_coe (f : Nat → Nat) (a : Nat) : ((f : Mem) : Nat → Nat) a = f a := by
-  show Mem.read { default := f } a = f a
-  unfold Mem.read
-  simp
-
-
-/-- Bound for reading ANY constructor-literal `Mem` (the syscall
-    `let mem' : Mem := fun a => …` coercion shape), overlay-agnostic: hit =
-    real `UInt8`, miss = default function. `apply`-unifies regardless of how
-    `{}` elaborated (a rewrite keyed on a specific `{}` does NOT reliably
-    match — learned the hard way). -/
-theorem Mem.read_mk_lt (f : Nat → Nat) (o : Std.HashMap Nat UInt8)
-    (a : Nat) (hf : ∀ x, f x < 256) : Mem.read ⟨f, o⟩ a < 256 := by
-  unfold Mem.read
-  split
-  · exact byte_toNat_lt _
-  · exact hf a
-
-/-- Peel one `ite` off a bound goal. WHY `repeat apply ite_lt` not `split`:
-    after `apply Mem.read_mk_lt; intro x` the goal is a BETA-REDEX
-    (`(fun a => if …) x < 256`) that `split` can't see through (syntactic
-    ite search) and `simp`/`dsimp` can't beta-normalize without max-stepping
-    on `Mem.read`'s `HashMap`; `apply` unifies up to defeq through it. -/
-theorem ite_lt {c : Prop} [Decidable c] {t e B : Nat}
-    (ht : t < B) (he : e < B) : (if c then t else e) < B := by
-  split
-  · exact ht
-  · exact he
 
 /-- `mem_lt` closers for the de-simp'd rent/epoch_schedule sysvars: peel
     `guardWrite` (fault keeps `s.mem`), then `Mem.read_mk_lt` + repeated

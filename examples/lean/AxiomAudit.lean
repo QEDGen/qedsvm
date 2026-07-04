@@ -110,13 +110,17 @@ elab "#assert_std_axioms " id:ident : command => do
 -- Phase 7 sub-item 4 (Stages A+B): StateBounded on the RUNTIME path.
 -- Stage A = CPI-free transfer (executeFnCpi coincides with executeFn);
 -- Stage B = the genuine cross-CPI chain (CPI commit step → fresh sub-VM
--- state → fuel-induction wrapper → end-to-end Runner.run). hnative/hexit
--- stay named hypotheses of the wrapper (staged backlog) — the assertions
--- still gate the proofs against sorry/native_decide regressions.
+-- state → fuel-induction wrapper → end-to-end Runner.run), HYPOTHESIS-FREE:
+-- the once-staged black boxes are discharged by Native.dispatch_bounded
+-- (all four native handler modules) and step_exitBounded (per-step exit-code
+-- sweep over execSyscall_exitBounded).
 #assert_std_axioms SVM.SBPF.executeFnCpi_bounded_of_no_cpi
 #assert_std_axioms SVM.SBPF.run_bounded_of_no_cpi
 #assert_std_axioms SVM.SBPF.cpiCallNextState_bounded
 #assert_std_axioms SVM.SBPF.buildCalleeVM_bounded
+#assert_std_axioms SVM.SBPF.execSyscall_exitBounded
+#assert_std_axioms SVM.SBPF.step_exitBounded
+#assert_std_axioms SVM.Native.dispatch_bounded
 #assert_std_axioms SVM.SBPF.executeFnCpiWithFuel_bounded
 #assert_std_axioms SVM.SBPF.run_bounded
 

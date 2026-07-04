@@ -12,10 +12,11 @@
   is the Stage-B chain below: `cpiCallNextState_bounded` (the commit step) →
   `buildCalleeVM_bounded` (the fresh sub-VM state) →
   `executeFnCpiWithFuel_bounded` (the fuel induction, closing `hcallee`) →
-  `run_bounded` (end-to-end on `Runner.run`, CPI or not). The two remaining
-  named black boxes are hypotheses of the wrapper: `hnative` (per-native-
-  handler byte-boundedness) and `hexit` (the per-`step` exit-code sweep) —
-  the staged backlog; see docs/PHASE7_LIFT_HARDENING_PLAN.md.
+  `run_bounded` (end-to-end on `Runner.run`, CPI or not). The once-staged
+  black boxes are DISCHARGED: `Native.dispatch_bounded` (SVM/Native.lean +
+  the System/BpfLoaderUpgradeable in-file legs) covers the native handlers,
+  and `step_exitBounded` (below) is the per-`step` exit-code sweep — the
+  chain is hypothesis-free.
 -/
 
 import SVM.SBPF.Bounded
@@ -168,12 +169,6 @@ theorem cpiCallNextState_bounded
          | (obtain ⟨hexit, hrd, hmem⟩ :=
               hcallee _ _ _ _ ‹runCallee _ = some _›
             exact h.with_cpi_commit hexit hmem hrd _ _ _ _))
-
-/-- `Memory.writeU64` preserves byte-boundedness (defeq to `writeByWidth …
-    .dword`). The CPI write-back's length/lamport dual-writes go through it. -/
-theorem writeU64_lt (m : Mem) (addr v : Nat) (h : ∀ a, m a < 256) :
-    ∀ a, (Memory.writeU64 m addr v) a < 256 :=
-  writeByWidth_lt m addr v .dword h
 
 /-- The CPI commit never touches `exitCode` (every `cpiCallNextState` arm
     preserves it, for ANY `sc`), so the wrapper's exit-code co-invariant
@@ -348,30 +343,199 @@ theorem exitBounded.getD_lt {s : State} (h : exitBounded s) :
   | none => decide
   | some v => exact h v hex
 
+/-! ### The `hexit` discharge: one `step` surfaces only u64 exit codes
+
+Guard combinators (fault = `accessFault`'s fixed sentinel, continuation =
+pass-through), per-family closers for the folded syscall execs (mirroring
+the `_regs_of_k` roster in Bounded.lean), then the two sweeps. -/
+
+/-- `accessFault` surfaces `ERR_ACCESS_VIOLATION` — a u64. -/
+theorem State.accessFault_exitBounded (s : State) : exitBounded s.accessFault := by
+  intro v hv
+  simp only [State.accessFault, Option.some.injEq] at hv
+  exact hv ▸ (by decide)
+
+/-- A guarded read's exit code is the fault sentinel or the continuation's. -/
+theorem State.guardRead_exitBounded (s : State) (addr len : Nat)
+    (k : State → State) (hk : exitBounded (k s)) :
+    exitBounded (s.guardRead addr len k) := by
+  simp only [State.guardRead]; split
+  · exact hk
+  · exact s.accessFault_exitBounded
+
+theorem State.guardWrite_exitBounded (s : State) (addr len : Nat)
+    (k : State → State) (hk : exitBounded (k s)) :
+    exitBounded (s.guardWrite addr len k) := by
+  simp only [State.guardWrite]; split
+  · exact hk
+  · exact s.accessFault_exitBounded
+
+theorem State.guardSlices_exitBounded (s : State) (descsAddr count : Nat)
+    (k : State → State) (hk : exitBounded (k s)) :
+    exitBounded (s.guardSlices descsAddr count k) := by
+  rcases s.guardSlices_eq descsAddr count k with h | h <;> rw [h]
+  · exact s.accessFault_exitBounded
+  · exact hk
+
+/-- `hashWrite` commits regs/mem only — exit code is a guard fault or the
+    caller's. -/
+theorem hashWrite_exitBounded (s : State) (outPtr outLen inPtr inN : Nat)
+    (digest : ByteArray) (he : exitBounded s) :
+    exitBounded (s.hashWrite outPtr outLen inPtr inN digest) := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_exitBounded s _ _ _ ?_
+  refine State.guardRead_exitBounded s _ _ _ ?_
+  refine State.guardSlices_exitBounded s _ _ _ ?_
+  exact he
+
+theorem guardedCommit_exitBounded (s : State) (outPtr outLen inPtr inN : Nat)
+    (result : Option ByteArray) (he : exitBounded s) :
+    exitBounded (s.guardedCommit outPtr outLen inPtr inN result) := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_exitBounded s _ _ _ ?_
+  refine State.guardRead_exitBounded s _ _ _ ?_
+  refine State.guardSlices_exitBounded s _ _ _ ?_
+  cases result
+  · exact he
+  · exact he
+
+theorem Sha256_exec_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Sha256.exec s) := by
+  simp only [Sha256.exec]; exact hashWrite_exitBounded s _ _ _ _ _ he
+
+theorem Sha512_exec_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Sha512.exec s) := by
+  simp only [Sha512.exec]; exact hashWrite_exitBounded s _ _ _ _ _ he
+
+theorem Keccak256_exec_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Keccak256.exec s) := by
+  simp only [Keccak256.exec]; exact hashWrite_exitBounded s _ _ _ _ _ he
+
+theorem Blake3_exec_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Blake3.exec s) := by
+  simp only [Blake3.exec]; exact hashWrite_exitBounded s _ _ _ _ _ he
+
+theorem Poseidon_exec_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Poseidon.exec s) := by
+  simp only [Poseidon.exec]; exact guardedCommit_exitBounded s _ _ _ _ _ he
+
+theorem Pda_execCreate_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Pda.execCreate s) := by
+  simp only [Pda.execCreate]
+  refine State.guardRead_exitBounded s _ _ _ ?_
+  exact guardedCommit_exitBounded s _ _ _ _ _ he
+
+theorem Pda_execTryFind_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Pda.execTryFind s) := by
+  simp only [Pda.execTryFind]
+  refine State.guardRead_exitBounded s _ _ _ ?_
+  refine State.guardRead_exitBounded s _ _ _ ?_
+  refine State.guardSlices_exitBounded s _ _ _ ?_
+  split
+  · refine State.guardWrite_exitBounded s _ _ _ ?_
+    refine State.guardWrite_exitBounded s _ _ _ ?_
+    exact he
+  · exact he
+
+theorem execLogData_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Logging.execLogData s) := by
+  simp only [Logging.execLogData]
+  refine State.guardRead_exitBounded s _ _ _ ?_
+  refine State.guardSlices_exitBounded s _ _ _ ?_
+  exact he
+
+theorem execRent_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Sysvar.execRent s) := by
+  simp only [Sysvar.execRent]
+  refine State.guardWrite_exitBounded s _ _ _ ?_
+  exact he
+
+theorem execEpochSchedule_exitBounded (s : State) (he : exitBounded s) :
+    exitBounded (Sysvar.execEpochSchedule s) := by
+  simp only [Sysvar.execEpochSchedule]
+  refine State.guardWrite_exitBounded s _ _ _ ?_
+  exact he
+
+set_option maxHeartbeats 8000000 in
+set_option maxRecDepth 65536 in
+/-- Every syscall surfaces a u64 exit code: pass-through (`he`), a fixed
+    `ERR_*` sentinel (`decide`), or a folded-family closer. Same roster
+    discipline as `execSyscall_regs_lt`/`execSyscall_mem_lt`. -/
+theorem execSyscall_exitBounded (sc : Syscall) (s : State)
+    (he : exitBounded s) : exitBounded (execSyscall sc s) := by
+  cases sc <;>
+    simp only [execSyscall, commitOptional,
+          State.guardRead, State.guardWrite, State.accessFault,
+          Logging.execLog, Logging.execLogPubkey, Logging.execLog64,
+          Logging.execLogComputeUnits,
+          MemOps.execCopy, MemOps.execSet, MemOps.execCmp,
+          Secp256k1.exec, Curve25519.execValidate, Curve25519.execGroupOp,
+          Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
+          AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
+          Cpi.exec,
+          Sysvar.execClock,
+          Sysvar.execLastRestartSlot, Sysvar.execFees,
+          Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
+          Sysvar.zeroFillR1, ReturnData.execSet, ReturnData.execGet,
+          Abort.execAbort, Abort.execPanic, Misc.execAllocFree,
+          Misc.allocFreeStep, Misc.execRemainingComputeUnits,
+          Misc.execGetStackHeight, Misc.execProcessedSibling,
+          Misc.execUnknown] <;>
+    (repeat' split) <;>
+    first
+      | exact he
+      | (intro v hv
+         simp only [Option.some.injEq] at hv
+         exact hv ▸ (by decide))
+      | exact execLogData_exitBounded s he
+      | exact Sha256_exec_exitBounded s he
+      | exact Sha512_exec_exitBounded s he
+      | exact Keccak256_exec_exitBounded s he
+      | exact Blake3_exec_exitBounded s he
+      | exact Poseidon_exec_exitBounded s he
+      | exact Pda_execCreate_exitBounded s he
+      | exact Pda_execTryFind_exitBounded s he
+      | exact execRent_exitBounded s he
+      | exact execEpochSchedule_exitBounded s he
+
+set_option maxHeartbeats 1000000 in
+/-- One `step` surfaces only u64 exit codes — the `hexit` discharge. The
+    clean `.exit` arm surfaces `r0` (bounded by `regs_lt`); every abort site
+    surfaces a fixed `ERR_*` sentinel; everything else passes through. -/
+theorem step_exitBounded (insn : Insn) {s : State} (hb : StateBounded s)
+    (he : exitBounded s) : exitBounded (step insn s) := by
+  cases insn
+  case call sc =>
+    simp only [step]
+    exact fun v hv => execSyscall_exitBounded sc s he v hv
+  case exit =>
+    simp only [step]
+    split
+    · exact he
+    · intro v hv
+      simp only [Option.some.injEq] at hv
+      exact hv ▸ hb.regs_lt .r0
+  all_goals
+    simp only [step] <;> (repeat' split) <;>
+      first
+        | exact he
+        | (intro v hv
+           simp only [Option.some.injEq] at hv
+           exact hv ▸ (by decide))
+
 /-- THE cross-CPI preservation theorem: the runtime stepper keeps every
     reachable state `StateBounded` (with u64 exit codes), through any depth
     of recursive CPI sub-VMs — the L5/L3 closure on the actual runtime path,
-    no CPI-free restriction.
+    no CPI-free restriction, no hypotheses.
 
     A plain induction on fuel covers both the tail and the sub-VM (both
     recurse at `fuel'`); the CPI commit arm reduces to
     `cpiCallNextState_bounded`, whose `hcallee` obligation is discharged by
     `buildCalleeVM_bounded` (fresh sub-state bounded) + the induction
-    hypothesis (sub-VM run bounded) + the `commitCallee_*` write-back lemmas.
-
-    Two named black boxes stay hypotheses (the staged backlog,
-    docs/PHASE7_LIFT_HARDENING_PLAN.md):
-    - `hnative`: a native handler returns a u64 `r0` and byte-bounded memory
-      (per-handler sweep over `Native.dispatch`);
-    - `hexit`: `step` only surfaces u64 exit codes (per-arm sweep mirroring
-      `step_bounded`). -/
-theorem executeFnCpiWithFuel_bounded (registry : Nat → Option ByteArray)
-    (hnative : ∀ (pid : Nat) (ixData : ByteArray)
-        (accts : List Native.AcctInput) (m : Mem), (∀ a, m a < 256) →
-        ∀ nr, Native.dispatch pid ixData accts m = some nr →
-          nr.r0 < U64_MODULUS ∧ ∀ a, nr.mem a < 256)
-    (hexit : ∀ (insn : Insn) (s : State), StateBounded s → exitBounded s →
-        exitBounded (step insn s)) :
+    hypothesis (sub-VM run bounded) + the `commitCallee_*` write-back
+    lemmas; the native arm by `Native.dispatch_bounded` (all four handler
+    modules swept) and the exit co-invariant by `step_exitBounded`. -/
+theorem executeFnCpiWithFuel_bounded (registry : Nat → Option ByteArray) :
     ∀ (fuel : Nat) (fetch : Nat → Option Insn) (s : State),
       fuel < U64_MODULUS → StateBounded s → exitBounded s →
       StateBounded (Runner.executeFnCpiWithFuel registry fetch s fuel).1 ∧
@@ -452,11 +616,11 @@ theorem executeFnCpiWithFuel_bounded (registry : Nat → Option ByteArray)
             split
             · exact cpiCallNextState_bounded registry fuel' _ hb (Or.inl rfl)
                 (fun pid ixd accts nr hd =>
-                  hnative pid ixd accts s.mem hb.mem_lt nr hd)
+                  Native.dispatch_bounded hb.mem_lt hd)
                 (fun elf subF nm fr h => hrc _ _ _ elf subF nm fr h)
             · exact cpiCallNextState_bounded registry fuel' _ hb (Or.inr rfl)
                 (fun pid ixd accts nr hd =>
-                  hnative pid ixd accts s.mem hb.mem_lt nr hd)
+                  Native.dispatch_bounded hb.mem_lt hd)
                 (fun elf subF nm fr h => hrc _ _ _ elf subF nm fr h)
             · exact step_bounded _ hb
           · -- `exitBounded (chargeCu s')`: CPI arms keep `exitCode = none`
@@ -471,27 +635,20 @@ theorem executeFnCpiWithFuel_bounded (registry : Nat → Option ByteArray)
                     from fun _ => rfl,
                   cpiCallNextState_exitCode, hex] at hv
               cases hv
-            · exact hexit _ s hb he v hv
+            · exact step_exitBounded _ hb he v hv
 
-/-- End-to-end runtime boundedness, CPI or not: `Runner.run` succeeds with a
-    `StateBounded` final state carrying a u64 exit code. The across-CPI
-    counterpart of `run_bounded_of_no_cpi` (which needs neither `hnative`
-    nor `hexit` but forbids CPI instructions). -/
+/-- End-to-end runtime boundedness, CPI or not, hypothesis-free:
+    `Runner.run` succeeds with a `StateBounded` final state carrying a u64
+    exit code. Subsumes `run_bounded_of_no_cpi`. -/
 theorem run_bounded {bs : ByteArray} {cfg : Runner.RunConfig}
     {insns : Array Insn}
-    (hnative : ∀ (pid : Nat) (ixData : ByteArray)
-        (accts : List Native.AcctInput) (m : Mem), (∀ a, m a < 256) →
-        ∀ nr, Native.dispatch pid ixData accts m = some nr →
-          nr.r0 < U64_MODULUS ∧ ∀ a, nr.mem a < 256)
-    (hexit : ∀ (insn : Insn) (s : State), StateBounded s → exitBounded s →
-        exitBounded (step insn s))
     (hdecode : Decode.decodeProgram bs [(Elf.entrypointHash, 0)] = some insns)
     (hcu : cfg.cuBudget < U64_MODULUS) :
     ∃ sf, Runner.run bs cfg = some sf ∧ StateBounded sf ∧ exitBounded sf := by
   refine ⟨Runner.executeFnCpi cfg.programRegistry (Runner.fetchFromArray insns)
             (Runner.initialState cfg) cfg.cuBudget, ?_, ?_⟩
   · simp only [Runner.run, hdecode, bind, Option.bind, pure]
-  · exact executeFnCpiWithFuel_bounded cfg.programRegistry hnative hexit
+  · exact executeFnCpiWithFuel_bounded cfg.programRegistry
       cfg.cuBudget (Runner.fetchFromArray insns) (Runner.initialState cfg) hcu
       (initialState_bounded cfg hcu)
       (by intro v hv; rw [Runner.initialState_exitCode] at hv; cases hv)

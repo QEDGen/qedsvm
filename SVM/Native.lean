@@ -105,4 +105,57 @@ def dispatch (pid : Nat) (ixData : ByteArray) (accts : List AcctInput)
   else
     Precompiles.dispatch pid ixData accts mem
 
+/-! ## Boundedness — the full `hnative` discharge (audit L5/L3, cross-CPI
+`StateBounded` closure in `SVM/SBPF/BoundedCpi.lean`): any successful native
+dispatch returns a u64 `r0` and byte-bounded caller memory. System and
+BpfLoaderUpgradeable prove their legs in-file (private helpers); the two
+remaining modules are external sweeps here. -/
+
+theorem ComputeBudget.dispatch_bounded {ixData : ByteArray}
+    {accts : List AcctInput} {mem : Mem} {nr : NativeResult}
+    (hm : ∀ a, mem a < 256)
+    (h : ComputeBudget.dispatch ixData accts mem = some nr) :
+    nr.r0 < SVM.SBPF.U64_MODULUS ∧ ∀ a, nr.mem a < 256 := by
+  unfold ComputeBudget.dispatch at h
+  injection h with h
+  subst h
+  exact ⟨(by decide : (0 : Nat) < SVM.SBPF.U64_MODULUS), hm⟩
+
+set_option linter.unusedSimpArgs false in
+theorem Precompiles.dispatch_bounded {pid : Nat} {ixData : ByteArray}
+    {accts : List AcctInput} {mem : Mem} {nr : NativeResult}
+    (hm : ∀ a, mem a < 256)
+    (h : Precompiles.dispatch pid ixData accts mem = some nr) :
+    nr.r0 < SVM.SBPF.U64_MODULUS ∧ ∀ a, nr.mem a < 256 := by
+  have hzero : (0 : Nat) < SVM.SBPF.U64_MODULUS := by decide
+  have hone : (1 : Nat) < SVM.SBPF.U64_MODULUS := by decide
+  unfold Precompiles.dispatch at h
+  repeat' split at h
+  all_goals first
+    | (injection h with h; subst h
+       simp only [Precompiles.dispatchEd25519, Precompiles.dispatchSecp256k1,
+         Precompiles.dispatchSecp256r1]
+       refine ⟨?_, ?_⟩
+       · repeat' split
+         all_goals first | exact hzero | exact hone
+       · intro a
+         repeat' split
+         all_goals exact hm _)
+    | exact nomatch h
+
+/-- The full `hnative` obligation. -/
+theorem dispatch_bounded {pid : Nat} {ixData : ByteArray}
+    {accts : List AcctInput} {mem : Mem} {nr : NativeResult}
+    (hm : ∀ a, mem a < 256)
+    (h : dispatch pid ixData accts mem = some nr) :
+    nr.r0 < SVM.SBPF.U64_MODULUS ∧ ∀ a, nr.mem a < 256 := by
+  unfold dispatch at h
+  repeat' split at h
+  all_goals
+    first
+      | exact System.dispatch_bounded hm h
+      | exact ComputeBudget.dispatch_bounded hm h
+      | exact BpfLoaderUpgradeable.dispatch_bounded hm h
+      | exact Precompiles.dispatch_bounded hm h
+
 end SVM.Native
