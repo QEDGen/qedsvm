@@ -181,6 +181,21 @@ lean_lib Examples where
     -- `containsRange`) and a single-atom prefix post (the fault spec applies
     -- bare, no `frame_right`). Shows the OOB arm scales across syscall families.
     `Generated.OobClockSysvarLifted,
+    -- OobRentSysvar: the H6 scale-out of the OOB fault emitter to the rent
+    -- getter (17-byte execRent write region) — pure OobSyscall registration,
+    -- no emitter changes.
+    `Generated.OobRentSysvarLifted,
+    -- OobSetReturnData: the register-sized-region OOB arm — the guarded
+    -- slice is [r1, r1+r2), so the fault spec pins BOTH registers and the
+    -- literal length side conditions discharge `by decide`.
+    `Generated.OobSetReturnDataLifted,
+    -- OobCreatePda: the non-r1-region OOB arm — the program_id slice
+    -- [r3, r3+32) is the first guard, so the emitter rotates r3 to the
+    -- front of the lifted pre/post before composing the fault spec.
+    `Generated.OobCreatePdaLifted,
+    -- OobSha256: the hash-family OOB arm — the digest output [r3, r3+32)
+    -- is hashWrite's FIRST guard (non-r1 rotation on the WRITE side).
+    `Generated.OobSha256Lifted,
     -- Counter: a real non-token .so re-lifted trace-style, plus the first
     -- NON-token asm-refines-intrinsic theorem (CounterRefinement →
     -- AsmRefinesCounterIncrement). Validates that the refinement codegen

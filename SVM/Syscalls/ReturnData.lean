@@ -46,6 +46,20 @@ theorem execSet_faults_oob (s : State)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 
+/-- Companion to `execSet_faults_oob`: the same out-of-region input slice pins
+    the `exitCode` sentinel (guardRead sets both). Discharges the exitCode
+    conjunct of the lifted setter's `cuTripleFaultsWithinMem` corollary. -/
+theorem execSet_faults_oob_exitCode (s : State)
+    (hle : s.regs.r2 ≤ MAX_RETURN_DATA) (hne : s.regs.r2 ≠ 0)
+    (hoob : s.regions.containsRange s.regs.r1 s.regs.r2 = false) :
+    (execSet s).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [execSet, State.guardRead]
+  rw [if_neg (Nat.not_lt.mpr hle), if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
 /-- `sol_get_return_data(out, maxLen, pubkeyOut)`: r0 := ACTUAL returnData length
     (not truncated). When `copyLen = min maxLen dataLen ≠ 0`, copy `copyLen` bytes
     to `*out` and the setter's 32-byte program id to `*pubkeyOut`; when 0, write

@@ -663,6 +663,34 @@ theorem writeBytes_read_inside (mem : Memory.Mem) (out len i : Nat) (bs : ByteAr
         { s with regs := s.regs.set .r0 0
                  mem  := writeBytes s.mem outPtr outLen digest }
 
+/-- H6 fault direction for the whole hash family: a non-empty out-of-region
+    digest OUTPUT `[outPtr, outPtr+outLen)` (the FIRST guard) traps with a
+    typed access violation. One lemma covers all four hashes. -/
+theorem State.hashWrite_faults_oob (s : State) (outPtr outLen inPtr inN : Nat)
+    (digest : ByteArray) (hne : outLen ≠ 0)
+    (hoob : s.regions.containsWritable outPtr outLen = false) :
+    (s.hashWrite outPtr outLen inPtr inN digest).vmError
+      = some .accessViolation := by
+  simp only [State.hashWrite, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+/-- Companion: the same out-of-region output pins the `exitCode` sentinel. -/
+theorem State.hashWrite_faults_oob_exitCode (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) (hne : outLen ≠ 0)
+    (hoob : s.regions.containsWritable outPtr outLen = false) :
+    (s.hashWrite outPtr outLen inPtr inN digest).exitCode
+      = some ERR_ACCESS_VIOLATION := by
+  simp only [State.hashWrite, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
 /-- `hashWrite` only rewrites `regs` (r0) and `mem` (digest); every other field
     is preserved on both branches. `@[simp]` closes the sweeps folded (one set
     of lemmas covers all four hashes). -/

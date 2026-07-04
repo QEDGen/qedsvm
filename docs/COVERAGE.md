@@ -84,7 +84,12 @@ When a lifted path terminates in a typed fault rather than a clean `exit`, the l
 | `abort` / `sol_panic_` | `.abort` | Mechanical | Unconditional fault from any precondition; composed via `cuTripleWithinMem_seq_fault_pure` (`AbortCaller`). |
 | OOB `sol_secp256k1_recover` | `.accessViolation` | Mechanical | Read-region guard (`containsRange r1 32 = false`); the prefix post is framed into the single-register fault-spec pre and composed via the Mem-aware `cuTripleWithinMem_seq_fault` (`OobSecp256k1`). |
 | OOB `sol_get_clock_sysvar` | `.accessViolation` | Mechanical | Write-region guard (`containsWritable r1 40 = false`); single-atom prefix, fault spec applied directly (`OobClockSysvar`). |
-| Other OOB syscalls | `.accessViolation` | Manual | Same recipe: a per-syscall `*_faults_oob` triple plus an emitter registry entry. Register-sized regions (e.g. `[r1, r1+r2)`) and a region register that is not the first post atom fall closed for now. |
+| OOB `sol_get_rent_sysvar` | `.accessViolation` | Mechanical | Write-region guard over the 17-byte `execRent` output; pure registry entry, zero emitter changes (`OobRentSysvar`). |
+| OOB `sol_set_return_data` | `.accessViolation` | Mechanical | REGISTER-sized read region `[r1, r1+r2)`: the fault spec pins both registers and the literal length side conditions discharge `by decide` (`OobSetReturnData`). |
+| OOB `sol_create_program_address` | `.accessViolation` | Mechanical | NON-r1 region (program_id `[r3, r3+32)`): the emitter stably rotates the region register to the front of the lifted pre/post (`OobCreatePda`). |
+| OOB `sol_sha256` | `.accessViolation` | Mechanical | Hash-family digest output `[r3, r3+32)` — `hashWrite`'s first guard; generic `State.hashWrite_faults_oob` covers all four hashes (`OobSha256`). |
+| Other single-register OOB syscalls | `.accessViolation` | Mechanical | Pure registration: a per-syscall `*_faults_oob` triple + exitCode companion, an `OobSyscall` registry entry, and a decode arm. |
+| Descriptor-input OOB (`sol_sha256` slices, `sol_poseidon`, `sol_log_data`) | `.accessViolation` | Manual | The region condition depends on memory-read slice descriptors, not registers — a different library shape. Fault direction pinned model-side (`*_faults_oob`) and cross-engine (diff fixtures); only the lift corollary is out of scope. |
 
 OOB terminals are detected trace-side: a guarded syscall that does not return to `pc+1` on the trace is treated as the faulting terminal (static mode cannot distinguish success from fault).
 

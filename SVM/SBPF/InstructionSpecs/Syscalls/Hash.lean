@@ -1910,3 +1910,106 @@ theorem call_sol_create_program_address_spec
         exact hva
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
+
+/-! ## H6 OOB-fault triple — `sol_create_program_address` (non-r1 region)
+
+The first NON-r1 region register in the OOB family: the first guarded slice
+is the program_id `[r3, r3+32)`, so the pre pins `r3` and the emitter rotates
+the region register to the front of the lifted post (frame_right
+arrangement). -/
+theorem call_sol_create_program_address_faults_oob_spec (r3V : Nat)
+    (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_create_program_address) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithinMem 1 nCu pc
+      (CodeReq.singleton pc (.call .sol_create_program_address))
+      (.r3 ↦ᵣ r3V)
+      (fun rt => rt.containsRange r3V 32 = false)
+      .accessViolation := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_pred, h_R_sat⟩ := hPR
+  have hcr_regs := hcompat.regs
+  have h_P_regs_r3 : h_P.regs .r3 = some r3V := by
+    rw [h_P_pred]; exact PartialState.singletonReg_regs_self
+  have hp_regs_r3 : hp.regs .r3 = some r3V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r3
+  have hr3 : s.regs.r3 = r3V := hcr_regs .r3 r3V hp_regs_r3
+  have hoob : s.regions.containsRange s.regs.r3 32 = false := by
+    rw [hr3]; exact h_region
+  have hfetch : fetch s.pc = some (.call .sol_create_program_address) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1
+      = chargeCu (step (.call .sol_create_program_address) s) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      chargeCu { (Pda.execCreate s) with
+                 pc := s.pc + 1
+                 cuConsumed := (Pda.execCreate s).cuConsumed
+                   + syscallCu .sol_create_program_address s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  · rw [hexec]
+    show (Pda.execCreate s).exitCode = some VmError.accessViolation.toSentinel
+    exact Pda.execCreate_faults_oob_exitCode s hoob
+  · rw [hexec]
+    show (Pda.execCreate s).vmError = some .accessViolation
+    exact Pda.execCreate_faults_oob s hoob
+  · rw [hstep_eq]
+    show (step (.call .sol_create_program_address) s).cuConsumed + 1
+      ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
+
+/-! ## H6 OOB-fault triple — `sol_sha256` (hash-family digest output)
+
+The digest output `[r3, r3+32)` is `hashWrite`'s FIRST guard, so an
+out-of-region `r3` traps before any input translation — same non-r1 rotation
+as the PDA create, but on the WRITE guard. -/
+theorem call_sol_sha256_faults_oob_spec (r3V : Nat)
+    (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_sha256) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithinMem 1 nCu pc
+      (CodeReq.singleton pc (.call .sol_sha256))
+      (.r3 ↦ᵣ r3V)
+      (fun rt => rt.containsWritable r3V 32 = false)
+      .accessViolation := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_pred, h_R_sat⟩ := hPR
+  have hcr_regs := hcompat.regs
+  have h_P_regs_r3 : h_P.regs .r3 = some r3V := by
+    rw [h_P_pred]; exact PartialState.singletonReg_regs_self
+  have hp_regs_r3 : hp.regs .r3 = some r3V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r3
+  have hr3 : s.regs.r3 = r3V := hcr_regs .r3 r3V hp_regs_r3
+  have hoob : s.regions.containsWritable s.regs.r3 32 = false := by
+    rw [hr3]; exact h_region
+  have hfetch : fetch s.pc = some (.call .sol_sha256) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1
+      = chargeCu (step (.call .sol_sha256) s) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      chargeCu { (Sha256.exec s) with
+                 pc := s.pc + 1
+                 cuConsumed := (Sha256.exec s).cuConsumed
+                   + syscallCu .sol_sha256 s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  · rw [hexec]
+    show (Sha256.exec s).exitCode = some VmError.accessViolation.toSentinel
+    simp only [Sha256.exec]
+    exact State.hashWrite_faults_oob_exitCode s _ 32 _ _ _ (by decide) hoob
+  · rw [hexec]
+    show (Sha256.exec s).vmError = some .accessViolation
+    simp only [Sha256.exec]
+    exact State.hashWrite_faults_oob s _ 32 _ _ _ (by decide) hoob
+  · rw [hstep_eq]
+    show (step (.call .sol_sha256) s).cuConsumed + 1
+      ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega

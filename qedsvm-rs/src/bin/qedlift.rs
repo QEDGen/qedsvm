@@ -430,6 +430,102 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// Pins the rent-getter OOB fault corollary (H6 scale-out class (a)):
+    /// byte-identical recipe to the clock getter, over the de-simp'd 17-byte
+    /// `execRent` write. Validates the OobSyscall registry generalizes by
+    /// pure registration (no emitter changes).
+    #[test]
+    fn oob_rent_sysvar_fault_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/oob_rent_sysvar.so");
+        let ctx = load_binary(so).expect("load oob_rent_sysvar.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_rent_sysvar.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/oob_rent_sysvar.pcs"))
+            .expect("load oob_rent_sysvar trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("OobRentSysvar".to_string()),
+            Some(&trace), None, None, None).expect("lift oob_rent_sysvar.so");
+
+        let path = "../examples/lean/Generated/OobRentSysvarLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write OobRentSysvarLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read OobRentSysvarLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "OobRentSysvarLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// Pins the register-sized-region OOB fault corollary (H6 scale-out class
+    /// (b)): `sol_set_return_data`'s guarded input slice is `[r1, r1+r2)`, so
+    /// the fault spec's pre is a two-atom sepConj and the region requirement
+    /// mentions both traced values; the literal length side conditions
+    /// discharge `by decide`.
+    #[test]
+    fn oob_set_return_data_fault_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/oob_set_return_data.so");
+        let ctx = load_binary(so).expect("load oob_set_return_data.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_set_return_data.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/oob_set_return_data.pcs"))
+            .expect("load oob_set_return_data trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("OobSetReturnData".to_string()),
+            Some(&trace), None, None, None).expect("lift oob_set_return_data.so");
+
+        let path = "../examples/lean/Generated/OobSetReturnDataLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write OobSetReturnDataLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read OobSetReturnDataLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "OobSetReturnDataLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// Pins the non-r1-region OOB fault corollary (H6 scale-out class (c)):
+    /// `sol_create_program_address`'s first guarded slice is the program_id
+    /// `[r3, r3+32)`, so the emitter rotates r3 to the front of the lifted
+    /// pre/post (frame_right arrangement) before composing the fault spec.
+    #[test]
+    fn oob_create_pda_fault_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/oob_create_pda.so");
+        let ctx = load_binary(so).expect("load oob_create_pda.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_create_pda.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/oob_create_pda.pcs"))
+            .expect("load oob_create_pda trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("OobCreatePda".to_string()),
+            Some(&trace), None, None, None).expect("lift oob_create_pda.so");
+
+        let path = "../examples/lean/Generated/OobCreatePdaLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write OobCreatePdaLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read OobCreatePdaLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "OobCreatePdaLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// Pins the hash-family OOB fault corollary (H6 scale-out): `sol_sha256`'s
+    /// digest output `[r3, r3+32)` is `hashWrite`'s FIRST guard — the non-r1
+    /// rotation on the WRITE side.
+    #[test]
+    fn oob_sha256_fault_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/oob_sha256.so");
+        let ctx = load_binary(so).expect("load oob_sha256.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_sha256.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/oob_sha256.pcs"))
+            .expect("load oob_sha256 trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("OobSha256".to_string()),
+            Some(&trace), None, None, None).expect("lift oob_sha256.so");
+
+        let path = "../examples/lean/Generated/OobSha256Lifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write OobSha256Lifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read OobSha256Lifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "OobSha256Lifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).
@@ -2142,7 +2238,13 @@ struct OobSyscall {
     /// The register whose value addresses the guarded region (1 = r1).
     region_reg: u8,
     /// The guarded region length in bytes (e.g. 32 for the secp hash input).
+    /// Ignored when `region_len_reg` is set.
     region_size: i64,
+    /// When the region length is REGISTER-sized (e.g. `sol_set_return_data`'s
+    /// `[r1, r1+r2)`), the length register. The faults spec then takes both
+    /// values plus its literal side conditions (discharged `by decide`), and
+    /// the post must carry the length register as the SECOND atom.
+    region_len_reg: Option<u8>,
     /// `true` if the guard is a WRITE check (`containsWritable`, e.g. a sysvar
     /// output); `false` for a READ check (`containsRange`, e.g. the secp input).
     /// Must match the `rr` of the syscall's `faults_oob` triple.
@@ -2158,6 +2260,7 @@ impl OobSyscall {
                 faults_spec: "call_sol_secp256k1_recover_faults_oob_spec",
                 region_reg: 1,
                 region_size: 32,
+                region_len_reg: None,
                 region_writable: false,
             })
         } else if imm == ebpf::hash_symbol_name(b"sol_get_clock_sysvar") {
@@ -2166,7 +2269,44 @@ impl OobSyscall {
                 faults_spec: "call_sol_get_clock_sysvar_faults_oob_spec",
                 region_reg: 1,
                 region_size: 40,
+                region_len_reg: None,
                 region_writable: true,
+            })
+        } else if imm == ebpf::hash_symbol_name(b"sol_get_rent_sysvar") {
+            Some(OobSyscall {
+                ctor: ".sol_get_rent_sysvar",
+                faults_spec: "call_sol_get_rent_sysvar_faults_oob_spec",
+                region_reg: 1,
+                region_size: 17,
+                region_len_reg: None,
+                region_writable: true,
+            })
+        } else if imm == ebpf::hash_symbol_name(b"sol_create_program_address") {
+            Some(OobSyscall {
+                ctor: ".sol_create_program_address",
+                faults_spec: "call_sol_create_program_address_faults_oob_spec",
+                region_reg: 3,
+                region_size: 32,
+                region_len_reg: None,
+                region_writable: false,
+            })
+        } else if imm == ebpf::hash_symbol_name(b"sol_sha256") {
+            Some(OobSyscall {
+                ctor: ".sol_sha256",
+                faults_spec: "call_sol_sha256_faults_oob_spec",
+                region_reg: 3,
+                region_size: 32,
+                region_len_reg: None,
+                region_writable: true,
+            })
+        } else if imm == ebpf::hash_symbol_name(b"sol_set_return_data") {
+            Some(OobSyscall {
+                ctor: ".sol_set_return_data",
+                faults_spec: "call_sol_set_return_data_faults_oob_spec",
+                region_reg: 1,
+                region_size: 0,
+                region_len_reg: Some(2),
+                region_writable: false,
             })
         } else {
             None
@@ -2704,8 +2844,23 @@ fn lift_one_with_layouts(
 
     // Phase 2: Hoare-triple emission. Symbolic execution already done inline above; `state` is ready.
     out.push_str(render::lifted_triple_section_header());
-    let pre  = state.pre.clone();
-    let post = post_atoms(&pre, &state);
+    let mut pre  = state.pre.clone();
+    let mut post = post_atoms(&pre, &state);
+    // An OOB fault terminal composes its fault spec against the FRONT of the
+    // prefix post (`frame_right` appends the rest on the right), so rotate the
+    // spec's region register(s) to the front of both pre and post. Stable —
+    // a lift whose region regs already lead (r1[, r2]) is byte-identical.
+    if let Some(FaultTerminal::Oob(oob)) = &fault_terminal {
+        let spec_regs: Vec<u8> = std::iter::once(oob.region_reg)
+            .chain(oob.region_len_reg).collect();
+        let rank = |a: &Atom| match a {
+            Atom::Reg(r, _) => spec_regs.iter().position(|x| x == r)
+                .unwrap_or(spec_regs.len()),
+            _ => spec_regs.len(),
+        };
+        pre.sort_by_key(rank);
+        post.sort_by_key(rank);
+    }
 
     // Drop `< 2^k` bounds for cells only STORED to (stxdw_spec takes but doesn't bound them).
     state.u64_load_vars.retain(|(v, _)| {
@@ -3252,15 +3407,42 @@ fn lift_one_with_layouts(
                         "qedlift: OOB fault terminal needs r{} as the first post \
                          atom (frame_right arrangement)", oob.region_reg).into());
                 }
+                // Register-sized region (e.g. sol_set_return_data's
+                // `[r1, r1+r2)`): the spec's pre is a two-atom sepConj, so the
+                // length register must be the SECOND post atom; its literal
+                // side conditions (≤ cap, ≠ 0) discharge `by decide` at the
+                // traced value.
+                let len_value = match oob.region_len_reg {
+                    None => None,
+                    Some(lr) => {
+                        if !matches!(post.get(1), Some(Atom::Reg(r, _)) if *r == lr) {
+                            return Err(format!(
+                                "qedlift: register-sized OOB region needs r{} as \
+                                 the second post atom", lr).into());
+                        }
+                        post.iter().find_map(|a| match a {
+                            Atom::Reg(r, v) if *r == lr => Some(v.clone()),
+                            _ => None,
+                        })
+                    }
+                };
                 let r1v = fold_abstractions(region_value.to_lean(), &abs_subst);
+                let lenv = len_value.map(|v| fold_abstractions(v.to_lean(), &abs_subst));
+                let spec_args = match &lenv {
+                    None => format!("({r1v})"),
+                    Some(l) => format!("({r1v}) ({l}) (by decide) (by decide)"),
+                };
+                let spec_regs: Vec<u8> = std::iter::once(oob.region_reg)
+                    .chain(oob.region_len_reg).collect();
                 let rest_atoms: Vec<Atom> = post.iter()
-                    .filter(|a| !matches!(a, Atom::Reg(r, _) if *r == oob.region_reg))
+                    .filter(|a| !matches!(a, Atom::Reg(r, _) if spec_regs.contains(r)))
                     .cloned().collect();
                 // The fault tail spec, framed to the prefix post when there is a
-                // non-region remainder (else applied bare — pre is exactly r1).
+                // non-region remainder (else applied bare — pre is exactly the
+                // spec's region atoms).
                 let tail = if rest_atoms.is_empty() {
-                    format!("({spec} ({r1v}) {pc} nCuOob hCuOob)",
-                        spec = oob.faults_spec, r1v = r1v, pc = exit_pc)
+                    format!("({spec} {args} {pc} nCuOob hCuOob)",
+                        spec = oob.faults_spec, args = spec_args, pc = exit_pc)
                 } else {
                     let rest_lean = atoms_to_lean(&rest_atoms, &abs_subst);
                     format!(
@@ -3273,8 +3455,8 @@ fn lift_one_with_layouts(
                          | exact pcFree_memByteIs _ _\n            \
                          | exact pcFree_memBytes32Is _ _\n            \
                          | exact pcFree_memBytesIs _ _)\n      \
-                         ({spec} ({r1v}) {pc} nCuOob hCuOob))",
-                        rest = rest_lean, spec = oob.faults_spec, r1v = r1v, pc = exit_pc,
+                         ({spec} {args} {pc} nCuOob hCuOob))",
+                        rest = rest_lean, spec = oob.faults_spec, args = spec_args, pc = exit_pc,
                     )
                 };
                 let binders = format!(
@@ -3286,8 +3468,12 @@ fn lift_one_with_layouts(
                 // (write guard → `containsWritable`, read guard → `containsRange`;
                 // must match the syscall's `faults_oob` triple).
                 let region_pred = if oob.region_writable { "containsWritable" } else { "containsRange" };
+                let region_len = match &lenv {
+                    None => oob.region_size.to_string(),
+                    Some(l) => format!("({l})"),
+                };
                 let combined_rr = format!(
-                    "({}) ∧ rt.{} ({}) {} = false", rr, region_pred, r1v, oob.region_size,
+                    "({}) ∧ rt.{} ({}) {} = false", rr, region_pred, r1v, region_len,
                 );
                 let proof = format!(
                     "  refine cuTripleWithinMem_seq_fault ?_ ({lifted} {names}) {tail}\n  \

@@ -376,3 +376,55 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
     }
     Some(w)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::branch::{BranchHyp, BranchKind};
+    use super::super::core::Expr;
+    use super::super::state::SymState;
+    use super::build_branch_witness;
+
+    /// Phase 7 sub-item 1 negative test: a CONTRADICTORY branch-hypothesis set
+    /// (`v = 1 ∧ v = 2` on the same cell) must yield NO witness — the steerer
+    /// verifies the final assignment against every hypothesis and returns
+    /// `None` rather than emitting an unverified (or vacuous) certificate.
+    #[test]
+    fn contradictory_branch_hyps_yield_no_witness() {
+        let mut state = SymState::default();
+        let v = Expr::InitReg("vR1Old".to_string());
+        state.branch_hyps.push(BranchHyp {
+            kind: BranchKind::JeqImm,
+            dst_value: v.clone(),
+            src_value: None,
+            imm: 1,
+            taken: true,
+        });
+        state.branch_hyps.push(BranchHyp {
+            kind: BranchKind::JeqImm,
+            dst_value: v,
+            src_value: None,
+            imm: 2,
+            taken: true,
+        });
+        assert!(build_branch_witness(&state, &["vR1Old".to_string()]).is_none(),
+            "an unsatisfiable branch-hypothesis conjunction must not produce a witness");
+    }
+
+    /// The satisfiable sibling: the same shape with consistent targets DOES
+    /// produce a witness (guards the negative test against a steerer that
+    /// trivially returns `None`).
+    #[test]
+    fn consistent_branch_hyps_yield_a_witness() {
+        let mut state = SymState::default();
+        let v = Expr::InitReg("vR1Old".to_string());
+        state.branch_hyps.push(BranchHyp {
+            kind: BranchKind::JeqImm,
+            dst_value: v,
+            src_value: None,
+            imm: 1,
+            taken: true,
+        });
+        assert!(build_branch_witness(&state, &["vR1Old".to_string()]).is_some(),
+            "a satisfiable branch-hypothesis set must produce a witness");
+    }
+}

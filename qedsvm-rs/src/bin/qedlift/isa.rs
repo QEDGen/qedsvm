@@ -199,6 +199,14 @@ pub(super) fn insn_to_lean_full(
                 ".call .sol_secp256k1_recover".to_string()
             } else if himm == hash_symbol_name(b"sol_get_clock_sysvar") {
                 ".call .sol_get_clock_sysvar".to_string()
+            } else if himm == hash_symbol_name(b"sol_get_rent_sysvar") {
+                ".call .sol_get_rent_sysvar".to_string()
+            } else if himm == hash_symbol_name(b"sol_set_return_data") {
+                ".call .sol_set_return_data".to_string()
+            } else if himm == hash_symbol_name(b"sol_create_program_address") {
+                ".call .sol_create_program_address".to_string()
+            } else if himm == hash_symbol_name(b"sol_sha256") {
+                ".call .sol_sha256".to_string()
             } else {
                 match call_target {
                     Some(t) => format!(".call_local {}", t),

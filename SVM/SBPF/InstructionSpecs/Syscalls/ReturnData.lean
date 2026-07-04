@@ -569,4 +569,71 @@ theorem call_sol_set_return_data_spec
       exact hcompat.callStack cs hp_cs
 
 
+
+/-! ## H6 OOB-fault triple — `sol_set_return_data` (register-sized region)
+
+The first two-register region in the OOB family: the guarded input slice is
+`[r1, r1+r2)`, so the pre pins BOTH `r1` and `r2` and the region requirement
+mentions both values. The `r2V` side conditions (≤ cap, ≠ 0) are theorem
+hypotheses — the emitter instantiates them at the traced literal via
+`by decide`. -/
+theorem call_sol_set_return_data_faults_oob_spec (r1V r2V : Nat)
+    (hle : r2V ≤ MAX_RETURN_DATA) (hne : r2V ≠ 0) (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call .sol_set_return_data) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithinMem 1 nCu pc
+      (CodeReq.singleton pc (.call .sol_set_return_data))
+      ((.r1 ↦ᵣ r1V) ** (.r2 ↦ᵣ r2V))
+      (fun rt => rt.containsRange r1V r2V = false)
+      .accessViolation := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_r1, h_r2, hd_r1_r2, hu_r1_r2, h_r1_pred, h_r2_pred⟩ := h_P_sat
+  rw [h_r1_pred] at hu_r1_r2
+  rw [h_r2_pred] at hu_r1_r2
+  have hcr_regs := hcompat.regs
+  have h_P_regs_r1 : h_P.regs .r1 = some r1V := by
+    rw [← hu_r1_r2]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_regs_r2 : h_P.regs .r2 = some r2V := by
+    rw [← hu_r1_r2,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other (by decide : Reg.r2 ≠ Reg.r1))]
+    exact PartialState.singletonReg_regs_self
+  have hp_regs_r1 : hp.regs .r1 = some r1V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r1
+  have hp_regs_r2 : hp.regs .r2 = some r2V := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r2
+  have hr1 : s.regs.r1 = r1V := hcr_regs .r1 r1V hp_regs_r1
+  have hr2 : s.regs.r2 = r2V := hcr_regs .r2 r2V hp_regs_r2
+  have hoob : s.regions.containsRange s.regs.r1 s.regs.r2 = false := by
+    rw [hr1, hr2]; exact h_region
+  have hle' : s.regs.r2 ≤ MAX_RETURN_DATA := by rw [hr2]; exact hle
+  have hne' : s.regs.r2 ≠ 0 := by rw [hr2]; exact hne
+  have hfetch : fetch s.pc = some (.call .sol_set_return_data) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1
+      = chargeCu (step (.call .sol_set_return_data) s) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  have hexec : executeFn fetch s 1 =
+      chargeCu { (ReturnData.execSet s) with
+                 pc := s.pc + 1
+                 cuConsumed := (ReturnData.execSet s).cuConsumed
+                   + syscallCu .sol_set_return_data s } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+    simp only [step, execSyscall]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  · rw [hexec]
+    show (ReturnData.execSet s).exitCode = some VmError.accessViolation.toSentinel
+    exact ReturnData.execSet_faults_oob_exitCode s hle' hne' hoob
+  · rw [hexec]
+    show (ReturnData.execSet s).vmError = some .accessViolation
+    exact ReturnData.execSet_faults_oob s hle' hne' hoob
+  · rw [hstep_eq]
+    show (step (.call .sol_set_return_data) s).cuConsumed + 1
+      ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
+
 end SVM.SBPF

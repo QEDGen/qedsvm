@@ -128,6 +128,19 @@ theorem execCreate_faults_oob (s : State)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 
+/-- Companion to `execCreate_faults_oob`: the same out-of-region program_id
+    pins the `exitCode` sentinel (guardRead sets both). Discharges the exitCode
+    conjunct of the lifted PDA-create `cuTripleFaultsWithinMem` corollary. -/
+theorem execCreate_faults_oob_exitCode (s : State)
+    (hoob : s.regions.containsRange s.regs.r3 32 = false) :
+    (execCreate s).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [execCreate, State.guardRead]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
 /-- Execute `sol_try_find_program_address`.
     Same as `execCreate` plus r5 = `*mut [u8; 1]` bump output. -/
 def execTryFind (s : State) : State :=

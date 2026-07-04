@@ -186,6 +186,19 @@ theorem execRent_faults_oob (s : State)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 
+/-- Companion to `execRent_faults_oob`: the same out-of-region output pins the
+    `exitCode` sentinel (guardWrite sets both). Discharges the exitCode conjunct
+    of the lifted rent getter's `cuTripleFaultsWithinMem` corollary. -/
+theorem execRent_faults_oob_exitCode (s : State)
+    (hoob : s.regions.containsWritable s.regs.r1 17 = false) :
+    (execRent s).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [execRent, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
 @[simp] theorem execEpochSchedule_callStack (s : State) :
     (execEpochSchedule s).callStack = s.callStack := by
   simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.callStack) s _ _ _ rfl rfl
