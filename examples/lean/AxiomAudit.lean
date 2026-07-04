@@ -6,6 +6,7 @@ legitimately belongs — add it to the per-theorem allow-list with justification
 -/
 import Lean
 import SVM.SBPF.Bounded
+import SVM.SBPF.BoundedCpi
 import SVM.SBPF.CodecRead
 import SVM.Solana.InputLayout
 import SVM.Solana.CpiEnvelope
@@ -105,6 +106,19 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.executeFn_bounded
 #assert_std_axioms SVM.SBPF.initialState_bounded
 #assert_std_axioms SVM.SBPF.mem_byte_canonical
+
+-- Phase 7 sub-item 4 (Stages A+B): StateBounded on the RUNTIME path.
+-- Stage A = CPI-free transfer (executeFnCpi coincides with executeFn);
+-- Stage B = the genuine cross-CPI chain (CPI commit step → fresh sub-VM
+-- state → fuel-induction wrapper → end-to-end Runner.run). hnative/hexit
+-- stay named hypotheses of the wrapper (staged backlog) — the assertions
+-- still gate the proofs against sorry/native_decide regressions.
+#assert_std_axioms SVM.SBPF.executeFnCpi_bounded_of_no_cpi
+#assert_std_axioms SVM.SBPF.run_bounded_of_no_cpi
+#assert_std_axioms SVM.SBPF.cpiCallNextState_bounded
+#assert_std_axioms SVM.SBPF.buildCalleeVM_bounded
+#assert_std_axioms SVM.SBPF.executeFnCpiWithFuel_bounded
+#assert_std_axioms SVM.SBPF.run_bounded
 
 -- Issue #48: holdsFor↔read bridges for codecCoarse field atoms. The qedgen
 -- discharge-bridge glue (encodeState read-conjunction ↔ holdsFor codec). Forward
