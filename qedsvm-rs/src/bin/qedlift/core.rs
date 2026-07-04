@@ -29,12 +29,19 @@ pub(super) enum Expr {
     ByteCombo(Vec<Expr>),
     /// Pre-rendered Lean term for ALU results without a bespoke variant (or/xor/div/mod/neg, reg shifts, 32-bit ops). Opaque to the balance corollary; always parenthesised as a function argument.
     Raw(String),
+    /// A `Raw` render whose value is CLOSED (no free variables) and known —
+    /// e.g. a constant rodata table address built through `|||`/`arsh` chains
+    /// the structured variants don't cover. Renders byte-identically to
+    /// `Raw` (zero regen churn, `sl_block_auto` shape preserved); the carried
+    /// value lets the H8 witness evaluate the address root.
+    RawConst(String, u64),
 }
 
 impl Expr {
     pub(super) fn to_lean(&self) -> String {
         match self {
             Expr::Raw(s) => s.clone(),
+            Expr::RawConst(s, _) => s.clone(),
             Expr::InitReg(n) | Expr::InitMem(n) => n.clone(),
             Expr::Const(n) => format!("{}", n),
             Expr::ToU64(e) => format!("toU64 {}", e.atom_lean()),
@@ -118,6 +125,7 @@ impl Expr {
     pub(super) fn atom_lean(&self) -> String {
         match self {
             Expr::Raw(s) => format!("({})", s),
+            Expr::RawConst(s, _) => format!("({})", s),
             Expr::InitReg(_) | Expr::InitMem(_) => self.to_lean(),
             // Negative constants need parens: `toU64 -1` parses as subtraction otherwise.
             Expr::Const(n) if *n < 0 => format!("({})", n),
@@ -383,6 +391,7 @@ pub(super) fn eval_expr(e: &Expr, env: &std::collections::BTreeMap<String, u64>)
             Some(acc)
         }
         Expr::Raw(_) => None,
+        Expr::RawConst(_, v) => Some(*v),
     }
 }
 

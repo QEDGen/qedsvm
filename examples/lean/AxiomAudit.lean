@@ -111,6 +111,12 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.call_sol_sha256_faults_oob_spec
 #assert_std_axioms Examples.Lifted.OobSha256.OobSha256_fault_correct
 
+-- Pattern library Layer 3 (ENFORCES direction): the p-token error-path lifts
+-- and their EnforcedError compositions carry their own IN-MODULE assertions
+-- (`#assert_std_axioms_local` in PToken/TransferArm/{Balance,Frozen}GuardEnforced.lean)
+-- — importing that dylib mix here re-triggers the poisoned-dylib segfault
+-- (see the ExamplesCpi lakefile note).
+
 -- StateBounded invariant (audit L5 + L3): must remain decide-only, never sorry/native_decide.
 -- step_bounded = per-insn preservation (incl. r10 discipline); executeFn_bounded = multi-step
 -- closure; initialState_bounded = runner base case; mem_byte_canonical = L3 fence.

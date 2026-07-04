@@ -32,7 +32,7 @@ mod syscalls;
 mod witness;
 
 use core::{
-    arsh_render, canon_addr, lean_off, reg_initial_name, Atom, Expr, Width,
+    arsh_render, canon_addr, eval_expr, lean_off, reg_initial_name, Atom, Expr, Width,
 };
 use emit::{
     atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
@@ -523,6 +523,57 @@ mod layout_tests {
         let on_disk = std::fs::read_to_string(path).expect("read OobSha256Lifted.lean");
         assert_eq!(result.lean, on_disk,
             "OobSha256Lifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// Pins the p-token Transfer ERROR-PATH lift (pattern library Layer 3,
+    /// ENFORCES direction): from an insufficient-balance pre (the violated
+    /// check surfaces as the taken-`jlt` branch hypothesis), the real bytecode
+    /// runs dispatch → checks → error handler → TokenError logging → the
+    /// ProgramError encoder → the shared exit, with the account cells
+    /// untouched and r0 = the error code. The happy-path arm REQUIRES the
+    /// check; this lift proves the program ENFORCES it.
+    #[test]
+    fn p_token_transfer_insufficient_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_insufficient.pcs"))
+            .expect("load insufficient-transfer trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferInsufficient".to_string()),
+            Some(&trace), None, None, None).expect("lift p_token.so insufficient path");
+
+        let path = "../examples/lean/Generated/PTokenTransferInsufficientLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write PTokenTransferInsufficientLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferInsufficientLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "PTokenTransferInsufficientLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// Pins the p-token Transfer FROZEN-SOURCE error-path lift (pattern
+    /// library Layer 3, ENFORCES direction for the frozen check): the taken
+    /// `jeq state, 2` diverts to the same error handler with
+    /// TokenError::AccountFrozen (17) in r7 → r0 at the shared exit.
+    #[test]
+    fn p_token_transfer_frozen_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_frozen.pcs"))
+            .expect("load frozen-transfer trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferFrozen".to_string()),
+            Some(&trace), None, None, None).expect("lift p_token.so frozen path");
+
+        let path = "../examples/lean/Generated/PTokenTransferFrozenLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write PTokenTransferFrozenLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferFrozenLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "PTokenTransferFrozenLifted.lean is out of sync with the qedlift emitter \
              (mechanically emitted, do not hand-edit)");
     }
 
@@ -1880,31 +1931,59 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.write_reg(dst, Expr::WrapMul(Box::new(a), Box::new(b)));
         }
         OR64_REG | AND64_REG | XOR64_REG | LSH64_REG | RSH64_REG => {
-            let a = state.read_reg(dst).atom_lean();
-            let b = state.read_reg(src).atom_lean();
-            let r = match insn.opc {
-                OR64_REG  => format!("({} ||| {}) % U64_MODULUS", a, b),
-                AND64_REG => format!("({} &&& {}) % U64_MODULUS", a, b),
-                XOR64_REG => format!("({} ^^^ {}) % U64_MODULUS", a, b),
-                LSH64_REG => format!("({} <<< ({} % 64)) % U64_MODULUS", a, b),
-                RSH64_REG => format!("{} >>> ({} % 64)", a, b),
+            let av = state.read_reg(dst);
+            let bv = state.read_reg(src);
+            let a = av.atom_lean();
+            let b = bv.atom_lean();
+            // Closed operands: carry the semantic value (RawConst renders
+            // identically) so the H8 witness can evaluate derived roots.
+            let empty = std::collections::BTreeMap::new();
+            let cv = eval_expr(&av, &empty).zip(eval_expr(&bv, &empty));
+            let (r, v) = match insn.opc {
+                OR64_REG  => (format!("({} ||| {}) % U64_MODULUS", a, b),
+                              cv.map(|(x, y)| x | y)),
+                AND64_REG => (format!("({} &&& {}) % U64_MODULUS", a, b),
+                              cv.map(|(x, y)| x & y)),
+                XOR64_REG => (format!("({} ^^^ {}) % U64_MODULUS", a, b),
+                              cv.map(|(x, y)| x ^ y)),
+                LSH64_REG => (format!("({} <<< ({} % 64)) % U64_MODULUS", a, b),
+                              cv.map(|(x, y)| x.wrapping_shl((y % 64) as u32))),
+                RSH64_REG => (format!("{} >>> ({} % 64)", a, b),
+                              cv.map(|(x, y)| x >> (y % 64))),
                 _ => unreachable!(),
             };
-            state.write_reg(dst, Expr::Raw(r));
+            state.write_reg(dst, match v {
+                Some(v) => Expr::RawConst(r, v),
+                None => Expr::Raw(r),
+            });
         }
         OR64_IMM | XOR64_IMM | MUL64_IMM | DIV64_IMM | MOD64_IMM | NEG64 => {
-            let a = state.read_reg(dst).atom_lean();
+            let av = state.read_reg(dst);
+            let a = av.atom_lean();
             let i = lean_off(imm);
-            let r = match insn.opc {
-                OR64_IMM  => format!("({} ||| toU64 {}) % U64_MODULUS", a, i),
-                XOR64_IMM => format!("({} ^^^ toU64 {}) % U64_MODULUS", a, i),
-                MUL64_IMM => format!("wrapMul {} (toU64 {})", a, i),
-                DIV64_IMM => format!("({} / toU64 {}) % U64_MODULUS", a, i),
-                MOD64_IMM => format!("{} % toU64 {}", a, i),
-                NEG64     => format!("wrapNeg {}", a),
+            let empty = std::collections::BTreeMap::new();
+            let ca = eval_expr(&av, &empty);
+            let iv = imm as u64; // toU64 (sign-extend)
+            let (r, v) = match insn.opc {
+                OR64_IMM  => (format!("({} ||| toU64 {}) % U64_MODULUS", a, i),
+                              ca.map(|x| x | iv)),
+                XOR64_IMM => (format!("({} ^^^ toU64 {}) % U64_MODULUS", a, i),
+                              ca.map(|x| x ^ iv)),
+                MUL64_IMM => (format!("wrapMul {} (toU64 {})", a, i),
+                              ca.map(|x| x.wrapping_mul(iv))),
+                // Nat semantics: `x / 0 = 0`, `x % 0 = x`.
+                DIV64_IMM => (format!("({} / toU64 {}) % U64_MODULUS", a, i),
+                              ca.map(|x| x.checked_div(iv).unwrap_or(0))),
+                MOD64_IMM => (format!("{} % toU64 {}", a, i),
+                              ca.map(|x| if iv == 0 { x } else { x % iv })),
+                NEG64     => (format!("wrapNeg {}", a),
+                              ca.map(|x| x.wrapping_neg())),
                 _ => unreachable!(),
             };
-            state.write_reg(dst, Expr::Raw(r));
+            state.write_reg(dst, match v {
+                Some(v) => Expr::RawConst(r, v),
+                None => Expr::Raw(r),
+            });
         }
         ADD32_IMM | SUB32_IMM | MUL32_IMM | OR32_IMM | AND32_IMM | XOR32_IMM
         | LSH32_IMM | RSH32_IMM | MOV32_IMM | DIV32_IMM | MOD32_IMM | NEG32 => {
@@ -1928,16 +2007,33 @@ fn step(state: &mut SymState, insn: &ebpf::Insn, pc: Option<usize>,
             state.write_reg(dst, Expr::Raw(r));
         }
         // arsh (arithmetic shift right) — let/if/else post via arsh_render.
+        // Closed operands fold to RawConst (identical render) for the witness.
         ARSH64_IMM | ARSH32_IMM => {
-            let a = state.read_reg(dst).atom_lean();
+            let av = state.read_reg(dst);
+            let a = av.atom_lean();
             let bits = if insn.opc == ARSH64_IMM { 64 } else { 32 };
-            state.write_reg(dst, Expr::Raw(arsh_render(&a, &format!("toU64 {}", lean_off(imm)), bits)));
+            let empty = std::collections::BTreeMap::new();
+            let v = eval_expr(&av, &empty).map(|x| arsh_value(x, imm as u64, bits));
+            let r = arsh_render(&a, &format!("toU64 {}", lean_off(imm)), bits);
+            state.write_reg(dst, match v {
+                Some(v) => Expr::RawConst(r, v),
+                None => Expr::Raw(r),
+            });
         }
         ARSH64_REG | ARSH32_REG => {
-            let a = state.read_reg(dst).atom_lean();
-            let b = state.read_reg(src).atom_lean();
+            let av = state.read_reg(dst);
+            let bv = state.read_reg(src);
+            let a = av.atom_lean();
+            let b = bv.atom_lean();
             let bits = if insn.opc == ARSH64_REG { 64 } else { 32 };
-            state.write_reg(dst, Expr::Raw(arsh_render(&a, &b, bits)));
+            let empty = std::collections::BTreeMap::new();
+            let v = eval_expr(&av, &empty).zip(eval_expr(&bv, &empty))
+                .map(|(x, sv)| arsh_value(x, sv, bits));
+            let r = arsh_render(&a, &b, bits);
+            state.write_reg(dst, match v {
+                Some(v) => Expr::RawConst(r, v),
+                None => Expr::Raw(r),
+            });
         }
         ADD32_REG | SUB32_REG | MUL32_REG | OR32_REG | AND32_REG | XOR32_REG
         | LSH32_REG | RSH32_REG | MOV32_REG => {
@@ -2311,6 +2407,18 @@ impl OobSyscall {
         } else {
             None
         }
+    }
+}
+
+/// Arithmetic-shift-right value semantics mirroring `arsh_render`'s Lean
+/// let/if form: sign bit replicates into the top `shift` bits.
+fn arsh_value(x: u64, shift: u64, bits: u32) -> u64 {
+    if bits == 64 {
+        let s = (shift % 64) as u32;
+        (((x as i64) >> s) as u64)
+    } else {
+        let s = (shift % 32) as u32;
+        ((((x as u32) as i32) >> s) as u32) as u64
     }
 }
 

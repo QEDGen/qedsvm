@@ -2231,6 +2231,227 @@ fn p_token_transfer_matches_mollusk() {
     );
 }
 
+/// p-token Transfer with INSUFFICIENT balance (amount > source balance): the
+/// balance guard at the real `jlt` diverts to the error handler, both engines
+/// fail, accounts untouched. Exact error encoding diverges by design (raw r0
+/// vs typed ProgramError) — assert non-Success on both + account/CU parity.
+/// Trace source for `PTokenTransferInsufficientLifted` (the pattern library's
+/// Layer-3 balance guard, ENFORCES direction on the real error path).
+#[test]
+fn p_token_transfer_insufficient_balance_matches_mollusk() {
+    let program_id = pid(40);
+    let mint = pid(41);
+    let authority = pid(42);
+    let source_key = pid(43);
+    let dest_key = pid(44);
+
+    const TRANSFER_AMOUNT: u64 = 2_000; // > SOURCE_INITIAL: guard must fire
+    const SOURCE_INITIAL: u64 = 1_000;
+    const DEST_INITIAL: u64 = 0;
+    const LAMPORTS: u64 = 2_039_280;
+
+    let source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
+    let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
+
+    let pre_src_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_dst_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+
+    let pre_src_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_dst_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
+    ix_data.push(3);
+    ix_data.extend_from_slice(&TRANSFER_AMOUNT.to_le_bytes());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, pre_src_shared),
+            (dest_key, pre_dst_shared),
+            (authority, pre_auth_shared),
+        ])
+        .expect("qedsvm runs p-token Transfer (insufficient)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, pre_src_mollusk),
+        (dest_key, pre_dst_mollusk),
+        (authority, pre_auth_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
+    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
+
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: the balance guard must fail an insufficient transfer, got Success");
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: the balance guard must fail an insufficient transfer, got Success");
+
+    // Accounts untouched: the effect is never reached on the violating branch.
+    for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
+        let fa = fs_acct_by_key(&fs_r, &key);
+        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
+            .map(|(_, a)| a).expect("mollusk account");
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "{name} data must be untouched by a failed Transfer");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "{name} lamports must be untouched by a failed Transfer");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for insufficient p-token Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// p-token Transfer from a FROZEN source account (state byte = 2): the frozen
+/// guard (`jeq state, 2` before the balance check) diverts to the error
+/// handler, both engines fail, accounts untouched. Trace source for
+/// `PTokenTransferFrozenLifted` (the pattern library's Layer-3 frozen guard,
+/// ENFORCES direction — TokenError::AccountFrozen = 17).
+#[test]
+fn p_token_transfer_frozen_matches_mollusk() {
+    let program_id = pid(40);
+    let mint = pid(41);
+    let authority = pid(42);
+    let source_key = pid(43);
+    let dest_key = pid(44);
+
+    const TRANSFER_AMOUNT: u64 = 250;
+    const SOURCE_INITIAL: u64 = 1_000;
+    const DEST_INITIAL: u64 = 0;
+    const LAMPORTS: u64 = 2_039_280;
+
+    let mut source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
+    source_data[108] = 2; // AccountState::Frozen
+    let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
+
+    let pre_src_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_dst_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+
+    let pre_src_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_dst_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
+    ix_data.push(3);
+    ix_data.extend_from_slice(&TRANSFER_AMOUNT.to_le_bytes());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, pre_src_shared),
+            (dest_key, pre_dst_shared),
+            (authority, pre_auth_shared),
+        ])
+        .expect("qedsvm runs p-token Transfer (frozen)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, pre_src_mollusk),
+        (dest_key, pre_dst_mollusk),
+        (authority, pre_auth_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: the frozen guard must fail a Transfer from a frozen source, got Success");
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: the frozen guard must fail a Transfer from a frozen source, got Success");
+
+    for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
+        let fa = fs_acct_by_key(&fs_r, &key);
+        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
+            .map(|(_, a)| a).expect("mollusk account");
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "{name} data must be untouched by a frozen-source Transfer");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "{name} lamports must be untouched by a frozen-source Transfer");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for frozen p-token Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
 /// ELF-load probe for ATA binary: both engines fail before CPI. Validates loading + entry dispatch without CPI dependency.
 #[test]
 fn associated_token_empty_data_fails_on_both() {

@@ -185,6 +185,13 @@ pub(super) fn build_sat_witness(
             if matches!(root, Expr::InitReg(_) | Expr::InitMem(_)) { continue; }
             let key = root.to_lean();
             if !solved_roots.insert(key.clone()) { continue; }
+            // A CLOSED root (no free variables — e.g. a constant rodata
+            // table address built through `|||`/`arsh` chains, carried as
+            // `Expr::RawConst`) needs no steering: its value is forced and
+            // the witness evaluation below uses it directly.
+            if eval_expr(root, &env).is_some() {
+                continue;
+            }
             let target = alloc_base();
             if !solve_expr(root, target, &mut env) {
                 return Err(format!(

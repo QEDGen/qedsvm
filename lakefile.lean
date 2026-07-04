@@ -268,6 +268,21 @@ lean_lib Examples where
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
     `Generated.TwoOpDecrementLifted,
+    -- PTokenTransferInsufficient: the ERROR PATH of the real p_token
+    -- Transfer (pattern library Layer 3, ENFORCES direction): from an
+    -- insufficient-balance pre (the violated check = the taken-jlt branch
+    -- hypothesis), the bytecode runs dispatch → checks → error handler →
+    -- TokenError logging → the ProgramError encoder → the shared exit,
+    -- account cells untouched, r0 = 1 (InsufficientFunds). The happy arm
+    -- REQUIRES the check; this proves the program ENFORCES it.
+    `Generated.PTokenTransferInsufficientLifted,
+    -- The guard-vocabulary corollary: seq_exit composition to a halting
+    -- triple (exitCode = some 1) + the nonzero-code fact.
+    `PToken.TransferArm.BalanceGuardEnforced,
+    -- PTokenTransferFrozen: the FROZEN-source error path (H3c's check) —
+    -- same recipe, r0 = 17 (AccountFrozen) at the shared exit.
+    `Generated.PTokenTransferFrozenLifted,
+    `PToken.TransferArm.FrozenGuardEnforced,
     -- Trace-guided lifts: real p_token happy paths, balance/supply
     -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,

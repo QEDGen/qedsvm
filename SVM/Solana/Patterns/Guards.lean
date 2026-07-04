@@ -22,6 +22,7 @@
 -- versa), harvested from the `TransferArm` check windows.
 
 import SVM.SBPF.CPSSpec
+import SVM.SBPF.ExitTriple
 
 namespace SVM.Solana.Patterns
 
@@ -57,5 +58,23 @@ theorem enforcedFault_of_routes_then_handler
     (hfault : cuTripleFaultsWithin N2 M2 errPc cr2 mid e) :
     EnforcedFault (N1 + N2) (M1 + M2) entry (cr1.union cr2) viol rr1 e :=
   cuTripleWithinMem_seq_fault_pure hd hroute hfault
+
+/-- The CLEAN-EXIT enforcement mode, `EnforcedFault`'s sibling: from a
+    violating state the window runs to the program's shared `.exit` and HALTS
+    with the NONZERO error code `code` (`exitCode = some code`) — the effect
+    is never reached, and agave fails the instruction on the nonzero return.
+    Pinocchio-style programs enforce checks this way (a `TokenError` routed
+    through the error handler into `r0`), rather than VM-faulting; `post`
+    carries the untouched protected cells through to the halt.
+
+    The concrete instance (`Examples`,
+    `PToken.TransferArm.BalanceGuardEnforced`) composes the mechanically
+    lifted p-token Transfer ERROR PATH (`PTokenTransferInsufficient_lifted_spec`,
+    qedlift over a violating trace) with the shared exit via
+    `cuTripleWithinMem_seq_exit`. -/
+def EnforcedError (nSteps nCu entry : Nat) (cr : CodeReq)
+    (viol post : Assertion) (rr : Memory.RegionTable → Prop)
+    (code : Nat) : Prop :=
+  code ≠ 0 ∧ cuTripleExitsWithinMem nSteps nCu entry cr viol post rr code
 
 end SVM.Solana.Patterns
