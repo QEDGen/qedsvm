@@ -403,6 +403,30 @@ fn fs_acct_by_key<'a>(
         .unwrap_or_else(|| panic!("account {key} absent from qedsvm resulting_accounts"))
 }
 
+/// Build the SAME account for both engines (two `solana-account` majors —
+/// 4.x for qedsvm, 3.x for mollusk). Constructing both from one call site
+/// structurally guarantees the engines receive equal inputs.
+fn dual_account(
+    lamports: u64,
+    data: Vec<u8>,
+    owner: Pubkey,
+    executable: bool,
+) -> (AccountSharedData, mollusk_account::Account) {
+    let shared = AccountSharedData::from(Account {
+        lamports, data: data.clone(), owner, executable, rent_epoch: 0,
+    });
+    let mollusk = mollusk_account::Account {
+        lamports, data, owner, executable, rent_epoch: 0,
+    };
+    (shared, mollusk)
+}
+
+/// `dual_account` for the standard executable:true program-account fixture
+/// (the callee program entry required in the caller's account list for CPI).
+fn dual_program() -> (AccountSharedData, mollusk_account::Account) {
+    dual_account(1, vec![], solana_sdk_ids::bpf_loader_upgradeable::id(), true)
+}
+
 /// Shared driver for the byte-identical VM-fault fixtures (OOB syscalls,
 /// abort): runs `so` with an empty instruction and no accounts on both
 /// engines; qedsvm must report a typed `VmFault` and the M14 outcome must
@@ -588,14 +612,8 @@ fn incrementer_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -660,14 +678,8 @@ fn guarded_counter_success_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -750,14 +762,8 @@ fn guarded_abort_success_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -812,14 +818,8 @@ fn guarded_oob_success_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -874,16 +874,7 @@ fn cpi_envelope_caller_matches_mollusk() {
     let caller_id = pid(96);
     let callee_id = pid(97);
 
-    let callee_program_shared = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_mollusk = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (callee_program_shared, callee_program_mollusk) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -927,14 +918,8 @@ fn halfword_store_program_matches_mollusk() {
     let mut data: Vec<u8> = vec![0u8; 16];
     data[..2].copy_from_slice(&0x00ffu16.to_le_bytes());
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -993,14 +978,8 @@ fn heap_alloc_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1044,14 +1023,8 @@ fn memcpy_caller_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1096,14 +1069,8 @@ fn sha256_caller_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1149,14 +1116,8 @@ fn pda_create_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1201,14 +1162,8 @@ fn set_return_data_caller_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1251,14 +1206,8 @@ fn memmove_caller_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1301,14 +1250,8 @@ fn memcmp_caller_program_matches_mollusk() {
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1351,14 +1294,8 @@ fn remaining_cu_program_matches_mollusk() {
     let data: Vec<u8> = vec![0u8; 16];
     const BUDGET: u64 = 1_400_000;
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -1452,14 +1389,8 @@ fn token_initialize_mint2_matches_mollusk() {
     let lamports = 2_000_000u64; // > rent-exemption threshold for 82 bytes
     let data = vec![0u8; MINT_LEN];
 
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), program_id, false);
 
     // [20, decimals, mint_authority(32), freeze_authority_option=0]
     let mint_authority = pid(9);
@@ -1560,20 +1491,12 @@ fn p_token_mint_to_matches_mollusk() {
     let mint_data = build_mint_account(&authority, SUPPLY_INITIAL, 9);
     let dest_data = build_token_account(&mint_key, &dest_owner, DEST_INITIAL);
 
-    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    });
-    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    };
-    let auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-    let auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (mint_fs, mint_ml) = dual_account(
+        MINT_LAMPORTS, mint_data.clone(), program_id, false);
+    let (dest_fs, dest_ml) = dual_account(
+        ACCT_LAMPORTS, dest_data.clone(), program_id, false);
+    let (auth_shared, auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(9); // [7, amount_le_u64]
     ix_data.push(7);
@@ -1593,8 +1516,8 @@ fn p_token_mint_to_matches_mollusk() {
     fs.add_program(&program_id, P_TOKEN_SO);
     let fs_r = fs
         .process_instruction(&ix, &[
-            (mint_key, mk_shared(MINT_LAMPORTS, mint_data.clone())),
-            (dest_key, mk_shared(ACCT_LAMPORTS, dest_data.clone())),
+            (mint_key, mint_fs),
+            (dest_key, dest_fs),
             (authority, auth_shared),
         ])
         .expect("qedsvm runs p-token MintTo");
@@ -1606,8 +1529,8 @@ fn p_token_mint_to_matches_mollusk() {
         P_TOKEN_SO,
     );
     let m_r = m.process_instruction(&ix, &[
-        (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
-        (dest_key, mk_mollusk(ACCT_LAMPORTS, dest_data.clone())),
+        (mint_key, mint_ml),
+        (dest_key, dest_ml),
         (authority, auth_mollusk),
     ]);
 
@@ -1646,20 +1569,12 @@ fn p_token_burn_matches_mollusk() {
     let mint_data = build_mint_account(&mint_auth, SUPPLY_INITIAL, 9);
     let acct_data = build_token_account(&mint_key, &owner, ACCT_INITIAL);
 
-    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    });
-    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    };
-    let owner_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-    let owner_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (acct_fs, acct_ml) = dual_account(
+        ACCT_LAMPORTS, acct_data.clone(), program_id, false);
+    let (mint_fs, mint_ml) = dual_account(
+        MINT_LAMPORTS, mint_data.clone(), program_id, false);
+    let (owner_shared, owner_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(9); // [8, amount_le_u64]
     ix_data.push(8);
@@ -1679,8 +1594,8 @@ fn p_token_burn_matches_mollusk() {
     fs.add_program(&program_id, P_TOKEN_SO);
     let fs_r = fs
         .process_instruction(&ix, &[
-            (acct_key, mk_shared(ACCT_LAMPORTS, acct_data.clone())),
-            (mint_key, mk_shared(MINT_LAMPORTS, mint_data.clone())),
+            (acct_key, acct_fs),
+            (mint_key, mint_fs),
             (owner, owner_shared),
         ])
         .expect("qedsvm runs p-token Burn");
@@ -1692,8 +1607,8 @@ fn p_token_burn_matches_mollusk() {
         P_TOKEN_SO,
     );
     let m_r = m.process_instruction(&ix, &[
-        (acct_key, mk_mollusk(ACCT_LAMPORTS, acct_data.clone())),
-        (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
+        (acct_key, acct_ml),
+        (mint_key, mint_ml),
         (owner, owner_mollusk),
     ]);
 
@@ -1735,20 +1650,14 @@ fn p_token_transfer_checked_matches_mollusk() {
     let src_data = build_token_account(&mint_key, &authority, SOURCE_INITIAL);
     let dst_data = build_token_account(&mint_key, &authority, DEST_INITIAL);
 
-    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    });
-    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    };
-    let auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-    let auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (source_fs, source_ml) = dual_account(
+        ACCT_LAMPORTS, src_data.clone(), program_id, false);
+    let (mint_fs, mint_ml) = dual_account(
+        MINT_LAMPORTS, mint_data.clone(), program_id, false);
+    let (dest_fs, dest_ml) = dual_account(
+        ACCT_LAMPORTS, dst_data.clone(), program_id, false);
+    let (auth_shared, auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(10); // [12, amount_le_u64, decimals]
     ix_data.push(12);
@@ -1770,9 +1679,9 @@ fn p_token_transfer_checked_matches_mollusk() {
     fs.add_program(&program_id, P_TOKEN_SO);
     let fs_r = fs
         .process_instruction(&ix, &[
-            (source_key, mk_shared(ACCT_LAMPORTS, src_data.clone())),
-            (mint_key, mk_shared(MINT_LAMPORTS, mint_data.clone())),
-            (dest_key, mk_shared(ACCT_LAMPORTS, dst_data.clone())),
+            (source_key, source_fs),
+            (mint_key, mint_fs),
+            (dest_key, dest_fs),
             (authority, auth_shared),
         ])
         .expect("qedsvm runs p-token TransferChecked");
@@ -1784,9 +1693,9 @@ fn p_token_transfer_checked_matches_mollusk() {
         P_TOKEN_SO,
     );
     let m_r = m.process_instruction(&ix, &[
-        (source_key, mk_mollusk(ACCT_LAMPORTS, src_data.clone())),
-        (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
-        (dest_key, mk_mollusk(ACCT_LAMPORTS, dst_data.clone())),
+        (source_key, source_ml),
+        (mint_key, mint_ml),
+        (dest_key, dest_ml),
         (authority, auth_mollusk),
     ]);
 
@@ -1819,28 +1728,12 @@ fn p_token_close_account_matches_mollusk() {
 
     let acct_data = build_token_account(&mint_key, &owner, 0); // zero balance required
 
-    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    });
-    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    };
-    let dest_shared = AccountSharedData::from(Account {
-        lamports: DEST_LAMPORTS, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-    let dest_mollusk = mollusk_account::Account {
-        lamports: DEST_LAMPORTS, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
-    let owner_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-    let owner_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (acct_fs, acct_ml) = dual_account(
+        ACCT_LAMPORTS, acct_data.clone(), program_id, false);
+    let (dest_shared, dest_mollusk) = dual_account(
+        DEST_LAMPORTS, vec![], Pubkey::default(), false);
+    let (owner_shared, owner_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let ix = Instruction {
         program_id,
@@ -1856,7 +1749,7 @@ fn p_token_close_account_matches_mollusk() {
     fs.add_program(&program_id, P_TOKEN_SO);
     let fs_r = fs
         .process_instruction(&ix, &[
-            (acct_key, mk_shared(ACCT_LAMPORTS, acct_data.clone())),
+            (acct_key, acct_fs),
             (dest_key, dest_shared),
             (owner, owner_shared),
         ])
@@ -1869,7 +1762,7 @@ fn p_token_close_account_matches_mollusk() {
         P_TOKEN_SO,
     );
     let m_r = m.process_instruction(&ix, &[
-        (acct_key, mk_mollusk(ACCT_LAMPORTS, acct_data.clone())),
+        (acct_key, acct_ml),
         (dest_key, dest_mollusk),
         (owner, owner_mollusk),
     ]);
@@ -1891,12 +1784,8 @@ fn p_token_initialize_mint2_matches_mollusk() {
     const MINT_LAMPORTS: u64 = 1_461_600; // rent-exempt for 82 bytes, uninitialized
     let mint_data = vec![0u8; MINT_LEN];
 
-    let mk_shared = |lamports: u64, data: Vec<u8>| AccountSharedData::from(Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    });
-    let mk_mollusk = |lamports: u64, data: Vec<u8>| mollusk_account::Account {
-        lamports, data, owner: program_id, executable: false, rent_epoch: 0,
-    };
+    let (mint_fs, mint_ml) = dual_account(
+        MINT_LAMPORTS, mint_data.clone(), program_id, false);
 
     // [20, decimals, mintAuthority(32), freezeAuthority tag=0(None)]
     let mut data = vec![20u8, 6u8];
@@ -1913,7 +1802,7 @@ fn p_token_initialize_mint2_matches_mollusk() {
     fs.add_program(&program_id, P_TOKEN_SO);
     let fs_r = fs
         .process_instruction(&ix, &[
-            (mint_key, mk_shared(MINT_LAMPORTS, mint_data.clone())),
+            (mint_key, mint_fs),
         ])
         .expect("qedsvm runs p-token InitializeMint2");
 
@@ -1924,7 +1813,7 @@ fn p_token_initialize_mint2_matches_mollusk() {
         P_TOKEN_SO,
     );
     let m_r = m.process_instruction(&ix, &[
-        (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
+        (mint_key, mint_ml),
     ]);
 
 
@@ -1964,31 +1853,12 @@ fn token_transfer_matches_mollusk() {
     let source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
     let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
 
-    let pre_src_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_dst_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-
-    let pre_src_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_dst_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_src_shared, pre_src_mollusk) = dual_account(
+        LAMPORTS, source_data.clone(), program_id, false);
+    let (pre_dst_shared, pre_dst_mollusk) = dual_account(
+        LAMPORTS, dest_data.clone(), program_id, false);
+    let (pre_auth_shared, pre_auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     // Transfer instruction data: [3, amount_le_u64...] = 9 bytes.
     let mut ix_data = Vec::with_capacity(9);
@@ -2099,31 +1969,12 @@ fn p_token_transfer_matches_mollusk() {
     let source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
     let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
 
-    let pre_src_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_dst_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-
-    let pre_src_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_dst_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_src_shared, pre_src_mollusk) = dual_account(
+        LAMPORTS, source_data.clone(), program_id, false);
+    let (pre_dst_shared, pre_dst_mollusk) = dual_account(
+        LAMPORTS, dest_data.clone(), program_id, false);
+    let (pre_auth_shared, pre_auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
     ix_data.push(3);
@@ -2215,31 +2066,12 @@ fn p_token_transfer_insufficient_balance_matches_mollusk() {
     let source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
     let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
 
-    let pre_src_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_dst_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-
-    let pre_src_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_dst_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_src_shared, pre_src_mollusk) = dual_account(
+        LAMPORTS, source_data.clone(), program_id, false);
+    let (pre_dst_shared, pre_dst_mollusk) = dual_account(
+        LAMPORTS, dest_data.clone(), program_id, false);
+    let (pre_auth_shared, pre_auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
     ix_data.push(3);
@@ -2323,31 +2155,12 @@ fn p_token_transfer_frozen_matches_mollusk() {
     source_data[108] = 2; // AccountState::Frozen
     let dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
 
-    let pre_src_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_dst_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-
-    let pre_src_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_dst_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_src_shared, pre_src_mollusk) = dual_account(
+        LAMPORTS, source_data.clone(), program_id, false);
+    let (pre_dst_shared, pre_dst_mollusk) = dual_account(
+        LAMPORTS, dest_data.clone(), program_id, false);
+    let (pre_auth_shared, pre_auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
     ix_data.push(3);
@@ -2430,31 +2243,12 @@ fn p_token_transfer_dest_frozen_matches_mollusk() {
     let mut dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
     dest_data[108] = 2; // AccountState::Frozen
 
-    let pre_src_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_dst_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-
-    let pre_src_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_dst_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_src_shared, pre_src_mollusk) = dual_account(
+        LAMPORTS, source_data.clone(), program_id, false);
+    let (pre_dst_shared, pre_dst_mollusk) = dual_account(
+        LAMPORTS, dest_data.clone(), program_id, false);
+    let (pre_auth_shared, pre_auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
     ix_data.push(3);
@@ -2540,31 +2334,12 @@ fn p_token_transfer_mint_mismatch_matches_mollusk() {
     let source_data = build_token_account(&mint_a, &authority, SOURCE_INITIAL);
     let dest_data = build_token_account(&mint_b, &authority, DEST_INITIAL);
 
-    let pre_src_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_dst_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-
-    let pre_src_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_dst_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_src_shared, pre_src_mollusk) = dual_account(
+        LAMPORTS, source_data.clone(), program_id, false);
+    let (pre_dst_shared, pre_dst_mollusk) = dual_account(
+        LAMPORTS, dest_data.clone(), program_id, false);
+    let (pre_auth_shared, pre_auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
     ix_data.push(3);
@@ -2655,31 +2430,12 @@ fn assert_p_token_transfer_fails_auth(
     let dest_key = pid(seed + 3);
     const LAMPORTS: u64 = 2_039_280;
 
-    let pre_src_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_dst_shared = AccountSharedData::from(Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_auth_shared = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    });
-
-    let pre_src_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_dst_mollusk = mollusk_account::Account {
-        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
-    let pre_auth_mollusk = mollusk_account::Account {
-        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_src_shared, pre_src_mollusk) = dual_account(
+        LAMPORTS, source_data.clone(), program_id, false);
+    let (pre_dst_shared, pre_dst_mollusk) = dual_account(
+        LAMPORTS, dest_data.clone(), program_id, false);
+    let (pre_auth_shared, pre_auth_mollusk) = dual_account(
+        1_000_000, vec![], Pubkey::default(), false);
 
     let ix = Instruction {
         program_id,
@@ -3692,25 +3448,10 @@ fn cpi_caller_forwards_account_to_incrementer() {
 
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), callee_id, false);
     // Callee program account must be in caller's AccountInfos for CPI program_id resolution.
-    let callee_program_shared = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_mollusk = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (callee_program_shared, callee_program_mollusk) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -3770,24 +3511,9 @@ fn cpi_callee_reallocs_account_grow() {
 
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    };
-    let callee_program_shared = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_mollusk = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), callee_id, false);
+    let (callee_program_shared, callee_program_mollusk) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -3850,24 +3576,9 @@ fn cpi_callee_realloc_overflow_rejected_on_both() {
 
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    };
-    let callee_program_shared = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_mollusk = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), callee_id, false);
+    let (callee_program_shared, callee_program_mollusk) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -3936,24 +3647,9 @@ fn cpi_readonly_account_not_committed_by_callee() {
 
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
-    let pre_shared = AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_mollusk = mollusk_account::Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    };
-    let callee_program_shared = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_mollusk = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (pre_shared, pre_mollusk) = dual_account(
+        lamports, data.clone(), callee_id, false);
+    let (callee_program_shared, callee_program_mollusk) = dual_program();
 
     let ix = Instruction { // acct_key READ-ONLY at top level — escalation to writable in CPI must fail
         program_id: caller_id,
@@ -4006,16 +3702,7 @@ fn cpi_caller_invokes_logger_propagates_log() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let callee_shared = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_mollusk = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (callee_shared, callee_mollusk) = dual_program();
 
     let mut fs = Svm::default().with_cu_budget(1_400_000);
     fs.add_program(&caller_id, CPI_CALLER_SO);
@@ -4052,20 +3739,7 @@ fn cpi_caller_invokes_registered_noop() {
         data: callee_id.to_bytes().to_vec(), // first 32 bytes = target pubkey
     };
 
-    let callee_account_shared = AccountSharedData::from(Account {
-        lamports: 1,
-        data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true,
-        rent_epoch: 0,
-    });
-    let callee_account_mollusk = mollusk_account::Account {
-        lamports: 1,
-        data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true,
-        rent_epoch: 0,
-    };
+    let (callee_account_shared, callee_account_mollusk) = dual_program();
 
     let mut fs = Svm::default().with_cu_budget(1_400_000);
     fs.add_program(&caller_id, CPI_CALLER_SO);
@@ -4152,24 +3826,9 @@ fn cpi_two_account_caller_forwards_to_incrementer() {
 
     let lamports = 1_000_000u64;
     let data: Vec<u8> = vec![0u8; 16];
-    let mk_shared = || AccountSharedData::from(Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    });
-    let mk_mollusk = || mollusk_account::Account {
-        lamports, data: data.clone(), owner: callee_id,
-        executable: false, rent_epoch: 0,
-    };
-    let callee_program_shared = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_mollusk = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (acct0_fs, acct0_ml) = dual_account(lamports, data.clone(), callee_id, false);
+    let (acct1_fs, acct1_ml) = dual_account(lamports, data.clone(), callee_id, false);
+    let (callee_program_shared, callee_program_mollusk) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -4185,8 +3844,8 @@ fn cpi_two_account_caller_forwards_to_incrementer() {
     fs.add_program(&caller_id, CPI_TWO_ACCOUNT_CALLER_SO);
     fs.add_program(&callee_id, INCREMENTER_SO);
     let fs_r = fs.process_instruction(&ix, &[
-        (acct0_key, mk_shared()),
-        (acct1_key, mk_shared()),
+        (acct0_key, acct0_fs),
+        (acct1_key, acct1_fs),
         (callee_id, callee_program_shared),
     ]).expect("qedsvm runs N=2 CPI");
 
@@ -4197,8 +3856,8 @@ fn cpi_two_account_caller_forwards_to_incrementer() {
     m.add_program_with_loader_and_elf(
         &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), INCREMENTER_SO);
     let m_r = m.process_instruction(&ix, &[
-        (acct0_key, mk_mollusk()),
-        (acct1_key, mk_mollusk()),
+        (acct0_key, acct0_ml),
+        (acct1_key, acct1_ml),
         (callee_id, callee_program_mollusk),
     ]);
 
@@ -4501,22 +4160,10 @@ fn system_transfer_cpi_matches_mollusk() {
 
     let system_owner = Pubkey::new_from_array([0u8; 32]); // lamport-bearing accounts are system-owned
 
-    let from_pre = AccountSharedData::from(Account {
-        lamports: initial_from, data: vec![],
-        owner: system_owner, executable: false, rent_epoch: 0,
-    });
-    let to_pre = AccountSharedData::from(Account {
-        lamports: initial_to, data: vec![],
-        owner: system_owner, executable: false, rent_epoch: 0,
-    });
-    let from_pre_m = mollusk_account::Account {
-        lamports: initial_from, data: vec![],
-        owner: system_owner, executable: false, rent_epoch: 0,
-    };
-    let to_pre_m = mollusk_account::Account {
-        lamports: initial_to, data: vec![],
-        owner: system_owner, executable: false, rent_epoch: 0,
-    };
+    let (from_pre, from_pre_m) = dual_account(
+        initial_from, vec![], system_owner, false);
+    let (to_pre, to_pre_m) = dual_account(
+        initial_to, vec![], system_owner, false);
 
     // System program stub: mirrors mollusk's keyed_account_for_system_program so resulting_accounts compares cleanly.
     let (mollusk_system_id, mollusk_system_acct) =
@@ -4611,22 +4258,10 @@ fn system_create_account_cpi_matches_mollusk() {
         data: ix_data,
     };
 
-    let payer_pre = AccountSharedData::from(Account {
-        lamports: initial_payer, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    });
-    let new_pre = AccountSharedData::from(Account {
-        lamports: 0, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    });
-    let payer_pre_m = mollusk_account::Account {
-        lamports: initial_payer, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    };
-    let new_pre_m = mollusk_account::Account {
-        lamports: 0, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    };
+    let (payer_pre, payer_pre_m) = dual_account(
+        initial_payer, vec![], system_program_id, false);
+    let (new_pre, new_pre_m) = dual_account(
+        0, vec![], system_program_id, false);
 
     let (mollusk_system_id, mollusk_system_acct) =
         mollusk_svm::program::keyed_account_for_system_program();
@@ -4726,14 +4361,8 @@ fn system_allocate_assign_cpi_matches_mollusk() {
         data: ix_data,
     };
 
-    let acct_pre = AccountSharedData::from(Account {
-        lamports: initial_lamports, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    });
-    let acct_pre_m = mollusk_account::Account {
-        lamports: initial_lamports, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    };
+    let (acct_pre, acct_pre_m) = dual_account(
+        initial_lamports, vec![], system_program_id, false);
 
     let (mollusk_system_id, mollusk_system_acct) =
         mollusk_svm::program::keyed_account_for_system_program();
@@ -4830,30 +4459,12 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
         data: ix_data,
     };
 
-    let payer_pre = AccountSharedData::from(Account {
-        lamports: initial_payer, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    });
-    let derived_pre = AccountSharedData::from(Account {
-        lamports: 0, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    });
-    let base_pre = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    });
-    let payer_pre_m = mollusk_account::Account {
-        lamports: initial_payer, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    };
-    let derived_pre_m = mollusk_account::Account {
-        lamports: 0, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    };
-    let base_pre_m = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: system_program_id, executable: false, rent_epoch: 0,
-    };
+    let (payer_pre, payer_pre_m) = dual_account(
+        initial_payer, vec![], system_program_id, false);
+    let (derived_pre, derived_pre_m) = dual_account(
+        0, vec![], system_program_id, false);
+    let (base_pre, base_pre_m) = dual_account(
+        1, vec![], system_program_id, false);
 
     let (mollusk_system_id, mollusk_system_acct) =
         mollusk_svm::program::keyed_account_for_system_program();
@@ -4941,16 +4552,8 @@ fn compute_budget_cpi_matches_mollusk() {
         data: ix_data,
     };
 
-    let cb_stub_fs = AccountSharedData::from(Account {
-        lamports: 1, data: b"compute_budget_program".to_vec(),
-        owner: solana_sdk_ids::native_loader::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let cb_stub_m = mollusk_account::Account {
-        lamports: 1, data: b"compute_budget_program".to_vec(),
-        owner: solana_sdk_ids::native_loader::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (cb_stub_fs, cb_stub_m) = dual_account(
+        1, b"compute_budget_program".to_vec(), solana_sdk_ids::native_loader::id(), true);
 
     let mut fs = Svm::default().with_cu_budget(1_400_000);
     fs.add_program(&caller_id, COMPUTE_BUDGET_CALLER_SO);
@@ -4989,36 +4592,13 @@ fn cpi_signed_pda_promotes_signer() {
     let (pda, _bump) = Pubkey::find_program_address(&[seed], &caller_id);
 
     let data: Vec<u8> = vec![0u8; 4];
-    let data_pre_fs = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: callee_id, executable: false, rent_epoch: 0,
-    });
-    let data_pre_ml = mollusk_account::Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: callee_id, executable: false, rent_epoch: 0,
-    };
+    let (data_pre_fs, data_pre_ml) = dual_account(
+        1_000_000, data.clone(), callee_id, false);
 
-    let pda_pre_fs = AccountSharedData::from(Account {
-        lamports: 0, data: vec![],
-        owner: solana_sdk_ids::system_program::id(),
-        executable: false, rent_epoch: 0,
-    });
-    let pda_pre_ml = mollusk_account::Account {
-        lamports: 0, data: vec![],
-        owner: solana_sdk_ids::system_program::id(),
-        executable: false, rent_epoch: 0,
-    };
+    let (pda_pre_fs, pda_pre_ml) = dual_account(
+        0, vec![], solana_sdk_ids::system_program::id(), false);
 
-    let callee_program_fs = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_ml = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (callee_program_fs, callee_program_ml) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -5075,25 +4655,10 @@ fn cpi_returns_data_propagates() {
     let data_key  = pid(212);
 
     let data: Vec<u8> = vec![0u8; 4];
-    let data_pre_fs = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: caller_id, executable: false, rent_epoch: 0, // caller must own data_key to write it
-    });
-    let data_pre_ml = mollusk_account::Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: caller_id, executable: false, rent_epoch: 0,
-    };
+    let (data_pre_fs, data_pre_ml) = dual_account( // caller must own data_key to write it
+        1_000_000, data.clone(), caller_id, false);
 
-    let callee_program_fs = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_ml = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (callee_program_fs, callee_program_ml) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -5146,25 +4711,10 @@ fn cpi_get_return_data_setter_pubkey_matches_mollusk() {
     let data_key  = pid(232);
 
     let data: Vec<u8> = vec![0u8; 36];
-    let data_pre_fs = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: caller_id, executable: false, rent_epoch: 0,
-    });
-    let data_pre_ml = mollusk_account::Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: caller_id, executable: false, rent_epoch: 0,
-    };
+    let (data_pre_fs, data_pre_ml) = dual_account(
+        1_000_000, data.clone(), caller_id, false);
 
-    let callee_program_fs = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let callee_program_ml = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (callee_program_fs, callee_program_ml) = dual_program();
 
     let ix = Instruction {
         program_id: caller_id,
@@ -5219,14 +4769,8 @@ fn sysvar_probe_matches_mollusk() {
     let data_key = pid(241);
 
     let data = vec![0u8; 128];
-    let pre_fs = AccountSharedData::from(Account {
-        lamports: 2_000_000, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    });
-    let pre_ml = mollusk_account::Account {
-        lamports: 2_000_000, data: data.clone(), owner: program_id,
-        executable: false, rent_epoch: 0,
-    };
+    let (pre_fs, pre_ml) = dual_account(
+        2_000_000, data.clone(), program_id, false);
 
     let ix = Instruction {
         program_id,
@@ -5291,35 +4835,11 @@ fn cpi_depth_2_chain_matches_mollusk() {
     let acct_key  = pid(223);
 
     let data: Vec<u8> = vec![0u8; 16];
-    let acct_pre_fs = AccountSharedData::from(Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: leaf_id, executable: false, rent_epoch: 0,
-    });
-    let acct_pre_ml = mollusk_account::Account {
-        lamports: 1_000_000, data: data.clone(),
-        owner: leaf_id, executable: false, rent_epoch: 0,
-    };
+    let (acct_pre_fs, acct_pre_ml) = dual_account(
+        1_000_000, data.clone(), leaf_id, false);
 
-    let middle_prog_fs = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let middle_prog_ml = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
-    let leaf_prog_fs = AccountSharedData::from(Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    });
-    let leaf_prog_ml = mollusk_account::Account {
-        lamports: 1, data: vec![],
-        owner: solana_sdk_ids::bpf_loader_upgradeable::id(),
-        executable: true, rent_epoch: 0,
-    };
+    let (middle_prog_fs, middle_prog_ml) = dual_program();
+    let (leaf_prog_fs, leaf_prog_ml) = dual_program();
 
     let mut ix_data = Vec::with_capacity(64); // ix.data = middle_id || leaf_id
     ix_data.extend_from_slice(&middle_id.to_bytes());
