@@ -1533,10 +1533,110 @@ fn lift_one_with_layouts(
     // `refine_registry`. `None` = the registry-driven path (unchanged).
     descriptor:      Option<&RefinementDescriptor>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
-    let executable  = &ctx.executable;
-    let text_offset = ctx.text_offset;
-    let text_bytes  = ctx.text_bytes.as_slice();
-    let insns       = &ctx.insns;
+    let insns = &ctx.insns;
+
+    debug_dump_insns(insns);
+
+    let (so_stem, module_name) = derive_module_name(so_path, module_override);
+    let (out, emit_decode_bridge) =
+        emit_prelude(so_path, ctx, analysis, &so_stem, &module_name);
+
+    let entry_pc: usize = ctx.executable.get_entrypoint_instruction_offset();
+    let WalkResult { mut state, spec_calls, block_pcs, exit_pc, fault_terminal } =
+        walk_and_exec(ctx, analysis, trace, target_disc, arm_entry, entry_pc)?;
+
+    let out_patched = out.replace("@@HEARTBEATS@@",
+        if state.hot_regions.is_empty() { "4000000" } else { "16000000" });
+    let mut out = out_patched;
+
+    // CR must be a literal `union`-of-`singleton`s (sl_block_auto walks the AST), so inline not def.
+    let cr_lean = build_code_req(ctx, analysis, &block_pcs, &state)?;
+
+    // H8 + H2: full bridge omitted for large binaries; pin each walked PC's decode via hex-string embedding
+    // + buildSlotMap + native_decide, including call_local PCs resolved through the function registry.
+    if !emit_decode_bridge && !block_pcs.is_empty() {
+        emit_decode_pins(&mut out, ctx, analysis, &block_pcs, &state, &module_name)?;
+    }
+
+    // Phase 2: Hoare-triple emission. Symbolic execution already done inline above; `state` is ready.
+    out.push_str(render::lifted_triple_section_header());
+    let tc = assemble_triple(&mut state, &spec_calls, &block_pcs, fault_terminal,
+                             module_name, cr_lean, entry_pc, exit_pc);
+    out.push_str(&render::cu_triple_theorem(&render::TripleTheorem {
+        name: &tc.lifted_name,
+        binders: &tc.theorem_binders,
+        n: tc.n,
+        m_bound: &tc.m_bound,
+        start_pc: tc.start_pc,
+        exit_pc: tc.exit_pc,
+        cr: &tc.cr_lean,
+        pre: &tc.lifted_pre,
+        post: &tc.lifted_post,
+        rr: &tc.rr,
+        proof: &tc.tactic,
+    }));
+
+    // H8 satisfiability witness: fail-closed if precondition can't be witnessed satisfiable.
+    match build_sat_witness(&tc.pre, &state, &tc.abstractions, &tc.abs_subst,
+                            &tc.folded_rhs, &tc.vars) {
+        Ok(w) => out.push_str(&w),
+        Err(e) => return Err(format!(
+            "qedlift: satisfiability witness construction failed — {}", e).into()),
+    }
+
+    // Branch-satisfiability witness (Phase 7.1): certifies h_branch* / h*_lt jointly satisfiable
+    // at a concrete assignment (native_decide), closing branch-vacuity. Conservative (non-breaking).
+    if let Some(w) = build_branch_witness(&state, &tc.vars) {
+        out.push_str(&w);
+    }
+
+    emit_heap_corollary(&mut out, &tc, &state);
+
+    // Only counter/vault arms (is_const_delta_arm) — or a spec-driven descriptor, whose
+    // `op.add_const` is exactly this const-delta case — get the constant +k cleaning; others stay wrapAdd.
+    let counter_arm = is_const_delta_arm(arm_name) || descriptor.is_some();
+    let (shifts, post_clean) = clean_balance_shifts(&tc.post, counter_arm);
+    emit_balance_corollary(&mut out, &tc, &state, &shifts, &post_clean);
+
+    if let Some(terminal) = fault_terminal {
+        emit_fault_corollary(&mut out, &tc, &state, terminal)?;
+    }
+
+    let transition: Option<TransitionPathInfo> = match descriptor {
+        Some(desc) => emit_transition_corollary(&mut out, desc, &tc, &state, &shifts,
+            &post_clean, fault_terminal, trace.is_some(), insns, idl, sidecar_layouts),
+        None => None,
+    };
+
+    out.push_str(&render::end_namespace(&tc.module_name));
+
+    // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
+    // Spec-driven descriptor wins when present (the qedspec seam): build the
+    // layout-general `AsmRefinesFieldUpdate` straight from the descriptor,
+    // bypassing the hardcoded `refine_registry`. Otherwise the registry path.
+    let refinement = match descriptor {
+        Some(desc) => emit_descriptor_refinement(
+            desc, &tc.module_name, &tc.pre, &post_clean, &tc.abs_subst, &tc.vars,
+            tc.n, tc.start_pc, tc.exit_pc, idl, sidecar_layouts),
+        None => arm_name.and_then(|arm| emit_refinement(
+            arm, &tc.module_name, &tc.pre, &post_clean, &tc.abs_subst, &tc.vars,
+            tc.n, tc.start_pc, tc.exit_pc, idl, sidecar_layouts)),
+    };
+
+    Ok(LiftOutput {
+        lean: out,
+        module_name: tc.module_name,
+        text_bytes: ctx.text_bytes.len(),
+        insn_count: insns.len(),
+        cu: tc.n,
+        refinement,
+        transition,
+    })
+}
+
+/// Debug dump of the decoded instruction stream (stderr only; not part of the
+/// emitted Lean document).
+fn debug_dump_insns(insns: &[ebpf::Insn]) {
 
     eprintln!("=== decoded insns ===");
     for (i, ins) in insns.iter().enumerate() {
@@ -1544,6 +1644,11 @@ fn lift_one_with_layouts(
         eprintln!("  pc={:3}  opc=0x{:02x}  {}", i, ins.opc, rendered);
     }
     eprintln!();
+}
+
+/// `(so_stem, module_name)`: the .so file stem and the Lean module name
+/// (override, or PascalCase of the stem + `Lifted`).
+fn derive_module_name(so_path: &Path, module_override: Option<String>) -> (String, String) {
 
     let so_stem = so_path.file_stem()
         .map(|s| s.to_string_lossy().to_string())
@@ -1559,6 +1664,23 @@ fn lift_one_with_layouts(
         }
         format!("{}Lifted", out)
     });
+    (so_stem, module_name)
+}
+
+/// Emit the module intro + decode-bridge / decoded-insns sections (everything
+/// before the walk). Returns `(out, emit_decode_bridge)` — the flag gates the
+/// per-PC decode pins later.
+fn emit_prelude(
+    so_path: &Path,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    so_stem: &str,
+    module_name: &str,
+) -> (String, bool) {
+    let text_offset = ctx.text_offset;
+    let text_bytes  = ctx.text_bytes.as_slice();
+    let insns       = &ctx.insns;
+
 
     // NOT load-bearing for the Hoare triple. Large binaries blow `maxRecDepth` as a ByteArray
     // literal — emit per-PC decode pins (hex-string, H8) above 4096 bytes; small binaries get the full bridge.
@@ -1607,14 +1729,42 @@ fn lift_one_with_layouts(
         ));
     }
 
-    let entry_pc: usize = executable.get_entrypoint_instruction_offset();
+    (out, emit_decode_bridge)
+}
+
+/// What the CFG walk + symbolic execution produced for one arm: the final
+/// symbolic state, the per-insn spec calls, the walked PCs, the terminator PC
+/// and (when the path ends in an abort-style terminal) the typed fault.
+struct WalkResult {
+    state: SymState,
+    spec_calls: Vec<SpecCall>,
+    block_pcs: Vec<usize>,
+    exit_pc: usize,
+    fault_terminal: Option<FaultTerminal>,
+}
+
+/// CFG walk + symbolic execution + the hot-region/blob-split retry loop +
+/// syscall dispatch. Straight-line→pc+1, ja→target, cond-jump→fall-through,
+/// call_local→push+jump, exit/empty-stack→done, exit/non-empty→pop+resume.
+/// Starts at ELF entrypoint (NOT analysis PC 0: linker may place helpers
+/// before it).
+fn walk_and_exec(
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    trace: Option<&[usize]>,
+    target_disc: Option<i64>,
+    arm_entry: Option<usize>,
+    entry_pc: usize,
+) -> Result<WalkResult, Box<dyn std::error::Error>> {
+    let insns = &ctx.insns;
+
     // Hot regions: grow monotonically across walk retries (H8 Phase B); attempt cap is a safety net.
     let mut hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>> =
         Default::default();
     let mut blob_splits: std::collections::BTreeMap<(String, i64), i64> =
         Default::default();
     let mut walk_attempts = 0usize;
-    let (mut state, spec_calls, block_pcs, exit_pc, fault_terminal) = loop {
+    loop {
     walk_attempts += 1;
     if walk_attempts > 8 {
         return Err("qedlift: hot-region demotion did not converge after 8 \
@@ -1622,9 +1772,6 @@ fn lift_one_with_layouts(
     }
     let mut spec_calls: Vec<SpecCall> = Vec::new();
 
-    // CFG walk + symbolic execution: straight-line→pc+1, ja→target, cond-jump→fall-through,
-    // call_local→push+jump, exit/empty-stack→done, exit/non-empty→pop+resume.
-    // Starts at ELF entrypoint (NOT analysis PC 0: linker may place helpers before it).
     let mut block_pcs: Vec<usize> = Vec::new();
     let exit_pc: usize;
     // Phase 7 sub-item 3: when the walked happy-path terminates in a typed
@@ -1727,76 +1874,10 @@ fn lift_one_with_layouts(
                 if let Some(t) = trace {
                     if t.get(ti + 1).copied() == Some(pc_iter + 1) {
                         let imm = ins.imm as u32;
-                        if imm == ebpf::hash_symbol_name(b"sol_memset_") {
-                            emit_sol_memset(&mut state, &mut spec_calls,
-                                            &mut block_pcs, pc_iter);
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
-                            // H8 Phase C-2: faithful buffer-write (rent/offset 0/length 17; else fail-closed).
-                            emit_sol_get_sysvar(&mut state, &mut spec_calls,
-                                &mut block_pcs, pc_iter, ctx)?;
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_log_") {
-                            emit_sol_log(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter);
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_memcpy_") {
-                            emit_sol_memcpy(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter, false);
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_memmove_") {
-                            emit_sol_memcpy(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter, true);
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_memcmp_") {
-                            emit_sol_memcmp(&mut state, &mut spec_calls, &mut block_pcs,
-                                pc_iter);
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_set_return_data") {
-                            emit_sol_set_return_data(&mut state, &mut spec_calls,
-                                &mut block_pcs, pc_iter);
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_sha256") {
-                            // H6: single-slice hash — descriptor cells consumed
-                            // from the program's stores, input/output introduced.
-                            emit_sol_sha256(&mut state, &mut spec_calls,
-                                &mut block_pcs, pc_iter)?;
-                            ti += 1;
-                            continue;
-                        }
-                        if imm == ebpf::hash_symbol_name(b"sol_create_program_address") {
-                            // H6: single-seed PDA — descriptor from stores, seed +
-                            // program_id + output introduced; off-curve surfaced.
-                            emit_sol_create_program_address(&mut state, &mut spec_calls,
-                                &mut block_pcs, pc_iter)?;
-                            ti += 1;
-                            continue;
-                        }
-                        // NOTE: sol_invoke_signed_rust never reaches here — it is an
-                        // AbortKind::Invoke walk TERMINAL (the proof-facing CPI is the
-                        // fail-closed `Cpi.exec` stub, so no running spec can cross it).
-                        return Err(format!(
-                            "call_imm at pc {} is a syscall (trace returns to {} \
-                             without a frame push) with imm hash 0x{:08x}, but only \
-                             sol_memset_ / sol_memcpy_ / sol_memmove_ / sol_memcmp_ / \
-                             sol_get_sysvar / sol_log_ / sol_set_return_data are \
-                             modelled so far (sol_invoke_signed terminates the walk). \
-                             This arm needs a syscall-effect spec for that hash.",
-                            pc_iter, pc_iter + 1, imm).into());
+                        dispatch_traced_syscall(&mut state, &mut spec_calls,
+                            &mut block_pcs, pc_iter, imm, ctx)?;
+                        ti += 1;
+                        continue;
                     }
                 }
             }
@@ -1806,29 +1887,7 @@ fn lift_one_with_layouts(
             // Branch hyp name indexed by number of branches seen so far.
             let branch_idx = state.branch_hyps.len();
             let branch_hyp = format!("h_branch{}", branch_idx);
-            let is_cond_jump = matches!(ins.opc,
-                ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
-                ebpf::JNE64_IMM | ebpf::JNE32_IMM |
-                ebpf::JGT64_IMM | ebpf::JGT32_IMM |
-                ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
-                ebpf::JSLE64_IMM | ebpf::JSLE32_IMM |
-                ebpf::JLT64_IMM | ebpf::JLT32_IMM |
-                ebpf::JLE64_IMM | ebpf::JLE32_IMM |
-                ebpf::JSLT64_IMM | ebpf::JSLT32_IMM |
-                ebpf::JGE64_IMM | ebpf::JGE32_IMM |
-                ebpf::JSGE64_IMM | ebpf::JSGE32_IMM |
-                ebpf::JSET64_IMM | ebpf::JSET32_IMM |
-                ebpf::JEQ64_REG | ebpf::JEQ32_REG |
-                ebpf::JNE64_REG | ebpf::JNE32_REG |
-                ebpf::JLT64_REG | ebpf::JLT32_REG |
-                ebpf::JSLE64_REG | ebpf::JSLE32_REG |
-                ebpf::JGT64_REG | ebpf::JGT32_REG |
-                ebpf::JLE64_REG | ebpf::JLE32_REG |
-                ebpf::JSGE64_REG | ebpf::JSGE32_REG |
-                ebpf::JGE64_REG | ebpf::JGE32_REG |
-                ebpf::JSGT64_REG | ebpf::JSGT32_REG |
-                ebpf::JSLT64_REG | ebpf::JSLT32_REG |
-                ebpf::JSET64_REG | ebpf::JSET32_REG);
+            let is_cond_jump = is_cond_jump_opc(ins.opc);
             let branch_hyp_for_call = if is_cond_jump {
                 Some(branch_hyp.as_str())
             } else { None };
@@ -1836,38 +1895,9 @@ fn lift_one_with_layouts(
             let jtgt = resolve_jump_target(ctx, pc_iter, ins.off as i64);
             // Trace: taken iff next PC ≠ pc+1; target mismatch vs decoded offset = fail-closed.
             // Static: discriminator-driven where possible, else fall-through.
-            let branch_taken: Option<bool> = if let Some(t) = trace {
-                if is_cond_jump {
-                    let next = t.get(ti + 1).copied();
-                    let taken = next != Some(pc_iter + 1);
-                    if taken {
-                        if let Some(n) = next {
-                            if n as i64 != jtgt {
-                                return Err(format!(
-                                    "trace/decoder mismatch at pc {}: trace goes to {} \
-                                     but the decoded jump target is {} (off={})",
-                                    pc_iter, n, jtgt, ins.off).into());
-                            }
-                        }
-                    }
-                    Some(taken)
-                } else { None }
-            } else {
-                match (ins.opc, target_disc) {
-                    (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) => {
-                        Some(ins.imm == td)
-                    }
-                    (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => {
-                        Some(ins.imm != td)
-                    }
-                    // JGT: take branch when td > imm (disc > N → upper_half pattern).
-                    (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) => {
-                        Some(td > ins.imm)
-                    }
-                    _ if is_cond_jump => Some(false), // default: not-taken
-                    _ => None,
-                }
-            };
+            let branch_taken = resolve_branch_taken(
+                trace, ti, pc_iter, ins, jtgt, is_cond_jump, target_disc)?;
+
             if let Some(sc) = spec_call_for(&state, ins, pc_iter, call_target,
                                             branch_hyp_for_call, branch_taken, Some(jtgt)) {
                 spec_calls.push(sc);
@@ -1955,13 +1985,171 @@ fn lift_one_with_layouts(
              docs/QEDLIFT_ALIASING_DESIGN.md):\n  - {}",
             state.overlap_errors.join("\n  - ")).into());
     }
-    break (state, spec_calls, block_pcs, exit_pc, fault_terminal);
-    };
-    let out_patched = out.replace("@@HEARTBEATS@@",
-        if state.hot_regions.is_empty() { "4000000" } else { "16000000" });
-    let mut out = out_patched;
+    return Ok(WalkResult { state, spec_calls, block_pcs, exit_pc, fault_terminal });
+    }
+}
 
-    // CR must be a literal `union`-of-`singleton`s (sl_block_auto walks the AST), so inline not def.
+/// Handle a traced syscall (a `call_imm` whose trace returns to pc+1 without a
+/// BPF frame push): dispatch on the murmur3 hash to the effect emitter.
+/// Errors on an unmodelled syscall hash.
+fn dispatch_traced_syscall(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc_iter: usize,
+    imm: u32,
+    ctx: &BinaryCtx,
+) -> Result<(), Box<dyn std::error::Error>> {
+
+    if imm == ebpf::hash_symbol_name(b"sol_memset_") {
+        emit_sol_memset(state, spec_calls,
+                        block_pcs, pc_iter);
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
+        // H8 Phase C-2: faithful buffer-write (rent/offset 0/length 17; else fail-closed).
+        emit_sol_get_sysvar(state, spec_calls,
+            block_pcs, pc_iter, ctx)?;
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_log_") {
+        emit_sol_log(state, spec_calls, block_pcs,
+            pc_iter);
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_memcpy_") {
+        emit_sol_memcpy(state, spec_calls, block_pcs,
+            pc_iter, false);
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_memmove_") {
+        emit_sol_memcpy(state, spec_calls, block_pcs,
+            pc_iter, true);
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_memcmp_") {
+        emit_sol_memcmp(state, spec_calls, block_pcs,
+            pc_iter);
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_set_return_data") {
+        emit_sol_set_return_data(state, spec_calls,
+            block_pcs, pc_iter);
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_sha256") {
+        // H6: single-slice hash — descriptor cells consumed
+        // from the program's stores, input/output introduced.
+        emit_sol_sha256(state, spec_calls,
+            block_pcs, pc_iter)?;
+        return Ok(());
+    }
+    if imm == ebpf::hash_symbol_name(b"sol_create_program_address") {
+        // H6: single-seed PDA — descriptor from stores, seed +
+        // program_id + output introduced; off-curve surfaced.
+        emit_sol_create_program_address(state, spec_calls,
+            block_pcs, pc_iter)?;
+        return Ok(());
+    }
+    // NOTE: sol_invoke_signed_rust never reaches here — it is an
+    // AbortKind::Invoke walk TERMINAL (the proof-facing CPI is the
+    // fail-closed `Cpi.exec` stub, so no running spec can cross it).
+    return Err(format!(
+        "call_imm at pc {} is a syscall (trace returns to {} \
+         without a frame push) with imm hash 0x{:08x}, but only \
+         sol_memset_ / sol_memcpy_ / sol_memmove_ / sol_memcmp_ / \
+         sol_get_sysvar / sol_log_ / sol_set_return_data are \
+         modelled so far (sol_invoke_signed terminates the walk). \
+         This arm needs a syscall-effect spec for that hash.",
+        pc_iter, pc_iter + 1, imm).into());
+}
+
+/// True if `opc` is a conditional jump the walker models (imm + reg forms).
+fn is_cond_jump_opc(opc: u8) -> bool {
+    matches!(opc,
+
+        ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
+        ebpf::JNE64_IMM | ebpf::JNE32_IMM |
+        ebpf::JGT64_IMM | ebpf::JGT32_IMM |
+        ebpf::JSGT64_IMM | ebpf::JSGT32_IMM |
+        ebpf::JSLE64_IMM | ebpf::JSLE32_IMM |
+        ebpf::JLT64_IMM | ebpf::JLT32_IMM |
+        ebpf::JLE64_IMM | ebpf::JLE32_IMM |
+        ebpf::JSLT64_IMM | ebpf::JSLT32_IMM |
+        ebpf::JGE64_IMM | ebpf::JGE32_IMM |
+        ebpf::JSGE64_IMM | ebpf::JSGE32_IMM |
+        ebpf::JSET64_IMM | ebpf::JSET32_IMM |
+        ebpf::JEQ64_REG | ebpf::JEQ32_REG |
+        ebpf::JNE64_REG | ebpf::JNE32_REG |
+        ebpf::JLT64_REG | ebpf::JLT32_REG |
+        ebpf::JSLE64_REG | ebpf::JSLE32_REG |
+        ebpf::JGT64_REG | ebpf::JGT32_REG |
+        ebpf::JLE64_REG | ebpf::JLE32_REG |
+        ebpf::JSGE64_REG | ebpf::JSGE32_REG |
+        ebpf::JGE64_REG | ebpf::JGE32_REG |
+        ebpf::JSGT64_REG | ebpf::JSGT32_REG |
+        ebpf::JSLT64_REG | ebpf::JSLT32_REG |
+        ebpf::JSET64_REG | ebpf::JSET32_REG)
+}
+
+/// Whether the conditional jump at `pc_iter` is taken.
+/// Trace: taken iff next PC ≠ pc+1; target mismatch vs decoded offset = fail-closed.
+/// Static: discriminator-driven where possible, else fall-through.
+#[allow(clippy::too_many_arguments)]
+fn resolve_branch_taken(
+    trace: Option<&[usize]>,
+    ti: usize,
+    pc_iter: usize,
+    ins: &ebpf::Insn,
+    jtgt: i64,
+    is_cond_jump: bool,
+    target_disc: Option<i64>,
+) -> Result<Option<bool>, Box<dyn std::error::Error>> {
+
+    let branch_taken: Option<bool> = if let Some(t) = trace {
+        if is_cond_jump {
+            let next = t.get(ti + 1).copied();
+            let taken = next != Some(pc_iter + 1);
+            if taken {
+                if let Some(n) = next {
+                    if n as i64 != jtgt {
+                        return Err(format!(
+                            "trace/decoder mismatch at pc {}: trace goes to {} \
+                             but the decoded jump target is {} (off={})",
+                            pc_iter, n, jtgt, ins.off).into());
+                    }
+                }
+            }
+            Some(taken)
+        } else { None }
+    } else {
+        match (ins.opc, target_disc) {
+            (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) => {
+                Some(ins.imm == td)
+            }
+            (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => {
+                Some(ins.imm != td)
+            }
+            // JGT: take branch when td > imm (disc > N → upper_half pattern).
+            (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) => {
+                Some(td > ins.imm)
+            }
+            _ if is_cond_jump => Some(false), // default: not-taken
+            _ => None,
+        }
+    };
+    Ok(branch_taken)
+}
+
+/// Render the walked PCs as the literal `CodeReq` union-of-singletons.
+fn build_code_req(
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    block_pcs: &[usize],
+    state: &SymState,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let insns = &ctx.insns;
+
     let cr_lean: String = if block_pcs.is_empty() {
         "CodeReq.empty".to_string()
     } else {
@@ -1985,39 +2173,95 @@ fn lift_one_with_layouts(
         }
         s
     };
+    Ok(cr_lean)
+}
 
-    // H8 + H2: full bridge omitted for large binaries; pin each walked PC's decode via hex-string embedding
-    // + buildSlotMap + native_decide, including call_local PCs resolved through the function registry.
-    if !emit_decode_bridge && !block_pcs.is_empty() {
-        let mut pin_offs: Vec<String> = Vec::new();
-        let mut pin_exps: Vec<String> = Vec::new();
-        for &pc in &block_pcs {
-            let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
-                format!(".call {}", ctor)
-            } else {
-                let tgt = resolve_call_target_logical(ctx, &analysis, &insns[pc]);
-                let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
-                insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
-            };
-            let byte_off = ctx.pc_map.logical_to_slot(pc).expect("logical pc in range") * 8;
-            let sz = if insns[pc].opc == 0x18 { 16 } else { 8 };
-            pin_offs.push(byte_off.to_string());
-            pin_exps.push(format!("some ({}, {})", lean_insn, sz));
-        }
+/// H8 + H2: per-PC decode pins for the no-bridge (large / syscall-bearing)
+/// path — every walked PC's decode is checked in-kernel by `native_decide`.
+fn emit_decode_pins(
+    out: &mut String,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    block_pcs: &[usize],
+    state: &SymState,
+    module_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let insns = &ctx.insns;
+    let text_bytes = ctx.text_bytes.as_slice();
 
-        // H2: registry resolves call imms to .call_local targets in the pins below.
-        let reg = function_registry(ctx);
-        out.push_str(&render::large_text_decode_section(
-            &module_name,
-            text_bytes,
-            &function_registry_lean(&reg),
-            &pin_offs,
-            &pin_exps,
-        ));
+    let mut pin_offs: Vec<String> = Vec::new();
+    let mut pin_exps: Vec<String> = Vec::new();
+    for &pc in block_pcs {
+        let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
+            format!(".call {}", ctor)
+        } else {
+            let tgt = resolve_call_target_logical(ctx, &analysis, &insns[pc]);
+            let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
+            insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
+        };
+        let byte_off = ctx.pc_map.logical_to_slot(pc).expect("logical pc in range") * 8;
+        let sz = if insns[pc].opc == 0x18 { 16 } else { 8 };
+        pin_offs.push(byte_off.to_string());
+        pin_exps.push(format!("some ({}, {})", lean_insn, sz));
     }
 
-    // Phase 2: Hoare-triple emission. Symbolic execution already done inline above; `state` is ready.
-    out.push_str(render::lifted_triple_section_header());
+    // H2: registry resolves call imms to .call_local targets in the pins below.
+    let reg = function_registry(ctx);
+    out.push_str(&render::large_text_decode_section(
+        &module_name,
+        text_bytes,
+        &function_registry_lean(&reg),
+        &pin_offs,
+        &pin_exps,
+    ));
+    Ok(())
+}
+
+/// Everything the lifted-triple theorem statement is assembled from, shared by
+/// the corollary emitters (heap-alloc / balance / typed-fault / transition).
+struct TripleCtx {
+    module_name: String,
+    pre: Vec<Atom>,
+    post: Vec<Atom>,
+    /// Complex-address abstractions `(param, bridge_hyp, raw_expr)`.
+    abstractions: Vec<(String, String, String)>,
+    /// Rendered raw expr → abstraction param.
+    abs_subst: std::collections::BTreeMap<String, String>,
+    /// Bridge-equality RHS with inner abstractions folded, indexed like `abstractions`.
+    folded_rhs: Vec<String>,
+    /// Symbolic `Nat` parameters (initial regs/cells) in declaration order.
+    vars: Vec<String>,
+    use_block_iter: bool,
+    theorem_binders: String,
+    lifted_name: String,
+    lifted_pre: String,
+    lifted_post: String,
+    rr: String,
+    cs_atom: &'static str,
+    m_bound: String,
+    cr_lean: String,
+    /// The `_lifted_spec` proof body.
+    tactic: String,
+    n: usize,
+    start_pc: usize,
+    exit_pc: usize,
+}
+
+/// Theorem-binder assembly: pre/post atoms, complex-address abstractions,
+/// symbolic parameters, hypothesis signatures and the proof body — everything
+/// `_lifted_spec` and its corollaries are rendered from.
+#[allow(clippy::too_many_arguments)]
+fn assemble_triple(
+    state: &mut SymState,
+    spec_calls: &[SpecCall],
+    block_pcs: &[usize],
+    fault_terminal: Option<FaultTerminal>,
+    module_name: String,
+    cr_lean: String,
+    entry_pc: usize,
+    exit_pc: usize,
+) -> TripleCtx {
+
     let mut pre  = state.pre.clone();
     let mut post = post_atoms(&pre, &state);
     // An OOB fault terminal composes its fault spec against the FRONT of the
@@ -2042,32 +2286,8 @@ fn lift_one_with_layouts(
         spec_calls.iter().any(|sc| sc.have_line.contains(&h))
     });
 
-    // Complex addresses (non-InitReg) → opaque Nat params + bridging equalities, so the chain
-    // composes over clean atoms (see pda_n1_stack_macro_spec in SVM/SBPF/Macros.lean).
-    let mut abstractions: Vec<(String, String, String)> = Vec::new(); // (param, bridge_hyp, raw_expr)
-    {
-        let mut seen: std::collections::BTreeMap<String, usize> =
-            std::collections::BTreeMap::new();
-        // Flat const address (e.g. lddw heap base) is NOT complex: sl_block_auto re-derives it; abstracting breaks unification.
-        let is_const_addr = |e: &Expr| matches!(e, Expr::Const(_))
-            || matches!(e, Expr::ToU64(inner) if matches!(inner.as_ref(), Expr::Const(_)));
-        for atom in &pre {
-            if let Atom::Mem { addr_base, .. } = atom {
-                if !matches!(addr_base, Expr::InitReg(_)) && !is_const_addr(addr_base) {
-                    let rendered = addr_base.to_lean();
-                    if !seen.contains_key(&rendered) {
-                        let idx = seen.len();
-                        seen.insert(rendered.clone(), idx);
-                        abstractions.push((
-                            format!("addr{}", idx),
-                            format!("h_addr{}", idx),
-                            rendered,
-                        ));
-                    }
-                }
-            }
-        }
-    }
+    let abstractions = collect_abstractions(&pre);
+
     let abs_subst: std::collections::BTreeMap<String, String> =
         abstractions.iter()
             .map(|(p, _, e)| (e.clone(), p.clone()))
@@ -2077,29 +2297,8 @@ fn lift_one_with_layouts(
     // Net change = none, but sl_block_iter must thread it through the chain.
     let cs_atom = if state.saw_call { " ** callStackIs []" } else { "" };
 
-    let mut vars: Vec<String> = Vec::new();
-    let push_var = |v: &Expr, vars: &mut Vec<String>| {
-        if let Expr::InitReg(n) | Expr::InitMem(n) = v {
-            if !vars.contains(n) { vars.push(n.clone()); }
-        }
-    };
-    for atom in &pre {
-        match atom {
-            Atom::Reg(_, v) => push_var(v, &mut vars),
-            Atom::Mem { addr_base, value, .. } => {
-                push_var(addr_base, &mut vars);
-                push_var(value, &mut vars);
-            }
-            Atom::Bytes32 { addr, .. } => push_var(addr, &mut vars),
-            // The blob's `Sym` name is a `ByteArray` (surfaced via
-            // `memset_blobs`, not here); the address's Nat leaves were
-            // already collected when the syscall's registers were read.
-            Atom::Bytes { addr, .. } => push_var(addr, &mut vars),
-            // The returnData buffer has no address; its `ByteArray` name is
-            // bound via `bytearray_vars`.
-            Atom::ReturnData { .. } => {}
-        }
-    }
+    let vars = collect_pre_vars(&pre);
+
     let vars_sig = if vars.is_empty() { String::new() }
                    else { format!("({} : Nat)\n    ", vars.join(" ")) };
     // u64-load bounds: ldxdw_spec leaves `< 2^64` residuals; surface as hyps, discharge with `<;> assumption`.
@@ -2169,8 +2368,131 @@ fn lift_one_with_layouts(
     let any_taken = state.branch_hyps.iter().any(|b| b.taken);
     let use_block_iter = state.saw_call || any_taken || !state.syscall_pcs.is_empty();
 
+    let value_gens = build_value_gens(&state, &pre, &post, &abs_subst, use_block_iter);
+    let tactic = build_proof_body(spec_calls, &abstractions, &value_gens,
+                                  use_block_iter, needs_assumption);
+    let folded_rhs = fold_bridge_rhs(&abstractions);
+
+    // Abstraction signature (params + bridge equality hyps) for sl_block_iter programs.
+    let abs_sig: String = if use_block_iter && !abstractions.is_empty() {
+        let mut s = String::new();
+        for (param, _, _) in &abstractions {
+            s.push_str(&format!("({} : Nat)\n    ", param));
+        }
+        for (i, (param, h, _)) in abstractions.iter().enumerate() {
+            s.push_str(&format!("({} : {} = {})\n    ", h, param, folded_rhs[i]));
+        }
+        s
+    } else {
+        String::new()
+    };
+    let n = block_pcs.len();
+    // Start PC = first walked instruction (trace first / static entrypoint / entry_pc fallback).
+    let start_pc = block_pcs.first().copied().unwrap_or(entry_pc);
+
+    let theorem_binders = format!(
+        "{}{}{}{}{}{}",
+        vars_sig, abs_sig, u64_hyps, branch_hyps_sig, side_hyps_sig, syscall_sig,
+    );
+    let lifted_name = format!("{}_lifted_spec", module_name);
+    let lifted_pre = format!("{}{}", atoms_to_lean(&pre, &abs_subst), cs_atom);
+    let lifted_post = format!("{}{}", atoms_to_lean(&post, &abs_subst), cs_atom);
+
+    TripleCtx {
+        module_name,
+        pre,
+        post,
+        abstractions,
+        abs_subst,
+        folded_rhs,
+        vars,
+        use_block_iter,
+        theorem_binders,
+        lifted_name,
+        lifted_pre,
+        lifted_post,
+        rr,
+        cs_atom,
+        m_bound,
+        cr_lean,
+        tactic,
+        n,
+        start_pc,
+        exit_pc,
+    }
+}
+
+/// Complex addresses (non-InitReg) → opaque Nat params + bridging equalities, so the chain
+/// composes over clean atoms (see pda_n1_stack_macro_spec in SVM/SBPF/Macros.lean).
+fn collect_abstractions(pre: &[Atom]) -> Vec<(String, String, String)> {
+    let mut abstractions: Vec<(String, String, String)> = Vec::new(); // (param, bridge_hyp, raw_expr)
+
+    {
+        let mut seen: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        // Flat const address (e.g. lddw heap base) is NOT complex: sl_block_auto re-derives it; abstracting breaks unification.
+        let is_const_addr = |e: &Expr| matches!(e, Expr::Const(_))
+            || matches!(e, Expr::ToU64(inner) if matches!(inner.as_ref(), Expr::Const(_)));
+        for atom in pre {
+            if let Atom::Mem { addr_base, .. } = atom {
+                if !matches!(addr_base, Expr::InitReg(_)) && !is_const_addr(addr_base) {
+                    let rendered = addr_base.to_lean();
+                    if !seen.contains_key(&rendered) {
+                        let idx = seen.len();
+                        seen.insert(rendered.clone(), idx);
+                        abstractions.push((
+                            format!("addr{}", idx),
+                            format!("h_addr{}", idx),
+                            rendered,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    abstractions
+}
+
+/// Symbolic `Nat` parameters (initial register/cell names) referenced by the
+/// pre atoms, in first-reference order.
+fn collect_pre_vars(pre: &[Atom]) -> Vec<String> {
+
+    let mut vars: Vec<String> = Vec::new();
+    let push_var = |v: &Expr, vars: &mut Vec<String>| {
+        if let Expr::InitReg(n) | Expr::InitMem(n) = v {
+            if !vars.contains(n) { vars.push(n.clone()); }
+        }
+    };
+    for atom in pre {
+        match atom {
+            Atom::Reg(_, v) => push_var(v, &mut vars),
+            Atom::Mem { addr_base, value, .. } => {
+                push_var(addr_base, &mut vars);
+                push_var(value, &mut vars);
+            }
+            Atom::Bytes32 { addr, .. } => push_var(addr, &mut vars),
+            // The blob's `Sym` name is a `ByteArray` (surfaced via
+            // `memset_blobs`, not here); the address's Nat leaves were
+            // already collected when the syscall's registers were read.
+            Atom::Bytes { addr, .. } => push_var(addr, &mut vars),
+            // The returnData buffer has no address; its `ByteArray` name is
+            // bound via `bytearray_vars`.
+            Atom::ReturnData { .. } => {}
+        }
+    }
+    vars
+}
+
     // Value abstraction: sl_block_iter re-reduces complex values (wrapAdd/shift/etc.) at every step
     // (transferChecked: 178ms→>15min). Generalize to opaque Nat; theorem statement stays concrete.
+fn build_value_gens(
+    state: &SymState,
+    pre: &[Atom],
+    post: &[Atom],
+    abs_subst: &std::collections::BTreeMap<String, String>,
+    use_block_iter: bool,
+) -> Vec<String> {
+
     let value_gens: Vec<String> = if use_block_iter {
         let is_complex = |e: &Expr| match e {
             // All-constant ByteCombo is closed: generalizing triggers kabstract whnf blowup. Leave inline.
@@ -2212,10 +2534,22 @@ fn lift_one_with_layouts(
     } else {
         Vec::new()
     };
+    value_gens
+}
+
+/// Proof-body emission: the `_lifted_spec` tactic block — spec-call preamble +
+/// `sl_rw_abs` + `sl_block_iter` for composed programs, else `sl_block_auto`.
+fn build_proof_body(
+    spec_calls: &[SpecCall],
+    abstractions: &[(String, String, String)],
+    value_gens: &[String],
+    use_block_iter: bool,
+    needs_assumption: bool,
+) -> String {
 
     let tactic: String = if use_block_iter {
         let mut t = String::new();
-        for sc in &spec_calls {
+        for sc in spec_calls {
             t.push_str("  ");
             t.push_str(&sc.have_line);
             t.push('\n');
@@ -2251,10 +2585,13 @@ fn lift_one_with_layouts(
     } else {
         "  sl_block_auto".to_string()
     };
-    let tactic: &str = Box::leak(tactic.into_boxed_str());
+    tactic
+}
 
-    // Fold inner abstractions inside each bridge RHS so sl_rw_abs doesn't get stuck on partially-expanded
-    // patterns (e.g. addr3 = wrapAdd <addr0-expansion> k → wrapAdd addr0 k). Longest-first, strictly-shorter only.
+/// Fold inner abstractions inside each bridge RHS so sl_rw_abs doesn't get stuck on partially-expanded
+/// patterns (e.g. addr3 = wrapAdd <addr0-expansion> k → wrapAdd addr0 k). Longest-first, strictly-shorter only.
+fn fold_bridge_rhs(abstractions: &[(String, String, String)]) -> Vec<String> {
+
     let folded_rhs: Vec<String> = abstractions.iter().map(|(_, _, expr)| {
         let mut inner: Vec<(&String, &String)> = abstractions.iter()
             .filter(|(_, _, e)| e.len() < expr.len())
@@ -2267,113 +2604,74 @@ fn lift_one_with_layouts(
         }
         out
     }).collect();
+    folded_rhs
+}
 
-    // Abstraction signature (params + bridge equality hyps) for sl_block_iter programs.
-    let abs_sig: String = if use_block_iter && !abstractions.is_empty() {
-        let mut s = String::new();
-        for (param, _, _) in &abstractions {
-            s.push_str(&format!("({} : Nat)\n    ", param));
-        }
-        for (i, (param, h, _)) in abstractions.iter().enumerate() {
-            s.push_str(&format!("({} : {} = {})\n    ", h, param, folded_rhs[i]));
-        }
-        s
-    } else {
-        String::new()
-    };
-    let n = block_pcs.len();
-    // Start PC = first walked instruction (trace first / static entrypoint / entry_pc fallback).
-    let start_pc = block_pcs.first().copied().unwrap_or(entry_pc);
-
-    let theorem_binders = format!(
-        "{}{}{}{}{}{}",
-        vars_sig, abs_sig, u64_hyps, branch_hyps_sig, side_hyps_sig, syscall_sig,
-    );
-    let lifted_name = format!("{}_lifted_spec", module_name);
-    let lifted_pre = format!("{}{}", atoms_to_lean(&pre, &abs_subst), cs_atom);
-    let lifted_post = format!("{}{}", atoms_to_lean(&post, &abs_subst), cs_atom);
-    out.push_str(&render::cu_triple_theorem(&render::TripleTheorem {
-        name: &lifted_name,
-        binders: &theorem_binders,
-        n,
-        m_bound: &m_bound,
-        start_pc,
-        exit_pc,
-        cr: &cr_lean,
-        pre: &lifted_pre,
-        post: &lifted_post,
-        rr: &rr,
-        proof: tactic,
-    }));
-
-    // H8 satisfiability witness: fail-closed if precondition can't be witnessed satisfiable.
-    match build_sat_witness(&pre, &state, &abstractions, &abs_subst,
-                            &folded_rhs, &vars) {
-        Ok(w) => out.push_str(&w),
-        Err(e) => return Err(format!(
-            "qedlift: satisfiability witness construction failed — {}", e).into()),
+/// Positional arguments for applying `<module>_lifted_spec`, in its binder
+/// declaration order (mirrors the signature `assemble_triple` renders).
+fn lifted_param_names(tc: &TripleCtx, state: &SymState) -> Vec<String> {
+    let mut names: Vec<String> = tc.vars.clone();
+    if tc.use_block_iter && !tc.abstractions.is_empty() {
+        for (p, _, _) in &tc.abstractions { names.push(p.clone()); }
+        for (_, h, _) in &tc.abstractions { names.push(h.clone()); }
     }
-
-    // Branch-satisfiability witness (Phase 7.1): certifies h_branch* / h*_lt jointly satisfiable
-    // at a concrete assignment (native_decide), closing branch-vacuity. Conservative (non-breaking).
-    if let Some(w) = build_branch_witness(&state, &vars) {
-        out.push_str(&w);
+    for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
+    for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
+    for (name, _) in &state.side_hyps { names.push(name.clone()); }
+    // Mirror `syscall_sig` order: bytearray_vars, memset blobs, blob hyps, CU.
+    for ba in &state.bytearray_vars { names.push(ba.clone()); }
+    for (bs, _) in &state.memset_blobs {
+        names.push(bs.clone());
+        names.push(format!("h{}_sz", bs));
     }
+    for (name, _) in &state.blob_side_hyps { names.push(name.clone()); }
+    for (ncu, hcu, _) in &state.syscall_cu_vars {
+        names.push(ncu.clone());
+        names.push(hcu.clone());
+    }
+    names
+}
 
-    // Heap-allocation corollary: re-express heap cells via heapBumpPtr/heapBlockU64 predicates
-    // (unfold to same memU64Is, so `exact` closes after `simp`). Gated on heap cells; non-heap arms byte-identical.
-    let has_heap = pre.iter().chain(post.iter()).any(|a|
+/// Heap-allocation corollary: re-express heap cells via heapBumpPtr/heapBlockU64 predicates
+/// (unfold to same memU64Is, so `exact` closes after `simp`). Gated on heap cells; non-heap arms byte-identical.
+fn emit_heap_corollary(out: &mut String, tc: &TripleCtx, state: &SymState) {
+    let has_heap = tc.pre.iter().chain(tc.post.iter()).any(|a|
         matches!(a, Atom::Mem { addr_base, addr_off, width, .. }
             if matches!(width, Width::Dword) && heap_cell_addr(addr_base, *addr_off).is_some()));
-    if has_heap {
-        // Parameter list in declaration order (mirrors the lift theorem's signature).
-        let mut names: Vec<String> = vars.clone();
-        if use_block_iter && !abstractions.is_empty() {
-            for (p, _, _) in &abstractions { names.push(p.clone()); }
-            for (_, h, _) in &abstractions { names.push(h.clone()); }
-        }
-        for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
-        for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
-        for (name, _) in &state.side_hyps { names.push(name.clone()); }
-        // Mirror `syscall_sig` order: bytearray_vars, memset blobs, blob hyps, CU.
-        for ba in &state.bytearray_vars { names.push(ba.clone()); }
-        for (bs, _) in &state.memset_blobs {
-            names.push(bs.clone());
-            names.push(format!("h{}_sz", bs));
-        }
-        for (name, _) in &state.blob_side_hyps { names.push(name.clone()); }
-        for (ncu, hcu, _) in &state.syscall_cu_vars {
-            names.push(ncu.clone());
-            names.push(hcu.clone());
-        }
-        out = out.replacen("import SVM.SBPF.Macros\n",
-            "import SVM.SBPF.Macros\nimport SVM.SBPF.HeapSL\n", 1);
-        let alloc_name = format!("{}_allocates", module_name);
-        let alloc_pre = format!("{}{}", atoms_to_lean_heap(&pre, &abs_subst), cs_atom);
-        let alloc_post = format!("{}{}", atoms_to_lean_heap(&post, &abs_subst), cs_atom);
-        let alloc_proof = format!(
-            "  simp only [heapBumpPtr, heapBlockU64]\n  exact {}_lifted_spec {}",
-            module_name,
-            names.join(" "),
-        );
-        out.push_str(&render::cu_triple_theorem(&render::TripleTheorem {
-            name: &alloc_name,
-            binders: &theorem_binders,
-            n,
-            m_bound: &m_bound,
-            start_pc,
-            exit_pc,
-            cr: &cr_lean,
-            pre: &alloc_pre,
-            post: &alloc_post,
-            rr: &rr,
-            proof: &alloc_proof,
-        }));
-    }
+    if !has_heap { return; }
+    // Parameter list in declaration order (mirrors the lift theorem's signature).
+    let names = lifted_param_names(tc, state);
+    *out = out.replacen("import SVM.SBPF.Macros\n",
+        "import SVM.SBPF.Macros\nimport SVM.SBPF.HeapSL\n", 1);
+    let alloc_name = format!("{}_allocates", tc.module_name);
+    let alloc_pre = format!("{}{}", atoms_to_lean_heap(&tc.pre, &tc.abs_subst), tc.cs_atom);
+    let alloc_post = format!("{}{}", atoms_to_lean_heap(&tc.post, &tc.abs_subst), tc.cs_atom);
+    let alloc_proof = render::heap_alloc_proof(&tc.module_name, &names.join(" "));
+    out.push_str(&render::cu_triple_theorem(&render::TripleTheorem {
+        name: &alloc_name,
+        binders: &tc.theorem_binders,
+        n: tc.n,
+        m_bound: &tc.m_bound,
+        start_pc: tc.start_pc,
+        exit_pc: tc.exit_pc,
+        cr: &tc.cr_lean,
+        pre: &alloc_pre,
+        post: &alloc_post,
+        rr: &tc.rr,
+        proof: &alloc_proof,
+    }));
+}
 
-    // Balance-correctness corollary: re-expose wrapSub/wrapAdd as Nat arithmetic under
-    // funds/no-overflow guards. Only cells wrapping two InitMem values qualify (excludes reg/addr arithmetic).
-    enum Shift { Sub(Expr, Expr), Add(Expr, Expr), AddConst(Expr, i64) }
+/// A post-cell whose value wraps two symbolic operands (or a constant delta),
+/// re-exposed as clean Nat arithmetic by the balance corollary.
+enum Shift { Sub(Expr, Expr), Add(Expr, Expr), AddConst(Expr, i64) }
+
+/// Detect balance-shaped post cells and clean them: wrapSub/wrapAdd of two
+/// InitMem values (and, for counter/vault/descriptor arms, `wrapAdd v (toU64 k)`)
+/// become Nat `-`/`+` under funds/no-overflow guards. Returns the shifts and
+/// the cleaned post-atom list (other atoms unchanged).
+fn clean_balance_shifts(post: &[Atom], counter_arm: bool) -> (Vec<Shift>, Vec<Atom>) {
+
     let is_initmem = |e: &Expr| matches!(e, Expr::InitMem(_));
     // A constant immediate delta `toU64 k` (e.g. `add64 r2, 1`).
     let const_delta = |e: &Expr| -> Option<i64> {
@@ -2382,12 +2680,9 @@ fn lift_one_with_layouts(
         }
         None
     };
-    // Only counter/vault arms (is_const_delta_arm) — or a spec-driven descriptor, whose
-    // `op.add_const` is exactly this const-delta case — get the constant +k cleaning; others stay wrapAdd.
-    let counter_arm = is_const_delta_arm(arm_name) || descriptor.is_some();
     let mut shifts: Vec<Shift> = Vec::new();
     let mut post_clean: Vec<Atom> = Vec::with_capacity(post.len());
-    for atom in &post {
+    for atom in post {
         if let Atom::Mem { addr_base, addr_off, width, value, delta } = atom {
             if let Expr::WrapSub(a, b) = value {
                 if is_initmem(a) && is_initmem(b) {
@@ -2419,86 +2714,76 @@ fn lift_one_with_layouts(
         }
         post_clean.push(atom.clone());
     }
+    (shifts, post_clean)
+}
 
-    if !shifts.is_empty() {
-        // Param names in signature order (vars → abstraction params/hyps → u64 bounds → branch hyps → syscall).
-        let mut names: Vec<String> = vars.clone();
-        if use_block_iter && !abstractions.is_empty() {
-            for (p, _, _) in &abstractions { names.push(p.clone()); }
-            for (_, h, _) in &abstractions { names.push(h.clone()); }
-        }
-        for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
-        for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
-        for (name, _) in &state.side_hyps { names.push(name.clone()); }
-        // Mirror `syscall_sig` order: bytearray_vars, memset blobs, blob hyps, CU.
-        for ba in &state.bytearray_vars { names.push(ba.clone()); }
-        for (bs, _) in &state.memset_blobs {
-            names.push(bs.clone());
-            names.push(format!("h{}_sz", bs));
-        }
-        for (name, _) in &state.blob_side_hyps { names.push(name.clone()); }
-        for (ncu, hcu, _) in &state.syscall_cu_vars {
-            names.push(ncu.clone());
-            names.push(hcu.clone());
-        }
+/// Balance-correctness corollary: re-expose wrapSub/wrapAdd as Nat arithmetic under
+/// funds/no-overflow guards. Only cells wrapping two InitMem values qualify (excludes reg/addr arithmetic).
+fn emit_balance_corollary(
+    out: &mut String,
+    tc: &TripleCtx,
+    state: &SymState,
+    shifts: &[Shift],
+    post_clean: &[Atom],
+) {
+    if shifts.is_empty() { return; }
+    let abs_subst = &tc.abs_subst;
+    // Param names in signature order (vars → abstraction params/hyps → u64 bounds → branch hyps → syscall).
+    let names = lifted_param_names(tc, state);
 
-        let mut extra_hyps = String::new();
-        let mut rw_terms: Vec<String> = Vec::new();
-        for (k, sh) in shifts.iter().enumerate() {
-            match sh {
-                Shift::Sub(a, b) => {
-                    let al = fold_abstractions(a.to_lean(), &abs_subst);
-                    let bl = fold_abstractions(b.to_lean(), &abs_subst);
-                    extra_hyps.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
-                    extra_hyps.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
-                    rw_terms.push(format!("← wrapSub_of_le h_funds{} h_src_lt{}", k, k));
-                }
-                Shift::Add(a, b) => {
-                    let al = fold_abstractions(a.to_lean(), &abs_subst);
-                    let bl = fold_abstractions(b.to_lean(), &abs_subst);
-                    extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
-                    rw_terms.push(format!("← wrapAdd_of_lt h_noovf{}", k));
-                }
-                Shift::AddConst(a, c) => {
-                    // Clean `wrapAdd a (toU64 k) → a + k` under the no-overflow hyp.
-                    // `+1` keeps the specialized `wrapAdd_one_of_lt` so every existing
-                    // +1 lift stays byte-identical; any other positive literal uses the
-                    // general `wrapAdd_const_of_lt`.
-                    let al = fold_abstractions(a.to_lean(), &abs_subst);
-                    extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
-                    if *c == 1 {
-                        rw_terms.push(format!("← wrapAdd_one_of_lt h_noovf{}", k));
-                    } else {
-                        rw_terms.push(format!("← wrapAdd_const_of_lt h_noovf{}", k));
-                    }
+    let mut extra_hyps = String::new();
+    let mut rw_terms: Vec<String> = Vec::new();
+    for (k, sh) in shifts.iter().enumerate() {
+        match sh {
+            Shift::Sub(a, b) => {
+                let al = fold_abstractions(a.to_lean(), &abs_subst);
+                let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                extra_hyps.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
+                extra_hyps.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
+                rw_terms.push(format!("← wrapSub_of_le h_funds{} h_src_lt{}", k, k));
+            }
+            Shift::Add(a, b) => {
+                let al = fold_abstractions(a.to_lean(), &abs_subst);
+                let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
+                rw_terms.push(format!("← wrapAdd_of_lt h_noovf{}", k));
+            }
+            Shift::AddConst(a, c) => {
+                // Clean `wrapAdd a (toU64 k) → a + k` under the no-overflow hyp.
+                // `+1` keeps the specialized `wrapAdd_one_of_lt` so every existing
+                // +1 lift stays byte-identical; any other positive literal uses the
+                // general `wrapAdd_const_of_lt`.
+                let al = fold_abstractions(a.to_lean(), &abs_subst);
+                extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
+                if *c == 1 {
+                    rw_terms.push(format!("← wrapAdd_one_of_lt h_noovf{}", k));
+                } else {
+                    rw_terms.push(format!("← wrapAdd_const_of_lt h_noovf{}", k));
                 }
             }
         }
-
-        let balance_name = format!("{}_balance_correct", module_name);
-        let balance_binders = format!("{}{}", theorem_binders, extra_hyps);
-        let balance_pre = format!("{}{}", atoms_to_lean(&pre, &abs_subst), cs_atom);
-        let balance_post = format!("{}{}", atoms_to_lean(&post_clean, &abs_subst), cs_atom);
-        let balance_proof = format!(
-            "  have h := {}_lifted_spec {}\n  rw [{}]\n  exact h",
-            module_name,
-            names.join(" "),
-            rw_terms.join(", "),
-        );
-        out.push_str(&render::cu_triple_theorem(&render::TripleTheorem {
-            name: &balance_name,
-            binders: &balance_binders,
-            n,
-            m_bound: &m_bound,
-            start_pc,
-            exit_pc,
-            cr: &cr_lean,
-            pre: &balance_pre,
-            post: &balance_post,
-            rr: &rr,
-            proof: &balance_proof,
-        }));
     }
+
+    let balance_name = format!("{}_balance_correct", tc.module_name);
+    let balance_binders = format!("{}{}", tc.theorem_binders, extra_hyps);
+    let balance_pre = format!("{}{}", atoms_to_lean(&tc.pre, abs_subst), tc.cs_atom);
+    let balance_post = format!("{}{}", atoms_to_lean(post_clean, abs_subst), tc.cs_atom);
+    let balance_proof = render::balance_proof(&tc.module_name, &names.join(" "),
+                                              &rw_terms.join(", "));
+    out.push_str(&render::cu_triple_theorem(&render::TripleTheorem {
+        name: &balance_name,
+        binders: &balance_binders,
+        n: tc.n,
+        m_bound: &tc.m_bound,
+        start_pc: tc.start_pc,
+        exit_pc: tc.exit_pc,
+        cr: &tc.cr_lean,
+        pre: &balance_pre,
+        post: &balance_post,
+        rr: &tc.rr,
+        proof: &balance_proof,
+    }));
+}
 
     // Typed-fault corollary (Phase 7 sub-item 3): the walked happy path ends in
     // a typed fault. Compose the running prefix (`<module>_lifted_spec`, a
@@ -2512,166 +2797,167 @@ fn lift_one_with_layouts(
     //     register, so the single-register fault-spec pre is `frame_right`-extended
     //     to the prefix post and sequenced via the Mem-Mem `seq_fault` (combined
     //     `rr = prefixRR ∧ OOB`).
-    if let Some(terminal) = fault_terminal {
-        // Param names in `_lifted_spec` signature order (mirrors heap/balance).
-        let mut names: Vec<String> = vars.clone();
-        if use_block_iter && !abstractions.is_empty() {
-            for (p, _, _) in &abstractions { names.push(p.clone()); }
-            for (_, h, _) in &abstractions { names.push(h.clone()); }
-        }
-        for (v, _) in &state.u64_load_vars { names.push(format!("h{}_lt", v)); }
-        for i in 0..state.branch_hyps.len() { names.push(format!("h_branch{}", i)); }
-        for (name, _) in &state.side_hyps { names.push(name.clone()); }
-        for ba in &state.bytearray_vars { names.push(ba.clone()); }
-        for (bs, _) in &state.memset_blobs {
-            names.push(bs.clone());
-            names.push(format!("h{}_sz", bs));
-        }
-        for (name, _) in &state.blob_side_hyps { names.push(name.clone()); }
-        for (ncu, hcu, _) in &state.syscall_cu_vars {
-            names.push(ncu.clone());
-            names.push(hcu.clone());
-        }
-        let fault_name = format!("{}_fault_correct", module_name);
+fn emit_fault_corollary(
+    out: &mut String,
+    tc: &TripleCtx,
+    state: &SymState,
+    terminal: FaultTerminal,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let abs_subst = &tc.abs_subst;
+    let post = &tc.post;
+    let lifted_name = &tc.lifted_name;
+    let lifted_pre = &tc.lifted_pre;
+    let lifted_post = &tc.lifted_post;
+    let theorem_binders = &tc.theorem_binders;
+    let m_bound = &tc.m_bound;
+    let rr = &tc.rr;
+    let cs_atom = tc.cs_atom;
+    let cr_lean = &tc.cr_lean;
+    let (n, start_pc, exit_pc) = (tc.n, tc.start_pc, tc.exit_pc);
+    // Param names in `_lifted_spec` signature order (mirrors heap/balance).
+    let names = lifted_param_names(tc, state);
+    let fault_name = format!("{}_fault_correct", tc.module_name);
 
-        let fault_ctor = match terminal {
-            FaultTerminal::Abort(k) => k.ctor(),
-            FaultTerminal::Oob(o) => o.ctor,
-        };
-        let cr_fault = format!(
-            "({}).union\n        (CodeReq.singleton {} (.call {}))",
-            cr_lean, exit_pc, fault_ctor,
-        );
-        let (n_cu, fault_binders, fault_rr, vm_error, fault_proof) = match terminal {
-            FaultTerminal::Abort(kind) => {
-                let ctor = kind.ctor();
-                let binders = format!(
-                    "{}(nCuAbort : Nat)\n    (hCuAbort : ∀ s : State,\n        \
-                     (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuAbort)\n    ",
-                    theorem_binders, ctor,
-                );
-                let proof = format!(
-                    "  refine cuTripleWithinMem_seq_fault_pure ?_ ({lifted} {names}) \
-                     ({spec} ({post}) {pc} nCuAbort hCuAbort)\n  \
-                     repeat' apply CodeReq.Disjoint_union_left\n  \
-                     all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
-                    lifted = lifted_name, names = names.join(" "),
-                    spec = kind.faults_spec(), post = lifted_post, pc = exit_pc,
-                );
-                let _ = ctor;
-                (format!("{} + nCuAbort", m_bound), binders, rr.clone(), kind.vm_error(), proof)
+
+    let fault_ctor = match terminal {
+        FaultTerminal::Abort(k) => k.ctor(),
+        FaultTerminal::Oob(o) => o.ctor,
+    };
+    let cr_fault = format!(
+        "({}).union\n        (CodeReq.singleton {} (.call {}))",
+        cr_lean, exit_pc, fault_ctor,
+    );
+    let (n_cu, fault_binders, fault_rr, vm_error, fault_proof) = match terminal {
+        FaultTerminal::Abort(kind) => {
+            let ctor = kind.ctor();
+            let binders = format!(
+                "{}(nCuAbort : Nat)\n    (hCuAbort : ∀ s : State,\n        \
+                 (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuAbort)\n    ",
+                theorem_binders, ctor,
+            );
+            let proof = format!(
+                "  refine cuTripleWithinMem_seq_fault_pure ?_ ({lifted} {names}) \
+                 ({spec} ({post}) {pc} nCuAbort hCuAbort)\n  \
+                 repeat' apply CodeReq.Disjoint_union_left\n  \
+                 all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
+                lifted = lifted_name, names = names.join(" "),
+                spec = kind.faults_spec(), post = lifted_post, pc = exit_pc,
+            );
+            let _ = ctor;
+            (format!("{} + nCuAbort", m_bound), binders, rr.clone(), kind.vm_error(), proof)
+        }
+        FaultTerminal::Oob(oob) => {
+            // OOB needs the prefix post free of a callStack atom (no
+            // call_local) so the frame's `rest` is exactly the non-region
+            // post atoms, and the region register must be the FIRST post
+            // atom (frame_right adds `rest` on the right).
+            if !cs_atom.is_empty() {
+                return Err("qedlift: OOB fault terminal with a callStack atom \
+                            (call_local prefix) is not yet supported".into());
             }
-            FaultTerminal::Oob(oob) => {
-                // OOB needs the prefix post free of a callStack atom (no
-                // call_local) so the frame's `rest` is exactly the non-region
-                // post atoms, and the region register must be the FIRST post
-                // atom (frame_right adds `rest` on the right).
-                if !cs_atom.is_empty() {
-                    return Err("qedlift: OOB fault terminal with a callStack atom \
-                                (call_local prefix) is not yet supported".into());
-                }
-                let region_value = post.iter().find_map(|a| match a {
-                    Atom::Reg(r, v) if *r == oob.region_reg => Some(v.clone()),
-                    _ => None,
-                }).ok_or_else(|| format!(
-                    "qedlift: OOB fault terminal reads r{} but it is absent from \
-                     the lifted post", oob.region_reg))?;
-                if !matches!(post.first(), Some(Atom::Reg(r, _)) if *r == oob.region_reg) {
-                    return Err(format!(
-                        "qedlift: OOB fault terminal needs r{} as the first post \
-                         atom (frame_right arrangement)", oob.region_reg).into());
-                }
-                // Register-sized region (e.g. sol_set_return_data's
-                // `[r1, r1+r2)`): the spec's pre is a two-atom sepConj, so the
-                // length register must be the SECOND post atom; its literal
-                // side conditions (≤ cap, ≠ 0) discharge `by decide` at the
-                // traced value.
-                let len_value = match oob.region_len_reg {
-                    None => None,
-                    Some(lr) => {
-                        if !matches!(post.get(1), Some(Atom::Reg(r, _)) if *r == lr) {
-                            return Err(format!(
-                                "qedlift: register-sized OOB region needs r{} as \
-                                 the second post atom", lr).into());
-                        }
-                        post.iter().find_map(|a| match a {
-                            Atom::Reg(r, v) if *r == lr => Some(v.clone()),
-                            _ => None,
-                        })
+            let region_value = post.iter().find_map(|a| match a {
+                Atom::Reg(r, v) if *r == oob.region_reg => Some(v.clone()),
+                _ => None,
+            }).ok_or_else(|| format!(
+                "qedlift: OOB fault terminal reads r{} but it is absent from \
+                 the lifted post", oob.region_reg))?;
+            if !matches!(post.first(), Some(Atom::Reg(r, _)) if *r == oob.region_reg) {
+                return Err(format!(
+                    "qedlift: OOB fault terminal needs r{} as the first post \
+                     atom (frame_right arrangement)", oob.region_reg).into());
+            }
+            // Register-sized region (e.g. sol_set_return_data's
+            // `[r1, r1+r2)`): the spec's pre is a two-atom sepConj, so the
+            // length register must be the SECOND post atom; its literal
+            // side conditions (≤ cap, ≠ 0) discharge `by decide` at the
+            // traced value.
+            let len_value = match oob.region_len_reg {
+                None => None,
+                Some(lr) => {
+                    if !matches!(post.get(1), Some(Atom::Reg(r, _)) if *r == lr) {
+                        return Err(format!(
+                            "qedlift: register-sized OOB region needs r{} as \
+                             the second post atom", lr).into());
                     }
-                };
-                let r1v = fold_abstractions(region_value.to_lean(), &abs_subst);
-                let lenv = len_value.map(|v| fold_abstractions(v.to_lean(), &abs_subst));
-                let spec_args = match &lenv {
-                    None => format!("({r1v})"),
-                    Some(l) => format!("({r1v}) ({l}) (by decide) (by decide)"),
-                };
-                let spec_regs: Vec<u8> = std::iter::once(oob.region_reg)
-                    .chain(oob.region_len_reg).collect();
-                let rest_atoms: Vec<Atom> = post.iter()
-                    .filter(|a| !matches!(a, Atom::Reg(r, _) if spec_regs.contains(r)))
-                    .cloned().collect();
-                // The fault tail spec, framed to the prefix post when there is a
-                // non-region remainder (else applied bare — pre is exactly the
-                // spec's region atoms).
-                let tail = if rest_atoms.is_empty() {
-                    format!("({spec} {args} {pc} nCuOob hCuOob)",
-                        spec = oob.faults_spec, args = spec_args, pc = exit_pc)
-                } else {
-                    let rest_lean = atoms_to_lean(&rest_atoms, &abs_subst);
-                    format!(
-                        "(cuTripleFaultsWithinMem_frame_right ({rest})\n      \
-                         (by repeat' apply pcFree_sepConj\n          \
-                         all_goals first\n            | exact pcFree_regIs _ _\n            \
-                         | exact pcFree_memU64Is _ _\n            \
-                         | exact pcFree_memU32Is _ _\n            \
-                         | exact pcFree_memU16Is _ _\n            \
-                         | exact pcFree_memByteIs _ _\n            \
-                         | exact pcFree_memBytes32Is _ _\n            \
-                         | exact pcFree_memBytesIs _ _)\n      \
-                         ({spec} {args} {pc} nCuOob hCuOob))",
-                        rest = rest_lean, spec = oob.faults_spec, args = spec_args, pc = exit_pc,
-                    )
-                };
-                let binders = format!(
-                    "{}(nCuOob : Nat)\n    (hCuOob : ∀ s : State,\n        \
-                     (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuOob)\n    ",
-                    theorem_binders, oob.ctor,
-                );
-                // Combined rr: prefix region requirement ∧ the OOB condition
-                // (write guard → `containsWritable`, read guard → `containsRange`;
-                // must match the syscall's `faults_oob` triple).
-                let region_pred = if oob.region_writable { "containsWritable" } else { "containsRange" };
-                let region_len = match &lenv {
-                    None => oob.region_size.to_string(),
-                    Some(l) => format!("({l})"),
-                };
-                let combined_rr = format!(
-                    "({}) ∧ rt.{} ({}) {} = false", rr, region_pred, r1v, region_len,
-                );
-                let proof = format!(
-                    "  refine cuTripleWithinMem_seq_fault ?_ ({lifted} {names}) {tail}\n  \
-                     repeat' apply CodeReq.Disjoint_union_left\n  \
-                     all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
-                    lifted = lifted_name, names = names.join(" "), tail = tail,
-                );
-                (format!("{} + nCuOob", m_bound), binders, combined_rr, ".accessViolation", proof)
-            }
-        };
-        let n_steps = format!("{} + 1", n);
-        out.push_str(&render::faults_triple_theorem(&render::FaultsTriple {
-            name: &fault_name,
-            binders: &fault_binders,
-            n_steps: &n_steps,
-            n_cu: &n_cu,
-            entry: start_pc,
-            cr: &cr_fault,
-            pre: &lifted_pre,
-            rr: &fault_rr,
-            vm_error,
-            proof: &fault_proof,
-        }));
-    }
+                    post.iter().find_map(|a| match a {
+                        Atom::Reg(r, v) if *r == lr => Some(v.clone()),
+                        _ => None,
+                    })
+                }
+            };
+            let r1v = fold_abstractions(region_value.to_lean(), &abs_subst);
+            let lenv = len_value.map(|v| fold_abstractions(v.to_lean(), &abs_subst));
+            let spec_args = match &lenv {
+                None => format!("({r1v})"),
+                Some(l) => format!("({r1v}) ({l}) (by decide) (by decide)"),
+            };
+            let spec_regs: Vec<u8> = std::iter::once(oob.region_reg)
+                .chain(oob.region_len_reg).collect();
+            let rest_atoms: Vec<Atom> = post.iter()
+                .filter(|a| !matches!(a, Atom::Reg(r, _) if spec_regs.contains(r)))
+                .cloned().collect();
+            // The fault tail spec, framed to the prefix post when there is a
+            // non-region remainder (else applied bare — pre is exactly the
+            // spec's region atoms).
+            let tail = if rest_atoms.is_empty() {
+                format!("({spec} {args} {pc} nCuOob hCuOob)",
+                    spec = oob.faults_spec, args = spec_args, pc = exit_pc)
+            } else {
+                let rest_lean = atoms_to_lean(&rest_atoms, &abs_subst);
+                format!(
+                    "(cuTripleFaultsWithinMem_frame_right ({rest})\n      \
+                     (by repeat' apply pcFree_sepConj\n          \
+                     all_goals first\n            | exact pcFree_regIs _ _\n            \
+                     | exact pcFree_memU64Is _ _\n            \
+                     | exact pcFree_memU32Is _ _\n            \
+                     | exact pcFree_memU16Is _ _\n            \
+                     | exact pcFree_memByteIs _ _\n            \
+                     | exact pcFree_memBytes32Is _ _\n            \
+                     | exact pcFree_memBytesIs _ _)\n      \
+                     ({spec} {args} {pc} nCuOob hCuOob))",
+                    rest = rest_lean, spec = oob.faults_spec, args = spec_args, pc = exit_pc,
+                )
+            };
+            let binders = format!(
+                "{}(nCuOob : Nat)\n    (hCuOob : ∀ s : State,\n        \
+                 (step (.call {}) s).cuConsumed ≤ s.cuConsumed + nCuOob)\n    ",
+                theorem_binders, oob.ctor,
+            );
+            // Combined rr: prefix region requirement ∧ the OOB condition
+            // (write guard → `containsWritable`, read guard → `containsRange`;
+            // must match the syscall's `faults_oob` triple).
+            let region_pred = if oob.region_writable { "containsWritable" } else { "containsRange" };
+            let region_len = match &lenv {
+                None => oob.region_size.to_string(),
+                Some(l) => format!("({l})"),
+            };
+            let combined_rr = format!(
+                "({}) ∧ rt.{} ({}) {} = false", rr, region_pred, r1v, region_len,
+            );
+            let proof = format!(
+                "  refine cuTripleWithinMem_seq_fault ?_ ({lifted} {names}) {tail}\n  \
+                 repeat' apply CodeReq.Disjoint_union_left\n  \
+                 all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)",
+                lifted = lifted_name, names = names.join(" "), tail = tail,
+            );
+            (format!("{} + nCuOob", m_bound), binders, combined_rr, ".accessViolation", proof)
+        }
+    };
+    let n_steps = format!("{} + 1", n);
+    out.push_str(&render::faults_triple_theorem(&render::FaultsTriple {
+        name: &fault_name,
+        binders: &fault_binders,
+        n_steps: &n_steps,
+        n_cu: &n_cu,
+        entry: start_pc,
+        cr: &cr_fault,
+        pre: &lifted_pre,
+        rr: &fault_rr,
+        vm_error,
+        proof: &fault_proof,
+    }));
+    Ok(())
+}
 
     // ── Whole-transition path corollary (#40 gap 1) ─────────────────
     // Trace-guided + descriptor-driven walk landing on the shared `.exit`:
@@ -2681,150 +2967,155 @@ fn lift_one_with_layouts(
     // Fail-closed: binder kinds outside {vars, abstraction bridges, u64
     // bounds, branch guards, side hyps, shift guards} skip the corollary,
     // as does a call_local prefix (callStack atom) or a fault terminal.
+#[allow(clippy::too_many_arguments)]
+fn emit_transition_corollary(
+    out: &mut String,
+    desc: &RefinementDescriptor,
+    tc: &TripleCtx,
+    state: &SymState,
+    shifts: &[Shift],
+    post_clean: &[Atom],
+    fault_terminal: Option<FaultTerminal>,
+    has_trace: bool,
+    insns: &[ebpf::Insn],
+    idl: Option<&serde_json::Value>,
+    sidecar_layouts: Option<&[AccountLayout]>,
+) -> Option<TransitionPathInfo> {
+    let abs_subst = &tc.abs_subst;
+    let pre: &[Atom] = &tc.pre;
+    let post: &[Atom] = &tc.post;
+    let module_name = &tc.module_name;
+    let lifted_name = &tc.lifted_name;
+    let theorem_binders = &tc.theorem_binders;
+    let vars = &tc.vars;
+    let use_block_iter = tc.use_block_iter;
+    let abstractions = &tc.abstractions;
+    let folded_rhs = &tc.folded_rhs;
+    let m_bound = &tc.m_bound;
+    let rr = &tc.rr;
+    let cs_atom = tc.cs_atom;
+    let cr_lean = &tc.cr_lean;
+    let (n, start_pc, exit_pc) = (tc.n, tc.start_pc, tc.exit_pc);
     let mut transition: Option<TransitionPathInfo> = None;
-    if let Some(desc) = descriptor {
-        // Terminal kind: a clean `.exit` (error/success return) or a typed
-        // abort/panic fault. OOB fault terminals fall closed for now.
-        let wired_binders = trace.is_some()
-            && cs_atom.is_empty()
-            && state.bytearray_vars.is_empty()
-            && state.memset_blobs.is_empty()
-            && state.blob_side_hyps.is_empty()
-            && state.syscall_cu_vars.is_empty();
-        let terminal_fault = matches!(fault_terminal,
-            Some(FaultTerminal::Abort(k))
-                if !matches!(k, AbortKind::Invoke | AbortKind::InvokeC));
-        let terminal_oob = matches!(fault_terminal, Some(FaultTerminal::Oob(_)));
-        let terminal_exit = wired_binders
-            && fault_terminal.is_none()
-            && insns.get(exit_pc).map(|i| i.opc == ebpf::EXIT).unwrap_or(false);
-        if terminal_exit || (wired_binders && (terminal_fault || terminal_oob)) {
-            // Binder metadata + positional args in `_lifted_spec` signature order.
-            let mut bitems: Vec<BItem> = vars.iter().cloned().map(BItem::Val).collect();
-            let mut names: Vec<String> = vars.clone();
-            if use_block_iter && !abstractions.is_empty() {
-                for (p, _, _) in &abstractions {
-                    bitems.push(BItem::Val(p.clone()));
-                    names.push(p.clone());
-                }
-                for (i, (param, h, _)) in abstractions.iter().enumerate() {
-                    bitems.push(BItem::Hyp { name: h.clone(),
-                        prop: format!("{} = {}", param, folded_rhs[i]) });
-                    names.push(h.clone());
-                }
+
+    // Terminal kind: a clean `.exit` (error/success return) or a typed
+    // abort/panic fault. OOB fault terminals fall closed for now.
+    let wired_binders = has_trace
+        && cs_atom.is_empty()
+        && state.bytearray_vars.is_empty()
+        && state.memset_blobs.is_empty()
+        && state.blob_side_hyps.is_empty()
+        && state.syscall_cu_vars.is_empty();
+    let terminal_fault = matches!(fault_terminal,
+        Some(FaultTerminal::Abort(k))
+            if !matches!(k, AbortKind::Invoke | AbortKind::InvokeC));
+    let terminal_oob = matches!(fault_terminal, Some(FaultTerminal::Oob(_)));
+    let terminal_exit = wired_binders
+        && fault_terminal.is_none()
+        && insns.get(exit_pc).map(|i| i.opc == ebpf::EXIT).unwrap_or(false);
+    if terminal_exit || (wired_binders && (terminal_fault || terminal_oob)) {
+        // Binder metadata + positional args in `_lifted_spec` signature order.
+        let mut bitems: Vec<BItem> = vars.iter().cloned().map(BItem::Val).collect();
+        let mut names: Vec<String> = vars.clone();
+        if use_block_iter && !abstractions.is_empty() {
+            for (p, _, _) in abstractions {
+                bitems.push(BItem::Val(p.clone()));
+                names.push(p.clone());
             }
-            for (v, k) in &state.u64_load_vars {
-                bitems.push(BItem::Hyp { name: format!("h{}_lt", v),
-                    prop: format!("{} < 2 ^ {}", v, k) });
-                names.push(format!("h{}_lt", v));
-            }
-            for (i, bh) in state.branch_hyps.iter().enumerate() {
-                bitems.push(BItem::Guard { prop: bh.lean_hyp() });
-                names.push(bh.name(i));
-            }
-            for (name, prop) in &state.side_hyps {
-                bitems.push(BItem::Hyp { name: name.clone(), prop: prop.clone() });
-                names.push(name.clone());
-            }
-            // Target: the balance-corrected triple when shifts were cleaned
-            // (its post carries the clean `+`/`-` field value).
-            let (t_name, t_binders, t_post) = if shifts.is_empty() {
-                (lifted_name.clone(), theorem_binders.clone(), &post)
-            } else {
-                let mut extra = String::new();
-                for (k, sh) in shifts.iter().enumerate() {
-                    match sh {
-                        Shift::Sub(a, b) => {
-                            let al = fold_abstractions(a.to_lean(), &abs_subst);
-                            let bl = fold_abstractions(b.to_lean(), &abs_subst);
-                            extra.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
-                            extra.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
-                            bitems.push(BItem::Hyp { name: format!("h_funds{}", k),
-                                prop: format!("{} ≤ {}", bl, al) });
-                            bitems.push(BItem::Hyp { name: format!("h_src_lt{}", k),
-                                prop: format!("{} < 2 ^ 64", al) });
-                            names.push(format!("h_funds{}", k));
-                            names.push(format!("h_src_lt{}", k));
-                        }
-                        Shift::Add(a, b) => {
-                            let al = fold_abstractions(a.to_lean(), &abs_subst);
-                            let bl = fold_abstractions(b.to_lean(), &abs_subst);
-                            extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
-                            bitems.push(BItem::Hyp { name: format!("h_noovf{}", k),
-                                prop: format!("{} + {} < 2 ^ 64", al, bl) });
-                            names.push(format!("h_noovf{}", k));
-                        }
-                        Shift::AddConst(a, c) => {
-                            let al = fold_abstractions(a.to_lean(), &abs_subst);
-                            extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
-                            bitems.push(BItem::Hyp { name: format!("h_noovf{}", k),
-                                prop: format!("{} + {} < 2 ^ 64", al, c) });
-                            names.push(format!("h_noovf{}", k));
-                        }
-                    }
-                }
-                (format!("{}_balance_correct", module_name),
-                 format!("{}{}", theorem_binders, extra), &post_clean)
-            };
-            let emitted = if terminal_fault || terminal_oob {
-                let t_post_s = format!("{}{}",
-                    atoms_to_lean(t_post, &abs_subst), cs_atom);
-                let (ctor, spec, oob_info) = match fault_terminal {
-                    Some(FaultTerminal::Abort(k)) => (k.ctor(), k.faults_spec(), None),
-                    Some(FaultTerminal::Oob(o)) => (o.ctor, o.faults_spec,
-                        Some((o.region_reg, o.region_size, o.region_writable))),
-                    _ => unreachable!("gated on a fault terminal"),
-                };
-                emit_transition_fault(
-                    desc, &module_name, &pre, t_post, &abs_subst,
-                    &t_name, &names.join(" "), &t_binders, &t_post_s, bitems,
-                    n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
-                    ctor, spec, oob_info,
-                    idl, sidecar_layouts,
-                )
-            } else {
-                emit_transition_path(
-                    desc, &module_name, &pre, t_post, &abs_subst,
-                    &t_name, &names.join(" "), &t_binders, bitems,
-                    n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
-                    idl, sidecar_layouts,
-                )
-            };
-            if let Some((text, info)) = emitted {
-                out.push_str(&text);
-                out = out.replace(
-                    "import SVM.SBPF.SatWitness",
-                    "import SVM.SBPF.SatWitness\nimport SVM.Solana.Abstract.Transition");
-                transition = Some(info);
+            for (i, (param, h, _)) in abstractions.iter().enumerate() {
+                bitems.push(BItem::Hyp { name: h.clone(),
+                    prop: format!("{} = {}", param, folded_rhs[i]) });
+                names.push(h.clone());
             }
         }
+        for (v, k) in &state.u64_load_vars {
+            bitems.push(BItem::Hyp { name: format!("h{}_lt", v),
+                prop: format!("{} < 2 ^ {}", v, k) });
+            names.push(format!("h{}_lt", v));
+        }
+        for (i, bh) in state.branch_hyps.iter().enumerate() {
+            bitems.push(BItem::Guard { prop: bh.lean_hyp() });
+            names.push(bh.name(i));
+        }
+        for (name, prop) in &state.side_hyps {
+            bitems.push(BItem::Hyp { name: name.clone(), prop: prop.clone() });
+            names.push(name.clone());
+        }
+        // Target: the balance-corrected triple when shifts were cleaned
+        // (its post carries the clean `+`/`-` field value).
+        let (t_name, t_binders, t_post) = if shifts.is_empty() {
+            (lifted_name.clone(), theorem_binders.clone(), post)
+        } else {
+            let mut extra = String::new();
+            for (k, sh) in shifts.iter().enumerate() {
+                match sh {
+                    Shift::Sub(a, b) => {
+                        let al = fold_abstractions(a.to_lean(), &abs_subst);
+                        let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                        extra.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
+                        extra.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
+                        bitems.push(BItem::Hyp { name: format!("h_funds{}", k),
+                            prop: format!("{} ≤ {}", bl, al) });
+                        bitems.push(BItem::Hyp { name: format!("h_src_lt{}", k),
+                            prop: format!("{} < 2 ^ 64", al) });
+                        names.push(format!("h_funds{}", k));
+                        names.push(format!("h_src_lt{}", k));
+                    }
+                    Shift::Add(a, b) => {
+                        let al = fold_abstractions(a.to_lean(), &abs_subst);
+                        let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                        extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
+                        bitems.push(BItem::Hyp { name: format!("h_noovf{}", k),
+                            prop: format!("{} + {} < 2 ^ 64", al, bl) });
+                        names.push(format!("h_noovf{}", k));
+                    }
+                    Shift::AddConst(a, c) => {
+                        let al = fold_abstractions(a.to_lean(), &abs_subst);
+                        extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
+                        bitems.push(BItem::Hyp { name: format!("h_noovf{}", k),
+                            prop: format!("{} + {} < 2 ^ 64", al, c) });
+                        names.push(format!("h_noovf{}", k));
+                    }
+                }
+            }
+            (format!("{}_balance_correct", module_name),
+             format!("{}{}", theorem_binders, extra), post_clean)
+        };
+        let emitted = if terminal_fault || terminal_oob {
+            let t_post_s = format!("{}{}",
+                atoms_to_lean(t_post, abs_subst), cs_atom);
+            let (ctor, spec, oob_info) = match fault_terminal {
+                Some(FaultTerminal::Abort(k)) => (k.ctor(), k.faults_spec(), None),
+                Some(FaultTerminal::Oob(o)) => (o.ctor, o.faults_spec,
+                    Some((o.region_reg, o.region_size, o.region_writable))),
+                _ => unreachable!("gated on a fault terminal"),
+            };
+            emit_transition_fault(
+                desc, module_name, pre, t_post, abs_subst,
+                &t_name, &names.join(" "), &t_binders, &t_post_s, bitems,
+                n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
+                ctor, spec, oob_info,
+                idl, sidecar_layouts,
+            )
+        } else {
+            emit_transition_path(
+                desc, module_name, pre, t_post, abs_subst,
+                &t_name, &names.join(" "), &t_binders, bitems,
+                n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
+                idl, sidecar_layouts,
+            )
+        };
+        if let Some((text, info)) = emitted {
+            out.push_str(&text);
+            *out = out.replace(
+                "import SVM.SBPF.SatWitness",
+                "import SVM.SBPF.SatWitness\nimport SVM.Solana.Abstract.Transition");
+            transition = Some(info);
+        }
     }
-
-    out.push_str(&render::end_namespace(&module_name));
-
-    // ── Asm-refines-intrinsic theorem (mechanized recipe) ───────────
-    // Spec-driven descriptor wins when present (the qedspec seam): build the
-    // layout-general `AsmRefinesFieldUpdate` straight from the descriptor,
-    // bypassing the hardcoded `refine_registry`. Otherwise the registry path.
-    let refinement = match descriptor {
-        Some(desc) => emit_descriptor_refinement(
-            desc, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc,
-            idl, sidecar_layouts),
-        None => arm_name.and_then(|arm| emit_refinement(
-            arm, &module_name, &pre, &post_clean, &abs_subst, &vars, n, start_pc, exit_pc, idl,
-            sidecar_layouts)),
-    };
-
-    Ok(LiftOutput {
-        lean: out,
-        module_name,
-        text_bytes: text_bytes.len(),
-        insn_count: insns.len(),
-        cu: n,
-        refinement,
-        transition,
-    })
+    transition
 }
+
 
 /// Discover per-path traces beside the .so: `<stem>_<path>.pcs`, sorted by
 /// path label (deterministic bundle order). Each discovered trace is one

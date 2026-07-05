@@ -312,6 +312,24 @@ pub(super) fn faults_triple_theorem(t: &FaultsTriple<'_>) -> String {
     )
 }
 
+/// Proof body of the `<module>_allocates` heap corollary: unfold the heap
+/// predicates, then close by the lifted spec applied at its binders.
+pub(super) fn heap_alloc_proof(module_name: &str, names: &str) -> String {
+    format!(
+        "  simp only [heapBumpPtr, heapBlockU64]\n  exact {}_lifted_spec {}",
+        module_name, names,
+    )
+}
+
+/// Proof body of the `<module>_balance_correct` corollary: rewrite the wrap
+/// arithmetic to clean Nat ops under the guard hypotheses.
+pub(super) fn balance_proof(module_name: &str, names: &str, rw_terms: &str) -> String {
+    format!(
+        "  have h := {}_lifted_spec {}\n  rw [{}]\n  exact h",
+        module_name, names, rw_terms,
+    )
+}
+
 pub(super) fn end_namespace(module_name: &str) -> String {
     format!("end Examples.Lifted.{}\n", module_name)
 }
