@@ -18,22 +18,36 @@ pub use svm::{vm_fault_name, InstructionResult, PostStateError, ProgramResult, S
               SvmError, ERR_INVALID_POSTSTATE};
 pub use wire::{decode as decode_wire, DecodeError, ExitOutcome, RawResult};
 
-/// Run an ELF binary under the Lean VM. Low-level entry — for the Mollusk-shaped API see
-/// [`Svm::process_instruction`]. Thread-safe: serialized under a process-wide Mutex; init on first call.
-pub fn run_buffer(elf: &[u8], input: &[u8], cu_budget: u64) -> Result<RawResult, DecodeError> {
+/// Run one Lean FFI entry point under the runtime lock, enforcing the
+/// lock → alloc → call → read → dec_ref protocol in one place.
+///
+/// `call` receives the held [`ffi::LeanGuard`]; it must allocate its argument
+/// ByteArrays via [`ffi::alloc_bytearray`] and return the OWNED result object of
+/// one `qedsvm_*` entry point (the entry points *consume* their argument objects,
+/// so refcount=1 allocations are handed off exactly once). The result's bytes are
+/// copied out and the object released before the lock is dropped.
+fn with_lean(call: impl FnOnce(&ffi::LeanGuard<'_>) -> ffi::lean_obj_res) -> Vec<u8> {
     let g = ffi::lock();
-    // SAFETY: all Lean-runtime calls happen under `g`.
-    // alloc_bytearray → refcount=1; qedsvm_run_elf_buffer *consumes* elf_obj/input_obj;
-    // result_obj is owned by us — dec_ref after copying bytes out.
+    // SAFETY: all Lean-runtime calls happen under `g`; result_obj is owned by
+    // us — dec_ref after copying bytes out.
     let bytes = unsafe {
-        let elf_obj = ffi::alloc_bytearray(&g, elf);
-        let input_obj = ffi::alloc_bytearray(&g, input);
-        let result_obj = ffi::qedsvm_run_elf_buffer(elf_obj, input_obj, cu_budget);
+        let result_obj = call(&g);
         let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
         ffi::dec_ref(&g, result_obj);
         bytes
     };
     drop(g);
+    bytes
+}
+
+/// Run an ELF binary under the Lean VM. Low-level entry — for the Mollusk-shaped API see
+/// [`Svm::process_instruction`]. Thread-safe: serialized under a process-wide Mutex; init on first call.
+pub fn run_buffer(elf: &[u8], input: &[u8], cu_budget: u64) -> Result<RawResult, DecodeError> {
+    let bytes = with_lean(|g| unsafe {
+        let elf_obj = ffi::alloc_bytearray(g, elf);
+        let input_obj = ffi::alloc_bytearray(g, input);
+        ffi::qedsvm_run_elf_buffer(elf_obj, input_obj, cu_budget)
+    });
     wire::decode(&bytes)
 }
 
@@ -45,18 +59,12 @@ pub fn run_buffer_with_registry(
     registry_blob: &[u8],
     cu_budget: u64,
 ) -> Result<RawResult, DecodeError> {
-    let g = ffi::lock();
-    let bytes = unsafe {
-        let elf_obj = ffi::alloc_bytearray(&g, elf);
-        let input_obj = ffi::alloc_bytearray(&g, input);
-        let registry_obj = ffi::alloc_bytearray(&g, registry_blob);
-        let result_obj = ffi::qedsvm_run_with_registry(
-            elf_obj, input_obj, registry_obj, cu_budget);
-        let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
-        ffi::dec_ref(&g, result_obj);
-        bytes
-    };
-    drop(g);
+    let bytes = with_lean(|g| unsafe {
+        let elf_obj = ffi::alloc_bytearray(g, elf);
+        let input_obj = ffi::alloc_bytearray(g, input);
+        let registry_obj = ffi::alloc_bytearray(g, registry_blob);
+        ffi::qedsvm_run_with_registry(elf_obj, input_obj, registry_obj, cu_budget)
+    });
     wire::decode(&bytes)
 }
 
@@ -69,35 +77,25 @@ pub fn run_buffer_with_registry_and_pid(
     pid_bytes: &[u8; 32],
     cu_budget: u64,
 ) -> Result<RawResult, DecodeError> {
-    let g = ffi::lock();
-    let bytes = unsafe {
-        let elf_obj = ffi::alloc_bytearray(&g, elf);
-        let input_obj = ffi::alloc_bytearray(&g, input);
-        let registry_obj = ffi::alloc_bytearray(&g, registry_blob);
-        let pid_obj = ffi::alloc_bytearray(&g, pid_bytes);
-        let result_obj = ffi::qedsvm_run_with_registry_and_pid(
-            elf_obj, input_obj, registry_obj, pid_obj, cu_budget);
-        let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
-        ffi::dec_ref(&g, result_obj);
-        bytes
-    };
-    drop(g);
+    let bytes = with_lean(|g| unsafe {
+        let elf_obj = ffi::alloc_bytearray(g, elf);
+        let input_obj = ffi::alloc_bytearray(g, input);
+        let registry_obj = ffi::alloc_bytearray(g, registry_blob);
+        let pid_obj = ffi::alloc_bytearray(g, pid_bytes);
+        ffi::qedsvm_run_with_registry_and_pid(
+            elf_obj, input_obj, registry_obj, pid_obj, cu_budget)
+    });
     wire::decode(&bytes)
 }
 
 /// Drive `SVM.Native.Precompiles.dispatch` for the three sig-verify precompiles.
 /// Returns `(r0, cu)`: r0=0 success, r0=1 failure. Bypasses the BPF VM (agave does the same).
 pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> Result<(u64, u64), DecodeError> {
-    let g = ffi::lock();
-    let bytes = unsafe {
-        let pid_obj = ffi::alloc_bytearray(&g, pid);
-        let ix_obj = ffi::alloc_bytearray(&g, ix_data);
-        let result_obj = ffi::qedsvm_precompile_dispatch(pid_obj, ix_obj);
-        let bytes = ffi::sarray_as_slice(&g, result_obj).to_vec();
-        ffi::dec_ref(&g, result_obj);
-        bytes
-    };
-    drop(g);
+    let bytes = with_lean(|g| unsafe {
+        let pid_obj = ffi::alloc_bytearray(g, pid);
+        let ix_obj = ffi::alloc_bytearray(g, ix_data);
+        ffi::qedsvm_precompile_dispatch(pid_obj, ix_obj)
+    });
     // Wire format: [u64 LE r0 ‖ u64 LE cu]; surface malformed length as a wire-format error.
     if bytes.len() != 16 {
         return Err(DecodeError::Malformed("precompile FFI: expected 16 bytes"));
