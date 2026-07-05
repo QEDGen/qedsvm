@@ -83,6 +83,25 @@ theorem call_sol_log_pubkey_spec (r0Old r1V : Nat) (pc : Nat) (nCu : Nat)
     (fun s => h_step_cu s)
     r0Old
 
+/-! ## The r0-writer syscall wrappers
+
+Six syscalls (`sol_get_stack_height`, `sol_log_64_`, `sol_log_compute_units_`,
+`sol_get_epoch_stake`, `sol_get_processed_sibling_instruction`,
+`sol_remaining_compute_units`) only write `r0` (plus silent `log`), so each
+passes `cuTripleWithin_syscall_writes_r0_{only,fn}` the same six
+preserved-field obligations, all discharged by
+`simp [step, execSyscall, <execFn>]`. The macro expands `head` applied to
+exactly those six proof lambdas, as previously written out per-spec. -/
+
+macro "r0_writer_obligations" head:term:max execFn:ident : term =>
+  `($head
+    (fun s => by simp [step, execSyscall, $execFn:ident])
+    (fun s => by simp [step, execSyscall, $execFn:ident])
+    (fun s => by simp [step, execSyscall, $execFn:ident])
+    (fun s hex => by simp [step, execSyscall, $execFn:ident]; exact hex)
+    (fun s => by simp [step, execSyscall, $execFn:ident])
+    (fun s => by simp [step, execSyscall, $execFn:ident]))
+
 /-! ## Syscall: `sol_get_stack_height`
 
 Returns CPI depth in `r0`; our model fixes it to `1` (top-level) regardless of
@@ -95,13 +114,9 @@ theorem call_sol_get_stack_height_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
       (CodeReq.singleton pc (.call .sol_get_stack_height))
       (.r0 ↦ᵣ r0Old)
       (.r0 ↦ᵣ 1) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_get_stack_height 1 pc nCu
-    (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
-    (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
-    (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
-    (fun s hex => by simp [step, execSyscall, Misc.execGetStackHeight]; exact hex)
-    (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
-    (fun s => by simp [step, execSyscall, Misc.execGetStackHeight])
+  (r0_writer_obligations
+    (cuTripleWithin_syscall_writes_r0_only .sol_get_stack_height 1 pc nCu)
+    Misc.execGetStackHeight)
     (fun s => h_step_cu s)
     r0Old
 
@@ -117,13 +132,9 @@ theorem call_sol_log_64_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
       (CodeReq.singleton pc (.call .sol_log_64_))
       (.r0 ↦ᵣ r0Old)
       (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_64_ 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLog64])
-    (fun s => by simp [step, execSyscall, Logging.execLog64])
-    (fun s => by simp [step, execSyscall, Logging.execLog64])
-    (fun s hex => by simp [step, execSyscall, Logging.execLog64]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLog64])
-    (fun s => by simp [step, execSyscall, Logging.execLog64])
+  (r0_writer_obligations
+    (cuTripleWithin_syscall_writes_r0_only .sol_log_64_ 0 pc nCu)
+    Logging.execLog64)
     (fun s => h_step_cu s)
     r0Old
 
@@ -138,13 +149,9 @@ theorem call_sol_log_compute_units_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
       (CodeReq.singleton pc (.call .sol_log_compute_units_))
       (.r0 ↦ᵣ r0Old)
       (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_log_compute_units_ 0 pc nCu
-    (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
-    (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
-    (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
-    (fun s hex => by simp [step, execSyscall, Logging.execLogComputeUnits]; exact hex)
-    (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
-    (fun s => by simp [step, execSyscall, Logging.execLogComputeUnits])
+  (r0_writer_obligations
+    (cuTripleWithin_syscall_writes_r0_only .sol_log_compute_units_ 0 pc nCu)
+    Logging.execLogComputeUnits)
     (fun s => h_step_cu s)
     r0Old
 
@@ -170,13 +177,9 @@ theorem call_sol_get_epoch_stake_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
       (CodeReq.singleton pc (.call .sol_get_epoch_stake))
       (.r0 ↦ᵣ r0Old)
       (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only .sol_get_epoch_stake 0 pc nCu
-    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
-    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
-    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
-    (fun s hex => by simp [step, execSyscall, Sysvar.execEpochStake]; exact hex)
-    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
-    (fun s => by simp [step, execSyscall, Sysvar.execEpochStake])
+  (r0_writer_obligations
+    (cuTripleWithin_syscall_writes_r0_only .sol_get_epoch_stake 0 pc nCu)
+    Sysvar.execEpochStake)
     (fun s => h_step_cu s)
     r0Old
 
@@ -193,14 +196,10 @@ theorem call_sol_get_processed_sibling_instruction_spec
       (CodeReq.singleton pc (.call .sol_get_processed_sibling_instruction))
       (.r0 ↦ᵣ r0Old)
       (.r0 ↦ᵣ 0) :=
-  cuTripleWithin_syscall_writes_r0_only
-    .sol_get_processed_sibling_instruction 0 pc nCu
-    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
-    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
-    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
-    (fun s hex => by simp [step, execSyscall, Misc.execProcessedSibling]; exact hex)
-    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
-    (fun s => by simp [step, execSyscall, Misc.execProcessedSibling])
+  (r0_writer_obligations
+    (cuTripleWithin_syscall_writes_r0_only
+      .sol_get_processed_sibling_instruction 0 pc nCu)
+    Misc.execProcessedSibling)
     (fun s => h_step_cu s)
     r0Old
 
