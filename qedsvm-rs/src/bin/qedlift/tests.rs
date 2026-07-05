@@ -39,7 +39,7 @@ fn descriptor_refinement_is_mechanically_emitted() {
     let ctx = load_binary(so).expect("load counter.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse counter.so");
     let result = lift_one_with_layouts(so, &ctx, &analysis, None,
-        Some("CounterDescriptor".to_string()), None, None, None, None, None, Some(&desc))
+        Some("CounterDescriptor".to_string()), None, None, None, None, None, Some(&desc), None)
         .expect("lift counter.so via descriptor");
     let (_, rlean) = result.refinement.expect("descriptor refinement emitted (counter)");
     let on_disk = std::fs::read_to_string(
@@ -61,7 +61,7 @@ fn descriptor_refinement_is_mechanically_emitted() {
     let vctx = load_binary(vso).expect("load vault.so");
     let vanalysis = Analysis::from_executable(&vctx.executable).expect("analyse vault.so");
     let vresult = lift_one_with_layouts(vso, &vctx, &vanalysis, None,
-        Some("VaultDescriptor".to_string()), None, None, Some(&vidl), None, None, Some(&vdesc))
+        Some("VaultDescriptor".to_string()), None, None, Some(&vidl), None, None, Some(&vdesc), None)
         .expect("lift vault.so via descriptor");
     let (_, vrlean) = vresult.refinement.expect("descriptor refinement emitted (vault)");
     let von_disk = std::fs::read_to_string(
@@ -87,7 +87,7 @@ fn descriptor_literal_delta_is_mechanically_emitted() {
     let ctx = load_binary(so).expect("load vault_add5.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_add5.so");
     let result = lift_one_with_layouts(so, &ctx, &analysis, None,
-        Some("VaultAdd5".to_string()), None, None, Some(&idl), None, None, Some(&desc))
+        Some("VaultAdd5".to_string()), None, None, Some(&idl), None, None, Some(&desc), None)
         .expect("lift vault_add5.so via descriptor");
     let (_, rlean) = result.refinement.expect("descriptor refinement emitted (vault_add5)");
     let on_disk = std::fs::read_to_string(
@@ -113,7 +113,7 @@ fn descriptor_param_delta_is_mechanically_emitted() {
     let ctx = load_binary(so).expect("load vault_deposit.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_deposit.so");
     let result = lift_one_with_layouts(so, &ctx, &analysis, None,
-        Some("VaultDeposit".to_string()), None, None, Some(&idl), None, None, Some(&desc))
+        Some("VaultDeposit".to_string()), None, None, Some(&idl), None, None, Some(&desc), None)
         .expect("lift vault_deposit.so via descriptor");
     let (_, rlean) = result.refinement.expect("descriptor refinement emitted (vault_deposit)");
     let on_disk = std::fs::read_to_string(
@@ -179,16 +179,16 @@ fn vault_refinement_consumes_sidecar_layout() {
 
     // (a) IDL path — the existing, blessed behaviour.
     let via_idl = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
-        None, Some("VaultIncrement"), Some(&idl), None, None, None).expect("lift via idl");
+        None, Some("VaultIncrement"), Some(&idl), None, None, None, None).expect("lift via idl");
 
     // (b) Sidecar path — layout supplied as qedrecover emits it; NO `--idl`.
     let layouts = vec![parse_account_layout(&idl, "vault").expect("vault layout")];
     let via_sidecar = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
-        None, Some("VaultIncrement"), None, None, Some(&layouts), None).expect("lift via sidecar");
+        None, Some("VaultIncrement"), None, None, Some(&layouts), None, None).expect("lift via sidecar");
 
     // (c) No layout source at all.
     let via_none = lift_one_with_layouts(so, &ctx, &analysis, None, Some("Vault".to_string()),
-        None, Some("VaultIncrement"), None, None, None, None).expect("lift with no layout");
+        None, Some("VaultIncrement"), None, None, None, None, None).expect("lift with no layout");
 
     assert_eq!(via_idl.refinement, via_sidecar.refinement,
         "sidecar-supplied layout must reproduce the IDL-derived vault refinement");
@@ -473,22 +473,9 @@ fn oob_sha256_fault_lift_is_mechanically_emitted() {
 /// check; this lift proves the program ENFORCES it.
 #[test]
 fn p_token_transfer_insufficient_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/p_token.so");
-    let ctx = load_binary(so).expect("load p_token.so");
-    let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_insufficient.pcs"))
-        .expect("load insufficient-transfer trace");
-    let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferInsufficient".to_string()),
-        Some(&trace), None, None, None).expect("lift p_token.so insufficient path");
-
-    let path = "../examples/lean/Generated/PTokenTransferInsufficientLifted.lean";
-    if std::env::var("QEDLIFT_BLESS").is_ok() {
-        std::fs::write(path, &result.lean).expect("write PTokenTransferInsufficientLifted.lean");
-    }
-    let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferInsufficientLifted.lean");
-    assert_eq!(result.lean, on_disk,
-        "PTokenTransferInsufficientLifted.lean is out of sync with the qedlift emitter \
-         (mechanically emitted, do not hand-edit)");
+    pin_p_token_arm("tests/fixtures/p_token_transfer_insufficient.pcs",
+        "PTokenTransferInsufficient", None,
+        "../examples/lean/Generated/PTokenTransferInsufficientLifted.lean", None);
 }
 
 /// Pins the p-token Transfer FROZEN-SOURCE error-path lift (pattern
@@ -497,22 +484,9 @@ fn p_token_transfer_insufficient_lift_is_mechanically_emitted() {
 /// TokenError::AccountFrozen (17) in r7 → r0 at the shared exit.
 #[test]
 fn p_token_transfer_frozen_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/p_token.so");
-    let ctx = load_binary(so).expect("load p_token.so");
-    let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_frozen.pcs"))
-        .expect("load frozen-transfer trace");
-    let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferFrozen".to_string()),
-        Some(&trace), None, None, None).expect("lift p_token.so frozen path");
-
-    let path = "../examples/lean/Generated/PTokenTransferFrozenLifted.lean";
-    if std::env::var("QEDLIFT_BLESS").is_ok() {
-        std::fs::write(path, &result.lean).expect("write PTokenTransferFrozenLifted.lean");
-    }
-    let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferFrozenLifted.lean");
-    assert_eq!(result.lean, on_disk,
-        "PTokenTransferFrozenLifted.lean is out of sync with the qedlift emitter \
-         (mechanically emitted, do not hand-edit)");
+    pin_p_token_arm("tests/fixtures/p_token_transfer_frozen.pcs",
+        "PTokenTransferFrozen", None,
+        "../examples/lean/Generated/PTokenTransferFrozenLifted.lean", None);
 }
 
 /// Pins the p-token Transfer FROZEN-DEST error-path lift: the sibling of
@@ -520,22 +494,9 @@ fn p_token_transfer_frozen_lift_is_mechanically_emitted() {
 /// error handler, TokenError::AccountFrozen (17) at the shared exit.
 #[test]
 fn p_token_transfer_dest_frozen_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/p_token.so");
-    let ctx = load_binary(so).expect("load p_token.so");
-    let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_dest_frozen.pcs"))
-        .expect("load dest-frozen-transfer trace");
-    let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferDestFrozen".to_string()),
-        Some(&trace), None, None, None).expect("lift p_token.so dest-frozen path");
-
-    let path = "../examples/lean/Generated/PTokenTransferDestFrozenLifted.lean";
-    if std::env::var("QEDLIFT_BLESS").is_ok() {
-        std::fs::write(path, &result.lean).expect("write PTokenTransferDestFrozenLifted.lean");
-    }
-    let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferDestFrozenLifted.lean");
-    assert_eq!(result.lean, on_disk,
-        "PTokenTransferDestFrozenLifted.lean is out of sync with the qedlift emitter \
-         (mechanically emitted, do not hand-edit)");
+    pin_p_token_arm("tests/fixtures/p_token_transfer_dest_frozen.pcs",
+        "PTokenTransferDestFrozen", None,
+        "../examples/lean/Generated/PTokenTransferDestFrozenLifted.lean", None);
 }
 
 /// Pins the p-token Transfer MINT-MISMATCH error-path lift: the mint
@@ -546,22 +507,9 @@ fn p_token_transfer_dest_frozen_lift_is_mechanically_emitted() {
 /// differ in their first 8 bytes).
 #[test]
 fn p_token_transfer_mint_mismatch_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/p_token.so");
-    let ctx = load_binary(so).expect("load p_token.so");
-    let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_mint_mismatch.pcs"))
-        .expect("load mint-mismatch-transfer trace");
-    let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferMintMismatch".to_string()),
-        Some(&trace), None, None, None).expect("lift p_token.so mint-mismatch path");
-
-    let path = "../examples/lean/Generated/PTokenTransferMintMismatchLifted.lean";
-    if std::env::var("QEDLIFT_BLESS").is_ok() {
-        std::fs::write(path, &result.lean).expect("write PTokenTransferMintMismatchLifted.lean");
-    }
-    let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferMintMismatchLifted.lean");
-    assert_eq!(result.lean, on_disk,
-        "PTokenTransferMintMismatchLifted.lean is out of sync with the qedlift emitter \
-         (mechanically emitted, do not hand-edit)");
+    pin_p_token_arm("tests/fixtures/p_token_transfer_mint_mismatch.pcs",
+        "PTokenTransferMintMismatch", None,
+        "../examples/lean/Generated/PTokenTransferMintMismatchLifted.lean", None);
 }
 
 /// Pins the batch-2 p-token Transfer ERROR-PATH lifts (pattern library
@@ -1000,9 +948,10 @@ fn qedmeta_arm_entry_trace_lift_is_byte_identical() {
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
     let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer.pcs"))
         .expect("load transfer trace");
-    let result = lift_one(so, &ctx, &analysis, None,
+    let result = lift_one_with_layouts(so, &ctx, &analysis, None,
         Some("PTokenTransfer".to_string()), Some(&trace), Some("Transfer"),
-        None, Some(304)).expect("lift transfer with recovered arm");
+        None, Some(304), None, None, Some("PToken"))
+        .expect("lift transfer with recovered arm");
     let on_disk = std::fs::read_to_string(
         "../examples/lean/Generated/PTokenTransferTracedLifted.lean")
         .expect("read PTokenTransferTracedLifted.lean");
@@ -1050,8 +999,11 @@ fn pin_p_token_arm(
     let analysis = Analysis::from_executable(&ctx.executable)
         .expect("analyse p_token.so");
     let trace = load_trace(std::path::Path::new(pcs)).expect("load trace");
-    let result = lift_one(so, &ctx, &analysis, None,
-        Some(module.to_string()), Some(&trace), arm, None, None)
+    // All p_token arms share the binary → shared-text dedup: the arm imports
+    // `Generated.PTokenText` instead of re-embedding the ~100KB `.text`.
+    let result = lift_one_with_layouts(so, &ctx, &analysis, None,
+        Some(module.to_string()), Some(&trace), arm, None, None, None, None,
+        Some("PToken"))
         .expect("lift p_token arm");
 
     // QEDLIFT_BLESS=1 re-blesses artifacts after an intentional emitter change.
@@ -1072,6 +1024,19 @@ fn pin_p_token_arm(
             "{rp} is out of sync with the qedlift refinement codegen \
              (mechanically emitted, do not hand-edit)");
     }
+
+    // The shared `.text` module is generated output too: every arm pin also
+    // pins `Generated/PTokenText.lean` (identical for all arms of the binary).
+    let (smod, slean) = result.shared_text.expect("shared text module emitted");
+    assert_eq!(smod, "PTokenText");
+    let spath = "../examples/lean/Generated/PTokenText.lean";
+    if std::env::var("QEDLIFT_BLESS").is_ok() {
+        std::fs::write(spath, &slean).expect("write shared text module");
+    }
+    let s_on_disk = std::fs::read_to_string(spath).expect("read shared text module");
+    assert_eq!(slean, s_on_disk,
+        "{spath} is out of sync with the qedlift shared-text emitter \
+         (mechanically emitted, do not hand-edit)");
 }
 
 #[test]

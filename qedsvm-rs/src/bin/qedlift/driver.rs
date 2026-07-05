@@ -56,7 +56,7 @@ pub(super) fn run_transition(
         let module = format!("{}{}", stem_pascal, pascal_case(label));
         let trace = load_trace(pcs)?;
         let r = lift_one_with_layouts(so, ctx, analysis, None, Some(module.clone()),
-            Some(&trace), None, idl, None, None, Some(descriptor))?;
+            Some(&trace), None, idl, None, None, Some(descriptor), None)?;
         let info = r.transition.ok_or_else(|| format!(
             "--transition: path {:?} produced no transition corollary \
              (see stderr for the fail-closed reason)", label))?;
@@ -80,6 +80,12 @@ fn write_lift_result(
         std::fs::create_dir_all(parent)?;
     }
     std::fs::write(out_path, &result.lean)?;
+    // Shared-text module (batch dedup): identical for every arm of the same
+    // binary, so re-writing it per arm is idempotent.
+    if let Some((smod, slean)) = &result.shared_text {
+        let spath = out_path.with_file_name(format!("{}.lean", smod));
+        std::fs::write(&spath, slean)?;
+    }
     if let Some((rmod, rlean)) = &result.refinement {
         let rpath = out_path.with_file_name(format!("{}.lean", rmod));
         std::fs::write(&rpath, rlean)?;
@@ -159,7 +165,7 @@ pub(super) fn run_qedmeta_mode(
         let result = lift_one_with_layouts(&args.so, ctx, analysis,
             Some(ix.discriminator.value), Some(module_name.clone()),
             trace, Some(&arm), idl_value, arm_entry,
-            Some(&sidecar_layouts), None)?;
+            Some(&sidecar_layouts), None, args.shared_text.as_deref())?;
 
         // Cross-check: cu_budget is upper bound; result.cu is the exact discharged CU.
         let budget_note = match ix.cu_budget {
@@ -220,7 +226,9 @@ pub(super) fn run_batch_mode(
     for ix in &idl {
         // Namespace Examples.Lifted.<SoStem><Name>; file <SoStem><Name>Lifted.lean.
         let module_name = format!("{}{}", so_stem, pascal_case(&ix.name));
-        match lift_one(&args.so, ctx, analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value, None) {
+        match lift_one_with_layouts(&args.so, ctx, analysis, Some(ix.discriminator),
+            Some(module_name.clone()), None, Some(&ix.name), idl_value, None,
+            None, None, args.shared_text.as_deref()) {
             Ok(result) => {
                 let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
                 let refined = if write_lift_result(&result, &out_path)?.is_some() {
@@ -254,7 +262,8 @@ pub(super) fn run_single_mode(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let result = lift_one_with_layouts(&args.so, ctx, analysis, args.target_disc,
                           args.module.clone(), trace, args.arm_name.as_deref(),
-                          idl_value, None, None, descriptor)?;
+                          idl_value, None, None, descriptor,
+                          args.shared_text.as_deref())?;
     match args.output.as_ref() {
         Some(path) => {
             let rpath = write_lift_result(&result, path)?;
