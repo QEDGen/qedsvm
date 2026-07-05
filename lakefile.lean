@@ -292,6 +292,31 @@ lean_lib Examples where
     -- (MintMismatch) at the shared exit.
     `Generated.PTokenTransferMintMismatchLifted,
     `PToken.TransferArm.MintMismatchGuardEnforced,
+    -- Mint-mismatch limbs 1-3: the sibling jne paths (4022/4025/4028).
+    -- With limb 0 these close the mint-inequality case split — any two
+    -- distinct mints first differ at exactly one limb.
+    `Generated.PTokenTransferMintMismatchLimb1Lifted,
+    `PToken.TransferArm.MintMismatchLimb1GuardEnforced,
+    `Generated.PTokenTransferMintMismatchLimb2Lifted,
+    `PToken.TransferArm.MintMismatchLimb2GuardEnforced,
+    `Generated.PTokenTransferMintMismatchLimb3Lifted,
+    `PToken.TransferArm.MintMismatchLimb3GuardEnforced,
+    -- Uninitialized / invalid-state-byte guards (src + dest): the state
+    -- checks at 4004/4005/4007/4008. Builtin ProgramError encoding
+    -- (high 32 bits): UninitializedAccount = 10<<32, InvalidAccountData
+    -- = 4<<32.
+    `Generated.PTokenTransferSrcUninitLifted,
+    `PToken.TransferArm.SrcUninitGuardEnforced,
+    `Generated.PTokenTransferDestUninitLifted,
+    `PToken.TransferArm.DestUninitGuardEnforced,
+    `Generated.PTokenTransferSrcBadStateLifted,
+    `PToken.TransferArm.SrcBadStateGuardEnforced,
+    `Generated.PTokenTransferDestBadStateLifted,
+    `PToken.TransferArm.DestBadStateGuardEnforced,
+    -- Instruction-data-length guard: jlt ix_len,9 at 3998 through the 312
+    -- hub, r0 = 12 (TokenError::InvalidInstruction).
+    `Generated.PTokenTransferShortIxLifted,
+    `PToken.TransferArm.ShortIxGuardEnforced,
     -- Trace-guided lifts: real p_token happy paths, balance/supply
     -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,

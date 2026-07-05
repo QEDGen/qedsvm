@@ -193,20 +193,33 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
   `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
   `AsmRefinesTokenTransfer` carries entails the same account with its `amount`
   conjunct weakened to `balanceAtLeast`). Depend on **no axioms**.
-- **L3 Guards**: FOUR full `EnforcedError` guards on the real p-token Transfer
+- **L3 Guards**: TWELVE full `EnforcedError` guards on the real p-token Transfer
   arm, all standard-axiom clean, all built the same way (violating fixture →
   diff_mollusk test → captured failing trace → qedlift error-path lift →
-  `cuTripleWithinMem_seq_exit` composition):
+  `cuTripleWithinMem_seq_exit` composition; guard files generated mechanically
+  from the lifted specs):
   1. **Balance** (`BalanceGuardEnforced.lean`): insufficient balance HALTS with
      exit 1 (InsufficientFunds), token cells untouched.
   2. **Frozen source** (`FrozenGuardEnforced.lean`): exit 17 (AccountFrozen).
   3. **Frozen destination** (`DestFrozenGuardEnforced.lean`): the sibling one
      `jeq` later (pc 4012 vs 4011), exit 17.
-  4. **Mint mismatch** (`MintMismatchGuardEnforced.lean`): the first
-     pubkey-INEQUALITY guard — the unrolled 4-limb mint compare (pc 4017-4028)
-     diverts at its limb-0 `jne` (4019), exit 3 (MintMismatch). Scope: the
-     trace covers mints differing in limb 0; later-limb-only mismatches take
-     sibling `jne` paths, separate traces of the same guard (not yet lifted).
+  4. **Mint mismatch, all four limbs**
+     (`MintMismatch{,Limb1,Limb2,Limb3}GuardEnforced.lean`): the
+     pubkey-INEQUALITY guard, complete. The unrolled 4-limb mint compare
+     (pc 4017-4028) has one diverge `jne` per limb (4019/4022/4025/4028); any
+     two distinct mints first differ at exactly one limb, and each limb's
+     path is a proven EnforcedError, exit 3 (MintMismatch).
+  5. **Uninitialized src/dest** (`{Src,Dest}UninitGuardEnforced.lean`): state
+     byte = 0 diverts at 4005/4008; exit = 10<<32
+     (ProgramError::UninitializedAccount — builtins encode in the HIGH 32
+     bits, unlike TokenError customs which exit with the small custom code).
+  6. **Invalid state byte src/dest** (`{Src,Dest}BadStateGuardEnforced.lean`):
+     state > 2 (not a valid AccountState tag — the account-shape /
+     type-confusion class) diverts at 4004/4007; exit = 4<<32
+     (ProgramError::InvalidAccountData).
+  7. **Short instruction data** (`ShortIxGuardEnforced.lean`): ix data < 9
+     bytes diverts at 3998 through the 312 hub; exit 12
+     (TokenError::InvalidInstruction).
   The routing-only half-guard (`H3dBalanceGuard.lean`,
   `p_token_balance_insufficient_routes_to_error`) predates and is subsumed by
   the full balance guard. `EnforcedFault` + `enforcedFault_of_routes_then_handler`
@@ -218,15 +231,13 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
 Driven bottom-up: prove a guard on a proven arm, let it dictate the predicate /
 recognizer shapes.
 
-1. **SPL Token (in progress).** DONE on the Transfer arm: balance, frozen source,
-   frozen dest, mint mismatch (limb 0). Next candidates, all `h_branch*` flips of
-   existing traces (cheap) or new violating fixtures (medium):
-   - uninitialized src/dst (state = 0, flips h_branch8/h_branch10);
-   - invalid state byte (> 2, flips h_branch7/h_branch9);
-   - wrong data_len (≠ 165, flips h_branch1/h_branch3) — the shape/discriminator
-     guard;
-   - short instruction data (< 9, flips h_branch5);
-   - mint-mismatch limbs 1-3 (sibling traces of the limb-0 guard);
+1. **SPL Token (in progress).** DONE on the Transfer arm (12 guards): balance,
+   frozen src/dest, mint mismatch (all 4 limbs), uninitialized src/dest,
+   invalid state byte src/dest, short instruction data. Remaining Transfer-arm
+   candidates:
+   - wrong data_len (≠ 165): NOT a simple flip — the 305 `jne` targets the 312
+     generic account parser (slow path), not an error route; the failure
+     surfaces later. Needs its own trace study.
    - the honest authority tri-case (owner ∧ ¬signer → MissingRequiredSignature;
      delegate ∧ ¬signer → same; neither → OwnerMismatch) — un-parks the deferred
      signer item, three violating traces;
