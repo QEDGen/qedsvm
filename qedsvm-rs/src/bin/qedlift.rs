@@ -48,7 +48,8 @@ use isa::{
     render_callstack, resolve_call_target_logical, resolve_jump_target,
 };
 use refinement::{emit_descriptor_refinement, emit_refinement, emit_transition_bundle,
-    emit_transition_fault, emit_transition_path, is_const_delta_arm, BItem, TransitionPathInfo};
+    emit_transition_fault, emit_transition_path, is_const_delta_arm, BItem, FaultTail,
+    RefineTarget, RefinementCtx, TransitionPathInfo};
 use state::SymState;
 use syscalls::{
     emit_r0_syscall, emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log,
@@ -1680,13 +1681,21 @@ fn lift_one_with_layouts(
     // Spec-driven descriptor wins when present (the qedspec seam): build the
     // layout-general `AsmRefinesFieldUpdate` straight from the descriptor,
     // bypassing the hardcoded `refine_registry`. Otherwise the registry path.
+    let rctx = RefinementCtx {
+        lift_module: &tc.module_name,
+        pre: &tc.pre,
+        post: &post_clean,
+        abs_subst: &tc.abs_subst,
+        vars: &tc.vars,
+        n_cu: tc.n,
+        start_pc: tc.start_pc,
+        exit_pc: tc.exit_pc,
+        idl,
+        sidecar_layouts,
+    };
     let refinement = match descriptor {
-        Some(desc) => emit_descriptor_refinement(
-            desc, &tc.module_name, &tc.pre, &post_clean, &tc.abs_subst, &tc.vars,
-            tc.n, tc.start_pc, tc.exit_pc, idl, sidecar_layouts),
-        None => arm_name.and_then(|arm| emit_refinement(
-            arm, &tc.module_name, &tc.pre, &post_clean, &tc.abs_subst, &tc.vars,
-            tc.n, tc.start_pc, tc.exit_pc, idl, sidecar_layouts)),
+        Some(desc) => emit_descriptor_refinement(desc, rctx),
+        None => arm_name.and_then(|arm| emit_refinement(arm, rctx)),
     };
 
     Ok(LiftOutput {
@@ -3098,6 +3107,25 @@ fn emit_transition_corollary(
             (format!("{}_balance_correct", module_name),
              format!("{}{}", theorem_binders, extra), post_clean)
         };
+        let tctx = RefinementCtx {
+            lift_module: module_name,
+            pre,
+            post: t_post,
+            abs_subst,
+            vars,
+            n_cu: n,
+            start_pc,
+            exit_pc,
+            idl,
+            sidecar_layouts,
+        };
+        let t_args = names.join(" ");
+        let target = RefineTarget {
+            name: &t_name,
+            args: &t_args,
+            binders: &t_binders,
+            bitems,
+        };
         let emitted = if terminal_fault || terminal_oob {
             let t_post_s = format!("{}{}",
                 atoms_to_lean(t_post, abs_subst), cs_atom);
@@ -3107,20 +3135,10 @@ fn emit_transition_corollary(
                     Some((o.region_reg, o.region_size, o.region_writable))),
                 _ => unreachable!("gated on a fault terminal"),
             };
-            emit_transition_fault(
-                desc, module_name, pre, t_post, abs_subst,
-                &t_name, &names.join(" "), &t_binders, &t_post_s, bitems,
-                n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
-                ctor, spec, oob_info,
-                idl, sidecar_layouts,
-            )
+            emit_transition_fault(desc, tctx, target, &m_bound, &cr_lean, &rr,
+                FaultTail { ctor, spec, oob: oob_info, target_post: &t_post_s })
         } else {
-            emit_transition_path(
-                desc, module_name, pre, t_post, abs_subst,
-                &t_name, &names.join(" "), &t_binders, bitems,
-                n, &m_bound, start_pc, exit_pc, &cr_lean, &rr,
-                idl, sidecar_layouts,
-            )
+            emit_transition_path(desc, tctx, target, &m_bound, &cr_lean, &rr)
         };
         if let Some((text, info)) = emitted {
             out.push_str(&text);

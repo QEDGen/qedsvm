@@ -19,6 +19,47 @@ struct RefineSpec {
     accounts: &'static [(&'static str, CodecKind)],
 }
 
+/// The per-lift read-only bundle every refinement/transition emitter consumes:
+/// the lift's module name, pre/post atoms, abstraction substitution, symbolic
+/// params, CU/PC shape and the layout sources. One struct instead of ten
+/// positional arguments threaded through the codegen.
+#[derive(Clone, Copy)]
+pub(super) struct RefinementCtx<'a> {
+    pub(super) lift_module: &'a str,
+    pub(super) pre: &'a [Atom],
+    /// Cleaned post atoms of the refinement target (`post_clean`, or the
+    /// transition target's post).
+    pub(super) post: &'a [Atom],
+    pub(super) abs_subst: &'a std::collections::BTreeMap<String, String>,
+    pub(super) vars: &'a [String],
+    pub(super) n_cu: usize,
+    pub(super) start_pc: usize,
+    pub(super) exit_pc: usize,
+    pub(super) idl: Option<&'a serde_json::Value>,
+    // qedrecover-emitted layouts; preferred over `idl` for account-codec offsets (#41 loop closure).
+    pub(super) sidecar_layouts: Option<&'a [AccountLayout]>,
+}
+
+/// The lifted triple a transition corollary composes with: its name, rendered
+/// positional args, binder block and binder metadata.
+pub(super) struct RefineTarget<'a> {
+    pub(super) name: &'a str,
+    pub(super) args: &'a str,
+    pub(super) binders: &'a str,
+    pub(super) bitems: Vec<BItem>,
+}
+
+/// The typed-fault tail of a `*_transition_path` fault corollary.
+pub(super) struct FaultTail<'a> {
+    pub(super) ctor: &'a str,
+    pub(super) spec: &'a str,
+    /// OOB tail `(region_reg, region_size, region_writable)`; `None` = the
+    /// unconditional abort/panic tail (`seq_fault_pure`).
+    pub(super) oob: Option<(u8, i64, bool)>,
+    /// Rendered post of the target triple (for the OOB region-register split).
+    pub(super) target_post: &'a str,
+}
+
 fn refine_registry(arm: &str) -> Option<RefineSpec> {
     match arm {
         // Token/mint arms target the layout-general N-account predicate (#25):
@@ -102,38 +143,25 @@ struct AcctFields {
 }
 
 pub(super) fn emit_refinement(
-    arm_name:     &str,
-    lift_module:  &str,
-    pre:          &[Atom],
-    post_clean:   &[Atom],
-    abs_subst:    &std::collections::BTreeMap<String, String>,
-    vars:         &[String],
-    n_cu:         usize,
-    start_pc:     usize,
-    exit_pc:      usize,
-    idl:          Option<&serde_json::Value>,
-    // qedrecover-emitted layouts; preferred over `idl` for account-codec offsets (#41 loop closure).
-    sidecar_layouts: Option<&[AccountLayout]>,
+    arm_name: &str,
+    ctx:      RefinementCtx<'_>,
     // Returns `(refine_module, refine_lean)`.
 ) -> Option<(String, String)> {
     let spec = refine_registry(arm_name)?;
 
     // Counter codec (single u64, coarse=fine): dedicated path keeps token/mint codegen byte-identical.
     if spec.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Counter)) {
-        return emit_counter_refinement(&spec, lift_module, pre, post_clean,
-            abs_subst, vars, n_cu, start_pc, exit_pc);
+        return emit_counter_refinement(&spec, ctx);
     }
 
     // Vault codec (IDL layout, multi-field): owns updated u64, frames the rest, reshapes via `account_agg`.
     if spec.accounts.iter().all(|(_, c)| matches!(c, CodecKind::Vault)) {
-        return emit_vault_refinement(&spec, lift_module, pre, post_clean,
-            abs_subst, vars, n_cu, start_pc, exit_pc, idl, sidecar_layouts);
+        return emit_vault_refinement(&spec, ctx);
     }
 
     // Token/mint codecs: the vault route generalized to N accounts (#25) —
     // `AsmRefinesFieldUpdates` emitted directly off the lift, no aggregation module.
-    emit_token_refinement(&spec, lift_module, pre, post_clean,
-        abs_subst, vars, n_cu, start_pc, exit_pc, idl, sidecar_layouts)
+    emit_token_refinement(&spec, ctx)
 }
 
 /// Emit the N-account token/mint refinement (#25): one `(base, preFields,
@@ -141,15 +169,11 @@ pub(super) fn emit_refinement(
 /// `AsmRefinesFieldUpdates`. Same mechanism as `emit_vault_refinement` —
 /// reshape coarse→fine via `codecCoarse_eq_fine`, frame the untouched cells —
 /// generalized to N accounts and to `.u64` segs inside opaque regions.
-#[allow(clippy::too_many_arguments)]
 fn emit_token_refinement(
-    spec: &RefineSpec, lift_module: &str,
-    pre: &[Atom], post_clean: &[Atom],
-    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
-    n_cu: usize, start_pc: usize, exit_pc: usize,
-    idl: Option<&serde_json::Value>,
-    sidecar_layouts: Option<&[AccountLayout]>,
+    spec: &RefineSpec, ctx: RefinementCtx<'_>,
 ) -> Option<(String, String)> {
+    let RefinementCtx { lift_module, pre, post: post_clean, abs_subst,
+        idl, sidecar_layouts, .. } = ctx;
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
 
     // ── Detect mutated account cells (a ± b, both InitMem) ──────────
@@ -228,9 +252,8 @@ fn emit_token_refinement(
             CodecKind::Counter | CodecKind::Vault =>
                 unreachable!("counter/vault codec handled by its own emitter"),
         };
-        let base_off = m.off - field_off;
-        accts.push(build_account_fields(pre, m, base_off, &amount, field_off,
-            &synth, &fold, &mut fresh, role)?);
+        accts.push(build_account_fields(ctx, m, &amount, field_off,
+            &synth, &mut fresh, role)?);
     }
 
     // ── Assemble setup atoms (lift cells not owned by any account) ──
@@ -245,8 +268,8 @@ fn emit_token_refinement(
     let setup_post: Vec<Atom> = post_clean.iter().filter(|a| !is_owned(a)).cloned().collect();
 
     let module = format!("{}Refinement", lift_module);
-    let lean = render_token_refinement(spec, &module, &accts, pre, post_clean,
-        &setup_pre, &setup_post, abs_subst, vars, &amount, n_cu, start_pc, exit_pc);
+    let lean = render_token_refinement(spec, &module, &accts, ctx,
+        &setup_pre, &setup_post, &amount);
     Some((module, lean))
 }
 
@@ -265,12 +288,13 @@ fn cell_val_dword<'a>(atoms: &'a [Atom], base_raw: &str, off: i64) -> Option<&'a
 /// field list); unowned scalars become framed params; opaque regions split
 /// into owned `.u64`/`.byte` segs and framed `.gap`s, with gap-size
 /// hypotheses pinning the running offsets (`segsSL`) to the lift's addresses.
-#[allow(clippy::too_many_arguments)]
 fn build_account_fields(
-    pre: &[Atom], m: &MutCell, base_off: i64, amount: &str, field_off: i64,
-    synth: &[(i64, SynthKind)],
-    fold: &dyn Fn(&Expr) -> String, fresh: &mut u32, role: &'static str,
+    ctx: RefinementCtx<'_>, m: &MutCell, amount: &str, field_off: i64,
+    synth: &[(i64, SynthKind)], fresh: &mut u32, role: &'static str,
 ) -> Option<AcctFields> {
+    let RefinementCtx { pre, abs_subst, .. } = ctx;
+    let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
+    let base_off = m.off - field_off;
     let base_expr = fold(&m.base);
     let base_arg = if base_off == 0 { base_expr.clone() }
                    else { format!("({} + {})", base_expr, base_off) };
@@ -389,13 +413,12 @@ fn contains_ident(hay: &str, n: &str) -> bool {
 /// `AsmRefinesFieldUpdates` (proof: unfold the account fold, reshape each
 /// coarse codec via `codecCoarse_eq_fine`, frame, `sl_exact`) plus one
 /// `ensures_<role>` accessor corollary per account.
-#[allow(clippy::too_many_arguments)]
 fn render_token_refinement(
-    spec: &RefineSpec, module: &str, accts: &[AcctFields],
-    pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
-    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String], amount: &str,
-    n_cu: usize, start_pc: usize, exit_pc: usize,
+    spec: &RefineSpec, module: &str, accts: &[AcctFields], ctx: RefinementCtx<'_>,
+    setup_pre: &[Atom], setup_post: &[Atom], amount: &str,
 ) -> String {
+    let RefinementCtx { pre, post: post_clean, abs_subst, vars,
+        n_cu, start_pc, exit_pc, .. } = ctx;
     let mut nat_params = vars.join(" ");
     for b in accts { for p in &b.params { nat_params.push(' '); nat_params.push_str(p); } }
     let ba_params: Vec<String> =
@@ -558,11 +581,10 @@ end Examples.{module}
 /// Emit a counter-codec refinement: single owned `u64` cell, constant +1 delta.
 /// No aggregation (coarse = fine for `u64`), no frame, no `amount` arg.
 fn emit_counter_refinement(
-    spec: &RefineSpec, lift_module: &str,
-    pre: &[Atom], post_clean: &[Atom],
-    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
-    n_cu: usize, start_pc: usize, exit_pc: usize,
+    spec: &RefineSpec, ctx: RefinementCtx<'_>,
 ) -> Option<(String, String)> {
+    let RefinementCtx { lift_module, pre, post: post_clean, abs_subst, vars,
+        n_cu, start_pc, exit_pc, .. } = ctx;
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
 
     // Find the post-state incremented `u64` cell (NatAdd(InitMem, Const) form).
@@ -674,13 +696,10 @@ end Examples.{module}
 /// Emit a vault (`AsmRefinesFieldUpdate`) refinement: owns the updated `u64`, frames the rest,
 /// reshapes via `codecCoarse_eq_fine`. IDL-driven — new programs cost only a qedspec.
 fn emit_vault_refinement(
-    spec: &RefineSpec, lift_module: &str,
-    pre: &[Atom], post_clean: &[Atom],
-    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
-    n_cu: usize, start_pc: usize, exit_pc: usize,
-    idl: Option<&serde_json::Value>,
-    sidecar_layouts: Option<&[AccountLayout]>,
+    spec: &RefineSpec, ctx: RefinementCtx<'_>,
 ) -> Option<(String, String)> {
+    let RefinementCtx { lift_module, pre, post: post_clean, abs_subst, vars,
+        n_cu, start_pc, exit_pc, idl, sidecar_layouts } = ctx;
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
     let layout = resolve_layout(sidecar_layouts, idl, "vault")?;
 
@@ -964,21 +983,15 @@ end Examples.{module}
 // ════════════════════════════════════════════════════════════════
 
 pub(super) fn emit_descriptor_refinement(
-    desc:            &RefinementDescriptor,
-    lift_module:     &str,
-    pre:             &[Atom],
-    post_clean:      &[Atom],
-    abs_subst:       &std::collections::BTreeMap<String, String>,
-    vars:            &[String],
-    n_cu:            usize,
-    start_pc:        usize,
-    exit_pc:         usize,
-    // Shape substrate. When the descriptor has no inline layout, its account's layout is
-    // resolved from these — the SAME `qed-analysis` path the registry lift uses, so the
-    // seam stays name-level (offsets are the IDL's job, not the descriptor's).
-    idl:             Option<&serde_json::Value>,
-    sidecar_layouts: Option<&[AccountLayout]>,
+    desc: &RefinementDescriptor,
+    ctx:  RefinementCtx<'_>,
 ) -> Option<(String, String)> {
+    // Shape substrate: when the descriptor has no inline layout, its account's
+    // layout is resolved from `ctx.idl`/`ctx.sidecar_layouts` — the SAME
+    // `qed-analysis` path the registry lift uses, so the seam stays name-level
+    // (offsets are the IDL's job, not the descriptor's).
+    let RefinementCtx { lift_module, pre, post: post_clean, abs_subst,
+        idl, sidecar_layouts, .. } = ctx;
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
 
     // Shape: inline layout (no-IDL fallback) or resolved from the IDL by account name.
@@ -1210,24 +1223,47 @@ pub(super) fn emit_descriptor_refinement(
     let setup_post: Vec<Atom> = post_clean.iter().filter(|a| !is_owned(a)).cloned().collect();
 
     let module = format!("{}Refinement", lift_module);
-    let lean = render_descriptor_refinement(
-        desc, &module, &base_l, &pre_fields, &post_fields, &frame, &params, &ba_params,
-        pre, post_clean, &setup_pre, &setup_post, abs_subst, vars, n_cu, start_pc, exit_pc,
-        upd_off, &delta_expr, param_binder.as_deref(), &upd_pre_l,
-    );
+    let lean = render_descriptor_refinement(desc, &module, ctx, &DescriptorRender {
+        base_l: &base_l,
+        pre_fields: &pre_fields,
+        post_fields: &post_fields,
+        frame: &frame,
+        params: &params,
+        ba_params: &ba_params,
+        setup_pre: &setup_pre,
+        setup_post: &setup_post,
+        upd_off,
+        delta_expr: &delta_expr,
+        param_binder: param_binder.as_deref(),
+        upd_pre_l: &upd_pre_l,
+    });
     Some((module, lean))
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The field-walk products `emit_descriptor_refinement` hands its renderer.
+struct DescriptorRender<'a> {
+    base_l: &'a str,
+    pre_fields: &'a [String],
+    post_fields: &'a [String],
+    frame: &'a [String],
+    params: &'a [String],
+    ba_params: &'a [String],
+    setup_pre: &'a [Atom],
+    setup_post: &'a [Atom],
+    upd_off: i64,
+    delta_expr: &'a str,
+    param_binder: Option<&'a str>,
+    upd_pre_l: &'a str,
+}
+
 fn render_descriptor_refinement(
-    desc: &RefinementDescriptor, module: &str, base_l: &str,
-    pre_fields: &[String], post_fields: &[String], frame: &[String], params: &[String],
-    ba_params: &[String],
-    pre: &[Atom], post_clean: &[Atom], setup_pre: &[Atom], setup_post: &[Atom],
-    abs_subst: &std::collections::BTreeMap<String, String>, vars: &[String],
-    n_cu: usize, start_pc: usize, exit_pc: usize,
-    upd_off: i64, delta_expr: &str, param_binder: Option<&str>, upd_pre_l: &str,
+    desc: &RefinementDescriptor, module: &str, ctx: RefinementCtx<'_>,
+    r: &DescriptorRender<'_>,
 ) -> String {
+    let RefinementCtx { pre, post: post_clean, abs_subst, vars,
+        n_cu, start_pc, exit_pc, .. } = ctx;
+    let &DescriptorRender { base_l, pre_fields, post_fields, frame, params, ba_params,
+        setup_pre, setup_post, upd_off, delta_expr, param_binder, upd_pre_l } = r;
     let mut nat_params = vars.join(" ");
     for p in params { nat_params.push(' '); nat_params.push_str(p); }
     // `ensures` corollary binders: the field-list params, plus the runtime parameter binder
@@ -1433,22 +1469,16 @@ fn replace_ident(hay: &str, from: &str, to: &str) -> String {
 /// be unchanged, unowned cells are framed as field-named params — so
 /// `preFields = postFields` is syntactic. Fail-closed (`None`) on anything
 /// outside the wired shapes.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_transition_path(
     desc: &RefinementDescriptor,
-    module_name: &str,
-    pre: &[Atom],
-    post_atoms: &[Atom],
-    abs_subst: &std::collections::BTreeMap<String, String>,
-    target_name: &str,
-    target_args: &str,
-    target_binders: &str,
-    bitems_in: Vec<BItem>,
-    n: usize, m_bound: &str, start_pc: usize, exit_pc: usize,
-    cr: &str, rr: &str,
-    idl: Option<&serde_json::Value>,
-    sidecar_layouts: Option<&[AccountLayout]>,
+    ctx: RefinementCtx<'_>,
+    target: RefineTarget<'_>,
+    m_bound: &str, cr: &str, rr: &str,
 ) -> Option<(String, TransitionPathInfo)> {
+    let RefinementCtx { lift_module: module_name, pre, post: post_atoms, abs_subst,
+        n_cu: n, start_pc, exit_pc, idl, sidecar_layouts, .. } = ctx;
+    let RefineTarget { name: target_name, args: target_args,
+        binders: target_binders, bitems: bitems_in } = target;
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
     let layout = match desc.explicit_layout() {
         Some(l) => l,
@@ -1770,30 +1800,18 @@ theorem {corollary}
 /// owned in the PRE (no post: a faulted instruction is rolled back
 /// wholesale). Tracked cells outside the prefix footprint are framed as
 /// field-named params. Fail-closed (`None`) outside the wired shapes.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn emit_transition_fault(
     desc: &RefinementDescriptor,
-    module_name: &str,
-    pre: &[Atom],
-    // The target triple's post ATOMS (for the OOB region-register split).
-    post_atoms: &[Atom],
-    abs_subst: &std::collections::BTreeMap<String, String>,
-    target_name: &str,
-    target_args: &str,
-    target_binders: &str,
-    target_post: &str,
-    bitems_in: Vec<BItem>,
-    n: usize, m_bound: &str, start_pc: usize, exit_pc: usize,
-    cr: &str, rr: &str,
-    fault_ctor: &str, fault_spec: &str,
-    // OOB tail (region_reg, region_size, region_writable): the fault is
-    // CONDITIONAL on the region register's range being unmapped, composed
-    // via the Mem-Mem `cuTripleWithinMem_seq_fault` with combined rr.
-    // `None` = the unconditional abort/panic tail (`seq_fault_pure`).
-    oob: Option<(u8, i64, bool)>,
-    idl: Option<&serde_json::Value>,
-    sidecar_layouts: Option<&[AccountLayout]>,
+    ctx: RefinementCtx<'_>,
+    target: RefineTarget<'_>,
+    m_bound: &str, cr: &str, rr: &str,
+    tail: FaultTail<'_>,
 ) -> Option<(String, TransitionPathInfo)> {
+    let RefinementCtx { lift_module: module_name, pre, post: post_atoms, abs_subst,
+        n_cu: n, start_pc, exit_pc, idl, sidecar_layouts, .. } = ctx;
+    let RefineTarget { name: target_name, args: target_args,
+        binders: target_binders, bitems: bitems_in } = target;
+    let FaultTail { ctor: fault_ctor, spec: fault_spec, oob, target_post } = tail;
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
     let layout = match desc.explicit_layout() {
         Some(l) => l,
