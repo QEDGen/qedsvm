@@ -1,0 +1,279 @@
+//! CLI mode runners: transition / qedmeta / batch / single-arm dispatch and
+//! the shared lift-output writer.
+
+use super::*;
+
+/// Discover per-path traces beside the .so: `<stem>_<path>.pcs`, sorted by
+/// path label (deterministic bundle order). Each discovered trace is one
+/// PATH of the program's transition (#40).
+fn discover_path_traces(so: &Path) -> Vec<(String, std::path::PathBuf)> {
+    let stem = so.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let dir = so.parent().unwrap_or_else(|| Path::new("."));
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("pcs") { continue; }
+            if let Some(fs) = p.file_stem().and_then(|x| x.to_str()) {
+                if let Some(label) = fs.strip_prefix(&format!("{}_", stem)) {
+                    if !label.is_empty() {
+                        out.push((label.to_string(), p.clone()));
+                    }
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Whole-transition emission (#40): lift every discovered path of `so`
+/// (descriptor-driven, trace-guided; each lift carries its
+/// `*_transition_path` corollary) and emit the bundle theorem. Returns the
+/// per-path `(module, lean)` files and the `(module, lean)` bundle.
+#[allow(clippy::type_complexity)]
+pub(super) fn run_transition(
+    so: &Path, ctx: &BinaryCtx, analysis: &Analysis<'_>,
+    descriptor: &RefinementDescriptor,
+    idl: Option<&serde_json::Value>,
+) -> Result<(Vec<(String, String)>, (String, String)), Box<dyn std::error::Error>> {
+    let traces = discover_path_traces(so);
+    if traces.len() < 2 {
+        return Err(format!(
+            "--transition: need ≥ 2 discovered `<stem>_<path>.pcs` traces \
+             beside {}, found {}", so.display(), traces.len()).into());
+    }
+    let stem_snake = so.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "lifted".to_string());
+    let stem_pascal = pascal_case(&stem_snake);
+    let mut path_files: Vec<(String, String)> = Vec::new();
+    let mut modules: Vec<String> = Vec::new();
+    let mut infos: Vec<TransitionPathInfo> = Vec::new();
+    for (label, pcs) in &traces {
+        let module = format!("{}{}", stem_pascal, pascal_case(label));
+        let trace = load_trace(pcs)?;
+        let r = lift_one_with_layouts(so, ctx, analysis, None, Some(module.clone()),
+            Some(&trace), None, idl, None, None, Some(descriptor))?;
+        let info = r.transition.ok_or_else(|| format!(
+            "--transition: path {:?} produced no transition corollary \
+             (see stderr for the fail-closed reason)", label))?;
+        path_files.push((module.clone(), r.lean));
+        modules.push(module);
+        infos.push(info);
+    }
+    let bundle = emit_transition_bundle(&stem_pascal, &stem_snake, &modules, &infos)
+        .ok_or("transition bundle emission failed (binder conflict — see stderr)")?;
+    Ok((path_files, bundle))
+}
+
+/// Write a lift result's `.lean` under `out_path` (creating the parent
+/// directory), plus its refinement sibling next to it when one was emitted.
+/// Returns the refinement path, if written. The shared tail of every mode.
+fn write_lift_result(
+    result: &LiftOutput,
+    out_path: &Path,
+) -> Result<Option<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    if let Some(parent) = out_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(out_path, &result.lean)?;
+    if let Some((rmod, rlean)) = &result.refinement {
+        let rpath = out_path.with_file_name(format!("{}.lean", rmod));
+        std::fs::write(&rpath, rlean)?;
+        return Ok(Some(rpath));
+    }
+    Ok(None)
+}
+
+/// --transition mode (#40): discovered per-path traces + descriptor →
+/// per-path lifts (each with a `*_transition_path` corollary) + the bundle.
+pub(super) fn run_transition_mode(
+    args: &Args,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    descriptor: Option<&RefinementDescriptor>,
+    idl_value: Option<&serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let desc = descriptor.ok_or("--transition needs --descriptor")?;
+    let out_dir = args.output_dir.as_ref()
+        .ok_or("--transition needs --output-dir")?;
+    std::fs::create_dir_all(out_dir)?;
+    let (paths, (bmod, blean)) =
+        run_transition(&args.so, ctx, analysis, desc, idl_value)?;
+    println!("=== qedlift (transition) ===");
+    println!("  input  : {}", args.so.display());
+    for (m, lean) in &paths {
+        let p = out_dir.join(format!("{}Lifted.lean", m));
+        std::fs::write(&p, lean)?;
+        println!("  ✔ path   {:<26} → {}", m, p.display());
+    }
+    let bp = out_dir.join(format!("{}.lean", bmod));
+    std::fs::write(&bp, &blean)?;
+    println!("  ✔ bundle {:<26} → {}", bmod, bp.display());
+    Ok(())
+}
+
+/// --qedmeta mode: targeting from qedrecover sidecar (disc + name), CU
+/// cross-check, optional --target-name filter.
+pub(super) fn run_qedmeta_mode(
+    args: &Args,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    meta_path: &Path,
+    trace: Option<&[usize]>,
+    idl_value: Option<&serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let meta = load_qedmeta(meta_path)?;
+    // #41 loop closure: consume qedrecover's emitted + validated account layouts as the
+    // refinement-codegen layout source (falls back to `--idl` per-name when a layout is absent).
+    let sidecar_layouts = sidecar_account_layouts(&meta);
+    let so_stem = args.so.file_stem()
+        .map(|s| pascal_case(&s.to_string_lossy()))
+        .unwrap_or_else(|| "Lifted".to_string());
+
+    let selected: Vec<_> = match args.target_name.as_ref() {
+        Some(want) => meta.instructions.iter().filter(|i| &i.name == want).collect(),
+        None       => meta.instructions.iter().collect(),
+    };
+    if selected.is_empty() {
+        return Err(format!("--qedmeta {}: no in-scope instruction{}",
+            meta_path.display(),
+            args.target_name.as_ref()
+                .map(|n| format!(" named {:?}", n)).unwrap_or_default()).into());
+    }
+
+    println!("=== qedlift (qedmeta) ===");
+    println!("  input  : {}", args.so.display());
+    println!("  sidecar: {}", meta_path.display());
+    println!("  arms   : {}", selected.len());
+
+    let mut budget_fail = false;
+    for ix in selected {
+        let arm = pascal_case(&ix.name);
+        let module_name = format!("{}{}", so_stem, arm);
+        // #41 Phase 4: recovered arm_entry seeds no-trace walk / cross-checks trace.
+        let arm_entry = ix.recovered.as_ref().map(|r| r.arm_entry_pc);
+        let result = lift_one_with_layouts(&args.so, ctx, analysis,
+            Some(ix.discriminator.value), Some(module_name.clone()),
+            trace, Some(&arm), idl_value, arm_entry,
+            Some(&sidecar_layouts), None)?;
+
+        // Cross-check: cu_budget is upper bound; result.cu is the exact discharged CU.
+        let budget_note = match ix.cu_budget {
+            Some(b) if result.cu as u64 > b => {
+                budget_fail = true;
+                format!(" ✘ CU {} EXCEEDS budget {}", result.cu, b)
+            }
+            Some(b) => format!(" ✔ CU {} ≤ budget {}", result.cu, b),
+            None    => format!(" CU {} (no budget claimed)", result.cu),
+        };
+
+        let out_path = if let Some(o) = args.output.as_ref() {
+            o.clone()
+        } else if let Some(d) = args.output_dir.as_ref() {
+            std::fs::create_dir_all(d)?;
+            d.join(format!("{}Lifted.lean", module_name))
+        } else {
+            return Err("--qedmeta needs --output (single arm) or --output-dir".into());
+        };
+        let refined = if write_lift_result(&result, &out_path)?.is_some() {
+            " (+refinement)"
+        } else { "" };
+        println!("  ✔ {:<20} disc={:<4}{} → {}{}",
+            ix.name, ix.discriminator.value, budget_note, out_path.display(), refined);
+    }
+    if budget_fail {
+        return Err("one or more lifted triples exceeded the claimed cu_budget".into());
+    }
+    Ok(())
+}
+
+/// Batch mode: --idl + --output-dir, one lift per IDL instruction
+/// (per-arm tolerance: unmodelled opcodes are reported+skipped — batch is a
+/// coverage probe).
+pub(super) fn run_batch_mode(
+    args: &Args,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    idl_path: &Path,
+    output_dir: &Path,
+    idl_value: Option<&serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let idl = load_idl(idl_path)?;
+    std::fs::create_dir_all(output_dir)?;
+
+    let so_stem = args.so.file_stem()
+        .map(|s| pascal_case(&s.to_string_lossy()))
+        .unwrap_or_else(|| "Lifted".to_string());
+
+    println!("=== qedlift (batch) ===");
+    println!("  input  : {}", args.so.display());
+    println!("  idl    : {}", idl_path.display());
+    println!("  outdir : {}", output_dir.display());
+    println!("  arms   : {}", idl.len());
+
+    let mut lifted = 0usize;
+    let mut skipped: Vec<(String, String)> = Vec::new();
+    for ix in &idl {
+        // Namespace Examples.Lifted.<SoStem><Name>; file <SoStem><Name>Lifted.lean.
+        let module_name = format!("{}{}", so_stem, pascal_case(&ix.name));
+        match lift_one(&args.so, ctx, analysis, Some(ix.discriminator), Some(module_name.clone()), None, Some(&ix.name), idl_value, None) {
+            Ok(result) => {
+                let out_path = output_dir.join(format!("{}Lifted.lean", module_name));
+                let refined = if write_lift_result(&result, &out_path)?.is_some() {
+                    " (+refinement)"
+                } else { "" };
+                println!("  ✔ {:<24} disc={:<4} {} insns → {}{}",
+                    ix.name, ix.discriminator, result.insn_count, out_path.display(), refined);
+                lifted += 1;
+            }
+            Err(e) => {
+                println!("  ✘ {:<24} disc={:<4} {}", ix.name, ix.discriminator, e);
+                skipped.push((ix.name.clone(), e.to_string()));
+            }
+        }
+    }
+    println!("=== batch summary ===");
+    println!("  lifted  : {}", lifted);
+    println!("  skipped : {}", skipped.len());
+    Ok(())
+}
+
+/// Single-arm mode: one lift (optionally trace-guided / descriptor-driven),
+/// written to --output or streamed to stdout.
+pub(super) fn run_single_mode(
+    args: &Args,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    trace: Option<&[usize]>,
+    descriptor: Option<&RefinementDescriptor>,
+    idl_value: Option<&serde_json::Value>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let result = lift_one_with_layouts(&args.so, ctx, analysis, args.target_disc,
+                          args.module.clone(), trace, args.arm_name.as_deref(),
+                          idl_value, None, None, descriptor)?;
+    match args.output.as_ref() {
+        Some(path) => {
+            let rpath = write_lift_result(&result, path)?;
+            println!("=== qedlift ===");
+            println!("  input  : {}", args.so.display());
+            println!("  output : {}", path.display());
+            println!("  .text  : {} bytes ({} insns)", result.text_bytes, result.insn_count);
+            println!("  module : Examples.Lifted.{}", result.module_name);
+            if let Some(rpath) = rpath {
+                println!("  refine : {}", rpath.display());
+            }
+        }
+        None => {
+            print!("{}", result.lean);
+            if let Some((_, rlean)) = &result.refinement {
+                println!("\n-- ╌╌ refinement ╌╌");
+                print!("{}", rlean);
+            }
+        }
+    }
+    Ok(())
+}
