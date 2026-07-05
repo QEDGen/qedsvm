@@ -454,34 +454,37 @@ fn assert_vm_faults_on_both(seed: u64, so: &[u8], label: &str) {
     assert_outcome_matches(&fs_r.program_result, &m_r.program_result, label);
 }
 
-/// Both engines produce identical output for a trivial noop.
-#[test]
-fn noop_program_matches_mollusk() {
-    let program_id = pid(1);
+/// Shared driver for the zero-account happy-path fixtures: empty instruction,
+/// both engines Success, return_data / resulting-accounts / CU byte-identical.
+fn assert_no_account_success(seed: u64, so: &[u8], label: &str) {
+    let program_id = pid(seed);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
     let mut fs = Svm::default();
-    fs.add_program(&program_id, NOOP_SO);
-    let fs_r = fs.process_instruction(&ix, &[]).expect("qedsvm runs noop");
+    fs.add_program(&program_id, so);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .unwrap_or_else(|e| panic!("qedsvm runs {label}: {e:?}"));
 
     let mut m = Mollusk::default();
     m.add_program_with_loader_and_elf(
         &program_id,
         &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        NOOP_SO,
+        so,
     );
     let m_r = m.process_instruction(&ix, &[]);
 
     assert!(
         matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result,
+        "qedsvm: expected Success on {label}, got {:?}", fs_r.program_result,
     );
     assert!(
         matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result,
+        "mollusk: expected Success on {label}, got {:?}", m_r.program_result,
     );
     assert_eq!(fs_r.return_data, m_r.return_data,
-        "return_data diverged: ours={:?} mollusk={:?}", fs_r.return_data, m_r.return_data);
+        "return_data diverged for {label}: ours={:?} mollusk={:?}",
+        fs_r.return_data, m_r.return_data);
     assert_eq!(
         fs_r.resulting_accounts.len(),
         m_r.resulting_accounts.len(),
@@ -498,74 +501,105 @@ fn noop_program_matches_mollusk() {
     // Strict CU equality — catches any drift in per-instruction CU accounting.
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "compute_units_consumed diverged: ours={} mollusk={}",
+        "CU diverged for {label}: ours={} mollusk={}",
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
     );
+}
+
+/// Shared driver for the single-account happy-path fixtures: one writable
+/// program-owned account (1M lamports, `pre_data`), empty instruction data,
+/// both engines Success, return_data + CU byte-identical. When
+/// `expected_data` is given (incrementer / halfword_store), the post-state
+/// account must equal it on BOTH engines plus full cross-engine
+/// lamports/data/owner equality.
+fn assert_single_account_success(
+    program_seed: u64,
+    acct_seed: u64,
+    so: &[u8],
+    label: &str,
+    pre_data: Vec<u8>,
+    expected_data: Option<Vec<u8>>,
+) {
+    let program_id = pid(program_seed);
+    let acct_key = pid(acct_seed);
+    let (pre_shared, pre_mollusk) = dual_account(
+        1_000_000, pre_data, program_id, false);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![AccountMeta::new(acct_key, false)],
+        data: vec![],
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, so);
+    let fs_r = fs
+        .process_instruction(&ix, &[(acct_key, pre_shared)])
+        .unwrap_or_else(|e| panic!("qedsvm runs {label}: {e:?}"));
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        so,
+    );
+    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+
+    assert!(
+        matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected Success on {label}, got {:?}", fs_r.program_result,
+    );
+    assert!(
+        matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected Success on {label}, got {:?}", m_r.program_result,
+    );
+    assert_eq!(fs_r.return_data, m_r.return_data,
+        "return_data diverged for {label}");
+
+    if let Some(want) = expected_data {
+        assert_eq!(fs_r.resulting_accounts.len(), 1,
+            "{label}: qedsvm expected 1 account back");
+        assert_eq!(m_r.resulting_accounts.len(), 1,
+            "{label}: mollusk expected 1 account back");
+        let (fs_key, fs_acct) = &fs_r.resulting_accounts[0];
+        let (m_key, m_acct) = &m_r.resulting_accounts[0];
+        assert_eq!(fs_key, &acct_key);
+        assert_eq!(m_key, &acct_key);
+
+        assert_eq!(fs_acct.data(), want.as_slice(),
+            "qedsvm post-state data wrong for {label}: got {:?}", fs_acct.data());
+        assert_eq!(m_acct.data.as_slice(), want.as_slice(),
+            "mollusk post-state data wrong for {label}: got {:?}", m_acct.data);
+
+        assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
+        assert_eq!(fs_acct.data(), m_acct.data.as_slice(), "data diverged");
+        assert_eq!(fs_acct.owner(), &m_acct.owner, "owner diverged");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for {label}: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// Both engines produce identical output for a trivial noop.
+#[test]
+fn noop_program_matches_mollusk() {
+    assert_no_account_success(1, NOOP_SO, "noop");
 }
 
 /// Cross-engine equality on the real `entrypoint!` noop shape (~1923 sBPF instructions) — the actual "we conform to agave" claim.
 #[test]
 fn real_solana_program_entrypoint_noop_matches_mollusk() {
-    let program_id = pid(3);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, SOLANA_NOOP_SO);
-    let fs_r = fs.process_instruction(&ix, &[]).expect("qedsvm runs");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SOLANA_NOOP_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-    match (&fs_r.program_result, &m_r.program_result) {
-        (FsProgramResult::Success, MlProgramResult::Success) => {}
-        (a, b) => panic!(
-            "program_result diverged on real solana_program noop:\n  qedsvm: {a:?}\n  mollusk:    {b:?}",
-        ),
-    }
-    assert_eq!(fs_r.return_data, m_r.return_data,
-        "return_data diverged");
-
     // Exact CU equality catches call-frame off-by-ones.
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "compute_units_consumed diverged on real solana_program noop: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_no_account_success(3, SOLANA_NOOP_SO, "real solana_program noop");
 }
 
 /// Validates per-syscall CU table: both engines must report identical CU for `sol_log_`.
 #[test]
 fn logger_program_matches_mollusk() {
-    let program_id = pid(4);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, LOGGER_SO);
-    let fs_r = fs.process_instruction(&ix, &[]).expect("qedsvm runs logger");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        LOGGER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for msg!(\"hi\"): ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_no_account_success(4, LOGGER_SO, "msg!(\"hi\") logger");
 }
 
 /// H5: budget too small for `sol_log_`'s surcharge. Both engines must (a) not succeed
@@ -606,64 +640,10 @@ fn logger_surcharge_overrun_matches_mollusk() {
 /// First fixture that mutates account data (u64+1). Validates `deserialize_account_writes` and full field equality.
 #[test]
 fn incrementer_program_matches_mollusk() {
-    let program_id = pid(5);
-    let acct_key = pid(6);
-    // Account owned by the program (required for write permission). Two `solana-account` majors (4.x/3.x) — built twice.
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000); // keep budgets identical across engines
-    fs.add_program(&program_id, INCREMENTER_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs incrementer");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        INCREMENTER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-
-    assert_eq!(fs_r.resulting_accounts.len(), 1, "qedsvm: expected 1 account back");
-    assert_eq!(m_r.resulting_accounts.len(), 1, "mollusk: expected 1 account back");
-    let (fs_key, fs_acct) = &fs_r.resulting_accounts[0];
-    let (m_key, m_acct) = &m_r.resulting_accounts[0];
-    assert_eq!(fs_key, &acct_key);
-    assert_eq!(m_key, &acct_key);
-
     let mut want = vec![0u8; 16]; // expected post-state: data[0..8] = 1u64
     want[..8].copy_from_slice(&1u64.to_le_bytes());
-    assert_eq!(fs_acct.data(), want.as_slice(),
-        "qedsvm did not record the increment: got {:?}", fs_acct.data());
-    assert_eq!(m_acct.data.as_slice(), want.as_slice(),
-        "mollusk did not record the increment: got {:?}", m_acct.data);
-
-    assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
-    assert_eq!(fs_acct.data(), m_acct.data.as_slice(), "data diverged");
-    assert_eq!(fs_acct.owner(), &m_acct.owner, "owner diverged");
-
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for incrementer: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        5, 6, INCREMENTER_SO, "incrementer", vec![0u8; 16], Some(want));
 }
 
 /// Guarded-counter SUCCESS path (#40): one account → serialized count u64 = 1
@@ -912,105 +892,20 @@ fn cpi_envelope_caller_matches_mollusk() {
 /// 16-bit store coverage: ldxh/stxh increment (0x00ff→0x0100) + sth constant (0x1234). Only fixture exercising 16-bit stores.
 #[test]
 fn halfword_store_program_matches_mollusk() {
-    let program_id = pid(70);
-    let acct_key = pid(71);
-    let lamports = 1_000_000u64;
-    let mut data: Vec<u8> = vec![0u8; 16];
-    data[..2].copy_from_slice(&0x00ffu16.to_le_bytes());
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, HALFWORD_STORE_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs halfword_store");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        HALFWORD_STORE_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-
-    let (fs_key, fs_acct) = &fs_r.resulting_accounts[0];
-    let (m_key, m_acct) = &m_r.resulting_accounts[0];
-    assert_eq!(fs_key, &acct_key);
-    assert_eq!(m_key, &acct_key);
-
+    let mut pre = vec![0u8; 16];
+    pre[..2].copy_from_slice(&0x00ffu16.to_le_bytes());
     let mut want = vec![0u8; 16]; // data[0..2]=0x0100 (carried increment), data[2..4]=0x1234 (ST_H_IMM)
     want[..2].copy_from_slice(&0x0100u16.to_le_bytes());
     want[2..4].copy_from_slice(&0x1234u16.to_le_bytes());
-    assert_eq!(fs_acct.data(), want.as_slice(),
-        "qedsvm halfword writes wrong: got {:?}", fs_acct.data());
-    assert_eq!(m_acct.data.as_slice(), want.as_slice(),
-        "mollusk halfword writes wrong: got {:?}", m_acct.data);
-
-    assert_eq!(fs_acct.lamports(), m_acct.lamports, "lamports diverged");
-    assert_eq!(fs_acct.owner(), &m_acct.owner, "owner diverged");
-
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for halfword_store: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        70, 71, HALFWORD_STORE_SO, "halfword_store", pre, Some(want));
 }
 
 /// Heap bump-allocator: reads/commits 0x300000000, writes+reads a block. Pure byte-level conformance on the heap region.
 #[test]
 fn heap_alloc_program_matches_mollusk() {
-    let program_id = pid(7);
-    let acct_key = pid(8);
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, HEAP_ALLOC_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs heap_alloc");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        HEAP_ALLOC_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for heap_alloc: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        7, 8, HEAP_ALLOC_SO, "heap_alloc", vec![0u8; 16], None);
 }
 
 /// H6 happy path: `sol_memcpy_` over two disjoint, in-bounds heap slices
@@ -1018,44 +913,8 @@ fn heap_alloc_program_matches_mollusk() {
 /// to `oob_memset_fails_on_both`, and the trace source for `MemcpyLifted`.
 #[test]
 fn memcpy_caller_program_matches_mollusk() {
-    let program_id = pid(9);
-    let acct_key = pid(10);
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, MEMCPY_CALLER_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs memcpy_caller");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        MEMCPY_CALLER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for memcpy_caller: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        9, 10, MEMCPY_CALLER_SO, "memcpy_caller", vec![0u8; 16], None);
 }
 
 /// H6 happy path: single-slice `sol_sha256` over disjoint, in-bounds heap
@@ -1064,44 +923,8 @@ fn memcpy_caller_program_matches_mollusk() {
 /// `oob_sha256_*_fails_on_both`, and the trace source for `Sha256CallerLifted`.
 #[test]
 fn sha256_caller_program_matches_mollusk() {
-    let program_id = pid(57);
-    let acct_key = pid(58);
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, SHA256_CALLER_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs sha256_caller");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SHA256_CALLER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for sha256_caller: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        57, 58, SHA256_CALLER_SO, "sha256_caller", vec![0u8; 16], None);
 }
 
 /// H6 happy path: single-seed `sol_create_program_address` over disjoint,
@@ -1111,44 +934,8 @@ fn sha256_caller_program_matches_mollusk() {
 /// `PdaCreateLifted`.
 #[test]
 fn pda_create_program_matches_mollusk() {
-    let program_id = pid(61);
-    let acct_key = pid(62);
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, PDA_CREATE_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs pda_create");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        PDA_CREATE_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for pda_create: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        61, 62, PDA_CREATE_SO, "pda_create", vec![0u8; 16], None);
 }
 
 /// H6 happy path: `sol_set_return_data` over an in-bounds 16-byte heap slice
@@ -1157,132 +944,24 @@ fn pda_create_program_matches_mollusk() {
 /// `SetReturnDataLifted`.
 #[test]
 fn set_return_data_caller_program_matches_mollusk() {
-    let program_id = pid(41);
-    let acct_key = pid(42);
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, SET_RETURN_DATA_CALLER_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs set_return_data_caller");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SET_RETURN_DATA_CALLER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for set_return_data_caller: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        41, 42, SET_RETURN_DATA_CALLER_SO, "set_return_data_caller", vec![0u8; 16], None);
 }
 
 /// H6 happy path: `sol_memmove_` over two disjoint, in-bounds heap slices.
 /// Same shape as `memcpy_caller`; the trace source for `MemmoveLifted`.
 #[test]
 fn memmove_caller_program_matches_mollusk() {
-    let program_id = pid(11);
-    let acct_key = pid(12);
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, MEMMOVE_CALLER_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs memmove_caller");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        MEMMOVE_CALLER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for memmove_caller: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        11, 12, MEMMOVE_CALLER_SO, "memmove_caller", vec![0u8; 16], None);
 }
 
 /// H6 happy path: `sol_memcmp_` over two disjoint 16-byte heap slices +
 /// a disjoint 4-byte output. The trace source for `MemcmpLifted`.
 #[test]
 fn memcmp_caller_program_matches_mollusk() {
-    let program_id = pid(13);
-    let acct_key = pid(14);
-    let lamports = 1_000_000u64;
-    let data: Vec<u8> = vec![0u8; 16];
-
-    let (pre_shared, pre_mollusk) = dual_account(
-        lamports, data.clone(), program_id, false);
-
-    let ix = Instruction {
-        program_id,
-        accounts: vec![AccountMeta::new(acct_key, false)],
-        data: vec![],
-    };
-
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, MEMCMP_CALLER_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[(acct_key, pre_shared)])
-        .expect("qedsvm runs memcmp_caller");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        MEMCMP_CALLER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
-        "qedsvm: expected Success, got {:?}", fs_r.program_result);
-    assert!(matches!(m_r.program_result, MlProgramResult::Success),
-        "mollusk: expected Success, got {:?}", m_r.program_result);
-    assert_eq!(fs_r.return_data, m_r.return_data, "return_data diverged");
-    assert_eq!(
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-        "CU diverged for memcmp_caller: ours={} mollusk={}",
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
+    assert_single_account_success(
+        13, 14, MEMCMP_CALLER_SO, "memcmp_caller", vec![0u8; 16], None);
 }
 
 /// H7 anchor: pins `sol_remaining_compute_units` formula (`cuBudget − (cuConsumed + 1 + 100)`) against rbpf's meter.
