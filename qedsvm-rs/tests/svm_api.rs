@@ -4,27 +4,14 @@ use qedsvm::{
     deserialize_account_writes, serialize_parameters,
     ProgramResult, SerializeError, Svm, SvmError,
 };
-use solana_account::{Account, AccountSharedData};
+use solana_account::AccountSharedData;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
 const HELLO_ELF: &[u8] = include_bytes!("fixtures/hello.elf"); // 289B: `mov64 r0, 42; exit` = RunnerDemo.helloElf
 
-fn pid(seed: u64) -> Pubkey {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&seed.to_le_bytes());
-    Pubkey::from(b)
-}
-
-fn shared(lamports: u64, data: Vec<u8>, owner: Pubkey) -> AccountSharedData {
-    AccountSharedData::from(Account {
-        lamports,
-        data,
-        owner,
-        executable: false,
-        rent_epoch: 0,
-    })
-}
+mod common;
+use common::{pid, shared};
 
 #[test]
 fn process_instruction_with_no_accounts_returns_helloelfs_exit_code() {

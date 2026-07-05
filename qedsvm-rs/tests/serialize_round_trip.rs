@@ -2,7 +2,6 @@
 //! Any width/padding/alignment deviation either crashes the deserializer or produces wrong values.
 
 use qedsvm::serialize_parameters;
-use solana_account::{Account, AccountSharedData};
 use solana_account_info::AccountInfo;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
@@ -25,25 +24,9 @@ fn make_ix(metas: Vec<AccountMeta>, data: Vec<u8>, program_id: Pubkey) -> Instru
     Instruction { program_id, accounts: metas, data }
 }
 
-/// Counter-derived unique pubkey (avoids the `rand`-gated `new_unique` feature).
-fn unique_pubkey() -> Pubkey {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(1);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    let mut bytes = [0u8; 32];
-    bytes[..8].copy_from_slice(&n.to_le_bytes());
-    Pubkey::from(bytes)
-}
+mod common;
+use common::{shared_executable, unique_pubkey};
 
-fn shared(lamports: u64, data: Vec<u8>, owner: Pubkey, executable: bool) -> AccountSharedData {
-    AccountSharedData::from(Account {
-        lamports,
-        data,
-        owner,
-        executable,
-        rent_epoch: 0,
-    })
-}
 
 #[test]
 fn single_account_round_trips() {
@@ -55,7 +38,7 @@ fn single_account_round_trips() {
         vec![0xAA, 0xBB, 0xCC],
         program_id,
     );
-    let accounts = vec![(key, shared(1_000_000, vec![1, 2, 3, 4, 5], owner, false))];
+    let accounts = vec![(key, shared_executable(1_000_000, vec![1, 2, 3, 4, 5], owner, false))];
 
     let mut buf = AlignedBuf {
         bytes: serialize_parameters(&ix, &accounts, &program_id).expect("valid inputs"),
@@ -91,9 +74,9 @@ fn multiple_distinct_accounts_round_trip() {
         program_id,
     );
     let accounts = vec![
-        (k1, shared(100, vec![], owner, false)),
-        (k2, shared(200, vec![0xDE, 0xAD], owner, true)),
-        (k3, shared(300, (0..50).collect(), owner, false)),
+        (k1, shared_executable(100, vec![], owner, false)),
+        (k2, shared_executable(200, vec![0xDE, 0xAD], owner, true)),
+        (k3, shared_executable(300, (0..50).collect(), owner, false)),
     ];
 
     let mut buf = AlignedBuf {
@@ -128,7 +111,7 @@ fn duplicate_account_meta_compresses() {
         vec![],
         program_id,
     );
-    let accounts = vec![(k1, shared(42, vec![9, 9, 9], owner, false))];
+    let accounts = vec![(k1, shared_executable(42, vec![9, 9, 9], owner, false))];
 
     let bytes = serialize_parameters(&ix, &accounts, &program_id).expect("valid inputs");
     assert_eq!(bytes[0..8], 2u64.to_le_bytes());  // num_accounts = 2
@@ -156,7 +139,7 @@ fn known_offsets_match_spec() {
         vec![0x10],
         program_id,
     );
-    let accounts = vec![(key, shared(0xDEADBEEF, vec![0xAB], owner, true))];
+    let accounts = vec![(key, shared_executable(0xDEADBEEF, vec![0xAB], owner, true))];
     let bytes = serialize_parameters(&ix, &accounts, &program_id).expect("valid inputs");
 
     // num_accounts = 1

@@ -3,16 +3,12 @@
 
 use qedsvm::Svm;
 use solana_instruction::Instruction;
-use solana_pubkey::Pubkey;
 
 const CURVE_VALIDATE_PROBE_SO: &[u8] =
     include_bytes!("fixtures/curve_validate_probe.so");
 
-fn pid(seed: u64) -> Pubkey {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&seed.to_le_bytes());
-    Pubkey::from(b)
-}
+mod common;
+use common::pid;
 
 #[test]
 fn curve_validate_via_runtime() {
