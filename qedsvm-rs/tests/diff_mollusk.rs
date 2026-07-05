@@ -2452,6 +2452,227 @@ fn p_token_transfer_frozen_matches_mollusk() {
     );
 }
 
+/// p-token Transfer into a FROZEN destination account (state byte = 2): the
+/// sibling of the frozen-source guard, one `jeq` later (`jeq r5, 2` at pc 4012
+/// vs the source's pc 4011), same error handler, TokenError::AccountFrozen.
+/// Trace source for `PTokenTransferDestFrozenLifted` (pattern library Layer-3
+/// dest-frozen guard, ENFORCES direction).
+#[test]
+fn p_token_transfer_dest_frozen_matches_mollusk() {
+    let program_id = pid(45);
+    let mint = pid(46);
+    let authority = pid(47);
+    let source_key = pid(48);
+    let dest_key = pid(49);
+
+    const TRANSFER_AMOUNT: u64 = 250;
+    const SOURCE_INITIAL: u64 = 1_000;
+    const DEST_INITIAL: u64 = 0;
+    const LAMPORTS: u64 = 2_039_280;
+
+    let source_data = build_token_account(&mint, &authority, SOURCE_INITIAL);
+    let mut dest_data = build_token_account(&mint, &authority, DEST_INITIAL);
+    dest_data[108] = 2; // AccountState::Frozen
+
+    let pre_src_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_dst_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+
+    let pre_src_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_dst_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
+    ix_data.push(3);
+    ix_data.extend_from_slice(&TRANSFER_AMOUNT.to_le_bytes());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, pre_src_shared),
+            (dest_key, pre_dst_shared),
+            (authority, pre_auth_shared),
+        ])
+        .expect("qedsvm runs p-token Transfer (dest frozen)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, pre_src_mollusk),
+        (dest_key, pre_dst_mollusk),
+        (authority, pre_auth_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: the frozen guard must fail a Transfer into a frozen dest, got Success");
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: the frozen guard must fail a Transfer into a frozen dest, got Success");
+
+    for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
+        let fa = fs_acct_by_key(&fs_r, &key);
+        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
+            .map(|(_, a)| a).expect("mollusk account");
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "{name} data must be untouched by a frozen-dest Transfer");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "{name} lamports must be untouched by a frozen-dest Transfer");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for frozen-dest p-token Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+/// p-token Transfer between accounts of DIFFERENT mints: the mint-equality
+/// compare (four unrolled dword compares of source mint vs dest mint at
+/// pc 4017-4028) diverts to the error handler, TokenError::MintMismatch (3).
+/// Passes the state and balance checks first (both accounts initialized,
+/// unfrozen, sufficient balance), so the mint compare is the violated check.
+/// Trace source for `PTokenTransferMintMismatchLifted` (pattern library
+/// Layer-3 mint guard, ENFORCES direction — the first pubkey-inequality
+/// guard).
+#[test]
+fn p_token_transfer_mint_mismatch_matches_mollusk() {
+    let program_id = pid(50);
+    let mint_a = pid(51);
+    let mint_b = pid(52);
+    let authority = pid(53);
+    let source_key = pid(54);
+    let dest_key = pid(55);
+
+    const TRANSFER_AMOUNT: u64 = 250;
+    const SOURCE_INITIAL: u64 = 1_000;
+    const DEST_INITIAL: u64 = 0;
+    const LAMPORTS: u64 = 2_039_280;
+
+    let source_data = build_token_account(&mint_a, &authority, SOURCE_INITIAL);
+    let dest_data = build_token_account(&mint_b, &authority, DEST_INITIAL);
+
+    let pre_src_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_dst_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+
+    let pre_src_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_dst_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    let mut ix_data = Vec::with_capacity(9); // [3, amount_le_u64]
+    ix_data.push(3);
+    ix_data.extend_from_slice(&TRANSFER_AMOUNT.to_le_bytes());
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, pre_src_shared),
+            (dest_key, pre_dst_shared),
+            (authority, pre_auth_shared),
+        ])
+        .expect("qedsvm runs p-token Transfer (mint mismatch)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, pre_src_mollusk),
+        (dest_key, pre_dst_mollusk),
+        (authority, pre_auth_mollusk),
+    ]);
+
+    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: the mint guard must fail a cross-mint Transfer, got Success");
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: the mint guard must fail a cross-mint Transfer, got Success");
+
+    for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
+        let fa = fs_acct_by_key(&fs_r, &key);
+        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
+            .map(|(_, a)| a).expect("mollusk account");
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "{name} data must be untouched by a cross-mint Transfer");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "{name} lamports must be untouched by a cross-mint Transfer");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for mint-mismatch p-token Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
 /// ELF-load probe for ATA binary: both engines fail before CPI. Validates loading + entry dispatch without CPI dependency.
 #[test]
 fn associated_token_empty_data_fails_on_both() {

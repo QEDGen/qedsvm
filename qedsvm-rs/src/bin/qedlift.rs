@@ -577,6 +577,55 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// Pins the p-token Transfer FROZEN-DEST error-path lift: the sibling of
+    /// the frozen-source lift, one `jeq` later (pc 4012, `jeq r5, 2`), same
+    /// error handler, TokenError::AccountFrozen (17) at the shared exit.
+    #[test]
+    fn p_token_transfer_dest_frozen_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_dest_frozen.pcs"))
+            .expect("load dest-frozen-transfer trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferDestFrozen".to_string()),
+            Some(&trace), None, None, None).expect("lift p_token.so dest-frozen path");
+
+        let path = "../examples/lean/Generated/PTokenTransferDestFrozenLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write PTokenTransferDestFrozenLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferDestFrozenLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "PTokenTransferDestFrozenLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
+    /// Pins the p-token Transfer MINT-MISMATCH error-path lift: the mint
+    /// compare's first dword limb (`jne` at pc 4019, src mint limb0 vs dest
+    /// mint limb0) diverts through pc 4724 to the error handler,
+    /// TokenError::MintMismatch (3) at the shared exit. The first
+    /// pubkey-INEQUALITY lift; the trace exercises limb 0 (the fixture mints
+    /// differ in their first 8 bytes).
+    #[test]
+    fn p_token_transfer_mint_mismatch_lift_is_mechanically_emitted() {
+        let so = std::path::Path::new("tests/fixtures/p_token.so");
+        let ctx = load_binary(so).expect("load p_token.so");
+        let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
+        let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer_mint_mismatch.pcs"))
+            .expect("load mint-mismatch-transfer trace");
+        let result = lift_one(so, &ctx, &analysis, None, Some("PTokenTransferMintMismatch".to_string()),
+            Some(&trace), None, None, None).expect("lift p_token.so mint-mismatch path");
+
+        let path = "../examples/lean/Generated/PTokenTransferMintMismatchLifted.lean";
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(path, &result.lean).expect("write PTokenTransferMintMismatchLifted.lean");
+        }
+        let on_disk = std::fs::read_to_string(path).expect("read PTokenTransferMintMismatchLifted.lean");
+        assert_eq!(result.lean, on_disk,
+            "PTokenTransferMintMismatchLifted.lean is out of sync with the qedlift emitter \
+             (mechanically emitted, do not hand-edit)");
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).

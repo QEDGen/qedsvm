@@ -113,7 +113,7 @@ elab "#assert_std_axioms " id:ident : command => do
 
 -- Pattern library Layer 3 (ENFORCES direction): the p-token error-path lifts
 -- and their EnforcedError compositions carry their own IN-MODULE assertions
--- (`#assert_std_axioms_local` in PToken/TransferArm/{Balance,Frozen}GuardEnforced.lean)
+-- (`#assert_std_axioms_local` in PToken/TransferArm/{Balance,Frozen,DestFrozen,MintMismatch}GuardEnforced.lean)
 -- — importing that dylib mix here re-triggers the poisoned-dylib segfault
 -- (see the ExamplesCpi lakefile note).
 
