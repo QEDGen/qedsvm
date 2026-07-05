@@ -193,24 +193,47 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
   `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
   `AsmRefinesTokenTransfer` carries entails the same account with its `amount`
   conjunct weakened to `balanceAtLeast`). Depend on **no axioms**.
-- **L3 Guards**: started. Notion `EnforcedFault` + composition
-  `enforcedFault_of_routes_then_handler` (`Patterns/Guards.lean`, SVM lib). First
-  concrete guard, harvested from the proven p_token balance check
-  (`examples/lean/PToken/TransferArm/H3dBalanceGuard.lean`):
-  `p_token_balance_insufficient_routes_to_error` proves that on real bytecode,
-  insufficient balance ROUTES to the error handler PC instead of the effect (the
-  substantive enforcement half). Standard-axiom clean. Full `EnforcedFault` =
-  compose the handler fault spec at the error PC (next).
+- **L3 Guards**: FOUR full `EnforcedError` guards on the real p-token Transfer
+  arm, all standard-axiom clean, all built the same way (violating fixture →
+  diff_mollusk test → captured failing trace → qedlift error-path lift →
+  `cuTripleWithinMem_seq_exit` composition):
+  1. **Balance** (`BalanceGuardEnforced.lean`): insufficient balance HALTS with
+     exit 1 (InsufficientFunds), token cells untouched.
+  2. **Frozen source** (`FrozenGuardEnforced.lean`): exit 17 (AccountFrozen).
+  3. **Frozen destination** (`DestFrozenGuardEnforced.lean`): the sibling one
+     `jeq` later (pc 4012 vs 4011), exit 17.
+  4. **Mint mismatch** (`MintMismatchGuardEnforced.lean`): the first
+     pubkey-INEQUALITY guard — the unrolled 4-limb mint compare (pc 4017-4028)
+     diverts at its limb-0 `jne` (4019), exit 3 (MintMismatch). Scope: the
+     trace covers mints differing in limb 0; later-limb-only mismatches take
+     sibling `jne` paths, separate traces of the same guard (not yet lifted).
+  The routing-only half-guard (`H3dBalanceGuard.lean`,
+  `p_token_balance_insufficient_routes_to_error`) predates and is subsumed by
+  the full balance guard. `EnforcedFault` + `enforcedFault_of_routes_then_handler`
+  remain the fault-channel mode (no p-token instance; pinocchio enforces via
+  clean nonzero exits, hence `EnforcedError`).
 
 ## Catalog roadmap
 
 Driven bottom-up: prove a guard on a proven arm, let it dictate the predicate /
 recognizer shapes.
 
-1. **SPL Token (in progress).** Balance enforcement is the live thread:
-   `balanceAtLeast` (L1) → recognizer (L2) → routing guard (L3). Next: compose the
-   handler fault for full `EnforcedFault`, then the frozen-state check (`H3c`, also
-   a clean fault-dominating check).
+1. **SPL Token (in progress).** DONE on the Transfer arm: balance, frozen source,
+   frozen dest, mint mismatch (limb 0). Next candidates, all `h_branch*` flips of
+   existing traces (cheap) or new violating fixtures (medium):
+   - uninitialized src/dst (state = 0, flips h_branch8/h_branch10);
+   - invalid state byte (> 2, flips h_branch7/h_branch9);
+   - wrong data_len (≠ 165, flips h_branch1/h_branch3) — the shape/discriminator
+     guard;
+   - short instruction data (< 9, flips h_branch5);
+   - mint-mismatch limbs 1-3 (sibling traces of the limb-0 guard);
+   - the honest authority tri-case (owner ∧ ¬signer → MissingRequiredSignature;
+     delegate ∧ ¬signer → same; neither → OwnerMismatch) — un-parks the deferred
+     signer item, three violating traces;
+   - dest-balance overflow (checked_add → Overflow 14) — the unchecked-arithmetic
+     class;
+   - then the same checks on Burn / MintTo / TransferChecked / CloseAccount
+     (new entry PCs, same recipe).
 2. **Signer/owner DEFERRED, with reason.** The p_token signer check is NOT a clean
    guard: its proven non-signer branch *continues to the effect* (pinocchio's
    delegate-authority path, `H3fSignerExit`), so a naive "signer enforced" guard is

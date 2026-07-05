@@ -283,6 +283,15 @@ lean_lib Examples where
     -- same recipe, r0 = 17 (AccountFrozen) at the shared exit.
     `Generated.PTokenTransferFrozenLifted,
     `PToken.TransferArm.FrozenGuardEnforced,
+    -- PTokenTransferDestFrozen: the FROZEN-destination sibling — the
+    -- source's jeq at 4011 falls through, the dest's at 4012 takes.
+    `Generated.PTokenTransferDestFrozenLifted,
+    `PToken.TransferArm.DestFrozenGuardEnforced,
+    -- PTokenTransferMintMismatch: the first pubkey-INEQUALITY guard —
+    -- the unrolled mint compare's limb-0 jne (4019) diverts, r0 = 3
+    -- (MintMismatch) at the shared exit.
+    `Generated.PTokenTransferMintMismatchLifted,
+    `PToken.TransferArm.MintMismatchGuardEnforced,
     -- Trace-guided lifts: real p_token happy paths, balance/supply
     -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,
