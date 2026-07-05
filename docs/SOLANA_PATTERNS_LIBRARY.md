@@ -193,11 +193,12 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
   `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
   `AsmRefinesTokenTransfer` carries entails the same account with its `amount`
   conjunct weakened to `balanceAtLeast`). Depend on **no axioms**.
-- **L3 Guards**: SIXTEEN full `EnforcedError` guards on the real p-token Transfer
-  arm, all standard-axiom clean, all built the same way (violating fixture →
+- **L3 Guards**: TWENTY-SIX full `EnforcedError` guards across FIVE p-token
+  arms (Transfer 16, MintTo 5, Burn 2, TransferChecked 2, CloseAccount 1),
+  all standard-axiom clean, all built the same way (violating fixture →
   diff_mollusk test → captured failing trace → qedlift error-path lift →
   `cuTripleWithinMem_seq_exit` composition; guard files generated mechanically
-  from the lifted specs):
+  from the lifted specs). Transfer arm:
   1. **Balance** (`BalanceGuardEnforced.lean`): insufficient balance HALTS with
      exit 1 (InsufficientFunds), token cells untouched.
   2. **Frozen source** (`FrozenGuardEnforced.lean`): exit 17 (AccountFrozen).
@@ -233,6 +234,20 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
      a signing delegate with allowance < amount halts with exit 1
      (InsufficientFunds) via the delegated_amount@121 cell — a distinct check
      and distinct cell from the source-balance guard.
+  Fan-out arms (`PToken/{MintToArm,BurnArm,TransferCheckedArm,CloseAccountArm}/`):
+  10. **MintTo supply overflow** (`MintToArm/SupplyOverflowGuardEnforced.lean`):
+      exit 14 (TokenError::Overflow). THE load-bearing check: it is the
+      invariant the absent Transfer dest-overflow check leans on, so both
+      sides of the supply invariant are now in the catalog (the absent check
+      pinned, the enforcing check proven).
+  11. **MintTo fixed-supply** (exit 5), **mint-authority mismatch** (exit 4),
+      **mint mismatch** (exit 3), **dest frozen** (exit 17).
+  12. **Burn insufficient** (exit 1 — the balance guard's twin on the arm
+      that decrements supply) and **Burn frozen** (exit 17).
+  13. **TransferChecked decimals mismatch** (exit 18 — the check the *Checked
+      family exists for) and **explicit-mint mismatch** (exit 3 — vs the
+      provided mint account, distinct from Transfer's src-vs-dest compare).
+  14. **CloseAccount nonzero balance** (exit 11, NonNativeHasBalance).
   **FINDING — the first REQUIRES-without-ENFORCES on a canonical program:**
   p-token does NOT enforce a destination-balance overflow check on Transfer.
   Where SPL Token uses `checked_add(...).ok_or(TokenError::Overflow)`, the
@@ -255,18 +270,21 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
 Driven bottom-up: prove a guard on a proven arm, let it dictate the predicate /
 recognizer shapes.
 
-1. **SPL Token (in progress).** DONE on the Transfer arm (16 guards): balance,
-   frozen src/dest, mint mismatch (all 4 limbs), uninitialized src/dest,
-   invalid state byte src/dest, short instruction data, the authority tri-case,
-   delegated-amount allowance. Plus one pinned NON-guard (dest overflow wraps —
-   see the finding above). Remaining Transfer-arm candidates:
+1. **SPL Token (in progress).** DONE: Transfer (16 guards), MintTo (5: supply
+   overflow, fixed supply, authority mismatch, mint mismatch, dest frozen),
+   Burn (2: insufficient, frozen), TransferChecked (2: decimals, explicit
+   mint), CloseAccount (1: nonzero balance). Plus one pinned NON-guard
+   (Transfer dest overflow wraps — see the finding above; its enforcing
+   counterpart, MintTo supply overflow, is proven). Remaining candidates:
    - wrong data_len (≠ 165): NOT a simple flip — the 305 `jne` targets the 312
      generic account parser (slow path), not an error route; the failure
      surfaces later. Needs its own trace study.
-   - then the same checks on Burn / MintTo / TransferChecked / CloseAccount
-     (new entry PCs, same recipe). MintTo's supply-overflow check is now
-     EXTRA interesting: it is the invariant the missing Transfer overflow
-     check leans on.
+   - deeper per-arm coverage: Burn authority tri-case + delegated-amount,
+     TransferChecked frozen/balance legs, CloseAccount authority legs, the
+     Approve/Revoke/SetAuthority/FreezeAccount/ThawAccount arms.
+   - Burn supply-underflow side: balance ≤ supply invariant means the burn
+     subtraction cannot underflow supply; worth a wrap-vs-check probe like
+     the Transfer dest add (is the mint.supply -= amount checked?).
 2. **Signer/owner DEFERRED, with reason.** The p_token signer check is NOT a clean
    guard: its proven non-signer branch *continues to the effect* (pinocchio's
    delegate-authority path, `H3fSignerExit`), so a naive "signer enforced" guard is

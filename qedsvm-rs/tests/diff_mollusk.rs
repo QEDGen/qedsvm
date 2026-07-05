@@ -3048,6 +3048,320 @@ fn p_token_transfer_dest_overflow_wraps_on_both() {
     );
 }
 
+/// Generic p-token failing-instruction driver for the fan-out arms
+/// (MintTo/Burn/TransferChecked/CloseAccount guard fixtures): runs the given
+/// instruction on both engines, asserts both FAIL, post-states byte-identical
+/// across engines, CU identical. `accounts` = (key, lamports, data, owner).
+fn assert_p_token_ix_fails(
+    label: &str,
+    program_id: Pubkey,
+    ix: Instruction,
+    accounts: Vec<(Pubkey, u64, Vec<u8>, Pubkey)>,
+) {
+    let fs_accounts: Vec<_> = accounts.iter().map(|(k, l, d, o)| {
+        (*k, AccountSharedData::from(Account {
+            lamports: *l, data: d.clone(), owner: *o,
+            executable: false, rent_epoch: 0,
+        }))
+    }).collect();
+    let m_accounts: Vec<_> = accounts.iter().map(|(k, l, d, o)| {
+        (*k, mollusk_account::Account {
+            lamports: *l, data: d.clone(), owner: *o,
+            executable: false, rent_epoch: 0,
+        })
+    }).collect();
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs.process_instruction(&ix, &fs_accounts)
+        .unwrap_or_else(|e| panic!("qedsvm runs p-token ({label}): {e:?}"));
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &m_accounts);
+
+    eprintln!("[{label}] fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("[{label}] mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: {label} must fail, got Success");
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: {label} must fail, got Success");
+
+    for (key, _, _, _) in &accounts {
+        let fa = fs_acct_by_key(&fs_r, key);
+        let ma = m_r.resulting_accounts.iter().find(|(k, _)| k == key)
+            .map(|(_, a)| a).expect("mollusk account");
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "{label}: post data diverged for {key}");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "{label}: post lamports diverged for {key}");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for {label}: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+fn mint_to_ix_data(amount: u64) -> Vec<u8> {
+    let mut d = Vec::with_capacity(9); // [7, amount_le_u64]
+    d.push(7);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+fn burn_ix_data(amount: u64) -> Vec<u8> {
+    let mut d = Vec::with_capacity(9); // [8, amount_le_u64]
+    d.push(8);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+fn transfer_checked_ix_data(amount: u64, decimals: u8) -> Vec<u8> {
+    let mut d = Vec::with_capacity(10); // [12, amount_le_u64, decimals]
+    d.push(12);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d.push(decimals);
+    d
+}
+
+const MINT_LAMPORTS: u64 = 2_000_000;
+const ACCT_LAMPORTS: u64 = 2_039_280;
+
+/// MintTo violating-fixture driver: (mint, dest, authority) 3-account shape.
+fn mint_to_fails(label: &str, seed: u64, mint_data: Vec<u8>, dest_data: Vec<u8>,
+                 amount: u64) {
+    let program_id = pid(seed);
+    let mint_key = pid(seed + 1);
+    let dest_key = pid(seed + 2);
+    let authority = pid(seed + 3);
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(mint_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: mint_to_ix_data(amount),
+    };
+    assert_p_token_ix_fails(label, program_id, ix, vec![
+        (mint_key, MINT_LAMPORTS, mint_data, program_id),
+        (dest_key, ACCT_LAMPORTS, dest_data, program_id),
+        (authority, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
+/// MintTo SUPPLY-OVERFLOW: supply + amount does not fit u64. This is the
+/// check the (absent) Transfer dest-overflow check leans on — see
+/// `p_token_transfer_dest_overflow_wraps_on_both`. If THIS also wrapped, the
+/// supply invariant would be unsound program-wide.
+#[test]
+fn p_token_mint_to_supply_overflow_matches_mollusk() {
+    let seed = 140;
+    let mint_key = pid(seed + 1);
+    let authority = pid(seed + 3);
+    let dest_owner = pid(seed + 4);
+    let mint_data = build_mint_account(&authority, u64::MAX - 100, 9);
+    let dest_data = build_token_account(&mint_key, &dest_owner, 0);
+    mint_to_fails("mint-to-supply-overflow", seed, mint_data, dest_data, 250);
+}
+
+/// MintTo into a FIXED-SUPPLY mint (mint_authority = COption::None):
+/// TokenError::FixedSupply (5).
+#[test]
+fn p_token_mint_to_fixed_supply_matches_mollusk() {
+    let seed = 144;
+    let mint_key = pid(seed + 1);
+    let authority = pid(seed + 3);
+    let dest_owner = pid(seed + 4);
+    let mut mint_data = build_mint_account(&authority, 1_000, 9);
+    mint_data[0..4].copy_from_slice(&0u32.to_le_bytes()); // COption::None
+    mint_data[4..36].fill(0);
+    let dest_data = build_token_account(&mint_key, &dest_owner, 0);
+    mint_to_fails("mint-to-fixed-supply", seed, mint_data, dest_data, 250);
+}
+
+/// MintTo signed by an authority that is NOT the mint authority:
+/// TokenError::OwnerMismatch (4) on the MINT-authority check.
+#[test]
+fn p_token_mint_to_authority_mismatch_matches_mollusk() {
+    let seed = 148;
+    let mint_key = pid(seed + 1);
+    let real_auth = pid(seed + 4); // NOT the signing authority (seed+3)
+    let dest_owner = pid(seed + 5);
+    let mint_data = build_mint_account(&real_auth, 1_000, 9);
+    let dest_data = build_token_account(&mint_key, &dest_owner, 0);
+    mint_to_fails("mint-to-authority-mismatch", seed, mint_data, dest_data, 250);
+}
+
+/// MintTo into a token account of a DIFFERENT mint:
+/// TokenError::MintMismatch (3).
+#[test]
+fn p_token_mint_to_mint_mismatch_matches_mollusk() {
+    let seed = 152;
+    let authority = pid(seed + 3);
+    let other_mint = pid(seed + 4);
+    let dest_owner = pid(seed + 5);
+    let mint_data = build_mint_account(&authority, 1_000, 9);
+    let dest_data = build_token_account(&other_mint, &dest_owner, 0);
+    mint_to_fails("mint-to-mint-mismatch", seed, mint_data, dest_data, 250);
+}
+
+/// MintTo into a FROZEN destination: TokenError::AccountFrozen (17).
+#[test]
+fn p_token_mint_to_dest_frozen_matches_mollusk() {
+    let seed = 156;
+    let mint_key = pid(seed + 1);
+    let authority = pid(seed + 3);
+    let dest_owner = pid(seed + 4);
+    let mint_data = build_mint_account(&authority, 1_000, 9);
+    let mut dest_data = build_token_account(&mint_key, &dest_owner, 0);
+    dest_data[108] = 2; // AccountState::Frozen
+    mint_to_fails("mint-to-dest-frozen", seed, mint_data, dest_data, 250);
+}
+
+/// Burn violating-fixture driver: (account, mint, owner) 3-account shape.
+fn burn_fails(label: &str, seed: u64, acct_data: Vec<u8>, mint_data: Vec<u8>,
+              amount: u64) {
+    let program_id = pid(seed);
+    let mint_key = pid(seed + 1);
+    let acct_key = pid(seed + 2);
+    let owner = pid(seed + 3);
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new(mint_key, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+        data: burn_ix_data(amount),
+    };
+    assert_p_token_ix_fails(label, program_id, ix, vec![
+        (acct_key, ACCT_LAMPORTS, acct_data, program_id),
+        (mint_key, MINT_LAMPORTS, mint_data, program_id),
+        (owner, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
+/// Burn more than the account balance: TokenError::InsufficientFunds (1) —
+/// the balance guard's twin on the Burn arm.
+#[test]
+fn p_token_burn_insufficient_matches_mollusk() {
+    let seed = 160;
+    let mint_key = pid(seed + 1);
+    let owner = pid(seed + 3);
+    let mint_auth = pid(seed + 4);
+    let acct_data = build_token_account(&mint_key, &owner, 100);
+    let mint_data = build_mint_account(&mint_auth, 1_000, 9);
+    burn_fails("burn-insufficient", seed, acct_data, mint_data, 250);
+}
+
+/// Burn from a FROZEN account: TokenError::AccountFrozen (17).
+#[test]
+fn p_token_burn_frozen_matches_mollusk() {
+    let seed = 164;
+    let mint_key = pid(seed + 1);
+    let owner = pid(seed + 3);
+    let mint_auth = pid(seed + 4);
+    let mut acct_data = build_token_account(&mint_key, &owner, 1_000);
+    acct_data[108] = 2; // AccountState::Frozen
+    let mint_data = build_mint_account(&mint_auth, 1_000, 9);
+    burn_fails("burn-frozen", seed, acct_data, mint_data, 250);
+}
+
+/// TransferChecked violating-fixture driver: (source, mint, dest, authority).
+fn transfer_checked_fails(label: &str, seed: u64, src_data: Vec<u8>,
+                          mint_data: Vec<u8>, dst_data: Vec<u8>,
+                          amount: u64, decimals: u8) {
+    let program_id = pid(seed);
+    let mint_key = pid(seed + 1);
+    let source_key = pid(seed + 2);
+    let dest_key = pid(seed + 3);
+    let authority = pid(seed + 4);
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new_readonly(mint_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: transfer_checked_ix_data(amount, decimals),
+    };
+    assert_p_token_ix_fails(label, program_id, ix, vec![
+        (source_key, ACCT_LAMPORTS, src_data, program_id),
+        (mint_key, MINT_LAMPORTS, mint_data, program_id),
+        (dest_key, ACCT_LAMPORTS, dst_data, program_id),
+        (authority, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
+/// TransferChecked with the WRONG decimals argument (6 vs the mint's 9):
+/// TokenError::MintDecimalsMismatch (18) — the check the *Checked family
+/// exists for.
+#[test]
+fn p_token_transfer_checked_decimals_mismatch_matches_mollusk() {
+    let seed = 168;
+    let mint_key = pid(seed + 1);
+    let authority = pid(seed + 4);
+    let mint_auth = pid(seed + 5);
+    let mint_data = build_mint_account(&mint_auth, 1_000, 9);
+    let src = build_token_account(&mint_key, &authority, 1_000);
+    let dst = build_token_account(&mint_key, &authority, 0);
+    transfer_checked_fails("transfer-checked-decimals", seed,
+        src, mint_data, dst, 250, 6);
+}
+
+/// TransferChecked where the accounts belong to a DIFFERENT mint than the
+/// provided mint account: TokenError::MintMismatch (3) against the
+/// EXPLICIT mint (a distinct check from the src-vs-dest compare on the
+/// unchecked Transfer).
+#[test]
+fn p_token_transfer_checked_mint_mismatch_matches_mollusk() {
+    let seed = 172;
+    let authority = pid(seed + 4);
+    let mint_auth = pid(seed + 5);
+    let other_mint = pid(seed + 6);
+    let mint_data = build_mint_account(&mint_auth, 1_000, 9);
+    let src = build_token_account(&other_mint, &authority, 1_000);
+    let dst = build_token_account(&other_mint, &authority, 0);
+    transfer_checked_fails("transfer-checked-mint-mismatch", seed,
+        src, mint_data, dst, 250, 9);
+}
+
+/// CloseAccount with a NONZERO token balance:
+/// TokenError::NonNativeHasBalance (11).
+#[test]
+fn p_token_close_account_nonzero_matches_mollusk() {
+    let seed = 176;
+    let program_id = pid(seed);
+    let mint_key = pid(seed + 1);
+    let acct_key = pid(seed + 2);
+    let dest_key = pid(seed + 3);
+    let owner = pid(seed + 4);
+    let acct_data = build_token_account(&mint_key, &owner, 250);
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+        data: vec![9],
+    };
+    assert_p_token_ix_fails("close-account-nonzero", program_id, ix, vec![
+        (acct_key, ACCT_LAMPORTS, acct_data, program_id),
+        (dest_key, 500_000, vec![], Pubkey::default()),
+        (owner, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
 /// ELF-load probe for ATA binary: both engines fail before CPI. Validates loading + entry dispatch without CPI dependency.
 #[test]
 fn associated_token_empty_data_fails_on_both() {
