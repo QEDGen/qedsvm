@@ -2,6 +2,7 @@
 //! Two entry points: [`Svm`] (Mollusk-shaped API for differential tests) and
 //! [`run_buffer`] (low-level: raw ELF + serialized input buffer).
 
+mod cursor;
 mod deserialize;
 mod ffi;
 mod serialize;
