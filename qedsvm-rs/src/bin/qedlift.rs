@@ -72,7 +72,9 @@ use driver::{run_batch_mode, run_qedmeta_mode, run_single_mode, run_transition_m
 #[cfg(test)]
 use driver::run_transition;
 use exec::{imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, WalkResult};
-use lift::{lift_one, lift_one_with_layouts, LiftOutput};
+use lift::{lift_one_with_layouts, LiftOutput};
+#[cfg(test)]
+use lift::lift_one;
 use spec_call::{spec_call_for, SpecCall};
 use qed_analysis::layout::AccountLayout;
 

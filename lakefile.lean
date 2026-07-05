@@ -268,6 +268,12 @@ lean_lib Examples where
     `Generated.CounterWithHelperLifted,
     `Generated.TwoOpIncrementLifted,
     `Generated.TwoOpDecrementLifted,
+    -- Shared p_token `.text` embedding (batch dedup): the binary's
+    -- Text/SlotMap/FnRegistry defs, emitted ONCE by qedlift
+    -- (`--shared-text PToken` / the pin tests) and imported by every
+    -- `Generated.PToken*Lifted` arm below — the ~1,600-line hex blob
+    -- elaborates once instead of per arm.
+    `Generated.PTokenText,
     -- PTokenTransferInsufficient: the ERROR PATH of the real p_token
     -- Transfer (pattern library Layer 3, ENFORCES direction): from an
     -- insufficient-balance pre (the violated check = the taken-jlt branch

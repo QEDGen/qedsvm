@@ -49,6 +49,13 @@ pub(super) struct Args {
     /// and emit the per-path modules + the bundle theorem. Needs
     /// `--descriptor` and `--output-dir`.
     pub(super) transition: bool,
+    /// Shared-text base name (batch dedup, e.g. `PToken`). When given, the
+    /// binary's Text/SlotMap/FnRegistry defs are emitted ONCE into
+    /// `Generated/{base}Text.lean` and every arm lift imports that module
+    /// instead of re-embedding the ~100KB `.text` blob. Requires the
+    /// large-text decode-pins path (fails closed on small inline-bridge
+    /// binaries).
+    pub(super) shared_text: Option<String>,
 }
 
 // qedmeta sidecar (#41 Phase 4): v2 adds [instruction.recovered] arm
@@ -442,6 +449,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
     let mut target_name: Option<String> = None;
     let mut descriptor: Option<PathBuf> = None;
     let mut transition = false;
+    let mut shared_text: Option<String> = None;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -468,6 +476,9 @@ pub(super) fn parse_args() -> Result<Args, String> {
                 descriptor = Some(it.next().ok_or("--descriptor needs a path")?.into())
             }
             "--transition" => transition = true,
+            "--shared-text" => {
+                shared_text = Some(it.next().ok_or("--shared-text needs a base name")?)
+            }
             other => return Err(format!("unknown arg: {}", other)),
         }
     }
@@ -484,6 +495,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
         target_name,
         descriptor,
         transition,
+        shared_text,
     })
 }
 

@@ -18,11 +18,16 @@ pub(super) struct LiftOutput {
     /// Whole-transition path metadata (#40): present when the lift emitted a
     /// `*_transition_path` corollary; feeds `emit_transition_bundle`.
     pub(super) transition:  Option<TransitionPathInfo>,
+    /// Shared `.text` module `(module_name, lean)` (batch dedup): emitted when
+    /// `shared_text` was requested — the binary's Text/SlotMap/FnRegistry defs,
+    /// written ONCE as `Generated/{base}Text.lean` and imported by every arm.
+    pub(super) shared_text: Option<(String, String)>,
 }
 
-/// Lift without a qedrecover layout sidecar (tests, batch, single-arm `--idl`): refinement
-/// codegen resolves account layouts from the IDL only. `--qedmeta` runs call
-/// `lift_one_with_layouts` directly so the sidecar's `[[account_layout]]` is the layout source.
+/// Lift without a qedrecover layout sidecar (tests): refinement codegen
+/// resolves account layouts from the IDL only. The CLI modes call
+/// `lift_one_with_layouts` directly (sidecar layouts / descriptor / shared text).
+#[cfg(test)]
 pub(super) fn lift_one(
     so_path:         &Path,
     ctx:             &BinaryCtx,
@@ -35,7 +40,7 @@ pub(super) fn lift_one(
     arm_entry:       Option<usize>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     lift_one_with_layouts(so_path, ctx, analysis, target_disc, module_override,
-        trace, arm_name, idl, arm_entry, None, None)
+        trace, arm_name, idl, arm_entry, None, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -58,6 +63,11 @@ pub(super) fn lift_one_with_layouts(
     // codegen builds `AsmRefinesFieldUpdate` from the descriptor and IGNORES `arm_name` /
     // `refine_registry`. `None` = the registry-driven path (unchanged).
     descriptor:      Option<&RefinementDescriptor>,
+    // Shared-text base (batch dedup, e.g. `Some("PToken")`): the binary's Text/
+    // SlotMap/FnRegistry defs are emitted ONCE into `Generated/{base}Text.lean`
+    // (returned via `LiftOutput.shared_text`) and the arm imports them instead
+    // of re-defining `{module}Text` etc. Requires the large-text pins path.
+    shared_text:     Option<&str>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     let insns = &ctx.insns;
 
@@ -65,7 +75,11 @@ pub(super) fn lift_one_with_layouts(
 
     let (so_stem, module_name) = derive_module_name(so_path, module_override);
     let (out, emit_decode_bridge) =
-        emit_prelude(so_path, ctx, analysis, &so_stem, &module_name);
+        emit_prelude(so_path, ctx, analysis, &so_stem, &module_name, shared_text);
+    if shared_text.is_some() && emit_decode_bridge {
+        return Err("qedlift: --shared-text requires the large-text decode-pins \
+                    path (this binary embeds the full inline decode bridge)".into());
+    }
 
     let entry_pc: usize = ctx.executable.get_entrypoint_instruction_offset();
     let WalkResult { mut state, spec_calls, block_pcs, exit_pc, fault_terminal } =
@@ -81,7 +95,8 @@ pub(super) fn lift_one_with_layouts(
     // H8 + H2: full bridge omitted for large binaries; pin each walked PC's decode via hex-string embedding
     // + buildSlotMap + native_decide, including call_local PCs resolved through the function registry.
     if !emit_decode_bridge && !block_pcs.is_empty() {
-        emit_decode_pins(&mut out, ctx, analysis, &block_pcs, &state, &module_name)?;
+        emit_decode_pins(&mut out, ctx, analysis, &block_pcs, &state, &module_name,
+                         shared_text)?;
     }
 
     // Phase 2: Hoare-triple emission. Symbolic execution already done inline above; `state` is ready.
@@ -157,6 +172,15 @@ pub(super) fn lift_one_with_layouts(
         None => arm_name.and_then(|arm| emit_refinement(arm, rctx)),
     };
 
+    // Batch dedup: render the shared Text/SlotMap/FnRegistry module the arm's
+    // decode pins import (identical for every arm of the same binary).
+    let shared_text_out: Option<(String, String)> = shared_text.map(|base| {
+        let reg = function_registry(ctx);
+        (format!("{}Text", base),
+         render::shared_text_module(base, so_path, ctx.text_bytes.as_slice(),
+                                    &function_registry_lean(&reg)))
+    });
+
     Ok(LiftOutput {
         lean: out,
         module_name: tc.module_name,
@@ -165,6 +189,7 @@ pub(super) fn lift_one_with_layouts(
         cu: tc.n,
         refinement,
         transition,
+        shared_text: shared_text_out,
     })
 }
 
@@ -210,6 +235,7 @@ fn emit_prelude(
     analysis: &Analysis<'_>,
     so_stem: &str,
     module_name: &str,
+    shared_text: Option<&str>,
 ) -> (String, bool) {
     let text_offset = ctx.text_offset;
     let text_bytes  = ctx.text_bytes.as_slice();
@@ -228,12 +254,14 @@ fn emit_prelude(
         text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES && !has_modeled_syscall;
 
     let decode_claim = render::decode_claim(emit_decode_bridge);
-    let mut out = render::module_intro(so_path, decode_claim, &so_stem, &module_name);
+    let mut out = render::module_intro(so_path, decode_claim, &so_stem, &module_name,
+                                       shared_text);
 
     if emit_decode_bridge {
         out.push_str(&render::text_bytearray_defs(&module_name, text_bytes, text_offset));
     } else {
-        out.push_str(&render::decode_bridge_omitted_note(&module_name, text_bytes.len()));
+        out.push_str(&render::decode_bridge_omitted_note(&module_name, text_bytes.len(),
+                                                         shared_text));
     }
 
     // Render the full `.text` as `Array Insn` (sanity, not load-bearing for the Hoare triple).
@@ -310,6 +338,7 @@ fn emit_decode_pins(
     block_pcs: &[usize],
     state: &SymState,
     module_name: &str,
+    shared_text: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let insns = &ctx.insns;
     let text_bytes = ctx.text_bytes.as_slice();
@@ -330,15 +359,24 @@ fn emit_decode_pins(
         pin_exps.push(format!("some ({}, {})", lean_insn, sz));
     }
 
-    // H2: registry resolves call imms to .call_local targets in the pins below.
-    let reg = function_registry(ctx);
-    out.push_str(&render::large_text_decode_section(
-        &module_name,
-        text_bytes,
-        &function_registry_lean(&reg),
-        &pin_offs,
-        &pin_exps,
-    ));
+    match shared_text {
+        // Batch dedup: the Text/SlotMap/FnRegistry defs live in the shared
+        // `Generated/{base}Text.lean` module (imported above) — emit only the
+        // per-arm pins theorem, referencing the shared defs.
+        Some(base) => out.push_str(&render::decode_pins_theorem(
+            module_name, base, &pin_offs, &pin_exps)),
+        None => {
+            // H2: registry resolves call imms to .call_local targets in the pins below.
+            let reg = function_registry(ctx);
+            out.push_str(&render::large_text_decode_section(
+                &module_name,
+                text_bytes,
+                &function_registry_lean(&reg),
+                &pin_offs,
+                &pin_exps,
+            ));
+        }
+    }
     Ok(())
 }
 

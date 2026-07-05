@@ -27,6 +27,9 @@ pub(super) fn module_intro(
     decode_claim: &str,
     so_stem: &str,
     module_name: &str,
+    // Shared-text base (batch dedup): `Some("PToken")` adds
+    // `import Generated.PTokenText` so the decode pins resolve the shared defs.
+    shared_text: Option<&str>,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -49,7 +52,11 @@ pub(super) fn module_intro(
     out.push_str("import SVM.SBPF.Decode\n");
     out.push_str("import SVM.SBPF.RunnerBridge\n");
     out.push_str("import SVM.SBPF.Macros\n");
-    out.push_str("import SVM.SBPF.SatWitness\n\n");
+    out.push_str("import SVM.SBPF.SatWitness\n");
+    if let Some(base) = shared_text {
+        out.push_str(&format!("import Generated.{}Text\n", base));
+    }
+    out.push('\n');
     out.push_str("set_option maxRecDepth 65536\n");
     out.push_str("set_option maxHeartbeats @@HEARTBEATS@@\n\n");
     out.push_str(&format!("namespace Examples.Lifted.{}\n\n", module_name));
@@ -57,16 +64,24 @@ pub(super) fn module_intro(
     out
 }
 
-pub(super) fn decode_bridge_omitted_note(module_name: &str, text_len: usize) -> String {
+pub(super) fn decode_bridge_omitted_note(
+    module_name: &str,
+    text_len: usize,
+    shared_text: Option<&str>,
+) -> String {
+    let text_ref = match shared_text {
+        Some(base) => format!("`{}Text`, shared module `Generated.{}Text`", base, base),
+        None => format!("`{}Text`", module_name),
+    };
     format!(
         "-- NOTE: `{}Bytes` + `{}Insns` + `{}_decodes` omitted — the .text\n\
          -- is {} bytes, which blows `maxRecDepth` as a ByteArray literal.\n\
          -- The byte→insn link is pinned instead by `{}_decode_pins` below:\n\
-         -- the `.text` is embedded as a hex string (`{}Text`) and every\n\
+         -- the `.text` is embedded as a hex string ({}) and every\n\
          -- walked PC's decode is checked by `native_decide` against the\n\
          -- exact instruction the Hoare triple's `CodeReq` claims there\n\
          -- (soundness-audit H8).\n\n",
-        module_name, module_name, module_name, text_len, module_name, module_name,
+        module_name, module_name, module_name, text_len, module_name, text_ref,
     )
 }
 
@@ -149,12 +164,14 @@ pub(super) fn decoded_insns_section(
     out
 }
 
-pub(super) fn large_text_decode_section(
-    module_name: &str,
+/// The `{base}Text` + `{base}SlotMap` + `{base}FnRegistry` defs the decode
+/// pins reference. `pins_where` names where the pins live ("the pins below"
+/// inline; "the per-arm pins" in the shared-text module).
+pub(super) fn text_defs(
+    base: &str,
     text_bytes: &[u8],
     fn_registry_lean: &str,
-    pin_offsets: &[String],
-    pin_expected: &[String],
+    pins_where: &str,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -165,7 +182,7 @@ pub(super) fn large_text_decode_section(
     ));
     out.push_str(&format!(
         "def {}Text : ByteArray := Decode.bytesOfHex \"\n",
-        module_name
+        base
     ));
     for chunk in text_bytes.chunks(64) {
         let line: String = chunk.iter().map(|b| format!("{:02x}", b)).collect();
@@ -175,24 +192,37 @@ pub(super) fn large_text_decode_section(
     out.push_str(&format!(
         "/-- Byte-slot → logical-PC map for `{}Text` (pass 1 of the \
          decoder),\n    computed in-kernel — jump-target resolution \
-         in the pins below depends on\n    the `lddw` positions of \
+         in {} depends on\n    the `lddw` positions of \
          the WHOLE text, not just the pinned windows. -/\n",
-        module_name
+        base, pins_where
     ));
     out.push_str(&format!(
         "def {}SlotMap : Array Nat := Decode.buildSlotMap {}Text\n\n",
-        module_name, module_name
+        base, base
     ));
-    out.push_str(
+    out.push_str(&format!(
         "/-- The V0 function registry (murmur3 key → target slot) \
          solana-sbpf built\n    at load, mirroring `Elf.buildFnRegistry` \
-         (audit H2). Resolves internal\n    `call` immediates in the \
-         pins below to `.call_local` targets. -/\n",
-    );
+         (audit H2). Resolves internal\n    `call` immediates in {} \
+         to `.call_local` targets. -/\n",
+        pins_where
+    ));
     out.push_str(&format!(
         "def {}FnRegistry : List (Nat × Nat) := {}\n\n",
-        module_name, fn_registry_lean
+        base, fn_registry_lean
     ));
+    out
+}
+
+/// The `{module_name}_decode_pins` theorem, referencing the text defs of
+/// `text_base` (== `module_name` inline; the shared base in shared mode).
+pub(super) fn decode_pins_theorem(
+    module_name: &str,
+    text_base: &str,
+    pin_offsets: &[String],
+    pin_expected: &[String],
+) -> String {
+    let mut out = String::new();
     out.push_str(&format!(
         "/-- Walked-PC decode pins (soundness-audit H8 + H2): every \
          instruction the\n    Hoare triple's `CodeReq` claims at a \
@@ -202,7 +232,7 @@ pub(super) fn large_text_decode_section(
          function registry) by\n    `native_decide`. Internal \
          `call_local` PCs are included — their murmur3\n    imm \
          resolves through `{}FnRegistry`. -/\n",
-        module_name
+        text_base
     ));
     out.push_str(&format!("theorem {}_decode_pins :\n    ([", module_name));
     for (i, off) in pin_offsets.iter().enumerate() {
@@ -217,13 +247,56 @@ pub(super) fn large_text_decode_section(
     out.push_str(&format!(
         "].map fun off =>\n      Decode.decodeInsn {}Text {}SlotMap off \
          {}FnRegistry) = [\n",
-        module_name, module_name, module_name
+        text_base, text_base, text_base
     ));
     for (i, exp) in pin_expected.iter().enumerate() {
         let sep = if i + 1 < pin_expected.len() { "," } else { "" };
         out.push_str(&format!("      {}{}\n", exp, sep));
     }
     out.push_str("    ] := by\n  native_decide\n\n");
+    out
+}
+
+pub(super) fn large_text_decode_section(
+    module_name: &str,
+    text_bytes: &[u8],
+    fn_registry_lean: &str,
+    pin_offsets: &[String],
+    pin_expected: &[String],
+) -> String {
+    let mut out = text_defs(module_name, text_bytes, fn_registry_lean, "the pins below");
+    out.push_str(&decode_pins_theorem(module_name, module_name, pin_offsets, pin_expected));
+    out
+}
+
+/// The shared `.text` module (batch dedup): one binary's `{base}Text` +
+/// `{base}SlotMap` + `{base}FnRegistry`, emitted ONCE as
+/// `Generated/{base}Text.lean` and imported by every per-arm lift of that
+/// binary — the per-arm `*_decode_pins` theorems reference these defs.
+pub(super) fn shared_text_module(
+    base: &str,
+    so_path: &Path,
+    text_bytes: &[u8],
+    fn_registry_lean: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "/-\n  Generated by `qedlift` from `{}`.\n\
+         \n\
+         Shared `.text` embedding: the binary's `.text` bytes, byte-slot map\n\
+         and V0 function registry, emitted ONCE and imported by every per-arm\n\
+         lift of this binary (each arm's `*_decode_pins` theorem references\n\
+         these defs — soundness-audit H8 + H2). Deduplicates the {}-byte\n\
+         blob across the arm modules.\n\
+         -/\n\n",
+        so_path.display(),
+        text_bytes.len()
+    ));
+    out.push_str("import SVM.SBPF.Decode\n\n");
+    out.push_str("namespace Examples.Lifted\n\n");
+    out.push_str("open SVM.SBPF\n\n");
+    out.push_str(&text_defs(base, text_bytes, fn_registry_lean, "the per-arm pins"));
+    out.push_str("end Examples.Lifted\n");
     out
 }
 
