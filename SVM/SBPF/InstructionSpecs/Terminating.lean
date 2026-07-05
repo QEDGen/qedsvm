@@ -17,6 +17,38 @@ the SL level (diagnostic output is silent in `PartialState`).
 discipline isn't yet in `PartialState` (deferred lift #3), so `exit_aborts_spec`
 takes `s.callStack = []` as an extra hypothesis. -/
 
+/-- Shared proof for all single-step typed-fault syscall specs (`abort`,
+    `sol_panic_`, `sol_invoke_signed`, `sol_invoke_signed_c`): any syscall whose
+    `execSyscall` unconditionally sets `exitCode := some e.toSentinel` and
+    `vmError := some e` (witnessed by `hexit` / `hverr`, `fun _ => rfl` at each
+    instantiation) faults from ANY precondition `P` — the syscall reads nothing,
+    so a per-lift corollary composes the prefix's post straight into the tail. -/
+private theorem call_typed_fault_spec (sc : Syscall) (e : VmError)
+    (hexit : ∀ s : State, (execSyscall sc s).exitCode = some e.toSentinel)
+    (hverr : ∀ s : State, (execSyscall sc s).vmError = some e)
+    (P : Assertion) (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleFaultsWithin 1 nCu pc
+      (CodeReq.singleton pc (.call sc)) P e := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud
+  -- The fault ignores its pre, so `hPR` is not destructured.
+  have hfetch : fetch s.pc = some (.call sc) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
+  · rw [hstep_eq]
+    show (execSyscall sc s).exitCode = some e.toSentinel
+    exact hexit s
+  · rw [hstep_eq]
+    show (execSyscall sc s).vmError = some e
+    exact hverr s
+  · rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
+
 /-- `.call .abort`: unconditional abort, sets `exitCode := some ERR_ABORT,
     vmError := some .abort`. PRE-PARAMETRIC over `P`: abort reads nothing so it
     faults from ANY precondition, letting a per-lift corollary compose the
@@ -115,34 +147,9 @@ theorem call_sol_invoke_signed_faults_spec (P : Assertion) (pc : Nat) (nCu : Nat
         (step (.call .sol_invoke_signed) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed))
-      P .unsupportedInstruction := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
-  have hfetch : fetch s.pc = some (.call .sol_invoke_signed) := by
-    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1
-      = chargeCu (step (.call .sol_invoke_signed) s) := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  have hexec : executeFn fetch s 1 =
-      chargeCu { (Cpi.exec s) with
-                 pc := s.pc + 1
-                 cuConsumed := (Cpi.exec s).cuConsumed
-                   + syscallCu .sol_invoke_signed s } := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
-        executeFn_zero]
-    simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
-  · rw [hexec]
-    show (Cpi.exec s).exitCode = some VmError.unsupportedInstruction.toSentinel
-    rfl
-  · rw [hexec]
-    show (Cpi.exec s).vmError = some .unsupportedInstruction
-    rfl
-  · rw [hstep_eq]
-    show (step (.call .sol_invoke_signed) s).cuConsumed + 1
-        ≤ s.cuConsumed + 1 + nCu
-    have := hCu s; omega
+      P .unsupportedInstruction :=
+  call_typed_fault_spec .sol_invoke_signed .unsupportedInstruction
+    (fun _ => rfl) (fun _ => rfl) P pc nCu hCu
 
 /-- `.call .sol_invoke_signed_c`: the C-ABI CPI routes through the same
     fail-closed `Cpi.exec` stub — identical typed fault. -/
@@ -151,34 +158,9 @@ theorem call_sol_invoke_signed_c_faults_spec (P : Assertion) (pc : Nat) (nCu : N
         (step (.call .sol_invoke_signed_c) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed_c))
-      P .unsupportedInstruction := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
-  have hfetch : fetch s.pc = some (.call .sol_invoke_signed_c) := by
-    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1
-      = chargeCu (step (.call .sol_invoke_signed_c) s) := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  have hexec : executeFn fetch s 1 =
-      chargeCu { (Cpi.exec s) with
-                 pc := s.pc + 1
-                 cuConsumed := (Cpi.exec s).cuConsumed
-                   + syscallCu .sol_invoke_signed_c s } := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
-        executeFn_zero]
-    simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
-  · rw [hexec]
-    show (Cpi.exec s).exitCode = some VmError.unsupportedInstruction.toSentinel
-    rfl
-  · rw [hexec]
-    show (Cpi.exec s).vmError = some .unsupportedInstruction
-    rfl
-  · rw [hstep_eq]
-    show (step (.call .sol_invoke_signed_c) s).cuConsumed + 1
-        ≤ s.cuConsumed + 1 + nCu
-    have := hCu s; omega
+      P .unsupportedInstruction :=
+  call_typed_fault_spec .sol_invoke_signed_c .unsupportedInstruction
+    (fun _ => rfl) (fun _ => rfl) P pc nCu hCu
 
 /-- `.call .sol_panic_`: unconditional abort logging the message at r1/r2
     (r3/r4/r5 file/line are diagnostic, silent at SL). Sets
