@@ -692,6 +692,43 @@ mod layout_tests {
             "../examples/lean/Generated/PTokenTransferMintMismatchLimb3Lifted.lean", None);
     }
 
+    /// Pins the batch-3 p-token Transfer ERROR-PATH lifts: the authority
+    /// tri-case (owner-but-not-signer and delegate-but-not-signer →
+    /// ProgramError::MissingRequiredSignature 8<<32; neither owner nor
+    /// delegate → TokenError::OwnerMismatch 4) plus the delegated-amount
+    /// allowance check (delegate signs but allowance < amount →
+    /// TokenError::InsufficientFunds 1, a distinct check from the
+    /// source-balance one). Together these close the deferred "signer guard"
+    /// item honestly: each leg's violation is a separate EnforcedError, so
+    /// the delegate alternative is modeled instead of over-promised away.
+    #[test]
+    fn p_token_transfer_owner_not_signer_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_owner_not_signer.pcs",
+            "PTokenTransferOwnerNotSigner", None,
+            "../examples/lean/Generated/PTokenTransferOwnerNotSignerLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_delegate_not_signer_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_delegate_not_signer.pcs",
+            "PTokenTransferDelegateNotSigner", None,
+            "../examples/lean/Generated/PTokenTransferDelegateNotSignerLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_owner_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_owner_mismatch.pcs",
+            "PTokenTransferOwnerMismatch", None,
+            "../examples/lean/Generated/PTokenTransferOwnerMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_delegate_insufficient_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_delegate_insufficient.pcs",
+            "PTokenTransferDelegateInsufficient", None,
+            "../examples/lean/Generated/PTokenTransferDelegateInsufficientLifted.lean", None);
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).

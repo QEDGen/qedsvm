@@ -193,7 +193,7 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
   `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
   `AsmRefinesTokenTransfer` carries entails the same account with its `amount`
   conjunct weakened to `balanceAtLeast`). Depend on **no axioms**.
-- **L3 Guards**: TWELVE full `EnforcedError` guards on the real p-token Transfer
+- **L3 Guards**: SIXTEEN full `EnforcedError` guards on the real p-token Transfer
   arm, all standard-axiom clean, all built the same way (violating fixture →
   diff_mollusk test → captured failing trace → qedlift error-path lift →
   `cuTripleWithinMem_seq_exit` composition; guard files generated mechanically
@@ -220,6 +220,30 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
   7. **Short instruction data** (`ShortIxGuardEnforced.lean`): ix data < 9
      bytes diverts at 3998 through the 312 hub; exit 12
      (TokenError::InvalidInstruction).
+  8. **The authority tri-case**
+     (`{OwnerNotSigner,DelegateNotSigner,OwnerMismatch}GuardEnforced.lean`):
+     the honest signer/owner guard, un-parking the deferred item. The naive
+     "not signer implies fault" claim is FALSE on this binary (the delegate
+     path continues); the three legs state it honestly: owner ∧ ¬signer and
+     delegate ∧ ¬signer halt with 8<<32
+     (ProgramError::MissingRequiredSignature); a properly SIGNING stranger
+     (neither owner nor delegate) halts with exit 4 (TokenError::OwnerMismatch
+     — the canonical most-skipped check).
+  9. **Delegated-amount allowance** (`DelegateInsufficientGuardEnforced.lean`):
+     a signing delegate with allowance < amount halts with exit 1
+     (InsufficientFunds) via the delegated_amount@121 cell — a distinct check
+     and distinct cell from the source-balance guard.
+  **FINDING — the first REQUIRES-without-ENFORCES on a canonical program:**
+  p-token does NOT enforce a destination-balance overflow check on Transfer.
+  Where SPL Token uses `checked_add(...).ok_or(TokenError::Overflow)`, the
+  p-token binary WRAPS the destination amount mod 2^64 (verified against
+  mollusk: dest = u64::MAX-100 + 250 transfer succeeds on both engines with
+  the dest balance at 149). The check is protected only by the global supply
+  invariant (balances sum to supply ≤ u64::MAX, upheld by MintTo), not by the
+  Transfer arm. Pinned as `p_token_transfer_dest_overflow_wraps_on_both` in
+  diff_mollusk.rs so a future p-token that adds the check surfaces as a diff.
+  This is exactly the gap class the library exists to expose: sound under an
+  invariant that lives in a DIFFERENT arm.
   The routing-only half-guard (`H3dBalanceGuard.lean`,
   `p_token_balance_insufficient_routes_to_error`) predates and is subsumed by
   the full balance guard. `EnforcedFault` + `enforcedFault_of_routes_then_handler`
@@ -231,20 +255,18 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
 Driven bottom-up: prove a guard on a proven arm, let it dictate the predicate /
 recognizer shapes.
 
-1. **SPL Token (in progress).** DONE on the Transfer arm (12 guards): balance,
+1. **SPL Token (in progress).** DONE on the Transfer arm (16 guards): balance,
    frozen src/dest, mint mismatch (all 4 limbs), uninitialized src/dest,
-   invalid state byte src/dest, short instruction data. Remaining Transfer-arm
-   candidates:
+   invalid state byte src/dest, short instruction data, the authority tri-case,
+   delegated-amount allowance. Plus one pinned NON-guard (dest overflow wraps —
+   see the finding above). Remaining Transfer-arm candidates:
    - wrong data_len (≠ 165): NOT a simple flip — the 305 `jne` targets the 312
      generic account parser (slow path), not an error route; the failure
      surfaces later. Needs its own trace study.
-   - the honest authority tri-case (owner ∧ ¬signer → MissingRequiredSignature;
-     delegate ∧ ¬signer → same; neither → OwnerMismatch) — un-parks the deferred
-     signer item, three violating traces;
-   - dest-balance overflow (checked_add → Overflow 14) — the unchecked-arithmetic
-     class;
    - then the same checks on Burn / MintTo / TransferChecked / CloseAccount
-     (new entry PCs, same recipe).
+     (new entry PCs, same recipe). MintTo's supply-overflow check is now
+     EXTRA interesting: it is the invariant the missing Transfer overflow
+     check leans on.
 2. **Signer/owner DEFERRED, with reason.** The p_token signer check is NOT a clean
    guard: its proven non-signer branch *continues to the effect* (pinocchio's
    delegate-authority path, `H3fSignerExit`), so a naive "signer enforced" guard is
