@@ -66,6 +66,16 @@ pub(super) struct SymState {
 }
 
 impl SymState {
+    /// Allocate the per-syscall fresh index plus the `nCu<Tag><idx>` /
+    /// `hCu<Tag><idx>` CU-hypothesis names. MUST be called at the same point
+    /// in the fresh-name sequence as the emitter's other `*_{idx}` names are
+    /// derived — reordering fresh allocations changes emitted binder names.
+    pub(super) fn alloc_syscall(&mut self, tag: &str) -> (u32, String, String) {
+        let idx = self.fresh;
+        self.fresh += 1;
+        (idx, format!("nCu{}{}", tag, idx), format!("hCu{}{}", tag, idx))
+    }
+
     /// Record the byte footprint of a new atom and flag overlap with any DIFFERENT existing atom on the same root. Overlapping atoms in a sepConj → unsatisfiable precondition → vacuous theorem (soundness audit H8).
     pub(super) fn note_access(&mut self, base: &Expr, off: i64, len: i64, key_render: String) {
         let (root, lo) = canon_addr(base, off);

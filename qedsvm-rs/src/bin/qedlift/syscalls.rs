@@ -2,6 +2,32 @@ use super::core::{canon_addr, const_of_expr, eval_expr, Atom, BytesVal, Expr, Me
 use super::input::BinaryCtx;
 use super::{SpecCall, SymState};
 
+/// Register the finished syscall in the walk artifacts: the `nCu`/`hCu` CU
+/// hypothesis (data-dependent cost the lift can't discharge), the `.call
+/// <ctor>` rendering at `pc`, the spec-call preamble line and the walked PC.
+/// Counterpart of `SymState::alloc_syscall`; shared tail of every emitter.
+#[allow(clippy::too_many_arguments)]
+fn finish_syscall(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+    ctor: &'static str,
+    ncu_name: &str,
+    hcu_name: &str,
+    have_line: String,
+) {
+    state
+        .syscall_cu_vars
+        .push((ncu_name.to_string(), hcu_name.to_string(), ctor));
+    state.syscall_pcs.insert(pc, ctor);
+    spec_calls.push(SpecCall {
+        hyp_name: format!("h_{}", pc),
+        have_line,
+    });
+    block_pcs.push(pc);
+}
+
 /// Emit lift artifacts for `sol_memset_(r1, r2, r3)` at logical PC `pc`, shaped to
 /// `call_sol_memset_spec`. Adds a `↦Bytes` pre-atom at r1 (fresh ByteArray, size r3),
 /// records post (region filled with r2%256) and `r0 := 0`. CU is data-dependent (∝r3)
@@ -27,12 +53,9 @@ pub(super) fn emit_sol_memset(
         Some((r1v.clone(), r3v.clone())),
     ));
 
-    let idx = state.fresh;
-    state.fresh += 1;
+    let (idx, ncu_name, hcu_name) = state.alloc_syscall("Memset");
     let bs_name = format!("memsetBs_{}", idx);
     let bs_sz = format!("hmemsetBs_{}_sz", idx);
-    let ncu_name = format!("nCuMemset{}", idx);
-    let hcu_name = format!("hCuMemset{}", idx);
 
     // Pre atom: `r1V ↦Bytes memsetBs_idx`; size = r3V, or prefix length under a pre-split.
     let mut size_rendered = r3v.atom_lean();
@@ -73,10 +96,6 @@ pub(super) fn emit_sol_memset(
         value: BytesVal::Sym(bs_name.clone()),
     });
     state.memset_blobs.push((bs_name.clone(), size_rendered));
-    state
-        .syscall_cu_vars
-        .push((ncu_name.clone(), hcu_name.clone(), ".sol_memset"));
-    state.syscall_pcs.insert(pc, ".sol_memset");
 
     // Post: r0=0; blob -> `replicateByte (r2V%256) r3V`, or under tail-split: prefix blob +
     // a `↦U64` cell with fill across all 8 lanes (`call_sol_memset_split_u64_spec`).
@@ -260,11 +279,8 @@ pub(super) fn emit_sol_memset(
             )
         }
     };
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_memset",
+        &ncu_name, &hcu_name, have_line);
 }
 
 /// Emit `sol_memcmp_(p1 = r1, p2 = r2, n = r3, out = r4)` (H6). Reads `n`
@@ -309,8 +325,7 @@ pub(super) fn emit_sol_memcmp(
         Some((r4v.clone(), Expr::Const(4))),
     ));
 
-    let idx = state.fresh;
-    state.fresh += 1;
+    let (idx, ncu_name, hcu_name) = state.alloc_syscall("Memcmp");
     let p1_name = format!("memcmpP1_{}", idx);
     let p2_name = format!("memcmpP2_{}", idx);
     let size_rendered = r3v.atom_lean();
@@ -363,13 +378,6 @@ pub(super) fn emit_sol_memcmp(
     ));
     state.write_reg(0, Expr::Const(0));
 
-    let ncu_name = format!("nCuMemcmp{}", idx);
-    let hcu_name = format!("hCuMemcmp{}", idx);
-    state
-        .syscall_cu_vars
-        .push((ncu_name.clone(), hcu_name.clone(), ".sol_memcmp"));
-    state.syscall_pcs.insert(pc, ".sol_memcmp");
-
     // call_sol_memcmp_spec r0Old r1V r2V r3V r4V outOld pc nCu p1 p2 hsz1 hsz2 hCu
     let have_line = format!(
         "have h_{pc} := call_sol_memcmp_spec {r0} {r1} {r2} {r3} {r4} {out} {pc} {ncu} {p1} {p2} h{p1}_sz h{p2}_sz {hcu}",
@@ -385,11 +393,8 @@ pub(super) fn emit_sol_memcmp(
         p2 = p2_name,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_memcmp",
+        &ncu_name, &hcu_name, have_line);
 }
 
 /// The 32-byte rent sysvar id (`SysvarRent111…`), mirroring
@@ -443,14 +448,7 @@ pub(super) fn emit_sol_get_sysvar(
         .into());
     }
 
-    let idx = state.fresh;
-    state.fresh += 1;
-    let ncu_name = format!("nCuGetSysvar{}", idx);
-    let hcu_name = format!("hCuGetSysvar{}", idx);
-    state
-        .syscall_cu_vars
-        .push((ncu_name.clone(), hcu_name.clone(), ".sol_get_sysvar"));
-    state.syscall_pcs.insert(pc, ".sol_get_sysvar");
+    let (_idx, ncu_name, hcu_name) = state.alloc_syscall("GetSysvar");
 
     state.pre.push(Atom::Bytes32 {
         addr: r1v.clone(),
@@ -558,11 +556,8 @@ rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) h{o2}_lt \
         hdisj = h_disj,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_get_sysvar",
+        &ncu_name, &hcu_name, have_line);
     Ok(())
 }
 
@@ -583,12 +578,7 @@ pub(super) fn emit_r0_syscall(
     tag: &str,
 ) {
     let r0v = state.read_reg(0);
-    let idx = state.fresh;
-    state.fresh += 1;
-    let ncu_name = format!("nCu{}{}", tag, idx);
-    let hcu_name = format!("hCu{}{}", tag, idx);
-    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ctor));
-    state.syscall_pcs.insert(pc, ctor);
+    let (_idx, ncu_name, hcu_name) = state.alloc_syscall(tag);
     state.write_reg(0, Expr::Const(0));
     // call_<name>_spec r0Old pc nCu hCu
     let have_line = format!(
@@ -599,11 +589,8 @@ pub(super) fn emit_r0_syscall(
         ncu = ncu_name,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ctor,
+        &ncu_name, &hcu_name, have_line);
 }
 
 /// Emit `sol_log_(r1, r2)` (H6). Unlike `emit_r0_syscall`, `call_sol_log_spec` pins r1/r2 and
@@ -625,14 +612,7 @@ pub(super) fn emit_sol_log(
         false,
         Some((r1v.clone(), r2v.clone())),
     ));
-    let idx = state.fresh;
-    state.fresh += 1;
-    let ncu_name = format!("nCuLog{}", idx);
-    let hcu_name = format!("hCuLog{}", idx);
-    state
-        .syscall_cu_vars
-        .push((ncu_name.clone(), hcu_name.clone(), ".sol_log_"));
-    state.syscall_pcs.insert(pc, ".sol_log_");
+    let (_idx, ncu_name, hcu_name) = state.alloc_syscall("Log");
     state.write_reg(0, Expr::Const(0));
     let have_line = format!(
         "have h_{pc} := call_sol_log_spec {r0} {r1} {r2} {pc} {ncu} {hcu}",
@@ -643,11 +623,8 @@ pub(super) fn emit_sol_log(
         ncu = ncu_name,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_log_",
+        &ncu_name, &hcu_name, have_line);
 }
 
 /// Emit `sol_memcpy_`/`sol_memmove_(dst = r1, src = r2, n = r3)` (H6). Both share
@@ -686,13 +663,12 @@ pub(super) fn emit_sol_memcpy(
         Some((r1v.clone(), r3v.clone())),
     ));
 
-    let idx = state.fresh;
-    state.fresh += 1;
     let (mnem, ctor, cap) = if is_move {
         ("memmove", ".sol_memmove", "Memmove")
     } else {
         ("memcpy", ".sol_memcpy", "Memcpy")
     };
+    let (idx, ncu_name, hcu_name) = state.alloc_syscall(cap);
     let src_name = format!("{}Src_{}", mnem, idx);
     let dst_name = format!("{}Dst_{}", mnem, idx);
     let size_rendered = r3v.atom_lean();
@@ -713,11 +689,6 @@ pub(super) fn emit_sol_memcpy(
     // Footprints: disjoint src-read + dst-write regions (overlap ⇒ vacuous, fail closed).
     state.note_access(&r2v, 0, blob_len, format!("{}Src:{}", mnem, r2v.to_lean()));
     state.note_access(&r1v, 0, blob_len, format!("{}Dst:{}", mnem, r1v.to_lean()));
-
-    let ncu_name = format!("nCu{}{}", cap, idx);
-    let hcu_name = format!("hCu{}{}", cap, idx);
-    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ctor));
-    state.syscall_pcs.insert(pc, ctor);
 
     // Post: dst blob (at r1V) holds `srcBytes`; src blob unchanged; r0 := 0.
     state
@@ -744,11 +715,8 @@ pub(super) fn emit_sol_memcpy(
         dst = dst_name,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ctor,
+        &ncu_name, &hcu_name, have_line);
 }
 
 /// Emit `sol_set_return_data(ptr = r1, len = r2)` (H6 + H7). Reads the input
@@ -778,12 +746,9 @@ pub(super) fn emit_sol_set_return_data(
         Some((r1v.clone(), r2v.clone())),
     ));
 
-    let idx = state.fresh;
-    state.fresh += 1;
+    let (idx, ncu_name, hcu_name) = state.alloc_syscall("SetRetData");
     let blob_name = format!("setRetData_{}", idx);
     let rd_old_name = format!("retDataOld_{}", idx);
-    let ncu_name = format!("nCuSetRetData{}", idx);
-    let hcu_name = format!("hCuSetRetData{}", idx);
 
     let size_rendered = r2v.atom_lean();
     let blob_len = const_of_expr(&r2v).unwrap_or(1).max(1);
@@ -802,11 +767,6 @@ pub(super) fn emit_sol_set_return_data(
     // Footprint: the read input slice (must be disjoint from other owned regions).
     state.note_access(&r1v, 0, blob_len, format!("setRetData:{}", r1v.to_lean()));
 
-    state
-        .syscall_cu_vars
-        .push((ncu_name.clone(), hcu_name.clone(), ".sol_set_return_data"));
-    state.syscall_pcs.insert(pc, ".sol_set_return_data");
-
     // Post: returnData holds the input blob; input blob unchanged; r0 := 0.
     state.returndata_post = Some(BytesVal::Sym(blob_name.clone()));
     state.write_reg(0, Expr::Const(0));
@@ -824,11 +784,8 @@ pub(super) fn emit_sol_set_return_data(
         rd = rd_old_name,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_set_return_data",
+        &ncu_name, &hcu_name, have_line);
 }
 
 /// Emit single-slice `sol_sha256(r1 = vals, r2 = 1, r3 = out)` (H6). The one
@@ -880,12 +837,9 @@ pub(super) fn emit_sol_sha256(
     let len_val = eval_expr(&len_expr, &env)
         .ok_or_else(|| format!("sha256 at pc {pc}: symbolic descriptor.len"))?;
 
-    let idx = state.fresh;
-    state.fresh += 1;
+    let (idx, ncu_name, hcu_name) = state.alloc_syscall("Sha256");
     let in_name = format!("sha256In_{}", idx);
     let out_name = format!("sha256OldOut_{}", idx);
-    let ncu_name = format!("nCuSha256{}", idx);
-    let hcu_name = format!("hCuSha256{}", idx);
     let len_rendered = len_expr.atom_lean();
 
     // Pre atoms (spec order, AFTER the descriptor cells already present from the
@@ -927,9 +881,6 @@ pub(super) fn emit_sol_sha256(
     state.rr_continuations.insert(g0 + 1);
     state.rr_continuations.insert(g0 + 2);
 
-    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(), ".sol_sha256"));
-    state.syscall_pcs.insert(pc, ".sol_sha256");
-
     // Post: output flips to `Sha256.hash inputBytes`; input + descriptor
     // unchanged; r0 := 0.
     state.bytes32_post.insert(r3v.to_lean(), format!("(Sha256.hash {})", in_name));
@@ -956,11 +907,8 @@ pub(super) fn emit_sol_sha256(
         ncu = ncu_name,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_sha256",
+        &ncu_name, &hcu_name, have_line);
     Ok(())
 }
 
@@ -1011,13 +959,10 @@ pub(super) fn emit_sol_create_program_address(
     let len_val = eval_expr(&len_expr, &env)
         .ok_or_else(|| format!("create_pda at pc {pc}: symbolic descriptor.len"))?;
 
-    let idx = state.fresh;
-    state.fresh += 1;
+    let (idx, ncu_name, hcu_name) = state.alloc_syscall("Pda");
     let seed_name = format!("pdaSeed_{}", idx);
     let pid_name = format!("pdaPid_{}", idx);
     let out_name = format!("pdaOldOut_{}", idx);
-    let ncu_name = format!("nCuPda{}", idx);
-    let hcu_name = format!("hCuPda{}", idx);
     let hpid_sz = format!("hPdaPidSz{}", idx);
     let hoff = format!("hPdaOffCurve{}", idx);
     let len_rendered = len_expr.atom_lean();
@@ -1074,10 +1019,6 @@ pub(super) fn emit_sol_create_program_address(
     state.rr_continuations.insert(g0 + 2);
     state.rr_continuations.insert(g0 + 3);
 
-    state.syscall_cu_vars.push((ncu_name.clone(), hcu_name.clone(),
-        ".sol_create_program_address"));
-    state.syscall_pcs.insert(pc, ".sol_create_program_address");
-
     // Post: output flips to the derived PDA; seed + pid + descriptor unchanged;
     // r0 := 0.
     state.bytes32_post.insert(r4v.to_lean(), payload);
@@ -1110,10 +1051,7 @@ pub(super) fn emit_sol_create_program_address(
         hoff = hoff,
         hcu = hcu_name,
     );
-    spec_calls.push(SpecCall {
-        hyp_name: format!("h_{}", pc),
-        have_line,
-    });
-    block_pcs.push(pc);
+    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_create_program_address",
+        &ncu_name, &hcu_name, have_line);
     Ok(())
 }
