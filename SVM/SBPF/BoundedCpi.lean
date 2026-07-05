@@ -68,7 +68,7 @@ boxes it calls into:
   left as a hypothesis here so this lemma is independent of the recursion.
 
 The `executeFnCpiWithFuel_bounded` wrapper is the remaining Stage-B work; see
-docs/PHASE7_LIFT_HARDENING_PLAN.md. -/
+docs/archive/PHASE7_LIFT_HARDENING_PLAN.md. -/
 
 /-- CPI dispatch arms 1/2/4a/4b — depth-limit / writable-alias / unknown
     registry / failed sub-load — all return `{ s with r0 := 1, pc, cu }`.

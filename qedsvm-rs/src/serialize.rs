@@ -97,10 +97,10 @@ pub fn serialize_parameters(
 }
 
 /// Look up an account by pubkey; linear scan is fine for typical account counts (≤ 64).
-fn find_account<'a>(
+fn find_account(
     key: Pubkey,
-    accounts: &'a [(Pubkey, AccountSharedData)],
-) -> Option<&'a AccountSharedData> {
+    accounts: &[(Pubkey, AccountSharedData)],
+) -> Option<&AccountSharedData> {
     accounts.iter().find(|(k, _)| *k == key).map(|(_, a)| a)
 }
 

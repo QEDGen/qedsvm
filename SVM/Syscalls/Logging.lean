@@ -252,11 +252,5 @@ theorem execLogData_faults_oob (s : State)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 
-/-- Deprecated shared body, pushes an empty marker. No longer dispatched;
-    kept for backwards compatibility (no current callers). To be removed. -/
-@[simp] def execLogMarker (s : State) : State :=
-  { s with regs := s.regs.set .r0 0
-           log  := s.log.push ByteArray.empty }
-
 end Logging
 end SVM.SBPF

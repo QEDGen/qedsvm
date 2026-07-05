@@ -614,15 +614,6 @@ theorem singletonMemU64_mem_isSome (addr v : Nat) (a : Nat)
     have : a = addr + 7 := by omega
     rw [this]; exact singletonMemU64_mem_7 _ _
 
-theorem singletonMem32Bytes_mem_isSome (addr : Nat) (bs : ByteArray) (a : Nat)
-    (h : addr ≤ a ∧ a < addr + 32) :
-    ∃ x, (singletonMem32Bytes addr bs).mem a = some x := by
-  obtain ⟨h1, h2⟩ := h
-  have h_lt : a - addr < 32 := by omega
-  have key := singletonMem32Bytes_mem_at addr bs (a - addr) h_lt
-  rw [show addr + (a - addr) = a from by omega] at key
-  exact ⟨_, key⟩
-
 theorem singletonMemBytes_mem_isSome (addr : Nat) (bs : ByteArray) (a : Nat)
     (h : addr ≤ a ∧ a < addr + bs.size) :
     ∃ x, (singletonMemBytes addr bs).mem a = some x := by
@@ -761,17 +752,6 @@ theorem union_callStack_of_left_some {h1 h2 : PartialState}
 theorem union_empty_left {h : PartialState} : empty.union h = h := by
   cases h
   rfl
-
-theorem union_empty_right {h : PartialState} : h.union empty = h := by
-  obtain ⟨regs, mem, pc, rd, cs⟩ := h
-  show PartialState.mk _ _ _ _ _ = _
-  simp only [PartialState.mk.injEq]
-  refine ⟨?_, ?_, ?_, ?_, ?_⟩
-  · funext r; cases regs r <;> rfl
-  · funext a; cases mem  a <;> rfl
-  · cases pc <;> rfl
-  · cases rd <;> rfl
-  · cases cs <;> rfl
 
 theorem union_comm_of_disjoint {h1 h2 : PartialState} (hd : h1.Disjoint h2) :
     h1.union h2 = h2.union h1 := by
@@ -1407,21 +1387,10 @@ theorem applySwaps_perm {α} (l : List α) (swaps : List Nat) :
     show l.Perm (applySwaps (swapAt l k) rest)
     exact (swapAt_perm l k).trans (ih (swapAt l k))
 
-/-- Perm-iff between a `foldSepConj` and the result of applying a swap sequence —
-    the single application replacing sl_block_iter's O(N²) iff chain. -/
-theorem foldSepConj_applySwaps_iff (atoms : List Assertion) (swaps : List Nat) :
-    ∀ s, foldSepConj atoms s ↔ foldSepConj (applySwaps atoms swaps) s :=
-  foldSepConj_perm (applySwaps_perm atoms swaps)
-
 /-- `(P ** emp) h ↔ P h` flipped — the bridge from a no-trailing-emp sepConj to
     the trailing-emp form at the singleton-list base case. -/
 theorem sepConj_emp_right_symm {P : Assertion} : ∀ h, P h ↔ (P ** emp) h :=
   fun h => (sepConj_emp_right h).symm
-
-/-- Symmetry of pointwise iff. Used to flip `bridge2` (foldSepConj →
-    rebuildSepConj) from its naturally-stated direction. -/
-theorem sepConj_iff_pw_symm {P Q : Assertion} (h : ∀ s, P s ↔ Q s) :
-    ∀ s, Q s ↔ P s := fun s => (h s).symm
 
 /-! ## holdsFor — bridge from Assertion to full State -/
 
@@ -1442,11 +1411,6 @@ theorem holdsFor_iff_pointwise {P Q : Assertion} {s : State}
 theorem holdsFor_sepConj_assoc {P Q R : Assertion} {s : State} :
     ((P ** Q) ** R).holdsFor s ↔ (P ** (Q ** R)).holdsFor s :=
   holdsFor_iff_pointwise sepConj_assoc
-
-/-- `holdsFor` lifts `sepConj_comm`. -/
-theorem holdsFor_sepConj_comm {P Q : Assertion} {s : State} :
-    (P ** Q).holdsFor s ↔ (Q ** P).holdsFor s :=
-  holdsFor_iff_pointwise sepConj_comm
 
 /-! ## pcFree — assertion does not own the PC -/
 
@@ -1538,19 +1502,5 @@ theorem memByteIs_eq_memBytesIs (a v : Nat) (hv : v < 256) :
       show memBytesIs a (PartialState.byteBA v) h
          = (h = PartialState.singletonMemBytes a (PartialState.byteBA v)) from rfl,
       PartialState.singletonMem_eq_bytes a v hv]
-
-/-- Peel one byte off a blob's front: `↦Bytes (byteBA v ++ rest)` separates into
-    the cell `a ↦ₘ v` (`< 256`) and the tail blob at `a + 1`. The workhorse for
-    assembling a coarse `↦Bytes` field from `ldxb`-read cells interleaved with
-    framed gaps (iterate + `memBytesIs_append` for known-size gaps). -/
-theorem memBytesIs_cons_byte (a v : Nat) (rest : ByteArray) (hv : v < 256) :
-    ∀ h, memBytesIs a (PartialState.byteBA v ++ rest) h ↔
-         (memByteIs a v ** memBytesIs (a + 1) rest) h := by
-  intro h
-  have hsplit := memBytesIs_append a (PartialState.byteBA v) rest h
-  rw [PartialState.byteBA_size] at hsplit
-  rw [hsplit]
-  exact sepConj_iff_congr_left (memBytesIs (a + 1) rest)
-    (fun h => (memByteIs_eq_memBytesIs a v hv h).symm) h
 
 end SVM.SBPF

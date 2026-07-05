@@ -1405,11 +1405,6 @@ fn remaining_cu_program_matches_mollusk() {
 
     let fs_remaining = u64::from_le_bytes(fs_acct.data()[..8].try_into().unwrap());
     let m_remaining = u64::from_le_bytes(m_acct.data[..8].try_into().unwrap());
-    eprintln!(
-        "remaining_cu: ours={} mollusk={} (budget={}, consumed ours={} mollusk={})",
-        fs_remaining, m_remaining, BUDGET,
-        fs_r.compute_units_consumed, m_r.compute_units_consumed,
-    );
     assert_eq!(fs_remaining, m_remaining,
         "remaining-CU value diverged: ours={} mollusk={} (budget={})",
         fs_remaining, m_remaining, BUDGET);
@@ -1627,8 +1622,6 @@ fn p_token_mint_to_matches_mollusk() {
         (authority, auth_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on p-token MintTo, got {:?}", fs_r.program_result);
@@ -1715,8 +1708,6 @@ fn p_token_burn_matches_mollusk() {
         (owner, owner_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on p-token Burn, got {:?}", fs_r.program_result);
@@ -1810,8 +1801,6 @@ fn p_token_transfer_checked_matches_mollusk() {
         (authority, auth_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on p-token TransferChecked, got {:?}", fs_r.program_result);
@@ -1896,8 +1885,6 @@ fn p_token_close_account_matches_mollusk() {
         (owner, owner_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on p-token CloseAccount, got {:?}", fs_r.program_result);
@@ -1951,8 +1938,6 @@ fn p_token_initialize_mint2_matches_mollusk() {
         (mint_key, mk_mollusk(MINT_LAMPORTS, mint_data.clone())),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on p-token InitializeMint2, got {:?}", fs_r.program_result);
@@ -2054,14 +2039,8 @@ fn token_transfer_matches_mollusk() {
     ]);
 
     // Surface both results before asserting so a divergence is debuggable.
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
-    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
-    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
     if !fs_r.logs.is_empty() {
-        eprintln!("fs.logs ({}):", fs_r.logs.len());
         for (i, l) in fs_r.logs.iter().enumerate() {
-            eprintln!("  [{i}] {}", String::from_utf8_lossy(l));
         }
     }
 
@@ -2193,14 +2172,8 @@ fn p_token_transfer_matches_mollusk() {
         (authority, pre_auth_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
-    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
-    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
     if !fs_r.logs.is_empty() {
-        eprintln!("fs.logs ({}):", fs_r.logs.len());
         for (i, l) in fs_r.logs.iter().enumerate() {
-            eprintln!("  [{i}] {}", String::from_utf8_lossy(l));
         }
     }
 
@@ -2315,10 +2288,6 @@ fn p_token_transfer_insufficient_balance_matches_mollusk() {
         (authority, pre_auth_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
-    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
-    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: the balance guard must fail an insufficient transfer, got Success");
@@ -2427,8 +2396,6 @@ fn p_token_transfer_frozen_matches_mollusk() {
         (authority, pre_auth_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: the frozen guard must fail a Transfer from a frozen source, got Success");
@@ -2536,8 +2503,6 @@ fn p_token_transfer_dest_frozen_matches_mollusk() {
         (authority, pre_auth_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: the frozen guard must fail a Transfer into a frozen dest, got Success");
@@ -2648,8 +2613,6 @@ fn p_token_transfer_mint_mismatch_matches_mollusk() {
         (authority, pre_auth_mollusk),
     ]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: the mint guard must fail a cross-mint Transfer, got Success");
@@ -2761,8 +2724,6 @@ fn assert_p_token_transfer_fails_auth(
         (authority, pre_auth_mollusk),
     ]);
 
-    eprintln!("[{label}] fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("[{label}] mol.program_result  = {:?}", m_r.program_result);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: {label} must fail the Transfer, got Success");
@@ -3084,8 +3045,6 @@ fn assert_p_token_ix_fails(
     );
     let m_r = m.process_instruction(&ix, &m_accounts);
 
-    eprintln!("[{label}] fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("[{label}] mol.program_result  = {:?}", m_r.program_result);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: {label} must fail, got Success");
@@ -3950,8 +3909,6 @@ fn cpi_callee_realloc_overflow_rejected_on_both() {
         (callee_id, callee_program_mollusk),
     ]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success), // both must reject over-grow
         "qedsvm: over-grow realloc should fail, got {:?}", fs_r.program_result);
@@ -4307,10 +4264,6 @@ fn rodata_addr_returner_matches_mollusk() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
-    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
-    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected non-Success (exit code = upper 32 bits = 1), \
@@ -4351,10 +4304,6 @@ fn curve_msm_cu_matches_mollusk() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
-    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
-    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: both MSM calls must succeed (r0=0), got {:?}",
@@ -4389,11 +4338,6 @@ fn sentinel_clean_exit_observability() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("L1 EXPERIMENT: clean exit with r0 = 0xFFFFFFFFFFFFFFFD");
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
-    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
-    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: nonzero r0 must not be Success, got {:?}", fs_r.program_result);
@@ -4426,14 +4370,7 @@ fn pda_finder_matches_mollusk() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result   = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result  = {:?}", m_r.program_result);
-    eprintln!("fs.return_data      = {:?}", fs_r.return_data);
-    eprintln!("mol.return_data     = {:?}", m_r.return_data);
-    eprintln!("fs.cu_consumed      = {}", fs_r.compute_units_consumed);
-    eprintln!("mol.cu_consumed     = {}", m_r.compute_units_consumed);
     if fs_r.return_data.len() == 33 {
-        eprintln!("fs.bump             = {}", fs_r.return_data[32]);
     }
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -4474,8 +4411,6 @@ fn oob_read_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     // M14: VM-fault (accessViolation) → agave UnknownError(ProgramFailedToComplete); assert_outcome_matches checks equivalence.
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
@@ -4506,8 +4441,6 @@ fn abort_caller_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on the abort syscall, got {:?}", fs_r.program_result);
@@ -4534,8 +4467,6 @@ fn oob_memset_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_memset_, got {:?}", fs_r.program_result);
@@ -4562,8 +4493,6 @@ fn oob_log_pubkey_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_log_pubkey, got {:?}", fs_r.program_result);
@@ -4590,8 +4519,6 @@ fn oob_log_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_log_, got {:?}", fs_r.program_result);
@@ -4618,8 +4545,6 @@ fn oob_log_data_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_log_data, got {:?}", fs_r.program_result);
@@ -4646,8 +4571,6 @@ fn oob_sha256_output_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_sha256 output, got {:?}", fs_r.program_result);
@@ -4674,8 +4597,6 @@ fn oob_sha256_input_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_sha256 input, got {:?}", fs_r.program_result);
@@ -4702,8 +4623,6 @@ fn oob_poseidon_input_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_poseidon input, got {:?}", fs_r.program_result);
@@ -4730,8 +4649,6 @@ fn oob_clock_sysvar_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_get_clock_sysvar, got {:?}", fs_r.program_result);
@@ -4758,8 +4675,6 @@ fn oob_set_return_data_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_set_return_data, got {:?}", fs_r.program_result);
@@ -4786,8 +4701,6 @@ fn oob_rent_sysvar_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_get_rent_sysvar, got {:?}", fs_r.program_result);
@@ -4814,8 +4727,6 @@ fn oob_get_return_data_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_get_return_data, got {:?}", fs_r.program_result);
@@ -4842,8 +4753,6 @@ fn oob_secp256k1_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_secp256k1_recover, got {:?}", fs_r.program_result);
@@ -4870,8 +4779,6 @@ fn oob_create_pda_fails_on_both() {
     );
     let m_r = m.process_instruction(&ix, &[]);
 
-    eprintln!("fs.program_result  = {:?}", fs_r.program_result);
-    eprintln!("mol.program_result = {:?}", m_r.program_result);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
         "qedsvm should VM-fault on OOB sol_create_program_address, got {:?}", fs_r.program_result);
@@ -5768,10 +5675,6 @@ fn cpi_depth_2_chain_matches_mollusk() {
 
     let our_logs: Vec<String> = fs_r.logs.iter()
         .map(|b| String::from_utf8_lossy(b).into_owned()).collect();
-    eprintln!("DEPTH2 qedsvm cu={} result={:?} logs={our_logs:?}",
-        fs_r.compute_units_consumed, fs_r.program_result);
-    eprintln!("DEPTH2 mollusk cu={} result={:?}",
-        m_r.compute_units_consumed, m_r.program_result);
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success on depth-2 chain, got {:?}", m_r.program_result);
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -5875,18 +5778,10 @@ fn janus_slot_height_resolver_initialize_matches_mollusk() {
         (mollusk_system_id, mollusk_system_acct),
     ]);
 
-    eprintln!("mollusk: {:?} cu={} accounts={}",
-        m_r.program_result, m_r.compute_units_consumed, m_r.resulting_accounts.len());
-    eprintln!("qedsvm:  {:?} cu={} accounts={}",
-        fs_r.program_result, fs_r.compute_units_consumed, fs_r.resulting_accounts.len());
     let m_state = m_r.resulting_accounts.iter()
         .find(|(k, _)| *k == state).expect("mollusk state present").1.clone();
     let fs_state = fs_r.resulting_accounts.iter()
         .find(|(k, _)| *k == state).expect("qedsvm state present").1.clone();
-    eprintln!("mollusk state.data.len={} lamports={} owner={}",
-        m_state.data.len(), m_state.lamports, m_state.owner);
-    eprintln!("qedsvm  state.data.len={} lamports={} owner={}",
-        fs_state.data().len(), fs_state.lamports(), fs_state.owner());
 
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);

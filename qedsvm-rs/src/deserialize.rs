@@ -31,7 +31,7 @@ pub fn deserialize_account_writes(
     // Dup structure is fully determined by `instruction.accounts` — same as the serializer — so
     // we recompute it from there and skip 8 bytes for each detected dup.
     let mut by_first_occurrence: Vec<Option<AccountSharedData>> = vec![None; num_accounts];
-    for i in 0..num_accounts {
+    for (i, slot) in by_first_occurrence.iter_mut().enumerate() {
         let first = (0..i).find(|j| instruction.accounts[*j].pubkey == instruction.accounts[i].pubkey);
         if first.is_some() {
             // Dup: 1B (post-execution borrow_state, ignored) + 7B padding.
@@ -40,7 +40,7 @@ pub fn deserialize_account_writes(
             // Non-dup: 1B (post-execution borrow_state, ignored) + rest of record.
             r.skip(1)?;
             let updated = parse_non_dup_record(&mut r, &instruction.accounts[i].pubkey, pre_accounts)?;
-            by_first_occurrence[i] = Some(updated);
+            *slot = Some(updated);
         }
     }
 
