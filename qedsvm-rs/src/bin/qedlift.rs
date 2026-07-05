@@ -1307,13 +1307,7 @@ struct LiftOutput {
 /// preamble is threaded); the small `decodeProgram` bridge and bare `sl_block_auto`
 /// can't handle a syscall. Mirrors the trace dispatch in `lift_one_with_layouts`.
 fn imm_is_modeled_syscall(imm: u32) -> bool {
-    const NAMES: [&[u8]; 11] = [
-        b"sol_memset_", b"sol_memcpy_", b"sol_memmove_", b"sol_memcmp_",
-        b"sol_log_", b"sol_get_sysvar", b"sol_set_return_data", b"sol_sha256",
-        b"sol_create_program_address",
-        b"sol_invoke_signed_rust", b"sol_invoke_signed_c",
-    ];
-    NAMES.iter().any(|name| imm == ebpf::hash_symbol_name(name))
+    syscall_model(imm).is_some_and(|m| m.modeled)
 }
 
 /// A typed-fault terminal syscall a happy-path walk can end on (Phase 7
@@ -1344,17 +1338,7 @@ impl AbortKind {
     /// Resolve a relocated `call_imm` immediate (a Murmur3 syscall hash) to a
     /// fault terminal, or `None` if it is not abort/sol_panic_.
     fn from_hash(imm: u32) -> Option<AbortKind> {
-        if imm == ebpf::hash_symbol_name(b"abort") {
-            Some(AbortKind::Abort)
-        } else if imm == ebpf::hash_symbol_name(b"sol_panic_") {
-            Some(AbortKind::SolPanic)
-        } else if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_rust") {
-            Some(AbortKind::Invoke)
-        } else if imm == ebpf::hash_symbol_name(b"sol_invoke_signed_c") {
-            Some(AbortKind::InvokeC)
-        } else {
-            None
-        }
+        syscall_model(imm).and_then(|m| m.abort)
     }
     /// The Lean `Syscall` constructor (CodeReq singleton + `step`/`hCu` term).
     fn ctor(self) -> &'static str {
@@ -1416,64 +1400,146 @@ struct OobSyscall {
 impl OobSyscall {
     /// Resolve a syscall hash to its OOB fault descriptor, or `None`.
     fn from_hash(imm: u32) -> Option<OobSyscall> {
-        if imm == ebpf::hash_symbol_name(b"sol_secp256k1_recover") {
-            Some(OobSyscall {
-                ctor: ".sol_secp256k1_recover",
-                faults_spec: "call_sol_secp256k1_recover_faults_oob_spec",
-                region_reg: 1,
-                region_size: 32,
-                region_len_reg: None,
-                region_writable: false,
-            })
-        } else if imm == ebpf::hash_symbol_name(b"sol_get_clock_sysvar") {
-            Some(OobSyscall {
-                ctor: ".sol_get_clock_sysvar",
-                faults_spec: "call_sol_get_clock_sysvar_faults_oob_spec",
-                region_reg: 1,
-                region_size: 40,
-                region_len_reg: None,
-                region_writable: true,
-            })
-        } else if imm == ebpf::hash_symbol_name(b"sol_get_rent_sysvar") {
-            Some(OobSyscall {
-                ctor: ".sol_get_rent_sysvar",
-                faults_spec: "call_sol_get_rent_sysvar_faults_oob_spec",
-                region_reg: 1,
-                region_size: 17,
-                region_len_reg: None,
-                region_writable: true,
-            })
-        } else if imm == ebpf::hash_symbol_name(b"sol_create_program_address") {
-            Some(OobSyscall {
-                ctor: ".sol_create_program_address",
-                faults_spec: "call_sol_create_program_address_faults_oob_spec",
-                region_reg: 3,
-                region_size: 32,
-                region_len_reg: None,
-                region_writable: false,
-            })
-        } else if imm == ebpf::hash_symbol_name(b"sol_sha256") {
-            Some(OobSyscall {
-                ctor: ".sol_sha256",
-                faults_spec: "call_sol_sha256_faults_oob_spec",
-                region_reg: 3,
-                region_size: 32,
-                region_len_reg: None,
-                region_writable: true,
-            })
-        } else if imm == ebpf::hash_symbol_name(b"sol_set_return_data") {
-            Some(OobSyscall {
-                ctor: ".sol_set_return_data",
-                faults_spec: "call_sol_set_return_data_faults_oob_spec",
-                region_reg: 1,
-                region_size: 0,
-                region_len_reg: Some(2),
-                region_writable: false,
-            })
-        } else {
-            None
-        }
+        syscall_model(imm).and_then(|m| m.oob)
     }
+}
+
+/// A trace-mode running-effect emitter (`dispatch_traced_syscall` row): shapes
+/// the syscall's pre/post atoms + spec-call preamble at the walked PC.
+type EffectFn = fn(&mut SymState, &mut Vec<SpecCall>, &mut Vec<usize>, usize, &BinaryCtx)
+    -> Result<(), Box<dyn std::error::Error>>;
+
+/// One row of the modeled-syscall table: everything qedlift knows about a
+/// syscall hash. The four consumers (`imm_is_modeled_syscall`,
+/// `dispatch_traced_syscall`, `AbortKind::from_hash`, `OobSyscall::from_hash`)
+/// all derive from `SYSCALLS`, so adding a syscall is a one-row change.
+struct SyscallModel {
+    /// Symbol name (murmur3-hashed into the relocated `call_imm` imm).
+    name: &'static [u8],
+    /// In `imm_is_modeled_syscall`'s set: the lift emits an effect spec for
+    /// it, forcing the decode-pins path + `sl_block_iter` proof body.
+    modeled: bool,
+    /// Running-effect emitter for a traced syscall returning to pc+1.
+    effect: Option<EffectFn>,
+    /// Typed unconditional fault terminal (abort/panic/CPI stub).
+    abort: Option<AbortKind>,
+    /// Conditional out-of-bounds fault descriptor (H6 `.accessViolation`).
+    oob: Option<OobSyscall>,
+}
+
+impl SyscallModel {
+    /// Row template: fill only the lookups the syscall participates in.
+    const DEFAULT: SyscallModel = SyscallModel {
+        name: b"", modeled: false, effect: None, abort: None, oob: None,
+    };
+}
+
+/// The single source of truth for the modeled-syscall set.
+static SYSCALLS: &[SyscallModel] = &[
+    SyscallModel { name: b"sol_memset_", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| { emit_sol_memset(s, sc, bp, pc); Ok(()) }),
+        ..SyscallModel::DEFAULT },
+    // H8 Phase C-2: faithful buffer-write (rent/offset 0/length 17; else fail-closed).
+    SyscallModel { name: b"sol_get_sysvar", modeled: true,
+        effect: Some(emit_sol_get_sysvar),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_log_", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| { emit_sol_log(s, sc, bp, pc); Ok(()) }),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_memcpy_", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| { emit_sol_memcpy(s, sc, bp, pc, false); Ok(()) }),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_memmove_", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| { emit_sol_memcpy(s, sc, bp, pc, true); Ok(()) }),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_memcmp_", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| { emit_sol_memcmp(s, sc, bp, pc); Ok(()) }),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_set_return_data", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| { emit_sol_set_return_data(s, sc, bp, pc); Ok(()) }),
+        oob: Some(OobSyscall {
+            ctor: ".sol_set_return_data",
+            faults_spec: "call_sol_set_return_data_faults_oob_spec",
+            region_reg: 1,
+            region_size: 0,
+            region_len_reg: Some(2),
+            region_writable: false,
+        }),
+        ..SyscallModel::DEFAULT },
+    // H6: single-slice hash — descriptor cells consumed
+    // from the program's stores, input/output introduced.
+    SyscallModel { name: b"sol_sha256", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| emit_sol_sha256(s, sc, bp, pc)),
+        oob: Some(OobSyscall {
+            ctor: ".sol_sha256",
+            faults_spec: "call_sol_sha256_faults_oob_spec",
+            region_reg: 3,
+            region_size: 32,
+            region_len_reg: None,
+            region_writable: true,
+        }),
+        ..SyscallModel::DEFAULT },
+    // H6: single-seed PDA — descriptor from stores, seed +
+    // program_id + output introduced; off-curve surfaced.
+    SyscallModel { name: b"sol_create_program_address", modeled: true,
+        effect: Some(|s, sc, bp, pc, _| emit_sol_create_program_address(s, sc, bp, pc)),
+        oob: Some(OobSyscall {
+            ctor: ".sol_create_program_address",
+            faults_spec: "call_sol_create_program_address_faults_oob_spec",
+            region_reg: 3,
+            region_size: 32,
+            region_len_reg: None,
+            region_writable: false,
+        }),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_invoke_signed_rust", modeled: true,
+        abort: Some(AbortKind::Invoke),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_invoke_signed_c", modeled: true,
+        abort: Some(AbortKind::InvokeC),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"abort",
+        abort: Some(AbortKind::Abort),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_panic_",
+        abort: Some(AbortKind::SolPanic),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_secp256k1_recover",
+        oob: Some(OobSyscall {
+            ctor: ".sol_secp256k1_recover",
+            faults_spec: "call_sol_secp256k1_recover_faults_oob_spec",
+            region_reg: 1,
+            region_size: 32,
+            region_len_reg: None,
+            region_writable: false,
+        }),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_get_clock_sysvar",
+        oob: Some(OobSyscall {
+            ctor: ".sol_get_clock_sysvar",
+            faults_spec: "call_sol_get_clock_sysvar_faults_oob_spec",
+            region_reg: 1,
+            region_size: 40,
+            region_len_reg: None,
+            region_writable: true,
+        }),
+        ..SyscallModel::DEFAULT },
+    SyscallModel { name: b"sol_get_rent_sysvar",
+        oob: Some(OobSyscall {
+            ctor: ".sol_get_rent_sysvar",
+            faults_spec: "call_sol_get_rent_sysvar_faults_oob_spec",
+            region_reg: 1,
+            region_size: 17,
+            region_len_reg: None,
+            region_writable: true,
+        }),
+        ..SyscallModel::DEFAULT },
+];
+
+/// Look up a relocated `call_imm` immediate (murmur3 syscall hash) in the
+/// modeled-syscall table.
+fn syscall_model(imm: u32) -> Option<&'static SyscallModel> {
+    SYSCALLS.iter().find(|m| imm == ebpf::hash_symbol_name(m.name))
 }
 
 /// Arithmetic-shift-right value semantics mirroring `arsh_render`'s Lean
@@ -2000,74 +2066,25 @@ fn dispatch_traced_syscall(
     imm: u32,
     ctx: &BinaryCtx,
 ) -> Result<(), Box<dyn std::error::Error>> {
-
-    if imm == ebpf::hash_symbol_name(b"sol_memset_") {
-        emit_sol_memset(state, spec_calls,
-                        block_pcs, pc_iter);
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_get_sysvar") {
-        // H8 Phase C-2: faithful buffer-write (rent/offset 0/length 17; else fail-closed).
-        emit_sol_get_sysvar(state, spec_calls,
-            block_pcs, pc_iter, ctx)?;
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_log_") {
-        emit_sol_log(state, spec_calls, block_pcs,
-            pc_iter);
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_memcpy_") {
-        emit_sol_memcpy(state, spec_calls, block_pcs,
-            pc_iter, false);
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_memmove_") {
-        emit_sol_memcpy(state, spec_calls, block_pcs,
-            pc_iter, true);
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_memcmp_") {
-        emit_sol_memcmp(state, spec_calls, block_pcs,
-            pc_iter);
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_set_return_data") {
-        emit_sol_set_return_data(state, spec_calls,
-            block_pcs, pc_iter);
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_sha256") {
-        // H6: single-slice hash — descriptor cells consumed
-        // from the program's stores, input/output introduced.
-        emit_sol_sha256(state, spec_calls,
-            block_pcs, pc_iter)?;
-        return Ok(());
-    }
-    if imm == ebpf::hash_symbol_name(b"sol_create_program_address") {
-        // H6: single-seed PDA — descriptor from stores, seed +
-        // program_id + output introduced; off-curve surfaced.
-        emit_sol_create_program_address(state, spec_calls,
-            block_pcs, pc_iter)?;
-        return Ok(());
+    if let Some(effect) = syscall_model(imm).and_then(|m| m.effect) {
+        return effect(state, spec_calls, block_pcs, pc_iter, ctx);
     }
     // NOTE: sol_invoke_signed_rust never reaches here — it is an
     // AbortKind::Invoke walk TERMINAL (the proof-facing CPI is the
     // fail-closed `Cpi.exec` stub, so no running spec can cross it).
-    return Err(format!(
+    Err(format!(
         "call_imm at pc {} is a syscall (trace returns to {} \
          without a frame push) with imm hash 0x{:08x}, but only \
          sol_memset_ / sol_memcpy_ / sol_memmove_ / sol_memcmp_ / \
          sol_get_sysvar / sol_log_ / sol_set_return_data are \
          modelled so far (sol_invoke_signed terminates the walk). \
          This arm needs a syscall-effect spec for that hash.",
-        pc_iter, pc_iter + 1, imm).into());
+        pc_iter, pc_iter + 1, imm).into())
 }
 
 /// True if `opc` is a conditional jump the walker models (imm + reg forms).
 fn is_cond_jump_opc(opc: u8) -> bool {
     matches!(opc,
-
         ebpf::JEQ64_IMM | ebpf::JEQ32_IMM |
         ebpf::JNE64_IMM | ebpf::JNE32_IMM |
         ebpf::JGT64_IMM | ebpf::JGT32_IMM |
