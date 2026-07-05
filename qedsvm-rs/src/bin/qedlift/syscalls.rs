@@ -561,38 +561,6 @@ rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) h{o2}_lt \
     Ok(())
 }
 
-/// Emit the lift artifacts for an "r0-only" host syscall — one whose
-/// model effect is just `r0 := 0` (no memory, no output buffer): e.g.
-/// `sol_get_sysvar` (`Misc.execGetSysvar`) and `sol_log_`
-/// (`Logging.execLog`). The simplest syscall shape: a single `r0` atom,
-/// with the `nCu`/`hCu` CU assumption surfaced as a hypothesis (as for
-/// memset). `spec` is the proven `call_<name>_spec` (takes r0Old pc nCu
-/// hCu); `ctor` is the `Syscall` constructor; `tag` names the fresh vars.
-pub(super) fn emit_r0_syscall(
-    state: &mut SymState,
-    spec_calls: &mut Vec<SpecCall>,
-    block_pcs: &mut Vec<usize>,
-    pc: usize,
-    spec: &str,
-    ctor: &'static str,
-    tag: &str,
-) {
-    let r0v = state.read_reg(0);
-    let (_idx, ncu_name, hcu_name) = state.alloc_syscall(tag);
-    state.write_reg(0, Expr::Const(0));
-    // call_<name>_spec r0Old pc nCu hCu
-    let have_line = format!(
-        "have h_{pc} := {spec} {r0} {pc} {ncu} {hcu}",
-        pc = pc,
-        spec = spec,
-        r0 = r0v.atom_lean(),
-        ncu = ncu_name,
-        hcu = hcu_name,
-    );
-    finish_syscall(state, spec_calls, block_pcs, pc, ctor,
-        &ncu_name, &hcu_name, have_line);
-}
-
 /// Emit `sol_log_(r1, r2)` (H6). Unlike `emit_r0_syscall`, `call_sol_log_spec` pins r1/r2 and
 /// carries `rr = containsRange r1 r2`, so we read those registers and record the rr clause.
 pub(super) fn emit_sol_log(

@@ -32,7 +32,7 @@ mod syscalls;
 mod witness;
 
 use core::{
-    arsh_render, canon_addr, eval_expr, lean_off, reg_initial_name, Atom, Expr, Width,
+    arsh_render, canon_addr, eval_expr, lean_off, reg_initial_name, reg_lit, Atom, Expr, Width,
 };
 use emit::{
     atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
@@ -53,8 +53,8 @@ use refinement::{emit_descriptor_refinement, emit_refinement, emit_transition_bu
     RefineTarget, RefinementCtx, TransitionPathInfo};
 use state::SymState;
 use syscalls::{
-    emit_r0_syscall, emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log,
-    emit_sol_memcmp, emit_sol_memcpy, emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
+    emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log, emit_sol_memcmp,
+    emit_sol_memcpy, emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
 };
 use witness::build_branch_witness;
 use qed_analysis::layout::AccountLayout;
@@ -100,14 +100,8 @@ fn spec_call_for(
     // Parenthesise negative imm: `and64_imm_spec .r1 -8` would parse as `(and64_imm_spec .r1) - 8`.
     let imm = lean_off(insn.imm);
     let hyp_name = format!("h_{}", pc);
-    let reg = |r: u8| -> String {
-        match r {
-            0 => ".r0".into(), 1 => ".r1".into(), 2 => ".r2".into(), 3 => ".r3".into(),
-            4 => ".r4".into(), 5 => ".r5".into(), 6 => ".r6".into(), 7 => ".r7".into(),
-            8 => ".r8".into(), 9 => ".r9".into(), 10 => ".r10".into(),
-            _ => ".r0".into(),
-        }
-    };
+    // `.rN` register literal (dotted Lean ctor form of `core::reg_lit`).
+    let reg = |r: u8| -> String { format!(".{}", reg_lit(r)) };
     // Lean string for register r; falls back to initial-name convention (`baseAddr` for r1, `vR<N>Old` otherwise).
     let reg_val_lean = |r: u8| -> String {
         match state.regs.get(&r) {
@@ -1549,7 +1543,7 @@ fn syscall_model(imm: u32) -> Option<&'static SyscallModel> {
 fn arsh_value(x: u64, shift: u64, bits: u32) -> u64 {
     if bits == 64 {
         let s = (shift % 64) as u32;
-        (((x as i64) >> s) as u64)
+        ((x as i64) >> s) as u64
     } else {
         let s = (shift % 32) as u32;
         ((((x as u32) as i32) >> s) as u32) as u64
