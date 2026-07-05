@@ -125,14 +125,10 @@ theorem call_sol_remaining_compute_units_spec (pc : Nat) (nCu : Nat)
       (CodeReq.singleton pc (.call .sol_remaining_compute_units))
       (.r0 ↦ᵣ r0Old)
       (fun h => ∃ v, h = PartialState.singletonReg .r0 v) :=
-  cuTripleWithin_syscall_writes_r0_fn .sol_remaining_compute_units
-    (fun s => s.cuBudget - (s.cuConsumed + 1 + Misc.cu)) pc nCu
-    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
-    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
-    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
-    (fun s hex => by simp [step, execSyscall, Misc.execRemainingComputeUnits]; exact hex)
-    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
-    (fun s => by simp [step, execSyscall, Misc.execRemainingComputeUnits])
+  (r0_writer_obligations
+    (cuTripleWithin_syscall_writes_r0_fn .sol_remaining_compute_units
+      (fun s => s.cuBudget - (s.cuConsumed + 1 + Misc.cu)) pc nCu)
+    Misc.execRemainingComputeUnits)
     hCu
 
 /-! ## Syscall: `sol_set_return_data` — H6 region check + returnData write
