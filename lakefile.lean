@@ -331,6 +331,29 @@ lean_lib Examples where
     `PToken.TransferArm.OwnerMismatchGuardEnforced,
     `Generated.PTokenTransferDelegateInsufficientLifted,
     `PToken.TransferArm.DelegateInsufficientGuardEnforced,
+    -- Fan-out arms. MintTo supply-overflow is the load-bearing side of
+    -- the supply invariant that the (absent, pinned) Transfer
+    -- dest-overflow check leans on.
+    `Generated.PTokenMintToSupplyOverflowLifted,
+    `PToken.MintToArm.SupplyOverflowGuardEnforced,
+    `Generated.PTokenMintToFixedSupplyLifted,
+    `PToken.MintToArm.FixedSupplyGuardEnforced,
+    `Generated.PTokenMintToAuthorityMismatchLifted,
+    `PToken.MintToArm.AuthorityMismatchGuardEnforced,
+    `Generated.PTokenMintToMintMismatchLifted,
+    `PToken.MintToArm.MintMismatchGuardEnforced,
+    `Generated.PTokenMintToDestFrozenLifted,
+    `PToken.MintToArm.DestFrozenGuardEnforced,
+    `Generated.PTokenBurnInsufficientLifted,
+    `PToken.BurnArm.InsufficientGuardEnforced,
+    `Generated.PTokenBurnFrozenLifted,
+    `PToken.BurnArm.FrozenGuardEnforced,
+    `Generated.PTokenTransferCheckedDecimalsMismatchLifted,
+    `PToken.TransferCheckedArm.DecimalsMismatchGuardEnforced,
+    `Generated.PTokenTransferCheckedMintMismatchLifted,
+    `PToken.TransferCheckedArm.MintMismatchGuardEnforced,
+    `Generated.PTokenCloseAccountNonzeroLifted,
+    `PToken.CloseAccountArm.NonzeroBalanceGuardEnforced,
     -- Trace-guided lifts: real p_token happy paths, balance/supply
     -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,

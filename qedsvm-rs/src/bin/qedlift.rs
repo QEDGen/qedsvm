@@ -729,6 +729,86 @@ mod layout_tests {
             "../examples/lean/Generated/PTokenTransferDelegateInsufficientLifted.lean", None);
     }
 
+    /// Pins the fan-out p-token ERROR-PATH lifts (pattern library Layer 3,
+    /// ENFORCES direction) across the MintTo / Burn / TransferChecked /
+    /// CloseAccount arms. Headline: MintTo supply-overflow IS enforced
+    /// (TokenError::Overflow 14) — the invariant the absent Transfer
+    /// dest-overflow check leans on, so both sides of the supply invariant
+    /// are in the catalog. Others: MintTo fixed-supply (5), MintTo
+    /// authority-mismatch (4), MintTo mint-mismatch (3), MintTo dest-frozen
+    /// (17), Burn insufficient (1), Burn frozen (17), TransferChecked
+    /// decimals-mismatch (18) + explicit-mint mismatch (3), CloseAccount
+    /// nonzero balance (11).
+    #[test]
+    fn p_token_mint_to_supply_overflow_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_mint_to_supply_overflow.pcs",
+            "PTokenMintToSupplyOverflow", None,
+            "../examples/lean/Generated/PTokenMintToSupplyOverflowLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_mint_to_fixed_supply_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_mint_to_fixed_supply.pcs",
+            "PTokenMintToFixedSupply", None,
+            "../examples/lean/Generated/PTokenMintToFixedSupplyLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_mint_to_authority_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_mint_to_authority_mismatch.pcs",
+            "PTokenMintToAuthorityMismatch", None,
+            "../examples/lean/Generated/PTokenMintToAuthorityMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_mint_to_mint_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_mint_to_mint_mismatch.pcs",
+            "PTokenMintToMintMismatch", None,
+            "../examples/lean/Generated/PTokenMintToMintMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_mint_to_dest_frozen_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_mint_to_dest_frozen.pcs",
+            "PTokenMintToDestFrozen", None,
+            "../examples/lean/Generated/PTokenMintToDestFrozenLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_burn_insufficient_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_burn_insufficient.pcs",
+            "PTokenBurnInsufficient", None,
+            "../examples/lean/Generated/PTokenBurnInsufficientLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_burn_frozen_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_burn_frozen.pcs",
+            "PTokenBurnFrozen", None,
+            "../examples/lean/Generated/PTokenBurnFrozenLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_checked_decimals_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_checked_decimals_mismatch.pcs",
+            "PTokenTransferCheckedDecimalsMismatch", None,
+            "../examples/lean/Generated/PTokenTransferCheckedDecimalsMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_checked_mint_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_checked_mint_mismatch.pcs",
+            "PTokenTransferCheckedMintMismatch", None,
+            "../examples/lean/Generated/PTokenTransferCheckedMintMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_close_account_nonzero_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_close_account_nonzero.pcs",
+            "PTokenCloseAccountNonzero", None,
+            "../examples/lean/Generated/PTokenCloseAccountNonzeroLifted.lean", None);
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).
