@@ -427,6 +427,30 @@ fn dual_program() -> (AccountSharedData, mollusk_account::Account) {
     dual_account(1, vec![], solana_sdk_ids::bpf_loader_upgradeable::id(), true)
 }
 
+/// The CU budget used across the harness (= mollusk's default
+/// compute_unit_limit, so both engines run under the same cap).
+const DEFAULT_CU_BUDGET: u64 = 1_400_000;
+
+/// qedsvm engine with `DEFAULT_CU_BUDGET` and the given programs registered.
+fn svm_with(programs: &[(Pubkey, &[u8])]) -> Svm {
+    let mut fs = Svm::default().with_cu_budget(DEFAULT_CU_BUDGET);
+    for (id, so) in programs {
+        fs.add_program(id, so);
+    }
+    fs
+}
+
+/// Mollusk engine with the given programs registered under the upgradeable
+/// loader (mollusk keeps its default budget = `DEFAULT_CU_BUDGET`).
+fn mollusk_with(programs: &[(Pubkey, &[u8])]) -> Mollusk {
+    let mut m = Mollusk::default();
+    for (id, so) in programs {
+        m.add_program_with_loader_and_elf(
+            id, &solana_sdk_ids::bpf_loader_upgradeable::id(), so);
+    }
+    m
+}
+
 /// Shared driver for the byte-identical VM-fault fixtures (OOB syscalls,
 /// abort): runs `so` with an empty instruction and no accounts on both
 /// engines; qedsvm must report a typed `VmFault` and the M14 outcome must
@@ -441,12 +465,7 @@ fn assert_vm_faults_on_both(seed: u64, so: &[u8], label: &str) {
         .process_instruction(&ix, &[])
         .unwrap_or_else(|e| panic!("qedsvm runs {label}: {e:?}"));
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        so,
-    );
+    let m = mollusk_with(&[(program_id, so)]);
     let m_r = m.process_instruction(&ix, &[]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
@@ -466,12 +485,7 @@ fn assert_no_account_success(seed: u64, so: &[u8], label: &str) {
         .process_instruction(&ix, &[])
         .unwrap_or_else(|e| panic!("qedsvm runs {label}: {e:?}"));
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        so,
-    );
+    let m = mollusk_with(&[(program_id, so)]);
     let m_r = m.process_instruction(&ix, &[]);
 
     assert!(
@@ -531,18 +545,12 @@ fn assert_single_account_success(
         data: vec![],
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, so);
+    let fs = svm_with(&[(program_id, so)]);
     let fs_r = fs
         .process_instruction(&ix, &[(acct_key, pre_shared)])
         .unwrap_or_else(|e| panic!("qedsvm runs {label}: {e:?}"));
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        so,
-    );
+    let m = mollusk_with(&[(program_id, so)]);
     let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
 
     assert!(
@@ -667,18 +675,12 @@ fn guarded_counter_success_matches_mollusk() {
         data: vec![],
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, GUARDED_COUNTER_SO);
+    let fs = svm_with(&[(program_id, GUARDED_COUNTER_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[(acct_key, pre_shared)])
         .expect("qedsvm runs guarded_counter (success)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        GUARDED_COUNTER_SO,
-    );
+    let m = mollusk_with(&[(program_id, GUARDED_COUNTER_SO)]);
     let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -707,18 +709,12 @@ fn guarded_counter_abort_matches_mollusk() {
     let program_id = pid(92);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, GUARDED_COUNTER_SO);
+    let fs = svm_with(&[(program_id, GUARDED_COUNTER_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs guarded_counter (abort)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        GUARDED_COUNTER_SO,
-    );
+    let m = mollusk_with(&[(program_id, GUARDED_COUNTER_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
@@ -751,18 +747,12 @@ fn guarded_abort_success_matches_mollusk() {
         data: vec![],
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, GUARDED_ABORT_SO);
+    let fs = svm_with(&[(program_id, GUARDED_ABORT_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[(acct_key, pre_shared)])
         .expect("qedsvm runs guarded_abort (success)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        GUARDED_ABORT_SO,
-    );
+    let m = mollusk_with(&[(program_id, GUARDED_ABORT_SO)]);
     let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -807,18 +797,12 @@ fn guarded_oob_success_matches_mollusk() {
         data: vec![],
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, GUARDED_OOB_SO);
+    let fs = svm_with(&[(program_id, GUARDED_OOB_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[(acct_key, pre_shared)])
         .expect("qedsvm runs guarded_oob (success)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        GUARDED_OOB_SO,
-    );
+    let m = mollusk_with(&[(program_id, GUARDED_OOB_SO)]);
     let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -862,20 +846,12 @@ fn cpi_envelope_caller_matches_mollusk() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_ENVELOPE_CALLER_SO);
-    fs.add_program(&callee_id, NOOP_SO);
+    let fs = svm_with(&[(caller_id, CPI_ENVELOPE_CALLER_SO), (callee_id, NOOP_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[(callee_id, callee_program_shared)])
         .expect("qedsvm runs cpi_envelope_caller");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_ENVELOPE_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        NOOP_SO);
+    let m = mollusk_with(&[(caller_id, CPI_ENVELOPE_CALLER_SO), (callee_id, NOOP_SO)]);
     let m_r = m.process_instruction(&ix, &[(callee_id, callee_program_mollusk)]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -1032,18 +1008,12 @@ fn token_empty_data_invalid_instruction_matches_mollusk() {
     let program_id = pid(10);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, TOKEN_SO);
+    let fs = svm_with(&[(program_id, TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs token with empty data");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
     // Exact error encoding diverges by design (raw r0 vs typed ProgramError) — just assert non-Success.
@@ -1085,18 +1055,12 @@ fn token_initialize_mint2_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, TOKEN_SO);
+    let fs = svm_with(&[(program_id, TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[(mint_key, pre_shared)])
         .expect("qedsvm runs spl-token InitializeMint2");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[(mint_key, pre_mollusk)]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -1191,8 +1155,7 @@ fn p_token_mint_to_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (mint_key, mint_fs),
@@ -1201,12 +1164,7 @@ fn p_token_mint_to_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token MintTo");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (mint_key, mint_ml),
         (dest_key, dest_ml),
@@ -1269,8 +1227,7 @@ fn p_token_burn_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (acct_key, acct_fs),
@@ -1279,12 +1236,7 @@ fn p_token_burn_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token Burn");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, acct_ml),
         (mint_key, mint_ml),
@@ -1354,8 +1306,7 @@ fn p_token_transfer_checked_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, source_fs),
@@ -1365,12 +1316,7 @@ fn p_token_transfer_checked_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token TransferChecked");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, source_ml),
         (mint_key, mint_ml),
@@ -1424,8 +1370,7 @@ fn p_token_close_account_matches_mollusk() {
         data: vec![9],
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (acct_key, acct_fs),
@@ -1434,12 +1379,7 @@ fn p_token_close_account_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token CloseAccount");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, acct_ml),
         (dest_key, dest_mollusk),
@@ -1477,20 +1417,14 @@ fn p_token_initialize_mint2_matches_mollusk() {
         data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (mint_key, mint_fs),
         ])
         .expect("qedsvm runs p-token InitializeMint2");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (mint_key, mint_ml),
     ]);
@@ -1554,8 +1488,7 @@ fn token_transfer_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, TOKEN_SO);
+    let fs = svm_with(&[(program_id, TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, pre_src_shared),
@@ -1564,12 +1497,7 @@ fn token_transfer_matches_mollusk() {
         ])
         .expect("qedsvm runs spl-token Transfer");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, pre_src_mollusk),
         (dest_key, pre_dst_mollusk),
@@ -1577,11 +1505,6 @@ fn token_transfer_matches_mollusk() {
     ]);
 
     // Surface both results before asserting so a divergence is debuggable.
-    if !fs_r.logs.is_empty() {
-        for (i, l) in fs_r.logs.iter().enumerate() {
-        }
-    }
-
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on Transfer, got {:?}", fs_r.program_result);
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
@@ -1669,8 +1592,7 @@ fn p_token_transfer_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, pre_src_shared),
@@ -1679,22 +1601,12 @@ fn p_token_transfer_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token Transfer");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, pre_src_mollusk),
         (dest_key, pre_dst_mollusk),
         (authority, pre_auth_mollusk),
     ]);
-
-    if !fs_r.logs.is_empty() {
-        for (i, l) in fs_r.logs.iter().enumerate() {
-        }
-    }
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success on p-token Transfer, got {:?}", fs_r.program_result);
@@ -1766,8 +1678,7 @@ fn p_token_transfer_insufficient_balance_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, pre_src_shared),
@@ -1776,12 +1687,7 @@ fn p_token_transfer_insufficient_balance_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token Transfer (insufficient)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, pre_src_mollusk),
         (dest_key, pre_dst_mollusk),
@@ -1855,8 +1761,7 @@ fn p_token_transfer_frozen_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, pre_src_shared),
@@ -1865,12 +1770,7 @@ fn p_token_transfer_frozen_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token Transfer (frozen)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, pre_src_mollusk),
         (dest_key, pre_dst_mollusk),
@@ -1943,8 +1843,7 @@ fn p_token_transfer_dest_frozen_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, pre_src_shared),
@@ -1953,12 +1852,7 @@ fn p_token_transfer_dest_frozen_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token Transfer (dest frozen)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, pre_src_mollusk),
         (dest_key, pre_dst_mollusk),
@@ -2034,8 +1928,7 @@ fn p_token_transfer_mint_mismatch_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, pre_src_shared),
@@ -2044,12 +1937,7 @@ fn p_token_transfer_mint_mismatch_matches_mollusk() {
         ])
         .expect("qedsvm runs p-token Transfer (mint mismatch)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, pre_src_mollusk),
         (dest_key, pre_dst_mollusk),
@@ -2126,8 +2014,7 @@ fn assert_p_token_transfer_fails_auth(
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, pre_src_shared),
@@ -2136,12 +2023,7 @@ fn assert_p_token_transfer_fails_auth(
         ])
         .unwrap_or_else(|e| panic!("qedsvm runs p-token Transfer ({label}): {e:?}"));
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, pre_src_mollusk),
         (dest_key, pre_dst_mollusk),
@@ -2367,8 +2249,7 @@ fn p_token_transfer_dest_overflow_wraps_on_both() {
         data: transfer_ix_data(AMOUNT),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (source_key, AccountSharedData::from(Account {
@@ -2386,12 +2267,7 @@ fn p_token_transfer_dest_overflow_wraps_on_both() {
         ])
         .expect("qedsvm runs p-token Transfer (dest overflow)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (source_key, mollusk_account::Account {
             lamports: LAMPORTS, data: src.clone(), owner: program_id,
@@ -2456,17 +2332,11 @@ fn assert_p_token_ix_fails(
         })
     }).collect();
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs.process_instruction(&ix, &fs_accounts)
         .unwrap_or_else(|e| panic!("qedsvm runs p-token ({label}): {e:?}"));
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &m_accounts);
 
 
@@ -2681,8 +2551,7 @@ fn p_token_burn_supply_underflow_wraps_on_both() {
         data: burn_ix_data(BURN_AMOUNT),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs = svm_with(&[(program_id, P_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[
             (acct_key, AccountSharedData::from(Account {
@@ -2700,12 +2569,7 @@ fn p_token_burn_supply_underflow_wraps_on_both() {
         ])
         .expect("qedsvm runs p-token Burn (supply underflow)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        P_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, P_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, mollusk_account::Account {
             lamports: ACCT_LAMPORTS, data: acct_data.clone(),
@@ -3098,18 +2962,12 @@ fn associated_token_empty_data_fails_on_both() {
     let program_id = pid(20);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, ASSOCIATED_TOKEN_SO);
+    let fs = svm_with(&[(program_id, ASSOCIATED_TOKEN_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs ATA with empty data (must not crash the harness)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        ASSOCIATED_TOKEN_SO,
-    );
+    let m = mollusk_with(&[(program_id, ASSOCIATED_TOKEN_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
@@ -3141,20 +2999,13 @@ fn cpi_caller_forwards_account_to_incrementer() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
-    fs.add_program(&callee_id, INCREMENTER_SO);
+    let fs = svm_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, INCREMENTER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (acct_key, pre_shared),
         (callee_id, callee_program_shared),
     ]).expect("qedsvm runs CPI→incrementer");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_INCREMENT_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), INCREMENTER_SO);
+    let m = mollusk_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, INCREMENTER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, pre_mollusk),
         (callee_id, callee_program_mollusk),
@@ -3203,20 +3054,13 @@ fn cpi_callee_reallocs_account_grow() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
-    fs.add_program(&callee_id, CPI_REALLOC_CALLEE_SO);
+    let fs = svm_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, CPI_REALLOC_CALLEE_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (acct_key, pre_shared),
         (callee_id, callee_program_shared),
     ]).expect("qedsvm runs CPI→realloc");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_INCREMENT_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), CPI_REALLOC_CALLEE_SO);
+    let m = mollusk_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, CPI_REALLOC_CALLEE_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, pre_mollusk),
         (callee_id, callee_program_mollusk),
@@ -3268,21 +3112,13 @@ fn cpi_callee_realloc_overflow_rejected_on_both() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
-    fs.add_program(&callee_id, CPI_REALLOC_OVERFLOW_CALLEE_SO);
+    let fs = svm_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, CPI_REALLOC_OVERFLOW_CALLEE_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (acct_key, pre_shared),
         (callee_id, callee_program_shared),
     ]).expect("qedsvm runs CPI→realloc-overflow");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_INCREMENT_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_REALLOC_OVERFLOW_CALLEE_SO);
+    let m = mollusk_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, CPI_REALLOC_OVERFLOW_CALLEE_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, pre_mollusk),
         (callee_id, callee_program_mollusk),
@@ -3339,20 +3175,13 @@ fn cpi_readonly_account_not_committed_by_callee() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_INCREMENT_CALLER_SO);
-    fs.add_program(&callee_id, INCREMENTER_SO);
+    let fs = svm_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, INCREMENTER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (acct_key, pre_shared),
         (callee_id, callee_program_shared),
     ]).expect("qedsvm runs CPI->incrementer (read-only acct)");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_INCREMENT_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), INCREMENTER_SO);
+    let m = mollusk_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, INCREMENTER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, pre_mollusk),
         (callee_id, callee_program_mollusk),
@@ -3383,17 +3212,11 @@ fn cpi_caller_invokes_logger_propagates_log() {
 
     let (callee_shared, callee_mollusk) = dual_program();
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_CALLER_SO);
-    fs.add_program(&callee_id, LOGGER_SO);
+    let fs = svm_with(&[(caller_id, CPI_CALLER_SO), (callee_id, LOGGER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[(callee_id, callee_shared)])
         .expect("qedsvm runs CPI → logger");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), CPI_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), LOGGER_SO);
+    let m = mollusk_with(&[(caller_id, CPI_CALLER_SO), (callee_id, LOGGER_SO)]);
     let m_r = m.process_instruction(&ix, &[(callee_id, callee_mollusk)]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -3420,20 +3243,12 @@ fn cpi_caller_invokes_registered_noop() {
 
     let (callee_account_shared, callee_account_mollusk) = dual_program();
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_CALLER_SO);
-    fs.add_program(&callee_id, NOOP_SO);
+    let fs = svm_with(&[(caller_id, CPI_CALLER_SO), (callee_id, NOOP_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[(callee_id, callee_account_shared)])
         .expect("qedsvm runs CPI caller");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), CPI_CALLER_SO,
-    );
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), NOOP_SO,
-    );
+    let m = mollusk_with(&[(caller_id, CPI_CALLER_SO), (callee_id, NOOP_SO)]);
     let m_r = m.process_instruction(&ix, &[(callee_id, callee_account_mollusk)]);
 
     let our_logs: Vec<String> = fs_r.logs.iter()
@@ -3451,18 +3266,12 @@ fn pinocchio_escrow_empty_data_fails_on_both() {
     let program_id = pid(21);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, PINOCCHIO_ESCROW_SO);
+    let fs = svm_with(&[(program_id, PINOCCHIO_ESCROW_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs pinocchio escrow with empty data");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        PINOCCHIO_ESCROW_SO,
-    );
+    let m = mollusk_with(&[(program_id, PINOCCHIO_ESCROW_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
     assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
@@ -3482,12 +3291,7 @@ fn noop_with_instruction_data_matches_mollusk() {
     fs.add_program(&program_id, NOOP_SO);
     let fs_r = fs.process_instruction(&ix, &[]).expect("qedsvm runs");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        NOOP_SO,
-    );
+    let m = mollusk_with(&[(program_id, NOOP_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success));
@@ -3519,21 +3323,14 @@ fn cpi_two_account_caller_forwards_to_incrementer() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_TWO_ACCOUNT_CALLER_SO);
-    fs.add_program(&callee_id, INCREMENTER_SO);
+    let fs = svm_with(&[(caller_id, CPI_TWO_ACCOUNT_CALLER_SO), (callee_id, INCREMENTER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (acct0_key, acct0_fs),
         (acct1_key, acct1_fs),
         (callee_id, callee_program_shared),
     ]).expect("qedsvm runs N=2 CPI");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_TWO_ACCOUNT_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(), INCREMENTER_SO);
+    let m = mollusk_with(&[(caller_id, CPI_TWO_ACCOUNT_CALLER_SO), (callee_id, INCREMENTER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct0_key, acct0_ml),
         (acct1_key, acct1_ml),
@@ -3577,18 +3374,12 @@ fn rodata_addr_returner_matches_mollusk() {
     let program_id = pid(40);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, RODATA_ADDR_RETURNER_SO);
+    let fs = svm_with(&[(program_id, RODATA_ADDR_RETURNER_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs rodata_addr_returner");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        RODATA_ADDR_RETURNER_SO,
-    );
+    let m = mollusk_with(&[(program_id, RODATA_ADDR_RETURNER_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
 
@@ -3617,18 +3408,12 @@ fn curve_msm_cu_matches_mollusk() {
     let program_id = pid(73);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, CURVE_MSM_PROBE_SO);
+    let fs = svm_with(&[(program_id, CURVE_MSM_PROBE_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs curve_msm_probe");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CURVE_MSM_PROBE_SO,
-    );
+    let m = mollusk_with(&[(program_id, CURVE_MSM_PROBE_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
 
@@ -3651,18 +3436,12 @@ fn sentinel_clean_exit_observability() {
     let program_id = pid(74);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, SENTINEL_EXIT_SO);
+    let fs = svm_with(&[(program_id, SENTINEL_EXIT_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs sentinel_exit");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SENTINEL_EXIT_SO,
-    );
+    let m = mollusk_with(&[(program_id, SENTINEL_EXIT_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
 
 
@@ -3683,22 +3462,13 @@ fn pda_finder_matches_mollusk() {
     let program_id = pid(50);
     let ix = Instruction { program_id, accounts: vec![], data: vec![] };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, PDA_FINDER_SO);
+    let fs = svm_with(&[(program_id, PDA_FINDER_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[])
         .expect("qedsvm runs pda_finder");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        PDA_FINDER_SO,
-    );
+    let m = mollusk_with(&[(program_id, PDA_FINDER_SO)]);
     let m_r = m.process_instruction(&ix, &[]);
-
-    if fs_r.return_data.len() == 33 {
-    }
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
         "qedsvm: expected Success, got {:?}", fs_r.program_result);
@@ -3855,18 +3625,14 @@ fn system_transfer_cpi_matches_mollusk() {
         rent_epoch: mollusk_system_acct.rent_epoch,
     });
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, SYSTEM_TRANSFER_CALLER_SO);
+    let fs = svm_with(&[(caller_id, SYSTEM_TRANSFER_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (from_pk, from_pre),
         (to_pk,   to_pre),
         (system_program_id, system_stub_fs),
     ]).expect("qedsvm runs CPI → System::Transfer");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SYSTEM_TRANSFER_CALLER_SO);
+    let m = mollusk_with(&[(caller_id, SYSTEM_TRANSFER_CALLER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (from_pk, from_pre_m),
         (to_pk,   to_pre_m),
@@ -3952,18 +3718,14 @@ fn system_create_account_cpi_matches_mollusk() {
         rent_epoch: mollusk_system_acct.rent_epoch,
     });
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, SYSTEM_CREATE_ACCOUNT_CALLER_SO);
+    let fs = svm_with(&[(caller_id, SYSTEM_CREATE_ACCOUNT_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (payer_pk, payer_pre),
         (new_pk,   new_pre),
         (system_program_id, system_stub_fs),
     ]).expect("qedsvm runs CPI → System::CreateAccount");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SYSTEM_CREATE_ACCOUNT_CALLER_SO);
+    let m = mollusk_with(&[(caller_id, SYSTEM_CREATE_ACCOUNT_CALLER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (payer_pk, payer_pre_m),
         (new_pk,   new_pre_m),
@@ -4053,17 +3815,13 @@ fn system_allocate_assign_cpi_matches_mollusk() {
         rent_epoch: mollusk_system_acct.rent_epoch,
     });
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, SYSTEM_ALLOCATE_ASSIGN_CALLER_SO);
+    let fs = svm_with(&[(caller_id, SYSTEM_ALLOCATE_ASSIGN_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (acct_pk, acct_pre),
         (system_program_id, system_stub_fs),
     ]).expect("qedsvm runs CPI → Allocate + Assign");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SYSTEM_ALLOCATE_ASSIGN_CALLER_SO);
+    let m = mollusk_with(&[(caller_id, SYSTEM_ALLOCATE_ASSIGN_CALLER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_pk, acct_pre_m),
         (mollusk_system_id, mollusk_system_acct),
@@ -4155,8 +3913,7 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
         rent_epoch: mollusk_system_acct.rent_epoch,
     });
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO);
+    let fs = svm_with(&[(caller_id, SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (payer_pk,   payer_pre),
         (derived_pk, derived_pre),
@@ -4164,10 +3921,7 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
         (system_program_id, system_stub_fs),
     ]).expect("qedsvm runs CPI → CreateAccountWithSeed");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO);
+    let m = mollusk_with(&[(caller_id, SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (payer_pk,   payer_pre_m),
         (derived_pk, derived_pre_m),
@@ -4234,16 +3988,12 @@ fn compute_budget_cpi_matches_mollusk() {
     let (cb_stub_fs, cb_stub_m) = dual_account(
         1, b"compute_budget_program".to_vec(), solana_sdk_ids::native_loader::id(), true);
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, COMPUTE_BUDGET_CALLER_SO);
+    let fs = svm_with(&[(caller_id, COMPUTE_BUDGET_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (compute_budget_id, cb_stub_fs),
     ]).expect("qedsvm runs CPI → ComputeBudget");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        COMPUTE_BUDGET_CALLER_SO);
+    let m = mollusk_with(&[(caller_id, COMPUTE_BUDGET_CALLER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (compute_budget_id, cb_stub_m),
     ]);
@@ -4289,22 +4039,14 @@ fn cpi_signed_pda_promotes_signer() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_SIGNED_PDA_CALLER_SO);
-    fs.add_program(&callee_id, CPI_SIGNED_PDA_CALLEE_SO);
+    let fs = svm_with(&[(caller_id, CPI_SIGNED_PDA_CALLER_SO), (callee_id, CPI_SIGNED_PDA_CALLEE_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (data_key, data_pre_fs),
         (pda, pda_pre_fs),
         (callee_id, callee_program_fs),
     ]).expect("qedsvm runs CPI signed PDA");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_SIGNED_PDA_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_SIGNED_PDA_CALLEE_SO);
+    let m = mollusk_with(&[(caller_id, CPI_SIGNED_PDA_CALLER_SO), (callee_id, CPI_SIGNED_PDA_CALLEE_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (data_key, data_pre_ml),
         (pda, pda_pre_ml),
@@ -4348,21 +4090,13 @@ fn cpi_returns_data_propagates() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_GET_RETURN_DATA_CALLER_SO);
-    fs.add_program(&callee_id, CPI_SET_RETURN_DATA_CALLEE_SO);
+    let fs = svm_with(&[(caller_id, CPI_GET_RETURN_DATA_CALLER_SO), (callee_id, CPI_SET_RETURN_DATA_CALLEE_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (data_key, data_pre_fs),
         (callee_id, callee_program_fs),
     ]).expect("qedsvm runs CPI returnData round-trip");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_GET_RETURN_DATA_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_SET_RETURN_DATA_CALLEE_SO);
+    let m = mollusk_with(&[(caller_id, CPI_GET_RETURN_DATA_CALLER_SO), (callee_id, CPI_SET_RETURN_DATA_CALLEE_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (data_key, data_pre_ml),
         (callee_id, callee_program_ml),
@@ -4404,21 +4138,13 @@ fn cpi_get_return_data_setter_pubkey_matches_mollusk() {
         data: callee_id.to_bytes().to_vec(),
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&caller_id, CPI_GET_RETURN_DATA_PUBKEY_SO);
-    fs.add_program(&callee_id, CPI_SET_RETURN_DATA_CALLEE_SO);
+    let fs = svm_with(&[(caller_id, CPI_GET_RETURN_DATA_PUBKEY_SO), (callee_id, CPI_SET_RETURN_DATA_CALLEE_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (data_key, data_pre_fs),
         (callee_id, callee_program_fs),
     ]).expect("qedsvm runs CPI get_return_data pubkey round-trip");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &caller_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_GET_RETURN_DATA_PUBKEY_SO);
-    m.add_program_with_loader_and_elf(
-        &callee_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_SET_RETURN_DATA_CALLEE_SO);
+    let m = mollusk_with(&[(caller_id, CPI_GET_RETURN_DATA_PUBKEY_SO), (callee_id, CPI_SET_RETURN_DATA_CALLEE_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (data_key, data_pre_ml),
         (callee_id, callee_program_ml),
@@ -4457,18 +4183,12 @@ fn sysvar_probe_matches_mollusk() {
         data: vec![],
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, SYSVAR_PROBE_SO);
+    let fs = svm_with(&[(program_id, SYSVAR_PROBE_SO)]);
     let fs_r = fs
         .process_instruction(&ix, &[(data_key, pre_fs)])
         .expect("qedsvm runs sysvar probe");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        SYSVAR_PROBE_SO,
-    );
+    let m = mollusk_with(&[(program_id, SYSVAR_PROBE_SO)]);
     let m_r = m.process_instruction(&ix, &[(data_key, pre_ml)]);
 
     assert!(matches!(fs_r.program_result, FsProgramResult::Success),
@@ -4534,26 +4254,14 @@ fn cpi_depth_2_chain_matches_mollusk() {
         data: ix_data,
     };
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&outer_id, CPI_DEPTH_2_OUTER_SO);
-    fs.add_program(&middle_id, CPI_INCREMENT_CALLER_SO);
-    fs.add_program(&leaf_id, INCREMENTER_SO);
+    let fs = svm_with(&[(outer_id, CPI_DEPTH_2_OUTER_SO), (middle_id, CPI_INCREMENT_CALLER_SO), (leaf_id, INCREMENTER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (acct_key, acct_pre_fs),
         (middle_id, middle_prog_fs),
         (leaf_id, leaf_prog_fs),
     ]).expect("qedsvm runs depth-2 CPI chain");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &outer_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_DEPTH_2_OUTER_SO);
-    m.add_program_with_loader_and_elf(
-        &middle_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        CPI_INCREMENT_CALLER_SO);
-    m.add_program_with_loader_and_elf(
-        &leaf_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        INCREMENTER_SO);
+    let m = mollusk_with(&[(outer_id, CPI_DEPTH_2_OUTER_SO), (middle_id, CPI_INCREMENT_CALLER_SO), (leaf_id, INCREMENTER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (acct_key, acct_pre_ml),
         (middle_id, middle_prog_ml),
@@ -4645,8 +4353,7 @@ fn janus_slot_height_resolver_initialize_matches_mollusk() {
         rent_epoch: mollusk_system_acct.rent_epoch,
     });
 
-    let mut fs = Svm::default().with_cu_budget(1_400_000);
-    fs.add_program(&program_id, JANUS_SLOT_HEIGHT_RESOLVER_SO);
+    let fs = svm_with(&[(program_id, JANUS_SLOT_HEIGHT_RESOLVER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
         (payer, payer_pre_fs),
         (state, state_pre_fs),
@@ -4654,10 +4361,7 @@ fn janus_slot_height_resolver_initialize_matches_mollusk() {
         (system_program, system_stub_fs),
     ]).expect("qedsvm runs slot_height_resolver Initialize");
 
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id, &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        JANUS_SLOT_HEIGHT_RESOLVER_SO);
+    let m = mollusk_with(&[(program_id, JANUS_SLOT_HEIGHT_RESOLVER_SO)]);
     let m_r = m.process_instruction(&ix, &[
         (payer, payer_pre_ml),
         (state, state_pre_ml),
