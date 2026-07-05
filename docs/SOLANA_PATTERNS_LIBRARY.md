@@ -248,17 +248,29 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
       family exists for) and **explicit-mint mismatch** (exit 3 — vs the
       provided mint account, distinct from Transfer's src-vs-dest compare).
   14. **CloseAccount nonzero balance** (exit 11, NonNativeHasBalance).
-  **FINDING — the first REQUIRES-without-ENFORCES on a canonical program:**
-  p-token does NOT enforce a destination-balance overflow check on Transfer.
-  Where SPL Token uses `checked_add(...).ok_or(TokenError::Overflow)`, the
-  p-token binary WRAPS the destination amount mod 2^64 (verified against
-  mollusk: dest = u64::MAX-100 + 250 transfer succeeds on both engines with
-  the dest balance at 149). The check is protected only by the global supply
-  invariant (balances sum to supply ≤ u64::MAX, upheld by MintTo), not by the
-  Transfer arm. Pinned as `p_token_transfer_dest_overflow_wraps_on_both` in
-  diff_mollusk.rs so a future p-token that adds the check surfaces as a diff.
-  This is exactly the gap class the library exists to expose: sound under an
-  invariant that lives in a DIFFERENT arm.
+  **FINDINGS — REQUIRES-without-ENFORCES on a canonical program (the
+  unchecked-arithmetic audit of the token arms, now complete):**
+  1. p-token does NOT enforce a destination-balance overflow check on
+     Transfer. Where SPL Token uses `checked_add(...).ok_or(Overflow)`, the
+     p-token binary WRAPS the destination amount mod 2^64 (verified against
+     mollusk: dest = u64::MAX-100 + 250 transfer succeeds on both engines
+     with the dest balance at 149). Pinned as
+     `p_token_transfer_dest_overflow_wraps_on_both`.
+  2. p-token does NOT enforce a supply-underflow check on Burn. With an
+     account balance exceeding the supply (invariant-violating fixture:
+     balance 1000 > supply 100), burning 250 passes the balance check and
+     WRAPS the supply to 2^64-150 while the balance decrements normally.
+     SPL Token uses `checked_sub(...).ok_or(Overflow)` here. Pinned as
+     `p_token_burn_supply_underflow_wraps_on_both`.
+  Both omissions are sound ONLY under the supply invariant (each account
+  balance ≤ Σ balances = supply ≤ u64::MAX), which is upheld by the PROVEN
+  MintTo supply-overflow guard plus sum-preserving transfers — an invariant
+  living in a DIFFERENT arm than the code that leans on it. The remaining
+  token-arm subtractions/additions (Transfer source, Burn balance) are
+  dominated by proven in-arm guards (balance / delegated-amount /
+  burn-insufficient), so the arithmetic audit closes: every token-arm
+  balance/supply mutation is either guarded in-arm (proven) or
+  invariant-protected (pinned).
   The routing-only half-guard (`H3dBalanceGuard.lean`,
   `p_token_balance_insufficient_routes_to_error`) predates and is subsumed by
   the full balance guard. `EnforcedFault` + `enforcedFault_of_routes_then_handler`
@@ -282,9 +294,7 @@ recognizer shapes.
    - deeper per-arm coverage: Burn authority tri-case + delegated-amount,
      TransferChecked frozen/balance legs, CloseAccount authority legs, the
      Approve/Revoke/SetAuthority/FreezeAccount/ThawAccount arms.
-   - Burn supply-underflow side: balance ≤ supply invariant means the burn
-     subtraction cannot underflow supply; worth a wrap-vs-check probe like
-     the Transfer dest add (is the mint.supply -= amount checked?).
+   - Burn supply-underflow: PROBED — unchecked, wraps (finding #2 above).
 2. **Signer/owner DEFERRED, with reason.** The p_token signer check is NOT a clean
    guard: its proven non-signer branch *continues to the effect* (pinocchio's
    delegate-authority path, `H3fSignerExit`), so a naive "signer enforced" guard is

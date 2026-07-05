@@ -3262,6 +3262,119 @@ fn p_token_burn_insufficient_matches_mollusk() {
     burn_fails("burn-insufficient", seed, acct_data, mint_data, 250);
 }
 
+/// PINNED NON-GUARD (pattern library finding #2): p-token does NOT enforce
+/// a supply-underflow check on Burn. With an account balance EXCEEDING the
+/// mint supply (constructible only by violating the balances-sum-to-supply
+/// invariant in the fixture: balance 1000 > supply 100), burning 250 passes
+/// the account-balance check and then WRAPS the supply subtraction mod 2^64
+/// on both engines — where SPL Token uses
+/// `checked_sub(...).ok_or(TokenError::Overflow)`. Like the Transfer dest
+/// add (`p_token_transfer_dest_overflow_wraps_on_both`), the check is
+/// protected only by the supply invariant (amount <= balance <= supply),
+/// upheld elsewhere (MintTo supply checked-add, transfers preserving sums).
+/// Pinned so a future p-token that adds the check surfaces as a diff.
+#[test]
+fn p_token_burn_supply_underflow_wraps_on_both() {
+    let seed = 180;
+    let program_id = pid(seed);
+    let mint_key = pid(seed + 1);
+    let acct_key = pid(seed + 2);
+    let owner = pid(seed + 3);
+    let mint_auth = pid(seed + 4);
+    const SUPPLY_INITIAL: u64 = 100;
+    const BURN_AMOUNT: u64 = 250;
+    const WRAPPED_SUPPLY: u64 = SUPPLY_INITIAL.wrapping_sub(BURN_AMOUNT);
+
+    let acct_data = build_token_account(&mint_key, &owner, 1_000);
+    let mint_data = build_mint_account(&mint_auth, SUPPLY_INITIAL, 9);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new(mint_key, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+        data: burn_ix_data(BURN_AMOUNT),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (acct_key, AccountSharedData::from(Account {
+                lamports: ACCT_LAMPORTS, data: acct_data.clone(),
+                owner: program_id, executable: false, rent_epoch: 0,
+            })),
+            (mint_key, AccountSharedData::from(Account {
+                lamports: MINT_LAMPORTS, data: mint_data.clone(),
+                owner: program_id, executable: false, rent_epoch: 0,
+            })),
+            (owner, AccountSharedData::from(Account {
+                lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+                executable: false, rent_epoch: 0,
+            })),
+        ])
+        .expect("qedsvm runs p-token Burn (supply underflow)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (acct_key, mollusk_account::Account {
+            lamports: ACCT_LAMPORTS, data: acct_data.clone(),
+            owner: program_id, executable: false, rent_epoch: 0,
+        }),
+        (mint_key, mollusk_account::Account {
+            lamports: MINT_LAMPORTS, data: mint_data.clone(),
+            owner: program_id, executable: false, rent_epoch: 0,
+        }),
+        (owner, mollusk_account::Account {
+            lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+            executable: false, rent_epoch: 0,
+        }),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected the UNCHECKED supply sub to succeed, got {:?}",
+        fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected the UNCHECKED supply sub to succeed, got {:?}",
+        m_r.program_result);
+
+    for (result_name, data) in [
+        ("qedsvm", fs_acct_by_key(&fs_r, &mint_key).data().to_vec()),
+        ("mollusk", m_r.resulting_accounts.iter()
+            .find(|(k, _)| *k == mint_key).map(|(_, a)| a.data.clone())
+            .expect("mollusk mint")),
+    ] {
+        let post_supply = u64::from_le_bytes(data[36..44].try_into().unwrap());
+        assert_eq!(post_supply, WRAPPED_SUPPLY,
+            "{result_name}: mint supply must WRAP (not saturate/abort) on \
+             the unchecked burn subtraction");
+    }
+
+    for (result_name, data) in [
+        ("qedsvm", fs_acct_by_key(&fs_r, &acct_key).data().to_vec()),
+        ("mollusk", m_r.resulting_accounts.iter()
+            .find(|(k, _)| *k == acct_key).map(|(_, a)| a.data.clone())
+            .expect("mollusk acct")),
+    ] {
+        let post_balance = u64::from_le_bytes(data[64..72].try_into().unwrap());
+        assert_eq!(post_balance, 1_000 - BURN_AMOUNT,
+            "{result_name}: account balance must decrement normally");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for underflow p-token Burn: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
 /// Burn from a FROZEN account: TokenError::AccountFrozen (17).
 #[test]
 fn p_token_burn_frozen_matches_mollusk() {
