@@ -5,6 +5,9 @@
 //! When agave bumps a version, bump here — that is the whole point of this crate.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+// The FFI exports below are unsafe-by-design C-ABI entry points: Lean hands us raw
+// lean_object pointers and the extern signature cannot carry `unsafe`.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 mod lean_ffi;
 use lean_ffi::{

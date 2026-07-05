@@ -271,7 +271,7 @@ impl Svm {
         }
 
         let elf = self.programs.get(&instruction.program_id)
-            .ok_or_else(|| SvmError::UnknownProgram(instruction.program_id))?;
+            .ok_or(SvmError::UnknownProgram(instruction.program_id))?;
 
         // Sysvar read-only enforcement: agave's loader rejects writable sysvar accounts.
         // We mirror by inspecting `ix.accounts` before serializing
@@ -506,14 +506,13 @@ fn validate_post_state(
             .find(|m| m.pubkey == pk)
             .map(|m| m.is_writable)
             .unwrap_or(true); // not in ix.accounts → unconstrained
-        if !meta_writable {
-            if pre_acct.lamports() != post_acct.lamports()
+        if !meta_writable
+            && (pre_acct.lamports() != post_acct.lamports()
                 || pre_acct.data() != post_acct.data()
-                || pre_acct.owner() != post_acct.owner()
+                || pre_acct.owner() != post_acct.owner())
             {
                 return Err(PostStateError::ReadOnlyAccountModified(pk));
             }
-        }
 
         // Data-growth bound.
         let pre_len  = pre_acct.data().len();
