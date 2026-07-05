@@ -2673,6 +2673,206 @@ fn p_token_transfer_mint_mismatch_matches_mollusk() {
     );
 }
 
+/// Shared driver for p-token Transfer fixtures that must FAIL on both engines
+/// (pattern library Layer-3 violating traces): 3-account Transfer
+/// (source, dest, authority-as-signer), asserts both engines fail, both
+/// accounts untouched, CU identical. Callers pass the violating pre-state.
+fn assert_p_token_transfer_fails(
+    label: &str,
+    seed: u64,
+    source_data: Vec<u8>,
+    dest_data: Vec<u8>,
+    ix_data: Vec<u8>,
+) {
+    let program_id = pid(seed);
+    let authority = pid(seed + 1);
+    let source_key = pid(seed + 2);
+    let dest_key = pid(seed + 3);
+    const LAMPORTS: u64 = 2_039_280;
+
+    let pre_src_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_dst_shared = AccountSharedData::from(Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    });
+    let pre_auth_shared = AccountSharedData::from(Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    });
+
+    let pre_src_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: source_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_dst_mollusk = mollusk_account::Account {
+        lamports: LAMPORTS, data: dest_data.clone(), owner: program_id,
+        executable: false, rent_epoch: 0,
+    };
+    let pre_auth_mollusk = mollusk_account::Account {
+        lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+        executable: false, rent_epoch: 0,
+    };
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: ix_data,
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, pre_src_shared),
+            (dest_key, pre_dst_shared),
+            (authority, pre_auth_shared),
+        ])
+        .unwrap_or_else(|e| panic!("qedsvm runs p-token Transfer ({label}): {e:?}"));
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, pre_src_mollusk),
+        (dest_key, pre_dst_mollusk),
+        (authority, pre_auth_mollusk),
+    ]);
+
+    eprintln!("[{label}] fs.program_result   = {:?}", fs_r.program_result);
+    eprintln!("[{label}] mol.program_result  = {:?}", m_r.program_result);
+
+    assert!(!matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: {label} must fail the Transfer, got Success");
+    assert!(!matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: {label} must fail the Transfer, got Success");
+
+    for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
+        let fa = fs_acct_by_key(&fs_r, &key);
+        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
+            .map(|(_, a)| a).expect("mollusk account");
+        assert_eq!(fa.data(), ma.data.as_slice(),
+            "{name} data must be untouched by a failed Transfer ({label})");
+        assert_eq!(fa.lamports(), ma.lamports,
+            "{name} lamports must be untouched by a failed Transfer ({label})");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for {label} p-token Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
+}
+
+fn transfer_ix_data(amount: u64) -> Vec<u8> {
+    let mut d = Vec::with_capacity(9); // [3, amount_le_u64]
+    d.push(3);
+    d.extend_from_slice(&amount.to_le_bytes());
+    d
+}
+
+/// p-token Transfer from an UNINITIALIZED source (state byte = 0): the
+/// `jeq state, 0` at pc 4005 diverts. Trace source for the uninitialized
+/// guard (ENFORCES direction).
+#[test]
+fn p_token_transfer_src_uninit_matches_mollusk() {
+    let mint = pid(61);
+    let auth = pid(57);
+    let mut src = build_token_account(&mint, &auth, 1_000);
+    src[108] = 0; // AccountState::Uninitialized
+    let dst = build_token_account(&mint, &auth, 0);
+    assert_p_token_transfer_fails("src-uninit", 56, src, dst, transfer_ix_data(250));
+}
+
+/// p-token Transfer into an UNINITIALIZED destination (state byte = 0): the
+/// `jeq state, 0` at pc 4008 diverts.
+#[test]
+fn p_token_transfer_dest_uninit_matches_mollusk() {
+    let mint = pid(66);
+    let auth = pid(63);
+    let src = build_token_account(&mint, &auth, 1_000);
+    let mut dst = build_token_account(&mint, &auth, 0);
+    dst[108] = 0; // AccountState::Uninitialized
+    assert_p_token_transfer_fails("dest-uninit", 62, src, dst, transfer_ix_data(250));
+}
+
+/// p-token Transfer from a source with an INVALID state byte (> 2): the
+/// `jgt state, 2` at pc 4004 diverts (r6 = 3, r7 = 0 — the
+/// ProgramError::InvalidAccountData encoding, not a TokenError).
+#[test]
+fn p_token_transfer_src_bad_state_matches_mollusk() {
+    let mint = pid(72);
+    let auth = pid(69);
+    let mut src = build_token_account(&mint, &auth, 1_000);
+    src[108] = 3; // invalid AccountState tag
+    let dst = build_token_account(&mint, &auth, 0);
+    assert_p_token_transfer_fails("src-bad-state", 68, src, dst, transfer_ix_data(250));
+}
+
+/// p-token Transfer with an INVALID destination state byte (> 2): the
+/// `jgt state, 2` at pc 4007 diverts.
+#[test]
+fn p_token_transfer_dest_bad_state_matches_mollusk() {
+    let mint = pid(78);
+    let auth = pid(75);
+    let src = build_token_account(&mint, &auth, 1_000);
+    let mut dst = build_token_account(&mint, &auth, 0);
+    dst[108] = 3; // invalid AccountState tag
+    assert_p_token_transfer_fails("dest-bad-state", 74, src, dst, transfer_ix_data(250));
+}
+
+/// p-token Transfer with SHORT instruction data (1 byte, just the
+/// discriminator — no amount): the `jlt ix_len, 9` at pc 3998 diverts.
+#[test]
+fn p_token_transfer_short_ix_matches_mollusk() {
+    let mint = pid(84);
+    let auth = pid(81);
+    let src = build_token_account(&mint, &auth, 1_000);
+    let dst = build_token_account(&mint, &auth, 0);
+    assert_p_token_transfer_fails("short-ix", 80, src, dst, vec![3]);
+}
+
+/// Cross-mint Transfer where the mints differ ONLY in the given 8-byte limb
+/// of the pubkey: exercises the corresponding `jne` of the unrolled 4-limb
+/// mint compare (pcs 4019/4022/4025/4028 for limbs 0-3). The limb-0 case is
+/// `p_token_transfer_mint_mismatch_matches_mollusk`; these cover the
+/// remaining sibling error paths of the same mint guard.
+fn mint_mismatch_limb(label: &str, seed: u64, limb: usize) {
+    let mint_a = pid(seed + 4);
+    let mut b = [0u8; 32];
+    b.copy_from_slice(mint_a.as_ref());
+    b[limb * 8] ^= 0xFF; // differ only within limb `limb`
+    let mint_b = Pubkey::from(b);
+    let auth = pid(seed + 1);
+    let src = build_token_account(&mint_a, &auth, 1_000);
+    let dst = build_token_account(&mint_b, &auth, 0);
+    assert_p_token_transfer_fails(label, seed, src, dst, transfer_ix_data(250));
+}
+
+#[test]
+fn p_token_transfer_mint_mismatch_limb1_matches_mollusk() {
+    mint_mismatch_limb("mint-mismatch-limb1", 86, 1);
+}
+
+#[test]
+fn p_token_transfer_mint_mismatch_limb2_matches_mollusk() {
+    mint_mismatch_limb("mint-mismatch-limb2", 92, 2);
+}
+
+#[test]
+fn p_token_transfer_mint_mismatch_limb3_matches_mollusk() {
+    mint_mismatch_limb("mint-mismatch-limb3", 98, 3);
+}
+
 /// ELF-load probe for ATA binary: both engines fail before CPI. Validates loading + entry dispatch without CPI dependency.
 #[test]
 fn associated_token_empty_data_fails_on_both() {

@@ -626,6 +626,72 @@ mod layout_tests {
              (mechanically emitted, do not hand-edit)");
     }
 
+    /// Pins the batch-2 p-token Transfer ERROR-PATH lifts (pattern library
+    /// Layer 3, ENFORCES direction) — all violating traces of the same
+    /// Transfer dispatch window, each diverting at a different check:
+    /// uninitialized src/dest (jeq state,0 at 4005/4008 → the 5080
+    /// UninitializedAccount path), invalid state byte src/dest (jgt state,2
+    /// at 4004/4007 → 4725 with the ProgramError::InvalidAccountData
+    /// encoding r6=3), short instruction data (jlt ix_len,9 at 3998 → the
+    /// 312 hub, TokenError::InvalidInstruction 12), and the mint-compare
+    /// limbs 1-3 (the jne at 4022/4025/4028 → 4724, MintMismatch 3 —
+    /// completing pubkey inequality alongside the limb-0 lift).
+    #[test]
+    fn p_token_transfer_src_uninit_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_src_uninit.pcs",
+            "PTokenTransferSrcUninit", None,
+            "../examples/lean/Generated/PTokenTransferSrcUninitLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_dest_uninit_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_dest_uninit.pcs",
+            "PTokenTransferDestUninit", None,
+            "../examples/lean/Generated/PTokenTransferDestUninitLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_src_bad_state_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_src_bad_state.pcs",
+            "PTokenTransferSrcBadState", None,
+            "../examples/lean/Generated/PTokenTransferSrcBadStateLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_dest_bad_state_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_dest_bad_state.pcs",
+            "PTokenTransferDestBadState", None,
+            "../examples/lean/Generated/PTokenTransferDestBadStateLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_short_ix_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_short_ix.pcs",
+            "PTokenTransferShortIx", None,
+            "../examples/lean/Generated/PTokenTransferShortIxLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_mint_mismatch_limb1_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_mint_mismatch_limb1.pcs",
+            "PTokenTransferMintMismatchLimb1", None,
+            "../examples/lean/Generated/PTokenTransferMintMismatchLimb1Lifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_mint_mismatch_limb2_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_mint_mismatch_limb2.pcs",
+            "PTokenTransferMintMismatchLimb2", None,
+            "../examples/lean/Generated/PTokenTransferMintMismatchLimb2Lifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_transfer_mint_mismatch_limb3_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_transfer_mint_mismatch_limb3.pcs",
+            "PTokenTransferMintMismatchLimb3", None,
+            "../examples/lean/Generated/PTokenTransferMintMismatchLimb3Lifted.lean", None);
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).
