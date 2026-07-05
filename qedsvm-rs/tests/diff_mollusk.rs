@@ -403,6 +403,33 @@ fn fs_acct_by_key<'a>(
         .unwrap_or_else(|| panic!("account {key} absent from qedsvm resulting_accounts"))
 }
 
+/// Shared driver for the byte-identical VM-fault fixtures (OOB syscalls,
+/// abort): runs `so` with an empty instruction and no accounts on both
+/// engines; qedsvm must report a typed `VmFault` and the M14 outcome must
+/// match mollusk's `ProgramFailedToComplete` catch-all.
+fn assert_vm_faults_on_both(seed: u64, so: &[u8], label: &str) {
+    let program_id = pid(seed);
+    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+
+    let mut fs = Svm::default();
+    fs.add_program(&program_id, so);
+    let fs_r = fs
+        .process_instruction(&ix, &[])
+        .unwrap_or_else(|e| panic!("qedsvm runs {label}: {e:?}"));
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        so,
+    );
+    let m_r = m.process_instruction(&ix, &[]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
+        "qedsvm should VM-fault on {label}, got {:?}", fs_r.program_result);
+    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, label);
+}
+
 /// Both engines produce identical output for a trivial noop.
 #[test]
 fn noop_program_matches_mollusk() {
@@ -772,26 +799,7 @@ fn guarded_abort_success_matches_mollusk() {
 /// source for `GuardedAbortPanicLifted`.
 #[test]
 fn guarded_abort_panic_matches_mollusk() {
-    let program_id = pid(95);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, GUARDED_ABORT_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs guarded_abort (panic)");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        GUARDED_ABORT_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on the abort syscall, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "guarded_abort");
+    assert_vm_faults_on_both(95, GUARDED_ABORT_SO, "guarded_abort");
 }
 
 /// guarded_oob SUCCESS path (#40): one account → `amount` = 1 ≠ 0, guard
@@ -853,26 +861,7 @@ fn guarded_oob_success_matches_mollusk() {
 /// ProgramFailedToComplete). Trace source for `GuardedOobOobLifted`.
 #[test]
 fn guarded_oob_oob_matches_mollusk() {
-    let program_id = pid(100);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, GUARDED_OOB_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs guarded_oob (oob)");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        GUARDED_OOB_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on the OOB clock write, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "guarded_oob");
+    assert_vm_faults_on_both(100, GUARDED_OOB_SO, "guarded_oob");
 }
 
 /// cpi_envelope_caller (#40 gap 4): builds the StableInstruction on the heap
@@ -4394,28 +4383,7 @@ fn pda_finder_matches_mollusk() {
 /// Tier-1 OOB read: input+0x10000000 is unmapped; pre-fix returned Success, now both VM-fault.
 #[test]
 fn oob_read_fails_on_both() {
-    let program_id = pid(51);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_READ_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_read");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_READ_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    // M14: VM-fault (accessViolation) → agave UnknownError(ProgramFailedToComplete); assert_outcome_matches checks equivalence.
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB read, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_read");
+    assert_vm_faults_on_both(51, OOB_READ_SO, "oob_read");
 }
 
 /// Phase 7 sub-item 3: a program that calls the `abort` syscall faults on
@@ -4424,365 +4392,85 @@ fn oob_read_fails_on_both() {
 /// `AbortCaller_fault_correct` typed-fault corollary.
 #[test]
 fn abort_caller_fails_on_both() {
-    let program_id = pid(58);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, ABORT_CALLER_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs abort_caller");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        ABORT_CALLER_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on the abort syscall, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "abort_caller");
+    assert_vm_faults_on_both(58, ABORT_CALLER_SO, "abort_caller");
 }
 
 /// H6: sol_memset_ with dst 256 MiB OOB; pre-fix wrote through, post-fix guardWrite VM-faults on both.
 #[test]
 fn oob_memset_fails_on_both() {
-    let program_id = pid(52);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_MEMSET_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_memset");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_MEMSET_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_memset_, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_memset");
+    assert_vm_faults_on_both(52, OOB_MEMSET_SO, "oob_memset");
 }
 
 /// H6: sol_log_pubkey with ptr 256 MiB OOB; translate_type::<Pubkey> → guardRead VM-faults on both.
 #[test]
 fn oob_log_pubkey_fails_on_both() {
-    let program_id = pid(53);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_LOG_PUBKEY_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_log_pubkey");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_LOG_PUBKEY_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_log_pubkey, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_pubkey");
+    assert_vm_faults_on_both(53, OOB_LOG_PUBKEY_SO, "oob_log_pubkey");
 }
 
 /// H6: sol_log_ with msg 256 MiB OOB; translate_slice → guardRead VM-faults on both.
 #[test]
 fn oob_log_fails_on_both() {
-    let program_id = pid(54);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_LOG_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_log");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_LOG_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_log_, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log");
+    assert_vm_faults_on_both(54, OOB_LOG_SO, "oob_log");
 }
 
 /// H6: sol_log_data with descriptor array 256 MiB OOB; array read traps before slice deref on both.
 #[test]
 fn oob_log_data_fails_on_both() {
-    let program_id = pid(56);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_LOG_DATA_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_log_data");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_LOG_DATA_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_log_data, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_log_data");
+    assert_vm_faults_on_both(56, OOB_LOG_DATA_SO, "oob_log_data");
 }
 
 /// H6: sol_sha256 output buffer 256 MiB OOB; translate_slice_mut on output traps first; guardWrite VM-faults on both.
 #[test]
 fn oob_sha256_output_fails_on_both() {
-    let program_id = pid(242);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_SHA256_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_sha256");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_SHA256_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_sha256 output, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256");
+    assert_vm_faults_on_both(242, OOB_SHA256_SO, "oob_sha256");
 }
 
 /// H6: sol_sha256 valid output, input descriptor array 256 MiB OOB; guardRead traps after output pass.
 #[test]
 fn oob_sha256_input_fails_on_both() {
-    let program_id = pid(243);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_SHA256_INPUT_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_sha256_input");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_SHA256_INPUT_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_sha256 input, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_sha256_input");
+    assert_vm_faults_on_both(243, OOB_SHA256_INPUT_SO, "oob_sha256_input");
 }
 
 /// H6: sol_poseidon valid output, input array 256 MiB OOB; guardedCommit guardRead VM-faults on both.
 #[test]
 fn oob_poseidon_input_fails_on_both() {
-    let program_id = pid(244);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_POSEIDON_INPUT_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_poseidon_input");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_POSEIDON_INPUT_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_poseidon input, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_poseidon_input");
+    assert_vm_faults_on_both(244, OOB_POSEIDON_INPUT_SO, "oob_poseidon_input");
 }
 
 /// H6: sol_get_clock_sysvar output 256 MiB OOB; translate_type_mut::<Clock> → zeroFillR1 guardWrite VM-faults on both.
 #[test]
 fn oob_clock_sysvar_fails_on_both() {
-    let program_id = pid(245);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_CLOCK_SYSVAR_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_clock_sysvar");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_CLOCK_SYSVAR_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_get_clock_sysvar, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_clock_sysvar");
+    assert_vm_faults_on_both(245, OOB_CLOCK_SYSVAR_SO, "oob_clock_sysvar");
 }
 
 /// H6: sol_set_return_data input 256 MiB OOB (within MAX_RETURN_DATA); length passes then translate_slice traps.
 #[test]
 fn oob_set_return_data_fails_on_both() {
-    let program_id = pid(246);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_SET_RETURN_DATA_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_set_return_data");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_SET_RETURN_DATA_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_set_return_data, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_set_return_data");
+    assert_vm_faults_on_both(246, OOB_SET_RETURN_DATA_SO, "oob_set_return_data");
 }
 
 /// H6: sol_get_rent_sysvar output 256 MiB OOB; translate_type_mut::<Rent> → guardWrite VM-faults on both.
 #[test]
 fn oob_rent_sysvar_fails_on_both() {
-    let program_id = pid(247);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_RENT_SYSVAR_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_rent_sysvar");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_RENT_SYSVAR_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_get_rent_sysvar, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_rent_sysvar");
+    assert_vm_faults_on_both(247, OOB_RENT_SYSVAR_SO, "oob_rent_sysvar");
 }
 
 /// H6: sol_get_return_data output 256 MiB OOB (copyLen=8); translate_slice_mut → guardWrite VM-faults on both.
 #[test]
 fn oob_get_return_data_fails_on_both() {
-    let program_id = pid(248);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_GET_RETURN_DATA_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_get_return_data");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_GET_RETURN_DATA_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_get_return_data, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_get_return_data");
+    assert_vm_faults_on_both(248, OOB_GET_RETURN_DATA_SO, "oob_get_return_data");
 }
 
 /// H6: sol_secp256k1_recover hash 256 MiB OOB; representative of whole curve/crypto family's guardRead coverage.
 #[test]
 fn oob_secp256k1_fails_on_both() {
-    let program_id = pid(249);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_SECP256K1_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_secp256k1");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_SECP256K1_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_secp256k1_recover, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_secp256k1");
+    assert_vm_faults_on_both(249, OOB_SECP256K1_SO, "oob_secp256k1");
 }
 
 /// H6: sol_create_program_address with OOB program_id/output; guardRead/guardedCommit VM-faults on both.
 #[test]
 fn oob_create_pda_fails_on_both() {
-    let program_id = pid(250);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
-
-    let mut fs = Svm::default();
-    fs.add_program(&program_id, OOB_CREATE_PDA_SO);
-    let fs_r = fs
-        .process_instruction(&ix, &[])
-        .expect("qedsvm runs oob_create_pda");
-
-    let mut m = Mollusk::default();
-    m.add_program_with_loader_and_elf(
-        &program_id,
-        &solana_sdk_ids::bpf_loader_upgradeable::id(),
-        OOB_CREATE_PDA_SO,
-    );
-    let m_r = m.process_instruction(&ix, &[]);
-
-
-    assert!(matches!(fs_r.program_result, FsProgramResult::VmFault { .. }),
-        "qedsvm should VM-fault on OOB sol_create_program_address, got {:?}", fs_r.program_result);
-    assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "oob_create_pda");
+    assert_vm_faults_on_both(250, OOB_CREATE_PDA_SO, "oob_create_pda");
 }
 
 /// Tier-1 native System::Transfer CPI: from -= n, to += n; lamport conservation without Rust backstop.
