@@ -809,6 +809,83 @@ mod layout_tests {
             "../examples/lean/Generated/PTokenCloseAccountNonzeroLifted.lean", None);
     }
 
+    /// Pins the batch-5 p-token ERROR-PATH lifts across the Approve /
+    /// Revoke / SetAuthority / FreezeAccount / ThawAccount arms: approve
+    /// frozen (17) + owner-mismatch (4), revoke frozen (17) +
+    /// owner-mismatch (4), set-authority owner-mismatch (4) + unsupported
+    /// authority type (15), freeze on a no-freeze-authority mint (16) +
+    /// freeze-authority mismatch (4) + already-frozen (13), thaw
+    /// not-frozen (13).
+    #[test]
+    fn p_token_approve_frozen_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_approve_frozen.pcs",
+            "PTokenApproveFrozen", None,
+            "../examples/lean/Generated/PTokenApproveFrozenLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_approve_owner_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_approve_owner_mismatch.pcs",
+            "PTokenApproveOwnerMismatch", None,
+            "../examples/lean/Generated/PTokenApproveOwnerMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_revoke_frozen_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_revoke_frozen.pcs",
+            "PTokenRevokeFrozen", None,
+            "../examples/lean/Generated/PTokenRevokeFrozenLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_revoke_owner_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_revoke_owner_mismatch.pcs",
+            "PTokenRevokeOwnerMismatch", None,
+            "../examples/lean/Generated/PTokenRevokeOwnerMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_set_authority_owner_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_set_authority_owner_mismatch.pcs",
+            "PTokenSetAuthorityOwnerMismatch", None,
+            "../examples/lean/Generated/PTokenSetAuthorityOwnerMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_set_authority_bad_type_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_set_authority_bad_type.pcs",
+            "PTokenSetAuthorityBadType", None,
+            "../examples/lean/Generated/PTokenSetAuthorityBadTypeLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_freeze_cannot_freeze_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_freeze_cannot_freeze.pcs",
+            "PTokenFreezeCannotFreeze", None,
+            "../examples/lean/Generated/PTokenFreezeCannotFreezeLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_freeze_authority_mismatch_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_freeze_authority_mismatch.pcs",
+            "PTokenFreezeAuthorityMismatch", None,
+            "../examples/lean/Generated/PTokenFreezeAuthorityMismatchLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_freeze_already_frozen_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_freeze_already_frozen.pcs",
+            "PTokenFreezeAlreadyFrozen", None,
+            "../examples/lean/Generated/PTokenFreezeAlreadyFrozenLifted.lean", None);
+    }
+
+    #[test]
+    fn p_token_thaw_not_frozen_lift_is_mechanically_emitted() {
+        pin_p_token_arm("tests/fixtures/p_token_thaw_not_frozen.pcs",
+            "PTokenThawNotFrozen", None,
+            "../examples/lean/Generated/PTokenThawNotFrozenLifted.lean", None);
+    }
+
     /// Pins the `sol_memcpy_` happy-path lift (`call_sol_memcpy_spec`): two
     /// `↦Bytes` atoms (src readable, dst writable), dst blob ← src, r0 := 0.
     /// Trace-driven (syscall dispatch only fires on a trace).
