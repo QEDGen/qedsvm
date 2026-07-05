@@ -317,6 +317,20 @@ lean_lib Examples where
     -- hub, r0 = 12 (TokenError::InvalidInstruction).
     `Generated.PTokenTransferShortIxLifted,
     `PToken.TransferArm.ShortIxGuardEnforced,
+    -- The authority tri-case (un-parks the deferred signer item honestly):
+    -- owner-but-not-signer and delegate-but-not-signer halt with
+    -- MissingRequiredSignature (8<<32); a signing stranger halts with
+    -- OwnerMismatch (4). Plus the delegated-amount allowance check
+    -- (delegate signs, allowance < amount → InsufficientFunds 1, distinct
+    -- cell delegated_amount@121 from the source balance).
+    `Generated.PTokenTransferOwnerNotSignerLifted,
+    `PToken.TransferArm.OwnerNotSignerGuardEnforced,
+    `Generated.PTokenTransferDelegateNotSignerLifted,
+    `PToken.TransferArm.DelegateNotSignerGuardEnforced,
+    `Generated.PTokenTransferOwnerMismatchLifted,
+    `PToken.TransferArm.OwnerMismatchGuardEnforced,
+    `Generated.PTokenTransferDelegateInsufficientLifted,
+    `PToken.TransferArm.DelegateInsufficientGuardEnforced,
     -- Trace-guided lifts: real p_token happy paths, balance/supply
     -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,

@@ -2684,6 +2684,19 @@ fn assert_p_token_transfer_fails(
     dest_data: Vec<u8>,
     ix_data: Vec<u8>,
 ) {
+    assert_p_token_transfer_fails_auth(label, seed, source_data, dest_data, ix_data, true)
+}
+
+/// `assert_p_token_transfer_fails` with control over the authority's signer
+/// flag (the authority tri-case guards violate the signer side).
+fn assert_p_token_transfer_fails_auth(
+    label: &str,
+    seed: u64,
+    source_data: Vec<u8>,
+    dest_data: Vec<u8>,
+    ix_data: Vec<u8>,
+    authority_is_signer: bool,
+) {
     let program_id = pid(seed);
     let authority = pid(seed + 1);
     let source_key = pid(seed + 2);
@@ -2721,7 +2734,7 @@ fn assert_p_token_transfer_fails(
         accounts: vec![
             AccountMeta::new(source_key, false),
             AccountMeta::new(dest_key, false),
-            AccountMeta::new_readonly(authority, true),
+            AccountMeta::new_readonly(authority, authority_is_signer),
         ],
         data: ix_data,
     };
@@ -2871,6 +2884,168 @@ fn p_token_transfer_mint_mismatch_limb2_matches_mollusk() {
 #[test]
 fn p_token_transfer_mint_mismatch_limb3_matches_mollusk() {
     mint_mismatch_limb("mint-mismatch-limb3", 98, 3);
+}
+
+/// Set the SPL token-account delegate fields: COption tag @72 = Some,
+/// delegate key @76..108, delegated_amount @121..129.
+fn set_delegate(data: &mut [u8], delegate: &Pubkey, delegated_amount: u64) {
+    data[72..76].copy_from_slice(&1u32.to_le_bytes());
+    data[76..108].copy_from_slice(delegate.as_ref());
+    data[121..129].copy_from_slice(&delegated_amount.to_le_bytes());
+}
+
+/// Authority tri-case, leg 1: the authority IS the token owner but is NOT a
+/// signer: ProgramError::MissingRequiredSignature (builtin, 8<<32).
+#[test]
+fn p_token_transfer_owner_not_signer_matches_mollusk() {
+    let mint = pid(108);
+    let auth = pid(105); // = driver authority (seed+1) = token owner
+    let src = build_token_account(&mint, &auth, 1_000);
+    let dst = build_token_account(&mint, &auth, 0);
+    assert_p_token_transfer_fails_auth(
+        "owner-not-signer", 104, src, dst, transfer_ix_data(250), false);
+}
+
+/// Authority tri-case, leg 2: the authority is the account's DELEGATE (not
+/// the owner) but is NOT a signer: MissingRequiredSignature via the
+/// delegate branch of validate_owner.
+#[test]
+fn p_token_transfer_delegate_not_signer_matches_mollusk() {
+    let mint = pid(114);
+    let owner = pid(115); // NOT the driver authority
+    let delegate = pid(111); // = driver authority (seed+1)
+    let mut src = build_token_account(&mint, &owner, 1_000);
+    set_delegate(&mut src, &delegate, 1_000);
+    let dst = build_token_account(&mint, &owner, 0);
+    assert_p_token_transfer_fails_auth(
+        "delegate-not-signer", 110, src, dst, transfer_ix_data(250), false);
+}
+
+/// Authority tri-case, leg 3: the authority is NEITHER the owner NOR the
+/// delegate (a properly signing stranger): TokenError::OwnerMismatch (4).
+#[test]
+fn p_token_transfer_owner_mismatch_matches_mollusk() {
+    let mint = pid(120);
+    let owner = pid(121); // NOT the driver authority, no delegate set
+    let src = build_token_account(&mint, &owner, 1_000);
+    let dst = build_token_account(&mint, &owner, 0);
+    assert_p_token_transfer_fails_auth(
+        "owner-mismatch", 116, src, dst, transfer_ix_data(250), true);
+}
+
+/// Delegate leg 4: a properly signing delegate whose DELEGATED allowance is
+/// smaller than the transfer amount: TokenError::InsufficientFunds (1) via
+/// the delegated_amount check (a distinct check from the source-balance one
+/// — the source holds plenty).
+#[test]
+fn p_token_transfer_delegate_insufficient_matches_mollusk() {
+    let mint = pid(126);
+    let owner = pid(127);
+    let delegate = pid(123); // = driver authority (seed+1)
+    let mut src = build_token_account(&mint, &owner, 1_000);
+    set_delegate(&mut src, &delegate, 100); // allowance 100 < 250
+    let dst = build_token_account(&mint, &owner, 0);
+    assert_p_token_transfer_fails_auth(
+        "delegate-insufficient", 122, src, dst, transfer_ix_data(250), true);
+}
+
+/// PINNED NON-GUARD (pattern library finding): p-token does NOT enforce a
+/// destination-balance overflow check on Transfer. Where SPL Token uses
+/// `checked_add(...).ok_or(TokenError::Overflow)`, the p-token binary WRAPS
+/// the destination amount — both engines SUCCEED and the dest balance wraps
+/// mod 2^64. This is REQUIRES-without-ENFORCES: the check is protected only
+/// by the global supply invariant (balances sum to supply ≤ u64::MAX, upheld
+/// by MintTo), not by the Transfer arm itself. Pinned here so a future
+/// p-token that adds the check surfaces as a diff.
+#[test]
+fn p_token_transfer_dest_overflow_wraps_on_both() {
+    let program_id = pid(128);
+    let authority = pid(129);
+    let source_key = pid(130);
+    let dest_key = pid(131);
+    let mint = pid(132);
+    const LAMPORTS: u64 = 2_039_280;
+    const DEST_INITIAL: u64 = u64::MAX - 100;
+    const AMOUNT: u64 = 250;
+    const WRAPPED: u64 = DEST_INITIAL.wrapping_add(AMOUNT); // = 149
+
+    let src = build_token_account(&mint, &authority, 1_000);
+    let dst = build_token_account(&mint, &authority, DEST_INITIAL);
+
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new(dest_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: transfer_ix_data(AMOUNT),
+    };
+
+    let mut fs = Svm::default().with_cu_budget(1_400_000);
+    fs.add_program(&program_id, P_TOKEN_SO);
+    let fs_r = fs
+        .process_instruction(&ix, &[
+            (source_key, AccountSharedData::from(Account {
+                lamports: LAMPORTS, data: src.clone(), owner: program_id,
+                executable: false, rent_epoch: 0,
+            })),
+            (dest_key, AccountSharedData::from(Account {
+                lamports: LAMPORTS, data: dst.clone(), owner: program_id,
+                executable: false, rent_epoch: 0,
+            })),
+            (authority, AccountSharedData::from(Account {
+                lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+                executable: false, rent_epoch: 0,
+            })),
+        ])
+        .expect("qedsvm runs p-token Transfer (dest overflow)");
+
+    let mut m = Mollusk::default();
+    m.add_program_with_loader_and_elf(
+        &program_id,
+        &solana_sdk_ids::bpf_loader_upgradeable::id(),
+        P_TOKEN_SO,
+    );
+    let m_r = m.process_instruction(&ix, &[
+        (source_key, mollusk_account::Account {
+            lamports: LAMPORTS, data: src.clone(), owner: program_id,
+            executable: false, rent_epoch: 0,
+        }),
+        (dest_key, mollusk_account::Account {
+            lamports: LAMPORTS, data: dst.clone(), owner: program_id,
+            executable: false, rent_epoch: 0,
+        }),
+        (authority, mollusk_account::Account {
+            lamports: 1_000_000, data: vec![], owner: Pubkey::default(),
+            executable: false, rent_epoch: 0,
+        }),
+    ]);
+
+    assert!(matches!(fs_r.program_result, FsProgramResult::Success),
+        "qedsvm: expected the UNCHECKED dest add to succeed, got {:?}",
+        fs_r.program_result);
+    assert!(matches!(m_r.program_result, MlProgramResult::Success),
+        "mollusk: expected the UNCHECKED dest add to succeed, got {:?}",
+        m_r.program_result);
+
+    for (result_name, data) in [
+        ("qedsvm", fs_acct_by_key(&fs_r, &dest_key).data().to_vec()),
+        ("mollusk", m_r.resulting_accounts.iter()
+            .find(|(k, _)| *k == dest_key).map(|(_, a)| a.data.clone())
+            .expect("mollusk dest")),
+    ] {
+        let post = u64::from_le_bytes(data[64..72].try_into().unwrap());
+        assert_eq!(post, WRAPPED,
+            "{result_name}: dest balance must WRAP (not saturate/abort) on \
+             the unchecked add");
+    }
+
+    assert_eq!(
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+        "CU diverged for overflow p-token Transfer: ours={} mollusk={}",
+        fs_r.compute_units_consumed, m_r.compute_units_consumed,
+    );
 }
 
 /// ELF-load probe for ATA binary: both engines fail before CPI. Validates loading + entry dispatch without CPI dependency.
