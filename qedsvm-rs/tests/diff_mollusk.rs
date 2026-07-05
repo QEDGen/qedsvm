@@ -451,6 +451,56 @@ fn mollusk_with(programs: &[(Pubkey, &[u8])]) -> Mollusk {
     m
 }
 
+/// System-program stub mirroring mollusk's `keyed_account_for_system_program`
+/// on BOTH engines, so resulting_accounts compares cleanly.
+/// Returns (system id, qedsvm account, mollusk account).
+fn system_program_stub() -> (Pubkey, AccountSharedData, mollusk_account::Account) {
+    let (id, acct) = mollusk_svm::program::keyed_account_for_system_program();
+    let fs = AccountSharedData::from(Account {
+        lamports: acct.lamports,
+        data: acct.data.clone(),
+        owner: acct.owner,
+        executable: acct.executable,
+        rent_epoch: acct.rent_epoch,
+    });
+    (id, fs, acct)
+}
+
+/// Positional cross-engine compare of resulting_accounts (count + pubkey
+/// order always; per-field only when the flag is set, so a lamports-only
+/// call site never silently becomes a full compare).
+fn assert_resulting_accounts_match(
+    fs_r: &qedsvm::InstructionResult,
+    m_r: &mollusk_svm::result::InstructionResult,
+    compare_lamports: bool,
+    compare_data: bool,
+    compare_owner: bool,
+) {
+    assert_eq!(
+        fs_r.resulting_accounts.len(),
+        m_r.resulting_accounts.len(),
+        "resulting_accounts count diverged",
+    );
+    for ((k_a, a_a), (k_b, a_b)) in
+        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
+    {
+        assert_eq!(k_a, k_b, "pubkey order divergence");
+        if compare_lamports {
+            assert_eq!(a_a.lamports(), a_b.lamports,
+                "lamports diverged for {k_a}: ours={} mollusk={}",
+                a_a.lamports(), a_b.lamports);
+        }
+        if compare_data {
+            assert_eq!(a_a.data(), a_b.data.as_slice(),
+                "data diverged for {k_a}: ours.len={} mollusk.len={}",
+                a_a.data().len(), a_b.data.len());
+        }
+        if compare_owner {
+            assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
+        }
+    }
+}
+
 /// Shared driver for the byte-identical VM-fault fixtures (OOB syscalls,
 /// abort): runs `so` with an empty instruction and no accounts on both
 /// engines; qedsvm must report a typed `VmFault` and the M14 outcome must
@@ -499,19 +549,7 @@ fn assert_no_account_success(seed: u64, so: &[u8], label: &str) {
     assert_eq!(fs_r.return_data, m_r.return_data,
         "return_data diverged for {label}: ours={:?} mollusk={:?}",
         fs_r.return_data, m_r.return_data);
-    assert_eq!(
-        fs_r.resulting_accounts.len(),
-        m_r.resulting_accounts.len(),
-        "resulting_accounts count diverged",
-    );
-    for ((k_a, a_a), (k_b, a_b)) in
-        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
-    {
-        assert_eq!(k_a, k_b, "pubkey order divergence");
-        assert_eq!(a_a.lamports(), a_b.lamports, "lamports diverged for {k_a}");
-        assert_eq!(a_a.data(), a_b.data.as_slice(), "data diverged for {k_a}");
-        assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
-    }
+    assert_resulting_accounts_match(&fs_r, &m_r, true, true, true);
     // Strict CU equality — catches any drift in per-instruction CU accounting.
     assert_eq!(
         fs_r.compute_units_consumed, m_r.compute_units_consumed,
@@ -3615,15 +3653,8 @@ fn system_transfer_cpi_matches_mollusk() {
         initial_to, vec![], system_owner, false);
 
     // System program stub: mirrors mollusk's keyed_account_for_system_program so resulting_accounts compares cleanly.
-    let (mollusk_system_id, mollusk_system_acct) =
-        mollusk_svm::program::keyed_account_for_system_program();
-    let system_stub_fs = AccountSharedData::from(Account {
-        lamports: mollusk_system_acct.lamports,
-        data: mollusk_system_acct.data.clone(),
-        owner: mollusk_system_acct.owner,
-        executable: mollusk_system_acct.executable,
-        rent_epoch: mollusk_system_acct.rent_epoch,
-    });
+    let (mollusk_system_id, system_stub_fs, mollusk_system_acct) =
+        system_program_stub();
 
     let fs = svm_with(&[(caller_id, SYSTEM_TRANSFER_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
@@ -3645,16 +3676,8 @@ fn system_transfer_cpi_matches_mollusk() {
         "mollusk: expected Success, got {:?}", m_r.program_result);
     assert_no_poststate_backstop(&fs_r); // M13: lamport conservation in VM, not via Rust backstop
 
-    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len(),
-        "resulting_accounts count diverged");
-    for ((k_a, a_a), (k_b, a_b)) in
-        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
-    {
-        assert_eq!(k_a, k_b, "pubkey order divergence");
-        assert_eq!(a_a.lamports(), a_b.lamports,
-            "lamports diverged for {k_a}: ours={} mollusk={}",
-            a_a.lamports(), a_b.lamports);
-    }
+    // lamports-only compare: System::Transfer moves no data/owner.
+    assert_resulting_accounts_match(&fs_r, &m_r, true, false, false);
 
     let fs_from = fs_r.resulting_accounts.iter().find(|(k, _)| *k == from_pk)
         .expect("from account present").1.lamports();
@@ -3708,15 +3731,8 @@ fn system_create_account_cpi_matches_mollusk() {
     let (new_pre, new_pre_m) = dual_account(
         0, vec![], system_program_id, false);
 
-    let (mollusk_system_id, mollusk_system_acct) =
-        mollusk_svm::program::keyed_account_for_system_program();
-    let system_stub_fs = AccountSharedData::from(Account {
-        lamports: mollusk_system_acct.lamports,
-        data: mollusk_system_acct.data.clone(),
-        owner: mollusk_system_acct.owner,
-        executable: mollusk_system_acct.executable,
-        rent_epoch: mollusk_system_acct.rent_epoch,
-    });
+    let (mollusk_system_id, system_stub_fs, mollusk_system_acct) =
+        system_program_stub();
 
     let fs = svm_with(&[(caller_id, SYSTEM_CREATE_ACCOUNT_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
@@ -3737,21 +3753,7 @@ fn system_create_account_cpi_matches_mollusk() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
 
-    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len(),
-        "resulting_accounts count diverged");
-    for ((k_a, a_a), (k_b, a_b)) in
-        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
-    {
-        assert_eq!(k_a, k_b, "pubkey order divergence");
-        assert_eq!(a_a.lamports(), a_b.lamports,
-            "lamports diverged for {k_a}: ours={} mollusk={}",
-            a_a.lamports(), a_b.lamports);
-        assert_eq!(a_a.data(), a_b.data.as_slice(),
-            "data diverged for {k_a}: ours.len={} mollusk.len={}",
-            a_a.data().len(), a_b.data.len());
-        assert_eq!(a_a.owner(), &a_b.owner,
-            "owner diverged for {k_a}");
-    }
+    assert_resulting_accounts_match(&fs_r, &m_r, true, true, true);
 
     let new_acct = fs_r.resulting_accounts.iter().find(|(k, _)| *k == new_pk)
         .expect("newAcct present").1.clone();
@@ -3805,15 +3807,8 @@ fn system_allocate_assign_cpi_matches_mollusk() {
     let (acct_pre, acct_pre_m) = dual_account(
         initial_lamports, vec![], system_program_id, false);
 
-    let (mollusk_system_id, mollusk_system_acct) =
-        mollusk_svm::program::keyed_account_for_system_program();
-    let system_stub_fs = AccountSharedData::from(Account {
-        lamports: mollusk_system_acct.lamports,
-        data: mollusk_system_acct.data.clone(),
-        owner: mollusk_system_acct.owner,
-        executable: mollusk_system_acct.executable,
-        rent_epoch: mollusk_system_acct.rent_epoch,
-    });
+    let (mollusk_system_id, system_stub_fs, mollusk_system_acct) =
+        system_program_stub();
 
     let fs = svm_with(&[(caller_id, SYSTEM_ALLOCATE_ASSIGN_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
@@ -3832,18 +3827,7 @@ fn system_allocate_assign_cpi_matches_mollusk() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
 
-    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len());
-    for ((k_a, a_a), (k_b, a_b)) in
-        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
-    {
-        assert_eq!(k_a, k_b);
-        assert_eq!(a_a.lamports(), a_b.lamports,
-            "lamports diverged for {k_a}: ours={} mollusk={}",
-            a_a.lamports(), a_b.lamports);
-        assert_eq!(a_a.data(), a_b.data.as_slice(),
-            "data diverged for {k_a}");
-        assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
-    }
+    assert_resulting_accounts_match(&fs_r, &m_r, true, true, true);
 
     let post = fs_r.resulting_accounts.iter().find(|(k, _)| *k == acct_pk)
         .expect("acct present").1.clone();
@@ -3903,15 +3887,8 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
     let (base_pre, base_pre_m) = dual_account(
         1, vec![], system_program_id, false);
 
-    let (mollusk_system_id, mollusk_system_acct) =
-        mollusk_svm::program::keyed_account_for_system_program();
-    let system_stub_fs = AccountSharedData::from(Account {
-        lamports: mollusk_system_acct.lamports,
-        data: mollusk_system_acct.data.clone(),
-        owner: mollusk_system_acct.owner,
-        executable: mollusk_system_acct.executable,
-        rent_epoch: mollusk_system_acct.rent_epoch,
-    });
+    let (mollusk_system_id, system_stub_fs, mollusk_system_acct) =
+        system_program_stub();
 
     let fs = svm_with(&[(caller_id, SYSTEM_CREATE_ACCOUNT_WITH_SEED_CALLER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
@@ -3934,18 +3911,7 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
 
-    assert_eq!(fs_r.resulting_accounts.len(), m_r.resulting_accounts.len());
-    for ((k_a, a_a), (k_b, a_b)) in
-        fs_r.resulting_accounts.iter().zip(m_r.resulting_accounts.iter())
-    {
-        assert_eq!(k_a, k_b);
-        assert_eq!(a_a.lamports(), a_b.lamports,
-            "lamports diverged for {k_a}: ours={} mollusk={}",
-            a_a.lamports(), a_b.lamports);
-        assert_eq!(a_a.data(), a_b.data.as_slice(),
-            "data diverged for {k_a}");
-        assert_eq!(a_a.owner(), &a_b.owner, "owner diverged for {k_a}");
-    }
+    assert_resulting_accounts_match(&fs_r, &m_r, true, true, true);
 
     let derived = fs_r.resulting_accounts.iter().find(|(k, _)| *k == derived_pk)
         .expect("derived present").1.clone();
@@ -4343,15 +4309,8 @@ fn janus_slot_height_resolver_initialize_matches_mollusk() {
         lamports: 0, data: vec![], owner: system_program,
         executable: false, rent_epoch: 0,
     };
-    let (mollusk_system_id, mollusk_system_acct) =
-        mollusk_svm::program::keyed_account_for_system_program();
-    let system_stub_fs = AccountSharedData::from(Account {
-        lamports: mollusk_system_acct.lamports,
-        data: mollusk_system_acct.data.clone(),
-        owner: mollusk_system_acct.owner,
-        executable: mollusk_system_acct.executable,
-        rent_epoch: mollusk_system_acct.rent_epoch,
-    });
+    let (mollusk_system_id, system_stub_fs, mollusk_system_acct) =
+        system_program_stub();
 
     let fs = svm_with(&[(program_id, JANUS_SLOT_HEIGHT_RESOLVER_SO)]);
     let fs_r = fs.process_instruction(&ix, &[
