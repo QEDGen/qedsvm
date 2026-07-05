@@ -1,6 +1,7 @@
 //! Parse the post-execution input buffer into modified accounts (inverse of `serialize_parameters`).
 //! One `(Pubkey, AccountSharedData)` per `AccountMeta`; duplicates map to the first-occurrence record.
 
+use crate::cursor::ByteCursor;
 use solana_account::AccountSharedData;
 use solana_account::WritableAccount;
 use solana_instruction::Instruction;
@@ -15,9 +16,9 @@ pub fn deserialize_account_writes(
     instruction: &Instruction,
     pre_accounts: &[(Pubkey, AccountSharedData)],
 ) -> Result<Vec<(Pubkey, AccountSharedData)>, DeserializeError> {
-    let mut r = Reader::new(buffer);
+    let mut r = ByteCursor::new(buffer);
 
-    let num_accounts = r.read_u64()? as usize;
+    let num_accounts = r.u64().ok_or(DeserializeError::Truncated)? as usize;
     if num_accounts != instruction.accounts.len() {
         return Err(DeserializeError::AccountCountMismatch {
             expected: instruction.accounts.len(),
@@ -35,19 +36,19 @@ pub fn deserialize_account_writes(
     for (i, slot) in by_first_occurrence.iter_mut().enumerate() {
         if dup_of[i].is_some() {
             // Dup: 1B (post-execution borrow_state, ignored) + 7B padding.
-            r.skip(8)?;
+            r.skip(8).ok_or(DeserializeError::Truncated)?;
         } else {
             // Non-dup: 1B (post-execution borrow_state, ignored) + rest of record.
-            r.skip(1)?;
+            r.skip(1).ok_or(DeserializeError::Truncated)?;
             let updated = parse_non_dup_record(&mut r, &instruction.accounts[i].pubkey, pre_accounts)?;
             *slot = Some(updated);
         }
     }
 
     // Trailer: instruction_data_len + instruction_data + program_id — parse to validate buffer structure.
-    let ix_data_len = r.read_u64()? as usize;
-    r.skip(ix_data_len)?;
-    r.skip(32)?;  // program_id
+    let ix_data_len = r.u64().ok_or(DeserializeError::Truncated)? as usize;
+    r.skip(ix_data_len).ok_or(DeserializeError::Truncated)?;
+    r.skip(32).ok_or(DeserializeError::Truncated)?;  // program_id
 
     let mut result = Vec::with_capacity(num_accounts);
     for (i, meta) in instruction.accounts.iter().enumerate() {
@@ -61,23 +62,23 @@ pub fn deserialize_account_writes(
 }
 
 fn parse_non_dup_record(
-    r: &mut Reader<'_>,
+    r: &mut ByteCursor<'_>,
     meta_key: &Pubkey,
     pre_accounts: &[(Pubkey, AccountSharedData)],
 ) -> Result<AccountSharedData, DeserializeError> {
     // 1B is_signer + 1B is_writable + 1B is_executable + 4B padding — all runtime-only, skip.
-    r.skip(7)?;
+    r.skip(7).ok_or(DeserializeError::Truncated)?;
     let mut key_bytes = [0u8; 32];
-    r.read_into(&mut key_bytes)?;
+    r.read_into(&mut key_bytes).ok_or(DeserializeError::Truncated)?;
     let key = Pubkey::from(key_bytes);
     if &key != meta_key {
         return Err(DeserializeError::PubkeyMismatch { expected: *meta_key, got: key });
     }
     let mut owner_bytes = [0u8; 32];
-    r.read_into(&mut owner_bytes)?;
+    r.read_into(&mut owner_bytes).ok_or(DeserializeError::Truncated)?;
     let owner = Pubkey::from(owner_bytes);
-    let lamports = r.read_u64()?;
-    let data_len = r.read_u64()? as usize;
+    let lamports = r.u64().ok_or(DeserializeError::Truncated)?;
+    let data_len = r.u64().ok_or(DeserializeError::Truncated)? as usize;
     if data_len > MAX_PERMITTED_DATA_INCREASE + pre_accounts
         .iter()
         .find(|(k, _)| *k == *meta_key)
@@ -89,7 +90,7 @@ fn parse_non_dup_record(
     {
         return Err(DeserializeError::DataLengthOverflow(data_len));
     }
-    let data = r.read_bytes(data_len)?.to_vec();
+    let data = r.take(data_len).ok_or(DeserializeError::Truncated)?.to_vec();
     // Skip the reserved realloc-room: pre_data_len + pre_align + MAX_PERMITTED_DATA_INCREASE
     // bytes total; remaining = pre_data_len + pre_align - post_data_len - post_align + 10240.
     let pre_data_len = pre_accounts
@@ -102,8 +103,8 @@ fn parse_non_dup_record(
     let remaining_pad = pre_data_len + pre_align_pad
         + MAX_PERMITTED_DATA_INCREASE
         - data_len - post_align_pad;
-    r.skip(post_align_pad + remaining_pad)?;
-    r.skip(8)?;  // rent_epoch
+    r.skip(post_align_pad + remaining_pad).ok_or(DeserializeError::Truncated)?;
+    r.skip(8).ok_or(DeserializeError::Truncated)?;  // rent_epoch
 
     // `executable` and `rent_epoch` are always inherited from pre-state (immutable to programs).
     // Load-bearing: `validate_post_state` does not re-check these fields.
@@ -150,28 +151,3 @@ impl std::fmt::Display for DeserializeError {
 }
 
 impl std::error::Error for DeserializeError {}
-
-struct Reader<'a> { buf: &'a [u8], pos: usize }
-
-impl<'a> Reader<'a> {
-    fn new(buf: &'a [u8]) -> Self { Self { buf, pos: 0 } }
-
-    fn take(&mut self, n: usize) -> Result<&'a [u8], DeserializeError> {
-        if self.pos + n > self.buf.len() { return Err(DeserializeError::Truncated) }
-        let s = &self.buf[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(s)
-    }
-
-    fn skip(&mut self, n: usize) -> Result<(), DeserializeError> { self.take(n)?; Ok(()) }
-    fn read_u64(&mut self) -> Result<u64, DeserializeError> {
-        let b = self.take(8)?;
-        Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
-    }
-    fn read_bytes(&mut self, n: usize) -> Result<&'a [u8], DeserializeError> { self.take(n) }
-    fn read_into(&mut self, dst: &mut [u8]) -> Result<(), DeserializeError> {
-        let s = self.take(dst.len())?;
-        dst.copy_from_slice(s);
-        Ok(())
-    }
-}

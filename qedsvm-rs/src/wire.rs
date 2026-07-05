@@ -47,29 +47,32 @@ impl fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
+/// Truncation error for every cursor read in this format.
+const TRUNCATED: DecodeError = DecodeError::Malformed("buffer truncated");
+
 pub fn decode(bytes: &[u8]) -> Result<RawResult, DecodeError> {
-    let mut r = Reader::new(bytes);
-    let status = r.u8()?;
+    let mut r = crate::cursor::ByteCursor::new(bytes);
+    let status = r.u8().ok_or(TRUNCATED)?;
     match status {
         0 => Err(DecodeError::ElfDecodeFailed),
         1 => {
-            let outcome = match r.u8()? {
+            let outcome = match r.u8().ok_or(TRUNCATED)? {
                 0 => ExitOutcome::OutOfBudget,
-                1 => ExitOutcome::Halted(r.u64()?),
-                2 => ExitOutcome::Faulted(r.u64()?),
+                1 => ExitOutcome::Halted(r.u64().ok_or(TRUNCATED)?),
+                2 => ExitOutcome::Faulted(r.u64().ok_or(TRUNCATED)?),
                 _ => return Err(DecodeError::Malformed("unknown exit_kind")),
             };
-            let compute_units_consumed = r.u64()?;
-            let input_len = r.u32()? as usize;
-            let modified_input = r.bytes(input_len)?.to_vec();
-            let num_logs = r.u32()? as usize;
+            let compute_units_consumed = r.u64().ok_or(TRUNCATED)?;
+            let input_len = r.u32().ok_or(TRUNCATED)? as usize;
+            let modified_input = r.take(input_len).ok_or(TRUNCATED)?.to_vec();
+            let num_logs = r.u32().ok_or(TRUNCATED)? as usize;
             let mut logs = Vec::with_capacity(num_logs);
             for _ in 0..num_logs {
-                let n = r.u32()? as usize;
-                logs.push(r.bytes(n)?.to_vec());
+                let n = r.u32().ok_or(TRUNCATED)? as usize;
+                logs.push(r.take(n).ok_or(TRUNCATED)?.to_vec());
             }
-            let rd_len = r.u32()? as usize;
-            let return_data = r.bytes(rd_len)?.to_vec();
+            let rd_len = r.u32().ok_or(TRUNCATED)? as usize;
+            let return_data = r.take(rd_len).ok_or(TRUNCATED)?.to_vec();
             Ok(RawResult {
                 outcome,
                 compute_units_consumed,
@@ -80,36 +83,4 @@ pub fn decode(bytes: &[u8]) -> Result<RawResult, DecodeError> {
         }
         _ => Err(DecodeError::Malformed("unknown status byte")),
     }
-}
-
-struct Reader<'a> {
-    buf: &'a [u8],
-    pos: usize,
-}
-
-impl<'a> Reader<'a> {
-    fn new(buf: &'a [u8]) -> Self { Self { buf, pos: 0 } }
-
-    fn take(&mut self, n: usize) -> Result<&'a [u8], DecodeError> {
-        if self.pos + n > self.buf.len() {
-            return Err(DecodeError::Malformed("buffer truncated"));
-        }
-        let s = &self.buf[self.pos..self.pos + n];
-        self.pos += n;
-        Ok(s)
-    }
-
-    fn u8(&mut self) -> Result<u8, DecodeError> { Ok(self.take(1)?[0]) }
-
-    fn u32(&mut self) -> Result<u32, DecodeError> {
-        let b = self.take(4)?;
-        Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    }
-
-    fn u64(&mut self) -> Result<u64, DecodeError> {
-        let b = self.take(8)?;
-        Ok(u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
-    }
-
-    fn bytes(&mut self, n: usize) -> Result<&'a [u8], DecodeError> { self.take(n) }
 }
