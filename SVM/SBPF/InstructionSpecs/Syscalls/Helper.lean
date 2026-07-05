@@ -752,68 +752,49 @@ So a lift reaching CPI proves an ABORT; these `*_aborts_spec`s state exactly
 that. A future step-level CPI model agreeing with `cpiCallNextState` would
 replace them with effectful posts. See docs/SOUNDNESS_AUDIT_* (C4/C5). -/
 
+/-- Shared proof for the two CPI abort specs: any syscall whose `execSyscall`
+    sets `exitCode := some ERR_UNSUPPORTED_INSTRUCTION` (witnessed by `hexit`)
+    aborts from the empty precondition. The two public specs below instantiate
+    this with `hexit := fun _ => rfl`. -/
+private theorem call_cpi_syscall_aborts_spec (sc : Syscall)
+    (hexit : ∀ s : State,
+        (execSyscall sc s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION)
+    (pc : Nat) (nCu : Nat)
+    (hCu : ∀ s : State,
+        (step (.call sc) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleAbortsWithin 1 nCu pc
+      (CodeReq.singleton pc (.call sc))
+      emp ERR_UNSUPPORTED_INSTRUCTION := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud
+  have hfetch : fetch s.pc = some (.call sc) := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hstep_eq : executeFn fetch s 1 =
+      chargeCu (step (.call sc) s) := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
+  · rw [hstep_eq]
+    show (execSyscall sc s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
+    exact hexit s
+  · rw [hstep_eq]
+    show (step (.call sc) s).cuConsumed + 1
+      ≤ s.cuConsumed + 1 + nCu
+    have := hCu s; omega
+
 theorem call_sol_invoke_signed_aborts_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .sol_invoke_signed) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed))
-      emp ERR_UNSUPPORTED_INSTRUCTION := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
-  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
-  rw [hP1, PartialState.union_empty_left] at hu
-  rw [hP1] at hd
-  clear hP1 h1
-  have hfetch : fetch s.pc = some (.call .sol_invoke_signed) := by
-    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 =
-      chargeCu (step (.call .sol_invoke_signed) s) := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  have hexec : executeFn fetch s 1 =
-      chargeCu { (Cpi.exec s) with pc := s.pc + 1
-                                   cuConsumed := (Cpi.exec s).cuConsumed
-                                     + syscallCu .sol_invoke_signed s } := by
-    rw [hstep_eq]
-    simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
-  · rw [hexec]
-    show (Cpi.exec s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
-    rfl
-  · rw [hstep_eq]
-    show (step (.call .sol_invoke_signed) s).cuConsumed + 1
-      ≤ s.cuConsumed + 1 + nCu
-    have := hCu s; omega
+      emp ERR_UNSUPPORTED_INSTRUCTION :=
+  call_cpi_syscall_aborts_spec .sol_invoke_signed (fun _ => rfl) pc nCu hCu
 
 theorem call_sol_invoke_signed_c_aborts_spec (pc : Nat) (nCu : Nat)
     (hCu : ∀ s : State,
         (step (.call .sol_invoke_signed_c) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleAbortsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_invoke_signed_c))
-      emp ERR_UNSUPPORTED_INSTRUCTION := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
-  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
-  rw [hP1, PartialState.union_empty_left] at hu
-  rw [hP1] at hd
-  clear hP1 h1
-  have hfetch : fetch s.pc = some (.call .sol_invoke_signed_c) := by
-    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 =
-      chargeCu (step (.call .sol_invoke_signed_c) s) := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  have hexec : executeFn fetch s 1 =
-      chargeCu { (Cpi.exec s) with pc := s.pc + 1
-                                   cuConsumed := (Cpi.exec s).cuConsumed
-                                     + syscallCu .sol_invoke_signed_c s } := by
-    rw [hstep_eq]
-    simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
-  · rw [hexec]
-    show (Cpi.exec s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
-    rfl
-  · rw [hstep_eq]
-    show (step (.call .sol_invoke_signed_c) s).cuConsumed + 1
-      ≤ s.cuConsumed + 1 + nCu
-    have := hCu s; omega
+      emp ERR_UNSUPPORTED_INSTRUCTION :=
+  call_cpi_syscall_aborts_spec .sol_invoke_signed_c (fun _ => rfl) pc nCu hCu
 
 end SVM.SBPF
