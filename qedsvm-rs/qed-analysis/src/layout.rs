@@ -28,7 +28,7 @@ pub struct AccountLayout {
 }
 
 /// Byte width of a Codama `numberTypeNode` format string.
-fn codama_number_size(fmt: &str) -> Option<usize> {
+pub fn codama_number_size(fmt: &str) -> Option<usize> {
     match fmt {
         "u8" | "i8"     => Some(1),
         "u16" | "i16"   => Some(2),

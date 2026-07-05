@@ -7,6 +7,17 @@ use solana_sbpf::ebpf;
 
 pub mod layout;
 
+/// Static-analysis `ContextObject`: the lifting tools load executables for analysis only and
+/// never execute them, so metering is a no-op. Shared by qedlift and qedrecover.
+pub struct NoopCtx;
+
+impl solana_sbpf::vm::ContextObject for NoopCtx {
+    fn consume(&mut self, _amount: u64) {}
+    fn get_remaining(&self) -> u64 {
+        0
+    }
+}
+
 /// Converts between slot PC (raw 8-byte slot index; `lddw` = 2 slots; `cfg_nodes`/jump-`off` space)
 /// and logical PC (decoded-array index; `lddw` = 1 element; Lean decode / qedlift / `.pcs` space).
 /// The two agree until the first `lddw` and drift by 1 per `lddw` thereafter.
