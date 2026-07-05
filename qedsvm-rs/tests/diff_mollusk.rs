@@ -403,6 +403,17 @@ fn fs_acct_by_key<'a>(
         .unwrap_or_else(|| panic!("account {key} absent from qedsvm resulting_accounts"))
 }
 
+/// `fs_acct_by_key`'s mollusk mirror.
+fn ml_acct_by_key<'a>(
+    m_r: &'a mollusk_svm::result::InstructionResult,
+    key: &Pubkey,
+) -> &'a mollusk_account::Account {
+    m_r.resulting_accounts.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, a)| a)
+        .unwrap_or_else(|| panic!("account {key} absent from mollusk resulting_accounts"))
+}
+
 /// Build the SAME account for both engines (two `solana-account` majors —
 /// 4.x for qedsvm, 3.x for mollusk). Constructing both from one call site
 /// structurally guarantees the engines receive equal inputs.
@@ -1741,8 +1752,7 @@ fn p_token_transfer_insufficient_balance_matches_mollusk() {
     // Accounts untouched: the effect is never reached on the violating branch.
     for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
         let fa = fs_acct_by_key(&fs_r, &key);
-        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
-            .map(|(_, a)| a).expect("mollusk account");
+        let ma = ml_acct_by_key(&m_r, &key);
         assert_eq!(fa.data(), ma.data.as_slice(),
             "{name} data must be untouched by a failed Transfer");
         assert_eq!(fa.lamports(), ma.lamports,
@@ -1823,8 +1833,7 @@ fn p_token_transfer_frozen_matches_mollusk() {
 
     for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
         let fa = fs_acct_by_key(&fs_r, &key);
-        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
-            .map(|(_, a)| a).expect("mollusk account");
+        let ma = ml_acct_by_key(&m_r, &key);
         assert_eq!(fa.data(), ma.data.as_slice(),
             "{name} data must be untouched by a frozen-source Transfer");
         assert_eq!(fa.lamports(), ma.lamports,
@@ -1905,8 +1914,7 @@ fn p_token_transfer_dest_frozen_matches_mollusk() {
 
     for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
         let fa = fs_acct_by_key(&fs_r, &key);
-        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
-            .map(|(_, a)| a).expect("mollusk account");
+        let ma = ml_acct_by_key(&m_r, &key);
         assert_eq!(fa.data(), ma.data.as_slice(),
             "{name} data must be untouched by a frozen-dest Transfer");
         assert_eq!(fa.lamports(), ma.lamports,
@@ -1990,8 +1998,7 @@ fn p_token_transfer_mint_mismatch_matches_mollusk() {
 
     for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
         let fa = fs_acct_by_key(&fs_r, &key);
-        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
-            .map(|(_, a)| a).expect("mollusk account");
+        let ma = ml_acct_by_key(&m_r, &key);
         assert_eq!(fa.data(), ma.data.as_slice(),
             "{name} data must be untouched by a cross-mint Transfer");
         assert_eq!(fa.lamports(), ma.lamports,
@@ -2076,8 +2083,7 @@ fn assert_p_token_transfer_fails_auth(
 
     for (key, name) in [(source_key, "source"), (dest_key, "dest")] {
         let fa = fs_acct_by_key(&fs_r, &key);
-        let ma = m_r.resulting_accounts.iter().find(|(k, _)| *k == key)
-            .map(|(_, a)| a).expect("mollusk account");
+        let ma = ml_acct_by_key(&m_r, &key);
         assert_eq!(fa.data(), ma.data.as_slice(),
             "{name} data must be untouched by a failed Transfer ({label})");
         assert_eq!(fa.lamports(), ma.lamports,
@@ -2385,8 +2391,7 @@ fn assert_p_token_ix_fails(
 
     for (key, _, _, _) in &accounts {
         let fa = fs_acct_by_key(&fs_r, key);
-        let ma = m_r.resulting_accounts.iter().find(|(k, _)| k == key)
-            .map(|(_, a)| a).expect("mollusk account");
+        let ma = ml_acct_by_key(&m_r, key);
         assert_eq!(fa.data(), ma.data.as_slice(),
             "{label}: post data diverged for {key}");
         assert_eq!(fa.lamports(), ma.lamports,
@@ -3679,10 +3684,8 @@ fn system_transfer_cpi_matches_mollusk() {
     // lamports-only compare: System::Transfer moves no data/owner.
     assert_resulting_accounts_match(&fs_r, &m_r, true, false, false);
 
-    let fs_from = fs_r.resulting_accounts.iter().find(|(k, _)| *k == from_pk)
-        .expect("from account present").1.lamports();
-    let fs_to   = fs_r.resulting_accounts.iter().find(|(k, _)| *k == to_pk)
-        .expect("to account present").1.lamports();
+    let fs_from = fs_acct_by_key(&fs_r, &from_pk).lamports();
+    let fs_to = fs_acct_by_key(&fs_r, &to_pk).lamports();
     assert_eq!(fs_from, initial_from - lamports_to_send,
         "from balance: expected {}, got {}", initial_from - lamports_to_send, fs_from);
     assert_eq!(fs_to,   initial_to   + lamports_to_send,
@@ -3755,8 +3758,7 @@ fn system_create_account_cpi_matches_mollusk() {
 
     assert_resulting_accounts_match(&fs_r, &m_r, true, true, true);
 
-    let new_acct = fs_r.resulting_accounts.iter().find(|(k, _)| *k == new_pk)
-        .expect("newAcct present").1.clone();
+    let new_acct = fs_acct_by_key(&fs_r, &new_pk).clone();
     assert_eq!(new_acct.lamports(), lamports_to_send,
         "newAcct.lamports: expected {}, got {}", lamports_to_send, new_acct.lamports());
     assert_eq!(new_acct.data().len(), space as usize,
@@ -3766,8 +3768,7 @@ fn system_create_account_cpi_matches_mollusk() {
     assert_eq!(new_acct.owner(), &target_owner,
         "newAcct.owner: expected {}, got {}", target_owner, new_acct.owner());
 
-    let payer = fs_r.resulting_accounts.iter().find(|(k, _)| *k == payer_pk)
-        .expect("payer present").1.clone();
+    let payer = fs_acct_by_key(&fs_r, &payer_pk).clone();
     assert_eq!(payer.lamports(), initial_payer - lamports_to_send,
         "payer.lamports: expected {}, got {}",
         initial_payer - lamports_to_send, payer.lamports());
@@ -3829,8 +3830,7 @@ fn system_allocate_assign_cpi_matches_mollusk() {
 
     assert_resulting_accounts_match(&fs_r, &m_r, true, true, true);
 
-    let post = fs_r.resulting_accounts.iter().find(|(k, _)| *k == acct_pk)
-        .expect("acct present").1.clone();
+    let post = fs_acct_by_key(&fs_r, &acct_pk).clone();
     assert_eq!(post.lamports(), initial_lamports, "lamports should be unchanged");
     assert_eq!(post.data().len(), space as usize,
         "expected {} bytes, got {}", space, post.data().len());
@@ -3913,8 +3913,7 @@ fn system_create_account_with_seed_cpi_matches_mollusk() {
 
     assert_resulting_accounts_match(&fs_r, &m_r, true, true, true);
 
-    let derived = fs_r.resulting_accounts.iter().find(|(k, _)| *k == derived_pk)
-        .expect("derived present").1.clone();
+    let derived = fs_acct_by_key(&fs_r, &derived_pk).clone();
     assert_eq!(derived.lamports(), lamports_to_send);
     assert_eq!(derived.data().len(), space as usize);
     assert!(derived.data().iter().all(|&b| b == 0));
@@ -4328,10 +4327,8 @@ fn janus_slot_height_resolver_initialize_matches_mollusk() {
         (mollusk_system_id, mollusk_system_acct),
     ]);
 
-    let m_state = m_r.resulting_accounts.iter()
-        .find(|(k, _)| *k == state).expect("mollusk state present").1.clone();
-    let fs_state = fs_r.resulting_accounts.iter()
-        .find(|(k, _)| *k == state).expect("qedsvm state present").1.clone();
+    let m_state = ml_acct_by_key(&m_r, &state).clone();
+    let fs_state = fs_acct_by_key(&fs_r, &state).clone();
 
     assert!(matches!(m_r.program_result, MlProgramResult::Success),
         "mollusk: expected Success, got {:?}", m_r.program_result);
