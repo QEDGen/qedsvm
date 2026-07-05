@@ -58,35 +58,8 @@ theorem call_abort_faults_spec (P : Assertion) (pc : Nat) (nCu : Nat)
         (step (.call .abort) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .abort))
-      P .abort := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- The abort ignores its pre, so `hPR` is not destructured.
-  have hfetch : fetch s.pc = some (.call .abort) := by
-    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .abort) s) := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  have hexec : executeFn fetch s 1 =
-      chargeCu { (Abort.execAbort s) with
-                 pc := s.pc + 1
-                 cuConsumed := (Abort.execAbort s).cuConsumed
-                   + syscallCu .abort s } := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
-        executeFn_zero]
-    simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
-  · rw [hexec]
-    -- VmError.abort.toSentinel = ERR_ABORT
-    show (Abort.execAbort s).exitCode = some VmError.abort.toSentinel
-    rfl
-  · rw [hexec]
-    -- typed fault `.abort` (L1)
-    show (Abort.execAbort s).vmError = some .abort
-    rfl
-  · rw [hstep_eq]
-    show (step (.call .abort) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
-    have := hCu s; omega
+      P .abort :=
+  call_typed_fault_spec .abort .abort (fun _ => rfl) (fun _ => rfl) P pc nCu hCu
 
 /-- Original abort triple, derived from the typed-fault spec by forgetting the
     `vmError` conjunct. Kept for existing `cuTripleAbortsWithin` consumers. -/
@@ -174,33 +147,9 @@ theorem call_sol_panic_faults_spec (P : Assertion) (pc : Nat) (nCu : Nat)
         (step (.call .sol_panic_) s).cuConsumed ≤ s.cuConsumed + nCu) :
     cuTripleFaultsWithin 1 nCu pc
       (CodeReq.singleton pc (.call .sol_panic_))
-      P .abort := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
-  -- The panic ignores its pre, so `hPR` is not destructured.
-  have hfetch : fetch s.pc = some (.call .sol_panic_) := by
-    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .sol_panic_) s) := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  have hexec : executeFn fetch s 1 =
-      chargeCu { (Abort.execPanic s) with
-                 pc := s.pc + 1
-                 cuConsumed := (Abort.execPanic s).cuConsumed
-                   + syscallCu .sol_panic_ s } := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
-        executeFn_zero]
-    simp only [step, execSyscall]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
-  · rw [hexec]
-    show (Abort.execPanic s).exitCode = some VmError.abort.toSentinel
-    rfl
-  · rw [hexec]
-    show (Abort.execPanic s).vmError = some .abort
-    rfl
-  · rw [hstep_eq]
-    show (step (.call .sol_panic_) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
-    have := hCu s; omega
+      P .abort :=
+  call_typed_fault_spec .sol_panic_ .abort (fun _ => rfl) (fun _ => rfl)
+    P pc nCu hCu
 
 /-- The original `sol_panic_` abort triple, derived from the typed-fault
     spec. -/
@@ -332,6 +281,21 @@ p_token has 6 `mov64` + 1 `lddw`.) One lemma per shape discharges each block in
 one `apply`: `{mov64,lddw}_spec` ⨾ `exit_aborts_spec_cuTriple` via
 `cuTripleAbortsWithin_seq_abort`. -/
 
+/-- Shared collapse for the `set r0; exit` twins, parameterized over the
+    r0-setting instruction and its 1-step triple (`mov64_imm_spec` /
+    `lddw_spec` at the two instantiations below). -/
+private theorem errorExit_of_setR0 (insn : Insn) (err : Int) (vR0Old pc : Nat)
+    (hset : cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn)
+      (.r0 ↦ᵣ vR0Old) (.r0 ↦ᵣ toU64 err)) :
+    cuTripleAbortsWithin 2 0 pc
+      ((CodeReq.singleton pc insn).union (CodeReq.singleton (pc + 1) .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 err) :=
+  cuTripleAbortsWithin_seq_abort
+    (CodeReq.singleton_disjoint_singleton _ _ (by omega))
+    (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _) hset)
+    (exit_aborts_spec_cuTriple (toU64 err) (pc + 1))
+
 /-- `mov64 r0, err; exit` aborts with `toU64 err`, from any prior r0. -/
 theorem errorExit_spec (err : Int) (vR0Old pc : Nat) :
     cuTripleAbortsWithin 2 0 pc
@@ -339,11 +303,7 @@ theorem errorExit_spec (err : Int) (vR0Old pc : Nat) :
         (CodeReq.singleton (pc + 1) .exit))
       ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
       (toU64 err) :=
-  cuTripleAbortsWithin_seq_abort
-    (CodeReq.singleton_disjoint_singleton _ _ (by omega))
-    (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
-      (mov64_imm_spec .r0 err vR0Old pc (by decide)))
-    (exit_aborts_spec_cuTriple (toU64 err) (pc + 1))
+  errorExit_of_setR0 _ err vR0Old pc (mov64_imm_spec .r0 err vR0Old pc (by decide))
 
 /-- `lddw r0, err; exit` aborts with `toU64 err`, from any prior r0.
     The lddw form carries 64-bit codes (pinocchio's `code <<< 32`). -/
@@ -353,15 +313,35 @@ theorem errorExit_lddw_spec (err : Int) (vR0Old pc : Nat) :
         (CodeReq.singleton (pc + 1) .exit))
       ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
       (toU64 err) :=
-  cuTripleAbortsWithin_seq_abort
-    (CodeReq.singleton_disjoint_singleton _ _ (by omega))
-    (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
-      (lddw_spec .r0 err vR0Old pc (by decide)))
-    (exit_aborts_spec_cuTriple (toU64 err) (pc + 1))
+  errorExit_of_setR0 _ err vR0Old pc (lddw_spec .r0 err vR0Old pc (by decide))
 
 /-! Other half of the idiom: error blocks that set r0 and JUMP to a shared
 bare-`exit` block (p_token's transfer arm routes every error landing through
 the single `exit` at logical 3542). Same collapse, one extra `ja` hop. -/
+
+/-- Shared collapse for the `set r0; ja tgt` (+ shared `exit` at `tgt`) twins,
+    parameterized like `errorExit_of_setR0`. -/
+private theorem errorExitJa_of_setR0 (insn : Insn) (err : Int)
+    (vR0Old pc tgt : Nat) (h1 : pc ≠ tgt) (h2 : pc + 1 ≠ tgt)
+    (hset : cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc insn)
+      (.r0 ↦ᵣ vR0Old) (.r0 ↦ᵣ toU64 err)) :
+    cuTripleAbortsWithin 3 0 pc
+      (((CodeReq.singleton pc insn).union
+        (CodeReq.singleton (pc + 1) (.ja tgt))).union
+        (CodeReq.singleton tgt .exit))
+      ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
+      (toU64 err) :=
+  cuTripleAbortsWithin_seq_abort
+    (CodeReq.Disjoint_union_left
+      (CodeReq.singleton_disjoint_singleton _ _ h1)
+      (CodeReq.singleton_disjoint_singleton _ _ h2))
+    (cuTripleWithin_seq
+      (CodeReq.singleton_disjoint_singleton _ _ (by omega))
+      (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _) hset)
+      (cuTripleWithin_widen_emp ((.r0 ↦ᵣ toU64 err) ** callStackIs [])
+        (pcFree_sepConj (pcFree_regIs _ _) (pcFree_callStackIs _))
+        (ja_spec tgt (pc + 1))))
+    (exit_aborts_spec_cuTriple (toU64 err) tgt)
 
 /-- `mov64 r0, err; ja tgt` with `exit` at `tgt`: aborts with `toU64 err`.
     Side conditions: the shared exit doesn't overlap the landing. -/
@@ -373,18 +353,8 @@ theorem errorExitJa_spec (err : Int) (vR0Old pc tgt : Nat)
         (CodeReq.singleton tgt .exit))
       ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
       (toU64 err) :=
-  cuTripleAbortsWithin_seq_abort
-    (CodeReq.Disjoint_union_left
-      (CodeReq.singleton_disjoint_singleton _ _ h1)
-      (CodeReq.singleton_disjoint_singleton _ _ h2))
-    (cuTripleWithin_seq
-      (CodeReq.singleton_disjoint_singleton _ _ (by omega))
-      (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
-        (mov64_imm_spec .r0 err vR0Old pc (by decide)))
-      (cuTripleWithin_widen_emp ((.r0 ↦ᵣ toU64 err) ** callStackIs [])
-        (pcFree_sepConj (pcFree_regIs _ _) (pcFree_callStackIs _))
-        (ja_spec tgt (pc + 1))))
-    (exit_aborts_spec_cuTriple (toU64 err) tgt)
+  errorExitJa_of_setR0 _ err vR0Old pc tgt h1 h2
+    (mov64_imm_spec .r0 err vR0Old pc (by decide))
 
 /-- `lddw r0, err; ja tgt` with `exit` at `tgt`: aborts with
     `toU64 err`. The 64-bit-immediate variant of `errorExitJa_spec`. -/
@@ -396,17 +366,7 @@ theorem errorExitJa_lddw_spec (err : Int) (vR0Old pc tgt : Nat)
         (CodeReq.singleton tgt .exit))
       ((.r0 ↦ᵣ vR0Old) ** callStackIs [])
       (toU64 err) :=
-  cuTripleAbortsWithin_seq_abort
-    (CodeReq.Disjoint_union_left
-      (CodeReq.singleton_disjoint_singleton _ _ h1)
-      (CodeReq.singleton_disjoint_singleton _ _ h2))
-    (cuTripleWithin_seq
-      (CodeReq.singleton_disjoint_singleton _ _ (by omega))
-      (cuTripleWithin_frame_right (callStackIs []) (pcFree_callStackIs _)
-        (lddw_spec .r0 err vR0Old pc (by decide)))
-      (cuTripleWithin_widen_emp ((.r0 ↦ᵣ toU64 err) ** callStackIs [])
-        (pcFree_sepConj (pcFree_regIs _ _) (pcFree_callStackIs _))
-        (ja_spec tgt (pc + 1))))
-    (exit_aborts_spec_cuTriple (toU64 err) tgt)
+  errorExitJa_of_setR0 _ err vR0Old pc tgt h1 h2
+    (lddw_spec .r0 err vR0Old pc (by decide))
 
 end SVM.SBPF
