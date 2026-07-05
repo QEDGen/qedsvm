@@ -747,6 +747,35 @@ theorem union_callStack_of_left_some {h1 h2 : PartialState}
       (match h1.callStack with | some v => some v | none => h2.callStack) :=
   rfl
 
+/-! ## Frame-field compat discharge
+
+The Mem* instruction specs each rebuild a post `holdsFor` whose partial state
+is `X.union h_R` (new atom chain + old frame) from a pre-compat over
+`hp = h_P.union h_R`. Since the atom chains are `returnData`/`callStack`-silent,
+those two compat obligations always reduce to the pre's: these two lemmas
+discharge them deterministically (previously an identical `first | ...`
+backtracking block copied at every site). -/
+
+theorem CompatibleWith.union_returnData_frame
+    {hp h_P h_R X : PartialState} {s : State}
+    (hcompat : hp.CompatibleWith s) (hu : h_P.union h_R = hp)
+    (hX : X.returnData = none) (hP : h_P.returnData = none)
+    {rd : ByteArray} (hva : (X.union h_R).returnData = some rd) :
+    s.returnData = rd := by
+  rw [union_returnData_of_left_none hX] at hva
+  exact hcompat.returnData rd
+    (by rw [← hu, union_returnData_of_left_none hP]; exact hva)
+
+theorem CompatibleWith.union_callStack_frame
+    {hp h_P h_R X : PartialState} {s : State}
+    (hcompat : hp.CompatibleWith s) (hu : h_P.union h_R = hp)
+    (hX : X.callStack = none) (hP : h_P.callStack = none)
+    {cs : List CallFrame} (hva : (X.union h_R).callStack = some cs) :
+    s.callStack = cs := by
+  rw [union_callStack_of_left_none hX] at hva
+  exact hcompat.callStack cs
+    (by rw [← hu, union_callStack_of_left_none hP]; exact hva)
+
 /-! ## Union lemmas -/
 
 theorem union_empty_left {h : PartialState} : empty.union h = h := by
