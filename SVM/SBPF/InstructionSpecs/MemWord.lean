@@ -281,47 +281,11 @@ theorem ldxw_spec
         rw [h_R_no_pc] at hvp
         nomatch hvp
       · intro rd hva
-        first
-        | exact hcompat.returnData rd hva
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd
-             (by rw [
-                    ← hu_PR,
-                    ← hu_dst_SM,
-                    ← hu_src_mem,
-                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd
-             (by rw [
-                    ← hu_PR,
-                    ← hu_dst_SM,
-                    ← hu_src_mem,
-                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+        exact hcompat.union_returnData_frame hu_PR rfl
+          (by rw [← hu_dst_SM, ← hu_src_mem]; rfl) hva
       · intro cs hva
-        first
-        | exact hcompat.callStack cs hva
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs
-             (by rw [
-                    ← hu_PR,
-                    ← hu_dst_SM,
-                    ← hu_src_mem,
-                    PartialState.union_callStack_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs
-             (by rw [
-                    ← hu_PR,
-                    ← hu_dst_SM,
-                    ← hu_src_mem,
-                    PartialState.union_callStack_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs (by rw [← hu_PR]; exact hva))
+        exact hcompat.union_callStack_frame hu_PR rfl
+          (by rw [← hu_dst_SM, ← hu_src_mem]; rfl) hva
     · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrdst : r = dst
@@ -619,47 +583,11 @@ theorem stxw_spec
         rw [h_R_no_pc] at hvp
         nomatch hvp
       · intro rd hva
-        first
-        | exact hcompat.returnData rd hva
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd
-             (by rw [
-                    ← hu_PR,
-                    ← hu_base_VM,
-                    ← hu_val_mem,
-                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd
-             (by rw [
-                    ← hu_PR,
-                    ← hu_base_VM,
-                    ← hu_val_mem,
-                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+        exact hcompat.union_returnData_frame hu_PR rfl
+          (by rw [← hu_base_VM, ← hu_val_mem]; rfl) hva
       · intro cs hva
-        first
-        | exact hcompat.callStack cs hva
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs
-             (by rw [
-                    ← hu_PR,
-                    ← hu_base_VM,
-                    ← hu_val_mem,
-                    PartialState.union_callStack_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs
-             (by rw [
-                    ← hu_PR,
-                    ← hu_base_VM,
-                    ← hu_val_mem,
-                    PartialState.union_callStack_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs (by rw [← hu_PR]; exact hva))
+        exact hcompat.union_callStack_frame hu_PR rfl
+          (by rw [← hu_base_VM, ← hu_val_mem]; rfl) hva
     · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
         by_cases hrbase : r = baseReg
@@ -904,29 +832,11 @@ theorem cuTripleWithinMem_store_imm_word_via_reg_addr
         rw [h_R_no_pc] at hvp
         nomatch hvp
       · intro rd hva
-        first
-        | exact hcompat.returnData rd hva
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd
-             (by rw [
-                    ← hu_PR,
-                    ← hu_base_mem,
-                    PartialState.union_returnData_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_returnData_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.returnData rd (by rw [← hu_PR]; exact hva))
+        exact hcompat.union_returnData_frame hu_PR rfl
+          (by rw [← hu_base_mem]; rfl) hva
       · intro cs hva
-        first
-        | exact hcompat.callStack cs hva
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs
-             (by rw [
-                    ← hu_PR,
-                    ← hu_base_mem,
-                    PartialState.union_callStack_of_left_none (by first | rfl | simp)]
-                 exact hva))
-        | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
-           exact hcompat.callStack cs (by rw [← hu_PR]; exact hva))
+        exact hcompat.union_callStack_frame hu_PR rfl
+          (by rw [← hu_base_mem]; rfl) hva
     -- (b) Outer disjointness: new witness ⊥ h_R.
     · refine ⟨?_, ?_, ?_, by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp), by first | exact Or.inl rfl | exact Or.inr rfl | (left; simp) | (right; simp)⟩
       · intro r
