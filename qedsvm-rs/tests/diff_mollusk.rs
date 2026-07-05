@@ -3475,6 +3475,240 @@ fn p_token_close_account_nonzero_matches_mollusk() {
     ]);
 }
 
+/// `build_mint_account` with a FREEZE authority set (tag @46..50 = Some,
+/// key @50..82).
+fn build_mint_account_with_freeze(mint_authority: &Pubkey, supply: u64,
+                                  decimals: u8, freeze_authority: &Pubkey) -> Vec<u8> {
+    let mut d = build_mint_account(mint_authority, supply, decimals);
+    d[46..50].copy_from_slice(&1u32.to_le_bytes());
+    d[50..82].copy_from_slice(freeze_authority.as_ref());
+    d
+}
+
+/// Approve violating-fixture driver: (source, delegate, owner) shape,
+/// data [4, amount].
+fn approve_fails(label: &str, seed: u64, src_data: Vec<u8>, amount: u64) {
+    let program_id = pid(seed);
+    let source_key = pid(seed + 1);
+    let delegate = pid(seed + 2);
+    let owner = pid(seed + 3);
+    let mut data = Vec::with_capacity(9);
+    data.push(4);
+    data.extend_from_slice(&amount.to_le_bytes());
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new_readonly(delegate, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+        data,
+    };
+    assert_p_token_ix_fails(label, program_id, ix, vec![
+        (source_key, ACCT_LAMPORTS, src_data, program_id),
+        (delegate, 1_000_000, vec![], Pubkey::default()),
+        (owner, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
+/// Approve on a FROZEN source account: TokenError::AccountFrozen (17).
+#[test]
+fn p_token_approve_frozen_matches_mollusk() {
+    let seed = 184;
+    let mint = pid(seed + 4);
+    let owner = pid(seed + 3);
+    let mut src = build_token_account(&mint, &owner, 1_000);
+    src[108] = 2; // AccountState::Frozen
+    approve_fails("approve-frozen", seed, src, 250);
+}
+
+/// Approve signed by a non-owner: TokenError::OwnerMismatch (4).
+#[test]
+fn p_token_approve_owner_mismatch_matches_mollusk() {
+    let seed = 190;
+    let mint = pid(seed + 4);
+    let real_owner = pid(seed + 5); // NOT the signing owner (seed+3)
+    let src = build_token_account(&mint, &real_owner, 1_000);
+    approve_fails("approve-owner-mismatch", seed, src, 250);
+}
+
+/// Revoke violating-fixture driver: (source, owner) shape, data [5].
+fn revoke_fails(label: &str, seed: u64, src_data: Vec<u8>) {
+    let program_id = pid(seed);
+    let source_key = pid(seed + 1);
+    let owner = pid(seed + 2);
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(source_key, false),
+            AccountMeta::new_readonly(owner, true),
+        ],
+        data: vec![5],
+    };
+    assert_p_token_ix_fails(label, program_id, ix, vec![
+        (source_key, ACCT_LAMPORTS, src_data, program_id),
+        (owner, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
+/// Revoke on a FROZEN source account: TokenError::AccountFrozen (17).
+#[test]
+fn p_token_revoke_frozen_matches_mollusk() {
+    let seed = 196;
+    let mint = pid(seed + 4);
+    let owner = pid(seed + 2);
+    let delegate = pid(seed + 5);
+    let mut src = build_token_account(&mint, &owner, 1_000);
+    set_delegate(&mut src, &delegate, 500);
+    src[108] = 2; // AccountState::Frozen
+    revoke_fails("revoke-frozen", seed, src);
+}
+
+/// Revoke signed by a non-owner: TokenError::OwnerMismatch (4).
+#[test]
+fn p_token_revoke_owner_mismatch_matches_mollusk() {
+    let seed = 202;
+    let mint = pid(seed + 4);
+    let real_owner = pid(seed + 5); // NOT the signing owner (seed+2)
+    let delegate = pid(seed + 6);
+    let mut src = build_token_account(&mint, &real_owner, 1_000);
+    set_delegate(&mut src, &delegate, 500);
+    revoke_fails("revoke-owner-mismatch", seed, src);
+}
+
+/// SetAuthority violating-fixture driver: (account, current authority)
+/// shape, data [6, authority_type, coption_tag(, new_authority)].
+fn set_authority_fails(label: &str, seed: u64, acct_data: Vec<u8>,
+                       authority_type: u8, new_authority: Option<Pubkey>) {
+    let program_id = pid(seed);
+    let acct_key = pid(seed + 1);
+    let authority = pid(seed + 2);
+    let mut data = vec![6, authority_type];
+    match new_authority {
+        Some(k) => { data.push(1); data.extend_from_slice(k.as_ref()); }
+        None => data.push(0),
+    }
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data,
+    };
+    assert_p_token_ix_fails(label, program_id, ix, vec![
+        (acct_key, ACCT_LAMPORTS, acct_data, program_id),
+        (authority, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
+/// SetAuthority(AccountOwner) signed by a non-owner:
+/// TokenError::OwnerMismatch (4).
+#[test]
+fn p_token_set_authority_owner_mismatch_matches_mollusk() {
+    let seed = 208;
+    let mint = pid(seed + 4);
+    let real_owner = pid(seed + 5); // NOT the signing authority (seed+2)
+    let new_owner = pid(seed + 6);
+    let acct = build_token_account(&mint, &real_owner, 1_000);
+    set_authority_fails("set-authority-owner-mismatch", seed, acct,
+        2 /* AuthorityType::AccountOwner */, Some(new_owner));
+}
+
+/// SetAuthority with an authority TYPE that does not apply to a token
+/// account (MintTokens on a token account):
+/// TokenError::AuthorityTypeNotSupported (15).
+#[test]
+fn p_token_set_authority_bad_type_matches_mollusk() {
+    let seed = 214;
+    let mint = pid(seed + 4);
+    let owner = pid(seed + 2); // = the signing authority
+    let new_auth = pid(seed + 6);
+    let acct = build_token_account(&mint, &owner, 1_000);
+    set_authority_fails("set-authority-bad-type", seed, acct,
+        0 /* AuthorityType::MintTokens */, Some(new_auth));
+}
+
+/// Freeze/Thaw violating-fixture driver: (account, mint, authority) shape,
+/// data [10] (freeze) or [11] (thaw).
+fn toggle_freeze_fails(label: &str, seed: u64, acct_data: Vec<u8>,
+                       mint_data: Vec<u8>, disc: u8) {
+    let program_id = pid(seed);
+    let acct_key = pid(seed + 1);
+    let mint_key = pid(seed + 2);
+    let authority = pid(seed + 3);
+    let ix = Instruction {
+        program_id,
+        accounts: vec![
+            AccountMeta::new(acct_key, false),
+            AccountMeta::new_readonly(mint_key, false),
+            AccountMeta::new_readonly(authority, true),
+        ],
+        data: vec![disc],
+    };
+    assert_p_token_ix_fails(label, program_id, ix, vec![
+        (acct_key, ACCT_LAMPORTS, acct_data, program_id),
+        (mint_key, MINT_LAMPORTS, mint_data, program_id),
+        (authority, 1_000_000, vec![], Pubkey::default()),
+    ]);
+}
+
+/// FreezeAccount on a mint with NO freeze authority:
+/// TokenError::MintCannotFreeze (16).
+#[test]
+fn p_token_freeze_cannot_freeze_matches_mollusk() {
+    let seed = 220;
+    let mint_key = pid(seed + 2);
+    let owner = pid(seed + 4);
+    let mint_auth = pid(seed + 5);
+    let acct = build_token_account(&mint_key, &owner, 1_000);
+    let mint = build_mint_account(&mint_auth, 1_000, 9); // freeze auth = None
+    toggle_freeze_fails("freeze-cannot-freeze", seed, acct, mint, 10);
+}
+
+/// FreezeAccount signed by someone other than the mint's freeze authority:
+/// TokenError::OwnerMismatch (4).
+#[test]
+fn p_token_freeze_authority_mismatch_matches_mollusk() {
+    let seed = 226;
+    let mint_key = pid(seed + 2);
+    let owner = pid(seed + 4);
+    let mint_auth = pid(seed + 5);
+    let real_freeze_auth = pid(seed + 6); // NOT the signing authority (seed+3)
+    let acct = build_token_account(&mint_key, &owner, 1_000);
+    let mint = build_mint_account_with_freeze(&mint_auth, 1_000, 9, &real_freeze_auth);
+    toggle_freeze_fails("freeze-authority-mismatch", seed, acct, mint, 10);
+}
+
+/// FreezeAccount on an ALREADY-FROZEN account (valid freeze authority):
+/// TokenError::InvalidState (13).
+#[test]
+fn p_token_freeze_already_frozen_matches_mollusk() {
+    let seed = 232;
+    let mint_key = pid(seed + 2);
+    let freeze_auth = pid(seed + 3); // = the signing authority
+    let owner = pid(seed + 4);
+    let mint_auth = pid(seed + 5);
+    let mut acct = build_token_account(&mint_key, &owner, 1_000);
+    acct[108] = 2; // AccountState::Frozen
+    let mint = build_mint_account_with_freeze(&mint_auth, 1_000, 9, &freeze_auth);
+    toggle_freeze_fails("freeze-already-frozen", seed, acct, mint, 10);
+}
+
+/// ThawAccount on a NOT-FROZEN account (valid freeze authority):
+/// TokenError::InvalidState (13).
+#[test]
+fn p_token_thaw_not_frozen_matches_mollusk() {
+    let seed = 238;
+    let mint_key = pid(seed + 2);
+    let freeze_auth = pid(seed + 3); // = the signing authority
+    let owner = pid(seed + 4);
+    let mint_auth = pid(seed + 5);
+    let acct = build_token_account(&mint_key, &owner, 1_000); // Initialized
+    let mint = build_mint_account_with_freeze(&mint_auth, 1_000, 9, &freeze_auth);
+    toggle_freeze_fails("thaw-not-frozen", seed, acct, mint, 11);
+}
+
 /// ELF-load probe for ATA binary: both engines fail before CPI. Validates loading + entry dispatch without CPI dependency.
 #[test]
 fn associated_token_empty_data_fails_on_both() {

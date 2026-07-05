@@ -354,6 +354,30 @@ lean_lib Examples where
     `PToken.TransferCheckedArm.MintMismatchGuardEnforced,
     `Generated.PTokenCloseAccountNonzeroLifted,
     `PToken.CloseAccountArm.NonzeroBalanceGuardEnforced,
+    -- Batch-5 arms: Approve / Revoke / SetAuthority / Freeze / Thaw.
+    -- New TokenError families: InvalidState (13, the freeze/thaw
+    -- state-transition guards), AuthorityTypeNotSupported (15),
+    -- MintCannotFreeze (16).
+    `Generated.PTokenApproveFrozenLifted,
+    `PToken.ApproveArm.FrozenGuardEnforced,
+    `Generated.PTokenApproveOwnerMismatchLifted,
+    `PToken.ApproveArm.OwnerMismatchGuardEnforced,
+    `Generated.PTokenRevokeFrozenLifted,
+    `PToken.RevokeArm.FrozenGuardEnforced,
+    `Generated.PTokenRevokeOwnerMismatchLifted,
+    `PToken.RevokeArm.OwnerMismatchGuardEnforced,
+    `Generated.PTokenSetAuthorityOwnerMismatchLifted,
+    `PToken.SetAuthorityArm.OwnerMismatchGuardEnforced,
+    `Generated.PTokenSetAuthorityBadTypeLifted,
+    `PToken.SetAuthorityArm.BadTypeGuardEnforced,
+    `Generated.PTokenFreezeCannotFreezeLifted,
+    `PToken.FreezeArm.CannotFreezeGuardEnforced,
+    `Generated.PTokenFreezeAuthorityMismatchLifted,
+    `PToken.FreezeArm.AuthorityMismatchGuardEnforced,
+    `Generated.PTokenFreezeAlreadyFrozenLifted,
+    `PToken.FreezeArm.AlreadyFrozenGuardEnforced,
+    `Generated.PTokenThawNotFrozenLifted,
+    `PToken.FreezeArm.ThawNotFrozenGuardEnforced,
     -- Trace-guided lifts: real p_token happy paths, balance/supply
     -- mutation in the post (qedlift --trace).
     `Generated.PTokenTransferTracedLifted,

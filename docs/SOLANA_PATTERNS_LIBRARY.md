@@ -193,8 +193,9 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
   `balanceAtLeast_of_tokenAcctBalance` (the `tokenAcctBalance` atom that
   `AsmRefinesTokenTransfer` carries entails the same account with its `amount`
   conjunct weakened to `balanceAtLeast`). Depend on **no axioms**.
-- **L3 Guards**: TWENTY-SIX full `EnforcedError` guards across FIVE p-token
-  arms (Transfer 16, MintTo 5, Burn 2, TransferChecked 2, CloseAccount 1),
+- **L3 Guards**: THIRTY-SIX full `EnforcedError` guards across TEN p-token
+  arms (Transfer 16, MintTo 5, Burn 2, TransferChecked 2, CloseAccount 1,
+  Approve 2, Revoke 2, SetAuthority 2, FreezeAccount 3, ThawAccount 1),
   all standard-axiom clean, all built the same way (violating fixture →
   diff_mollusk test → captured failing trace → qedlift error-path lift →
   `cuTripleWithinMem_seq_exit` composition; guard files generated mechanically
@@ -248,6 +249,16 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
       family exists for) and **explicit-mint mismatch** (exit 3 — vs the
       provided mint account, distinct from Transfer's src-vs-dest compare).
   14. **CloseAccount nonzero balance** (exit 11, NonNativeHasBalance).
+  15. **Approve/Revoke**: frozen (exit 17) and owner-mismatch (exit 4) on
+      both — the Approve owner guard blocks the delegation-theft shape, the
+      Revoke pair guards the undo side.
+  16. **SetAuthority**: owner-mismatch on AccountOwner rotation (exit 4 —
+      the account-takeover shape) and unsupported authority type (exit 15,
+      MintTokens aimed at a token account).
+  17. **FreezeAccount/ThawAccount**: freeze-capability (exit 16,
+      MintCannotFreeze on a mint with no freeze authority),
+      freeze-authority mismatch (exit 4), and the two state-transition
+      guards (exit 13, InvalidState: freeze-when-frozen, thaw-when-thawed).
   **FINDINGS — REQUIRES-without-ENFORCES on a canonical program (the
   unchecked-arithmetic audit of the token arms, now complete):**
   1. p-token does NOT enforce a destination-balance overflow check on
@@ -282,18 +293,19 @@ over the cell value with a `≤` bound (a real lower bound, not a degenerate one
 Driven bottom-up: prove a guard on a proven arm, let it dictate the predicate /
 recognizer shapes.
 
-1. **SPL Token (in progress).** DONE: Transfer (16 guards), MintTo (5: supply
-   overflow, fixed supply, authority mismatch, mint mismatch, dest frozen),
-   Burn (2: insufficient, frozen), TransferChecked (2: decimals, explicit
-   mint), CloseAccount (1: nonzero balance). Plus one pinned NON-guard
-   (Transfer dest overflow wraps — see the finding above; its enforcing
-   counterpart, MintTo supply overflow, is proven). Remaining candidates:
+1. **SPL Token (in progress).** DONE across 10 arms (36 guards): Transfer 16,
+   MintTo 5, Burn 2, TransferChecked 2, CloseAccount 1, Approve 2, Revoke 2,
+   SetAuthority 2, Freeze 3, Thaw 1. Plus two pinned NON-guards (Transfer
+   dest add + Burn supply sub wrap; the invariant both lean on is upheld by
+   the PROVEN MintTo supply-overflow guard). Remaining candidates:
    - wrong data_len (≠ 165): NOT a simple flip — the 305 `jne` targets the 312
      generic account parser (slow path), not an error route; the failure
      surfaces later. Needs its own trace study.
    - deeper per-arm coverage: Burn authority tri-case + delegated-amount,
-     TransferChecked frozen/balance legs, CloseAccount authority legs, the
-     Approve/Revoke/SetAuthority/FreezeAccount/ThawAccount arms.
+     TransferChecked frozen/balance legs, CloseAccount authority legs,
+     SetAuthority close-authority leg, the *Checked siblings
+     (ApproveChecked/MintToChecked/BurnChecked), multisig arms,
+     InitializeAccount/InitializeMint AlreadyInUse guards.
    - Burn supply-underflow: PROBED — unchecked, wraps (finding #2 above).
 2. **Signer/owner DEFERRED, with reason.** The p_token signer check is NOT a clean
    guard: its proven non-signer branch *continues to the effect* (pinocchio's
