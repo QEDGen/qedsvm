@@ -365,17 +365,23 @@ pub const ERR_INVALID_POSTSTATE: u64 = 0xFFFFFFFFFFFFFFFB;
 
 /// Build the instruction-ordered account list for serialization, post-state validation,
 /// and `resulting_accounts`. Duplicate `AccountMeta`s produce duplicate entries matching
-/// `deserialize_account_writes` output so pre/post align positionally in `validate_post_state`.
+/// `deserialize_account_writes` output so pre/post align positionally in `validate_post_state`
+/// — the shared `dup_map` invariant guarantees the alignment.
 fn accounts_for_instruction(
     instruction: &Instruction,
     accounts: &[(Pubkey, AccountSharedData)],
 ) -> Result<Vec<(Pubkey, AccountSharedData)>, SerializeError> {
-    let mut out = Vec::with_capacity(instruction.accounts.len());
-    for meta in &instruction.accounts {
-        let acct = accounts.iter()
-            .find(|(k, _)| *k == meta.pubkey)
-            .map(|(_, a)| a.clone())
-            .ok_or(SerializeError::MissingAccount(meta.pubkey))?;
+    let dup_of = crate::serialize::dup_map(&instruction.accounts);
+    let mut out: Vec<(Pubkey, AccountSharedData)> =
+        Vec::with_capacity(instruction.accounts.len());
+    for (i, meta) in instruction.accounts.iter().enumerate() {
+        let acct = match dup_of[i] {
+            Some(j) => out[j].1.clone(), // duplicate: reuse the first-occurrence entry
+            None => accounts.iter()
+                .find(|(k, _)| *k == meta.pubkey)
+                .map(|(_, a)| a.clone())
+                .ok_or(SerializeError::MissingAccount(meta.pubkey))?,
+        };
         out.push((meta.pubkey, acct));
     }
     Ok(out)

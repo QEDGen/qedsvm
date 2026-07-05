@@ -5,11 +5,33 @@
 //! Dup: u8 original_index + 7B pad. Header: u64 num_accounts. Trailer: u64+[data] ix_data, [32] program_id.
 
 use solana_account::{AccountSharedData, ReadableAccount};
-use solana_instruction::Instruction;
+use solana_instruction::{AccountMeta, Instruction};
 use solana_program_entrypoint::{
     BPF_ALIGN_OF_U128, MAX_PERMITTED_DATA_INCREASE, NON_DUP_MARKER,
 };
 use solana_pubkey::Pubkey;
+
+/// First-occurrence map over an instruction's `AccountMeta` list: `map[i] = Some(j)` iff
+/// `metas[i].pubkey` first appears at index `j < i` (so `i` is a duplicate); `None` for
+/// first occurrences. THE duplicate-account invariant: the serializer (dup-marker records),
+/// the deserializer (dup-record skipping + first-occurrence write-back), and
+/// `Svm::accounts_for_instruction` (positional pre/post alignment) all derive their dup
+/// structure from this one function, so they cannot drift apart.
+pub(crate) fn dup_map(metas: &[AccountMeta]) -> Vec<Option<usize>> {
+    let mut first_seen: std::collections::HashMap<Pubkey, usize> =
+        std::collections::HashMap::with_capacity(metas.len());
+    metas
+        .iter()
+        .enumerate()
+        .map(|(i, m)| match first_seen.entry(m.pubkey) {
+            std::collections::hash_map::Entry::Occupied(e) => Some(*e.get()),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(i);
+                None
+            }
+        })
+        .collect()
+}
 
 /// Errors from `serialize_parameters` — caller-input issues, not dynamic program failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,13 +75,7 @@ pub fn serialize_parameters(
     let mut buf = Vec::new();
     write_u64(&mut buf, n as u64);
 
-    let mut seen: Vec<Option<usize>> = vec![None; n]; // first-occurrence index per slot, for dup detection
-    for (i, meta) in instruction.accounts.iter().enumerate() {
-        let first = (0..i).find(|j| instruction.accounts[*j].pubkey == meta.pubkey);
-        if let Some(j) = first {
-            seen[i] = Some(j);
-        }
-    }
+    let seen = dup_map(&instruction.accounts); // first-occurrence index per slot, for dup detection
 
     for (i, meta) in instruction.accounts.iter().enumerate() {
         if let Some(j) = seen[i] {
