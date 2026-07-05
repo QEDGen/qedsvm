@@ -3,16 +3,12 @@
 
 use qedsvm::{ProgramResult, Svm};
 use solana_instruction::Instruction;
-use solana_pubkey::Pubkey;
 
 const NOOP_SO: &[u8] = include_bytes!("fixtures/noop.so");
 const SOLANA_NOOP_SO: &[u8] = include_bytes!("fixtures/solana_noop.so");
 
-fn pid(seed: u64) -> Pubkey {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&seed.to_le_bytes());
-    Pubkey::from(b)
-}
+mod common;
+use common::pid;
 
 #[test]
 fn minimal_noop_program_runs() {

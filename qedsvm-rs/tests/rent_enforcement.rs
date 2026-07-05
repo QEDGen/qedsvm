@@ -3,7 +3,7 @@
 //! Flag is off by default; these scenarios test rejection that mollusk's harness skips.
 
 use qedsvm::{ProgramResult, Svm, ERR_INVALID_POSTSTATE};
-use solana_account::{Account, AccountSharedData};
+use solana_account::AccountSharedData;
 use solana_instruction::{AccountMeta, Instruction};
 use solana_pubkey::Pubkey;
 
@@ -12,21 +12,8 @@ use solana_pubkey::Pubkey;
 const SYSTEM_TRANSFER_CALLER_SO: &[u8] =
     include_bytes!("fixtures/system_transfer_caller.so");
 
-fn pid(seed: u64) -> Pubkey {
-    let mut b = [0u8; 32];
-    b[..8].copy_from_slice(&seed.to_le_bytes());
-    Pubkey::from(b)
-}
-
-fn shared(lamports: u64, data: Vec<u8>, owner: Pubkey) -> AccountSharedData {
-    AccountSharedData::from(Account {
-        lamports,
-        data,
-        owner,
-        executable: false,
-        rent_epoch: 0,
-    })
-}
+mod common;
+use common::{pid, shared};
 
 /// Build the System::Transfer ix + the standard 3-account layout.
 /// Returns `(ix, accounts)` ready for `Svm::process_instruction`.

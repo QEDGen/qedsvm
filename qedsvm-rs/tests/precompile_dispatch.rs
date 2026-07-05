@@ -4,17 +4,9 @@
 
 use qedsvm::{ProgramResult, Svm};
 use solana_account::{Account, AccountSharedData};
-use solana_pubkey::Pubkey;
 
-/// Counter-derived placeholder pubkey (Pubkey::new_unique is behind an `atomic` feature we don't enable).
-fn dummy_pubkey() -> Pubkey {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static N: AtomicU64 = AtomicU64::new(1);
-    let n = N.fetch_add(1, Ordering::Relaxed);
-    let mut bytes = [0u8; 32];
-    bytes[..8].copy_from_slice(&n.to_le_bytes());
-    Pubkey::new_from_array(bytes)
-}
+mod common;
+use common::unique_pubkey;
 
 fn precompile_native_account() -> AccountSharedData {
     AccountSharedData::from(Account {
@@ -46,7 +38,7 @@ fn ed25519_precompile_accepts_valid_signature() {
             .unwrap(),
     );
     let ed_id = solana_sdk_ids::ed25519_program::id();
-    let dummy = dummy_pubkey();
+    let dummy = unique_pubkey();
 
     let r = Svm::default()
         .process_instruction(&ix, &[
@@ -81,7 +73,7 @@ fn ed25519_precompile_rejects_corrupted_signature() {
     );
     let r = Svm::default()
         .process_instruction(&ix, &[
-            (dummy_pubkey(), AccountSharedData::default()),
+            (unique_pubkey(), AccountSharedData::default()),
             (solana_sdk_ids::ed25519_program::id(), precompile_native_account()),
         ])
         .expect("corrupted-sig precompile still dispatches");
@@ -112,7 +104,7 @@ fn secp256k1_precompile_accepts_valid_signature() {
         msg, &sig, recid, &eth_address,
     );
     let sk_id = solana_sdk_ids::secp256k1_program::id();
-    let dummy = dummy_pubkey();
+    let dummy = unique_pubkey();
     let r = Svm::default()
         .process_instruction(&ix, &[
             (dummy, AccountSharedData::default()),
@@ -153,7 +145,7 @@ fn secp256r1_precompile_accepts_valid_signature() {
         msg, &sig, &pubkey,
     );
     let r1_id = solana_sdk_ids::secp256r1_program::id();
-    let dummy = dummy_pubkey();
+    let dummy = unique_pubkey();
     let r = Svm::default()
         .process_instruction(&ix, &[
             (dummy, AccountSharedData::default()),
@@ -168,7 +160,7 @@ fn secp256r1_precompile_accepts_valid_signature() {
 
 #[test]
 fn unknown_pid_does_not_match_precompile_path() {
-    let pid = dummy_pubkey(); // unknown pid must not route through precompile path — expect UnknownProgram
+    let pid = unique_pubkey(); // unknown pid must not route through precompile path — expect UnknownProgram
     let ix = solana_instruction::Instruction {
         program_id: pid, accounts: vec![], data: vec![1, 2, 3],
     };
