@@ -913,12 +913,34 @@ syntax "sl_block_iter" "[" term,* "]" (" generalizing" " [" term,* "]")? : tacti
 open Lean Lean.Elab.Tactic in
 elab_rules : tactic
   | `(tactic| sl_block_iter [$hs,*] $[generalizing [$gs,*]]?) => withMainContext do
-      -- Opaque-ify each listed value at goal + every hyp (keeps chain/goal aligned).
+      -- Opaque-ify each listed value at goal + every OCCURRING hyp (keeps
+      -- chain/goal aligned). A plain `generalize … at *` reverts ALL step-lemma
+      -- hypotheses and `kabstract`s the combined mega-goal, paying candidate
+      -- defeq checks at every head-symbol match across hyps that never mention
+      -- the value (~3/4 of them on the 312-hub arms; the dominant lift-build
+      -- cost, ~96s of 117s on PTokenBurnInsufficient). The values are emitted
+      -- verbatim from the same source text, so a SYNTACTIC occurrence prefilter
+      -- is exact here: revert only the hyps the value occurs in, generalize,
+      -- intro back. Sequential per-value semantics unchanged.
       if let some gs := gs then
         for g in gs.getElems do
-          let v := mkIdent (← mkFreshUserName `vgen)
-          let h := mkIdent (← mkFreshUserName `hgen)
-          evalTactic (← `(tactic| generalize $h : $g = $v at *))
+          withMainContext do
+            let ge ← Lean.Elab.Term.elabTermAndSynthesize g none
+            let ge ← instantiateMVars ge
+            let mut targets := #[]
+            for decl in (← getLCtx) do
+              unless decl.isImplementationDetail do
+                if ge.occurs (← instantiateMVars decl.type) then
+                  targets := targets.push decl.fvarId
+            let goal ← getMainGoal
+            let arg : Meta.GeneralizeArg :=
+              { expr := ge, xName? := ← mkFreshUserName `vgen,
+                hName? := ← mkFreshUserName `hgen }
+            let (reverted, goal) ← goal.revert targets
+              (clearAuxDeclsInsteadOfRevert := true)
+            let (_, goal) ← goal.generalize #[arg]
+            let (_, goal) ← goal.introNP reverted.size
+            replaceMainGoal [goal]
       -- Re-enter context (generalize rewrote the haves; names stay stable).
       withMainContext do
         let hExprs ← hs.getElems.toList.mapM
