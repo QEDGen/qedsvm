@@ -12,12 +12,11 @@ use solana_sbpf::{
     elf::Executable,
     program::BuiltinProgram,
     static_analysis::{Analysis, CfgNode},
-    vm::ContextObject,
 };
 
 use qed_analysis::{
-    layout::{parse_account_layout, AccountLayout, FieldKind},
-    PcMap,
+    layout::{codama_number_size, parse_account_layout, AccountLayout, FieldKind},
+    NoopCtx, PcMap,
 };
 use sha2::Digest;
 
@@ -78,15 +77,6 @@ struct IdlArgument {
     // Opaque: many Codama default-value node kinds; only `numberValueNode` is consumed.
     #[serde(rename = "defaultValue", default)]
     default_value: Option<serde_json::Value>,
-}
-
-// Static-analysis context — analysis doesn't execute.
-struct NoopCtx;
-impl ContextObject for NoopCtx {
-    fn consume(&mut self, _amount: u64) {}
-    fn get_remaining(&self) -> u64 {
-        0
-    }
 }
 
 struct Args {
@@ -204,17 +194,6 @@ fn load_trace(path: &Path) -> Result<BTreeSet<usize>, String> {
         return Err(format!("--trace {}: no PCs found", path.display()));
     }
     Ok(pcs)
-}
-
-/// Size in bytes of a numeric type by Codama `format` string.
-fn number_size(format: &str) -> Option<usize> {
-    match format {
-        "u8" | "i8" => Some(1),
-        "u16" | "i16" => Some(2),
-        "u32" | "i32" => Some(4),
-        "u64" | "i64" => Some(8),
-        _ => None,
-    }
 }
 
 /// Map a Codama discriminator `format` to the sBPF load opcode (unsigned width only).
@@ -952,7 +931,7 @@ fn discriminator_info(idl_ix: &IdlInstruction) -> Option<Discriminator> {
         .as_ref()
         .and_then(|d| d.get("number"))
         .and_then(|n| n.as_i64())?;
-    let size = number_size(format)?;
+    let size = codama_number_size(format)?;
     discriminator_load_opc(format)?;
     Some(Discriminator {
         value,
@@ -1208,7 +1187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         arg.name, kind
                     )
                 })?;
-            let sz = number_size(format)
+            let sz = codama_number_size(format)
                 .ok_or_else(|| format!("unsupported number format: {}", format))?;
             // `numberValueNode` carries the literal under "number"; other kinds are skipped.
             let default = arg

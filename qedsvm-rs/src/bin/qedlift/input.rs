@@ -3,17 +3,9 @@ use std::sync::Arc;
 
 use qed_analysis::{
     layout::{parse_account_layout, AccountField, AccountLayout, FieldKind},
-    PcMap,
+    NoopCtx, PcMap,
 };
-use solana_sbpf::{ebpf, elf::Executable, program::BuiltinProgram, vm::ContextObject};
-
-pub(super) struct NoopCtx;
-impl ContextObject for NoopCtx {
-    fn consume(&mut self, _amount: u64) {}
-    fn get_remaining(&self) -> u64 {
-        0
-    }
-}
+use solana_sbpf::{ebpf, elf::Executable, program::BuiltinProgram};
 
 pub(super) struct Args {
     pub(super) so: PathBuf,
