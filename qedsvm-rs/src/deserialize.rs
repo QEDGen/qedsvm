@@ -28,12 +28,12 @@ pub fn deserialize_account_writes(
     // Walk the buffer once, collecting per-first-occurrence updates.
     // We do NOT read `dup_info` from the buffer: Pinocchio's borrow-tracking (`solana-account-view`)
     // overlays `borrow_state` on that byte and can leave any 0..=255 value there (issue #2).
-    // Dup structure is fully determined by `instruction.accounts` — same as the serializer — so
-    // we recompute it from there and skip 8 bytes for each detected dup.
+    // Dup structure is fully determined by `instruction.accounts` — the shared `dup_map`
+    // invariant the serializer also uses — so we recompute it and skip 8 bytes per dup.
+    let dup_of = crate::serialize::dup_map(&instruction.accounts);
     let mut by_first_occurrence: Vec<Option<AccountSharedData>> = vec![None; num_accounts];
     for (i, slot) in by_first_occurrence.iter_mut().enumerate() {
-        let first = (0..i).find(|j| instruction.accounts[*j].pubkey == instruction.accounts[i].pubkey);
-        if first.is_some() {
+        if dup_of[i].is_some() {
             // Dup: 1B (post-execution borrow_state, ignored) + 7B padding.
             r.skip(8)?;
         } else {
@@ -51,9 +51,7 @@ pub fn deserialize_account_writes(
 
     let mut result = Vec::with_capacity(num_accounts);
     for (i, meta) in instruction.accounts.iter().enumerate() {
-        let first = (0..=i)
-            .find(|j| instruction.accounts[*j].pubkey == meta.pubkey)
-            .unwrap();  // at minimum, i itself
+        let first = dup_of[i].unwrap_or(i); // first occurrence of this pubkey (i itself if non-dup)
         let updated = by_first_occurrence[first]
             .clone()
             .ok_or(DeserializeError::MissingFirstOccurrence(first))?;
