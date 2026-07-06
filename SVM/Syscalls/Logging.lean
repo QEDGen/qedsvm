@@ -49,15 +49,6 @@ partial def natToHex (n : Nat) : String :=
       else go (n / 16) (String.singleton (hexDigit (n % 16)) ++ acc)
     go n ""
 
-/-- Two-digit lowercase hex of a `UInt8`. -/
-private def byteToHex2 (b : UInt8) : String :=
-  let n := b.toNat
-  String.singleton (hexDigit (n / 16)) ++ String.singleton (hexDigit (n % 16))
-
-/-- Hex-encode a `ByteArray` as a string of `2 * bs.size` chars. -/
-def bytesToHex (bs : ByteArray) : String :=
-  bs.foldl (fun acc b => acc ++ byteToHex2 b) ""
-
 /-- Decimal of a `Nat`. Thin wrapper over `Nat.toDigits 10`. -/
 private def natToDec (n : Nat) : String :=
   String.ofList (Nat.toDigits 10 n)

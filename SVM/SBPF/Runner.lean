@@ -131,14 +131,6 @@ private def u64ToLE (n : Nat) : ByteArray :=
   ⟨(List.range 8).foldl
     (fun acc i => acc.push ((n / 256^i) % 256).toUInt8) #[]⟩
 
-/-- Build a zero-account sub-input buffer for a CPI:
-    `[u64 0][u64 ix_data_len][u8;ix_data_len ix_data][u8;32 program_id]`.
-    Total size = 8 + 8 + ix_data.size + 32 bytes. Matches the
-    serialized layout `serialize_parameters` produces when
-    `instruction.accounts` is empty. -/
-def buildCpiSubInputNoAccounts (programId ixData : ByteArray) : ByteArray :=
-  u64ToLE 0 ++ u64ToLE ixData.size ++ ixData ++ programId
-
 /-! ### One-account CPI marshaling (Phase 3-full)
 
 The AccountInfo passed via `r2` indirects through `Rc<RefCell<…>>` to

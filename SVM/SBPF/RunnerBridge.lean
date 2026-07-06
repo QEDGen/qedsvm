@@ -26,23 +26,6 @@ def Insn.isCpiCall : Insn → Bool
 
 namespace Runner
 
-/-- The per-instruction step body of `executeFnCpiWithFuel` collapses to
-    `step insn s` for a non-CPI instruction. Workhorse case lemma;
-    `executeFnCpi_eq_executeFn_of_no_cpi` inducts on fuel invoking it per step. -/
-private theorem stepBody_eq_step_of_noCpi
-    {registry : Nat → Option ByteArray} {s : State} {insn : Insn} {fuel' : Nat}
-    {runCallee₁ runCallee₂ : ByteArray → Option (State × Memory.Mem × Nat)}
-    (hnc : Insn.isCpiCall insn = false) :
-    (match insn with
-      | .call .sol_invoke_signed =>
-        cpiCallNextState registry s .sol_invoke_signed fuel' runCallee₁
-      | .call .sol_invoke_signed_c =>
-        cpiCallNextState registry s .sol_invoke_signed_c fuel' runCallee₂
-      | _ => step insn s) = step insn s := by
-  cases insn with
-  | call sc => cases sc <;> first | rfl | (simp [Insn.isCpiCall] at hnc)
-  | _ => rfl
-
 set_option maxHeartbeats 1600000 in
 /-- `executeFnCpi ≡ executeFn` on programs that never invoke CPI: if `fetch`
     never yields a CPI-call, running any fuel under `executeFnCpi` gives the

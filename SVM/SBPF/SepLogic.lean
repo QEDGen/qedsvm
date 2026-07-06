@@ -1389,33 +1389,6 @@ theorem foldSepConj_perm {l1 l2 : List Assertion} (h : l1.Perm l2) :
   | trans _ _ ih1 ih2 =>
     intro s; exact (ih1 s).trans (ih2 s)
 
-/-- Swap adjacent elements at position `k`. Structural recursion on the spine —
-    no `Inhabited` needed (no out-of-range lookup), and the perm proof follows
-    by the same induction. -/
-def swapAt {α} : List α → Nat → List α
-  | [], _ => []
-  | [a], _ => [a]
-  | a :: b :: rest, 0 => b :: a :: rest
-  | a :: b :: rest, k + 1 => a :: swapAt (b :: rest) k
-
-theorem swapAt_perm {α} : ∀ (l : List α) (k : Nat), l.Perm (swapAt l k)
-  | [], _ => List.Perm.refl _
-  | [_], _ => List.Perm.refl _
-  | a :: b :: rest, 0 => List.Perm.swap b a rest
-  | a :: b :: rest, k + 1 => List.Perm.cons a (swapAt_perm (b :: rest) k)
-
-/-- Apply a sequence of adjacent-position swaps to a list, left-to-right. -/
-def applySwaps {α} (l : List α) (swaps : List Nat) : List α :=
-  swaps.foldl swapAt l
-
-theorem applySwaps_perm {α} (l : List α) (swaps : List Nat) :
-    l.Perm (applySwaps l swaps) := by
-  induction swaps generalizing l with
-  | nil => exact List.Perm.refl l
-  | cons k rest ih =>
-    show l.Perm (applySwaps (swapAt l k) rest)
-    exact (swapAt_perm l k).trans (ih (swapAt l k))
-
 /-- `(P ** emp) h ↔ P h` flipped — the bridge from a no-trailing-emp sepConj to
     the trailing-emp form at the singleton-list base case. -/
 theorem sepConj_emp_right_symm {P : Assertion} : ∀ h, P h ↔ (P ** emp) h :=

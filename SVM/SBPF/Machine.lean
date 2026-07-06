@@ -580,13 +580,6 @@ def readSlices (mem : Memory.Mem) (descsAddr n : Nat) : ByteArray :=
     let len := Memory.readU64 mem (descAddr + 8)
     acc ++ readBytes mem ptr len) ByteArray.empty
 
-/-- Sum the `len` fields across `n` descriptors at `descsAddr`. Cheaper than
-    `readSlices … |>.size`: skips dereferencing the slice bytes. -/
-def sumSliceLens (mem : Memory.Mem) (descsAddr n : Nat) : Nat :=
-  (List.range n).foldl (fun acc i =>
-    let descAddr := descsAddr + i * 16
-    acc + Memory.readU64 mem (descAddr + 8)) 0
-
 /-- Per-slice hash-family cost. agave's
     `mem_op_base_cost.max(sha256_byte_cost.saturating_mul(len / 2))` applied per
     slice (NOT sum-of-lengths × byte_cost); the sum is added to base cost 85.

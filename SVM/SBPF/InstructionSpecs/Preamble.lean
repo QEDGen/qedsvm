@@ -24,12 +24,6 @@ def zerosByteArray (N : Nat) : ByteArray :=
   show (Array.replicate N (0 : UInt8)).size = N
   exact Array.size_replicate
 
-theorem zerosByteArray_get! (N i : Nat) (hi : i < N) :
-    (zerosByteArray N).get! i = (0 : UInt8) := by
-  show (Array.replicate N (0 : UInt8))[i]! = 0
-  rw [getElem!_pos _ _ (by rw [Array.size_replicate]; exact hi)]
-  exact Array.getElem_replicate _
-
 /-- `Mem.read` on a coerced bare `Nat → Nat` equals the function applied:
     closure-style writes (`Sysvar.zeroFillR1` / `ReturnData.execGet`) make a
     `Mem` of form `↑(fun a => ...)` whose reads fall through `default` (empty

@@ -572,15 +572,6 @@ theorem executeFn_r10_initState
       = STACK_START + 0x1000 :=
   (executeFn_preserves_r10_of_no_push fetch _ fuel h_nf rfl).1
 
-/-- `initState2` variant of `executeFn_r10_initState`. -/
-theorem executeFn_r10_initState2
-    (fetch : Nat → Option Insn) (inputAddr insnAddr : Nat) (mem : Mem)
-    (regions : RegionTable) (entryPc fuel : Nat)
-    (h_nf : ∀ a i, fetch a = some i → i.isCallLocal = false) :
-    (executeFn fetch (initState2 inputAddr insnAddr mem regions entryPc) fuel).regs.r10
-      = STACK_START + 0x1000 :=
-  (executeFn_preserves_r10_of_no_push fetch _ fuel h_nf rfl).1
-
 /-! ## Region table — execution invariant
 
 `step` never mutates `s.regions`; multi-step pattern proofs need this to carry a
