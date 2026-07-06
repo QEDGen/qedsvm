@@ -44,6 +44,962 @@ theorem readU64_eq_of_bytes_match {mem : Memory.Mem} {addr v : Nat}
   rw [h0, h1, h2, h3, h4, h5, h6, h7]
   omega
 
+/-! ## Width-generic memory-cell triples
+
+The width files (`MemHalfword`/`MemWord`/`MemDword*`) used to inline
+byte-for-byte copies of the same 4-level partial-state destructure,
+differing only in the memory footprint (byte-point count, `singletonMemU*`
+family, `readByWidth`/`writeByWidth` reconstruction). The helpers below
+abstract the footprint as an opaque mem-only `PartialState` atom `M` (with
+its assertion `Pm`); the per-byte decomposition facts reach the step
+semantics through the `h_step`/`h_write*` hypotheses, so no runtime-length
+byte list is ever elaborated (the known blowup shape). Width specs
+instantiate `M := PartialState.singletonMemU{16,32,64} ..`. -/
+
+/-- A partial state owning only memory cells — no registers, pc,
+    returnData, or callStack. Footprint contract for the width-generic
+    cell helpers. -/
+structure PartialState.MemOnly (M : PartialState) : Prop where
+  regs : ∀ r, M.regs r = none
+  pc : M.pc = none
+  returnData : M.returnData = none
+  callStack : M.callStack = none
+
+theorem PartialState.singletonMemU16_memOnly (addr v : Nat) :
+    (PartialState.singletonMemU16 addr v).MemOnly :=
+  ⟨fun _ => rfl, rfl, rfl, rfl⟩
+
+theorem PartialState.singletonMemU32_memOnly (addr v : Nat) :
+    (PartialState.singletonMemU32 addr v).MemOnly :=
+  ⟨fun _ => rfl, rfl, rfl, rfl⟩
+
+theorem PartialState.singletonMemU64_memOnly (addr v : Nat) :
+    (PartialState.singletonMemU64 addr v).MemOnly :=
+  ⟨fun _ => rfl, rfl, rfl, rfl⟩
+
+/-- Generic cell-load triple via a register-indexed address: owns dst+src
+    registers plus one opaque mem-only atom `M`, unchanged by the load.
+    `h_step` receives `M`'s compat facts and produces the stepped state;
+    width specs decompose `M`'s bytes there (via `singletonMemU*_mem_i` +
+    `readU*_eq_of_bytes_match`). -/
+theorem cuTripleWithinMem_load_cell_via_reg_addr
+    (dst src : Reg) (vOldDst baseAddr vNew : Nat) (pc : Nat) (insn : Insn)
+    (M : PartialState) (Pm : Assertion) (rr : Memory.RegionTable → Prop)
+    (hne : dst ≠ .r10)
+    (hPm : ∀ h, Pm h ↔ h = M)
+    (hM : M.MemOnly)
+    (h_step : ∀ s : State,
+        s.regs.get dst = vOldDst →
+        s.regs.get src = baseAddr →
+        (∀ a val, M.mem a = some val → s.mem a = val) →
+        rr s.regions →
+        step insn s = { s with regs := s.regs.set dst vNew, pc := s.pc + 1 }) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc insn)
+      ((dst ↦ᵣ vOldDst) ** (src ↦ᵣ baseAddr) ** Pm)
+      ((dst ↦ᵣ vNew) ** (src ↦ᵣ baseAddr) ** Pm)
+      rr := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_dst, h_SM, hd_dst_SM, hu_dst_SM, h_dst_pred, h_SM_sat⟩ := h_P_sat
+  obtain ⟨h_src, h_mem, hd_src_mem, hu_src_mem, h_src_pred, h_mem_pred⟩ := h_SM_sat
+  rw [h_src_pred] at hu_src_mem hd_src_mem
+  rw [(hPm _).mp h_mem_pred] at hu_src_mem hd_src_mem
+  rw [h_dst_pred] at hu_dst_SM hd_dst_SM
+  clear h_src_pred h_mem_pred h_dst_pred h_src h_mem h_dst
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hne_dst_src : dst ≠ src := by
+    intro habs
+    rcases hd_dst_SM.regs dst with hl | hr
+    · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
+    · rw [← hu_src_mem] at hr
+      have : ((PartialState.singletonReg src baseAddr).union M).regs dst
+          = some baseAddr := by
+        rw [habs]
+        exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+      rw [this] at hr; nomatch hr
+  have h_SM_regs_src : h_SM.regs src = some baseAddr := by
+    rw [← hu_src_mem]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_regs_dst : h_P.regs dst = some vOldDst := by
+    rw [← hu_dst_SM]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_regs_src : h_P.regs src = some baseAddr := by
+    rw [← hu_dst_SM,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other hne_dst_src.symm)]
+    exact h_SM_regs_src
+  have h_P_mem : ∀ a val, M.mem a = some val → h_P.mem a = some val := by
+    intro a val hMa
+    rw [← hu_dst_SM,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+        ← hu_src_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have h_P_mem_none : ∀ a, M.mem a = none → h_P.mem a = none := by
+    intro a hMa
+    rw [← hu_dst_SM,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+        ← hu_src_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have hp_regs_dst : hp.regs dst = some vOldDst := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_dst
+  have hp_regs_src : hp.regs src = some baseAddr := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_src
+  have hs_regs_dst : s.regs.get dst = vOldDst := hcr_regs dst vOldDst hp_regs_dst
+  have hs_regs_src : s.regs.get src = baseAddr := hcr_regs src baseAddr hp_regs_src
+  have hs_mem : ∀ a val, M.mem a = some val → s.mem a = val := by
+    intro a val hMa
+    refine hcm_mem a val ?_
+    rw [← hu_PR]; exact PartialState.union_mem_of_left_some (h_P_mem a val hMa)
+  have hfetch : fetch s.pc = some insn := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hexec : executeFn fetch s 1 =
+      chargeCu { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_zero,
+        h_step s hs_regs_dst hs_regs_src hs_mem h_region]
+  have h_R_no_dst : h_R.regs dst = none := by
+    rcases hd_PR.regs dst with hl | hr
+    · rw [h_P_regs_dst] at hl; nomatch hl
+    · exact hr
+  have h_R_no_src : h_R.regs src = none := by
+    rcases hd_PR.regs src with hl | hr
+    · rw [h_P_regs_src] at hl; nomatch hl
+    · exact hr
+  have h_R_no_mem : ∀ a val, M.mem a = some val → h_R.mem a = none := by
+    intro a val hMa
+    rcases hd_PR.mem a with hl | hr
+    · rw [h_P_mem a val hMa] at hl; nomatch hl
+    · exact hr
+  have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
+  · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
+  · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
+  · rw [hexec]
+    refine ⟨_, ?_,
+            (PartialState.singletonReg dst vNew).union
+              ((PartialState.singletonReg src baseAddr).union M),
+            h_R, ?_, rfl,
+            ⟨PartialState.singletonReg dst vNew,
+             (PartialState.singletonReg src baseAddr).union M,
+             ?_, rfl, rfl,
+             ⟨PartialState.singletonReg src baseAddr, M,
+              hd_src_mem, rfl, rfl, (hPm M).mpr rfl⟩⟩,
+            h_R_sat⟩
+    -- (a) Compat of the new witness with the post state.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r vr hvr
+        show (s.regs.set dst vNew).get r = vr
+        by_cases hrdst : r = dst
+        · rw [hrdst] at hvr
+          have h_inner :
+              ((PartialState.singletonReg dst vNew).union
+                ((PartialState.singletonReg src baseAddr).union M)).regs dst
+              = some vNew :=
+            PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+          rw [PartialState.union_regs_of_left_some h_inner] at hvr
+          have : vr = vNew := (Option.some.inj hvr).symm
+          rw [hrdst, this]; exact RegFile.get_set_self _ _ _ hne
+        · rw [RegFile.get_set_diff _ _ _ _ hrdst]
+          by_cases hrsrc : r = src
+          · rw [hrsrc] at hvr
+            have h_inner :
+                ((PartialState.singletonReg dst vNew).union
+                  ((PartialState.singletonReg src baseAddr).union M)).regs src
+                = some baseAddr := by
+              rw [PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hne_dst_src.symm)]
+              exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+            rw [PartialState.union_regs_of_left_some h_inner] at hvr
+            have : vr = baseAddr := (Option.some.inj hvr).symm
+            rw [hrsrc, this]
+            exact hs_regs_src
+          · have h_outer_h1_none :
+                ((PartialState.singletonReg dst vNew).union
+                  ((PartialState.singletonReg src baseAddr).union M)).regs r
+                = none := by
+              rw [PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrdst),
+                  PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrsrc)]
+              exact hM.regs r
+            rw [PartialState.union_regs_of_left_none h_outer_h1_none] at hvr
+            apply hcr_regs r vr
+            have h_P_none : h_P.regs r = none := by
+              rw [← hu_dst_SM,
+                  PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrdst),
+                  ← hu_src_mem,
+                  PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrsrc)]
+              exact hM.regs r
+            rw [← hu_PR, PartialState.union_regs_of_left_none h_P_none]
+            exact hvr
+      · intro a vm hvm
+        show s.mem a = vm
+        cases hMa : M.mem a with
+        | some val =>
+          have h_inner :
+              ((PartialState.singletonReg dst vNew).union
+                ((PartialState.singletonReg src baseAddr).union M)).mem a
+              = some val := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+                PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_some h_inner] at hvm
+          have : vm = val := (Option.some.inj hvm).symm
+          rw [this]; exact hs_mem a val hMa
+        | none =>
+          have h_outer_h1_none :
+              ((PartialState.singletonReg dst vNew).union
+                ((PartialState.singletonReg src baseAddr).union M)).mem a
+              = none := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+                PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_none h_outer_h1_none] at hvm
+          apply hcm_mem a vm
+          rw [← hu_PR, PartialState.union_mem_of_left_none (h_P_mem_none a hMa)]
+          exact hvm
+      · intro vp hvp
+        have h_outer_h1_pc :
+            ((PartialState.singletonReg dst vNew).union
+              ((PartialState.singletonReg src baseAddr).union M)).pc = none := by
+          rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc,
+              PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+          exact hM.pc
+        rw [PartialState.union_pc_of_left_none h_outer_h1_pc, h_R_no_pc] at hvp
+        nomatch hvp
+      · intro rd hva
+        refine hcompat.union_returnData_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hM.returnData
+        · rw [← hu_dst_SM,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData,
+              ← hu_src_mem,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hM.returnData
+      · intro cs hva
+        refine hcompat.union_callStack_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hM.callStack
+        · rw [← hu_dst_SM,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack,
+              ← hu_src_mem,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hM.callStack
+    -- (b) Outer disjointness: new witness ⊥ h_R.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r
+        by_cases hrdst : r = dst
+        · rw [hrdst]; right; exact h_R_no_dst
+        · by_cases hrsrc : r = src
+          · rw [hrsrc]; right; exact h_R_no_src
+          · left
+            rw [PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrdst),
+                PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrsrc)]
+            exact hM.regs r
+      · intro a
+        cases hMa : M.mem a with
+        | some val => right; exact h_R_no_mem a val hMa
+        | none =>
+          left
+          rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+              PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+          exact hMa
+      · left
+        rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc,
+            PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+        exact hM.pc
+      · left
+        rw [PartialState.union_returnData_of_left_none
+              PartialState.singletonReg_returnData,
+            PartialState.union_returnData_of_left_none
+              PartialState.singletonReg_returnData]
+        exact hM.returnData
+      · left
+        rw [PartialState.union_callStack_of_left_none
+              PartialState.singletonReg_callStack,
+            PartialState.union_callStack_of_left_none
+              PartialState.singletonReg_callStack]
+        exact hM.callStack
+    -- (c) Inner disjointness: singletonReg dst ⊥ (singletonReg src ⊎ M).
+    · refine ⟨fun r => ?_, fun a => ?_, Or.inl rfl, Or.inl rfl, Or.inl rfl⟩
+      · by_cases hrdst : r = dst
+        · right
+          rw [hrdst,
+              PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hne_dst_src)]
+          exact hM.regs dst
+        · left; exact PartialState.singletonReg_regs_other hrdst
+      · left; exact PartialState.singletonReg_mem a
+
+/-- Same-register variant of `cuTripleWithinMem_load_cell_via_reg_addr`:
+    owns ONE register atom (dst = src collapses the two atoms to a duplicate
+    unsatisfiable one, e.g. `ldxdw r2, [r2]` pointer-deref). -/
+theorem cuTripleWithinMem_load_cell_same_reg
+    (r : Reg) (baseAddr vNew : Nat) (pc : Nat) (insn : Insn)
+    (M : PartialState) (Pm : Assertion) (rr : Memory.RegionTable → Prop)
+    (hne : r ≠ .r10)
+    (hPm : ∀ h, Pm h ↔ h = M)
+    (hM : M.MemOnly)
+    (h_step : ∀ s : State,
+        s.regs.get r = baseAddr →
+        (∀ a val, M.mem a = some val → s.mem a = val) →
+        rr s.regions →
+        step insn s = { s with regs := s.regs.set r vNew, pc := s.pc + 1 }) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc insn)
+      ((r ↦ᵣ baseAddr) ** Pm)
+      ((r ↦ᵣ vNew) ** Pm)
+      rr := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_reg, h_mem, hd_reg_mem, hu_reg_mem, h_reg_pred, h_mem_pred⟩ := h_P_sat
+  rw [h_reg_pred] at hu_reg_mem hd_reg_mem
+  rw [(hPm _).mp h_mem_pred] at hu_reg_mem hd_reg_mem
+  clear h_reg_pred h_mem_pred h_reg h_mem
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have h_P_regs_r : h_P.regs r = some baseAddr := by
+    rw [← hu_reg_mem]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_mem : ∀ a val, M.mem a = some val → h_P.mem a = some val := by
+    intro a val hMa
+    rw [← hu_reg_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have h_P_mem_none : ∀ a, M.mem a = none → h_P.mem a = none := by
+    intro a hMa
+    rw [← hu_reg_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have hp_regs_r : hp.regs r = some baseAddr := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_r
+  have hs_regs_r : s.regs.get r = baseAddr := hcr_regs r baseAddr hp_regs_r
+  have hs_mem : ∀ a val, M.mem a = some val → s.mem a = val := by
+    intro a val hMa
+    refine hcm_mem a val ?_
+    rw [← hu_PR]; exact PartialState.union_mem_of_left_some (h_P_mem a val hMa)
+  have hfetch : fetch s.pc = some insn := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hexec : executeFn fetch s 1 =
+      chargeCu { s with regs := s.regs.set r vNew, pc := s.pc + 1 } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_zero,
+        h_step s hs_regs_r hs_mem h_region]
+  have h_R_no_r : h_R.regs r = none := by
+    rcases hd_PR.regs r with hl | hr
+    · rw [h_P_regs_r] at hl; nomatch hl
+    · exact hr
+  have h_R_no_mem : ∀ a val, M.mem a = some val → h_R.mem a = none := by
+    intro a val hMa
+    rcases hd_PR.mem a with hl | hr
+    · rw [h_P_mem a val hMa] at hl; nomatch hl
+    · exact hr
+  have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
+  · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
+  · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
+  · rw [hexec]
+    refine ⟨_, ?_,
+            (PartialState.singletonReg r vNew).union M,
+            h_R, ?_, rfl,
+            ⟨PartialState.singletonReg r vNew, M,
+             ?_, rfl, rfl, (hPm M).mpr rfl⟩,
+            h_R_sat⟩
+    -- (a) Compat of the new witness with the post state.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro rr' vr hvr
+        show (s.regs.set r vNew).get rr' = vr
+        by_cases hrr : rr' = r
+        · rw [hrr] at hvr
+          have h_inner :
+              ((PartialState.singletonReg r vNew).union M).regs r = some vNew :=
+            PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+          rw [PartialState.union_regs_of_left_some h_inner] at hvr
+          have : vr = vNew := (Option.some.inj hvr).symm
+          rw [hrr, this]
+          exact RegFile.get_set_self _ _ _ hne
+        · rw [RegFile.get_set_diff _ _ _ _ hrr]
+          have h_outer_none :
+              ((PartialState.singletonReg r vNew).union M).regs rr' = none := by
+            rw [PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrr)]
+            exact hM.regs rr'
+          rw [PartialState.union_regs_of_left_none h_outer_none] at hvr
+          apply hcr_regs rr' vr
+          have h_P_none : h_P.regs rr' = none := by
+            rw [← hu_reg_mem,
+                PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrr)]
+            exact hM.regs rr'
+          rw [← hu_PR, PartialState.union_regs_of_left_none h_P_none]
+          exact hvr
+      · intro a vm hvm
+        show s.mem a = vm
+        cases hMa : M.mem a with
+        | some val =>
+          have h_inner :
+              ((PartialState.singletonReg r vNew).union M).mem a = some val := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_some h_inner] at hvm
+          have : vm = val := (Option.some.inj hvm).symm
+          rw [this]; exact hs_mem a val hMa
+        | none =>
+          have h_outer_none :
+              ((PartialState.singletonReg r vNew).union M).mem a = none := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_none h_outer_none] at hvm
+          apply hcm_mem a vm
+          rw [← hu_PR, PartialState.union_mem_of_left_none (h_P_mem_none a hMa)]
+          exact hvm
+      · intro vp hvp
+        have h_outer_pc :
+            ((PartialState.singletonReg r vNew).union M).pc = none := by
+          rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+          exact hM.pc
+        rw [PartialState.union_pc_of_left_none h_outer_pc, h_R_no_pc] at hvp
+        nomatch hvp
+      · intro rd hva
+        refine hcompat.union_returnData_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hM.returnData
+        · rw [← hu_reg_mem,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hM.returnData
+      · intro cs hva
+        refine hcompat.union_callStack_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hM.callStack
+        · rw [← hu_reg_mem,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hM.callStack
+    -- (b) Outer disjointness: new witness ⊥ h_R.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro rr'
+        by_cases hrr : rr' = r
+        · rw [hrr]; right; exact h_R_no_r
+        · left
+          rw [PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hrr)]
+          exact hM.regs rr'
+      · intro a
+        cases hMa : M.mem a with
+        | some val => right; exact h_R_no_mem a val hMa
+        | none =>
+          left
+          rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+          exact hMa
+      · left
+        rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+        exact hM.pc
+      · left
+        rw [PartialState.union_returnData_of_left_none
+              PartialState.singletonReg_returnData]
+        exact hM.returnData
+      · left
+        rw [PartialState.union_callStack_of_left_none
+              PartialState.singletonReg_callStack]
+        exact hM.callStack
+    -- (c) Inner disjointness: singletonReg r ⊥ M.
+    · exact ⟨fun rr' => Or.inr (hM.regs rr'),
+             fun a => Or.inl (PartialState.singletonReg_mem a),
+             Or.inl rfl, Or.inl rfl, Or.inl rfl⟩
+
+/-- Generic cell-store triple via a register-indexed address: owns base+value
+    registers plus a mem-only atom that changes `Mold → Mnew` under the write
+    effect `wf` (e.g. `fun m => Memory.writeU16 m addr (vSrc % 2 ^ 16)`).
+    `h_foot` pins the two atoms to the same footprint; `h_write_in`/
+    `h_write_out` are the width's write-read decomposition facts. -/
+theorem cuTripleWithinMem_store_cell_via_reg_addr
+    (baseReg valReg : Reg) (baseAddr vSrc : Nat) (pc : Nat) (insn : Insn)
+    (Mold Mnew : PartialState) (PmOld PmNew : Assertion)
+    (wf : Memory.Mem → Memory.Mem) (rr : Memory.RegionTable → Prop)
+    (hPmOld : ∀ h, PmOld h ↔ h = Mold)
+    (hPmNew : ∀ h, PmNew h ↔ h = Mnew)
+    (hMold : Mold.MemOnly) (hMnew : Mnew.MemOnly)
+    (h_foot : ∀ a, Mold.mem a = none ↔ Mnew.mem a = none)
+    (h_write_in : ∀ (m : Memory.Mem) (a val : Nat),
+        Mnew.mem a = some val → wf m a = val)
+    (h_write_out : ∀ (m : Memory.Mem) (a : Nat),
+        Mnew.mem a = none → wf m a = m a)
+    (h_step : ∀ s : State,
+        s.regs.get baseReg = baseAddr →
+        s.regs.get valReg = vSrc →
+        rr s.regions →
+        step insn s = { s with mem := wf s.mem, pc := s.pc + 1 }) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc insn)
+      ((baseReg ↦ᵣ baseAddr) ** (valReg ↦ᵣ vSrc) ** PmOld)
+      ((baseReg ↦ᵣ baseAddr) ** (valReg ↦ᵣ vSrc) ** PmNew)
+      rr := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_base, h_VM, hd_base_VM, hu_base_VM, h_base_pred, h_VM_sat⟩ := h_P_sat
+  obtain ⟨h_val, h_mem, hd_val_mem, hu_val_mem, h_val_pred, h_mem_pred⟩ := h_VM_sat
+  rw [h_val_pred] at hu_val_mem hd_val_mem
+  rw [(hPmOld _).mp h_mem_pred] at hu_val_mem hd_val_mem
+  rw [h_base_pred] at hu_base_VM hd_base_VM
+  clear h_val_pred h_mem_pred h_base_pred h_val h_mem h_base
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have hne_base_val : baseReg ≠ valReg := by
+    intro habs
+    rcases hd_base_VM.regs baseReg with hl | hr
+    · rw [PartialState.singletonReg_regs_self] at hl; nomatch hl
+    · rw [← hu_val_mem] at hr
+      have : ((PartialState.singletonReg valReg vSrc).union Mold).regs baseReg
+          = some vSrc := by
+        rw [habs]
+        exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+      rw [this] at hr; nomatch hr
+  have h_VM_regs_val : h_VM.regs valReg = some vSrc := by
+    rw [← hu_val_mem]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_regs_base : h_P.regs baseReg = some baseAddr := by
+    rw [← hu_base_VM]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_regs_val : h_P.regs valReg = some vSrc := by
+    rw [← hu_base_VM,
+        PartialState.union_regs_of_left_none
+          (PartialState.singletonReg_regs_other hne_base_val.symm)]
+    exact h_VM_regs_val
+  have h_P_mem : ∀ a val, Mold.mem a = some val → h_P.mem a = some val := by
+    intro a val hMa
+    rw [← hu_base_VM,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+        ← hu_val_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have h_P_mem_none : ∀ a, Mold.mem a = none → h_P.mem a = none := by
+    intro a hMa
+    rw [← hu_base_VM,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+        ← hu_val_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have hp_regs_base : hp.regs baseReg = some baseAddr := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_base
+  have hp_regs_val : hp.regs valReg = some vSrc := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_val
+  have hs_regs_base : s.regs.get baseReg = baseAddr :=
+    hcr_regs baseReg baseAddr hp_regs_base
+  have hs_regs_val : s.regs.get valReg = vSrc := hcr_regs valReg vSrc hp_regs_val
+  have hfetch : fetch s.pc = some insn := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hexec : executeFn fetch s 1 =
+      chargeCu { s with mem := wf s.mem, pc := s.pc + 1 } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_zero,
+        h_step s hs_regs_base hs_regs_val h_region]
+  have h_R_no_base : h_R.regs baseReg = none := by
+    rcases hd_PR.regs baseReg with hl | hr
+    · rw [h_P_regs_base] at hl; nomatch hl
+    · exact hr
+  have h_R_no_val : h_R.regs valReg = none := by
+    rcases hd_PR.regs valReg with hl | hr
+    · rw [h_P_regs_val] at hl; nomatch hl
+    · exact hr
+  have h_R_no_mem : ∀ a val, Mold.mem a = some val → h_R.mem a = none := by
+    intro a val hMa
+    rcases hd_PR.mem a with hl | hr
+    · rw [h_P_mem a val hMa] at hl; nomatch hl
+    · exact hr
+  have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
+  · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
+  · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
+  · rw [hexec]
+    refine ⟨_, ?_,
+            (PartialState.singletonReg baseReg baseAddr).union
+              ((PartialState.singletonReg valReg vSrc).union Mnew),
+            h_R, ?_, rfl,
+            ⟨PartialState.singletonReg baseReg baseAddr,
+             (PartialState.singletonReg valReg vSrc).union Mnew,
+             ?_, rfl, rfl,
+             ⟨PartialState.singletonReg valReg vSrc, Mnew,
+              ?_, rfl, rfl, (hPmNew Mnew).mpr rfl⟩⟩,
+            h_R_sat⟩
+    -- (a) Compat of the new witness with the post state.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r vr hvr
+        show s.regs.get r = vr
+        by_cases hrbase : r = baseReg
+        · rw [hrbase] at hvr
+          have h_inner :
+              ((PartialState.singletonReg baseReg baseAddr).union
+                ((PartialState.singletonReg valReg vSrc).union Mnew)).regs baseReg
+              = some baseAddr :=
+            PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+          rw [PartialState.union_regs_of_left_some h_inner] at hvr
+          have : vr = baseAddr := (Option.some.inj hvr).symm
+          rw [hrbase, this]; exact hs_regs_base
+        · by_cases hrval : r = valReg
+          · rw [hrval] at hvr
+            have h_inner :
+                ((PartialState.singletonReg baseReg baseAddr).union
+                  ((PartialState.singletonReg valReg vSrc).union Mnew)).regs valReg
+                = some vSrc := by
+              rw [PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hne_base_val.symm)]
+              exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+            rw [PartialState.union_regs_of_left_some h_inner] at hvr
+            have : vr = vSrc := (Option.some.inj hvr).symm
+            rw [hrval, this]; exact hs_regs_val
+          · have h_outer_h1_none :
+                ((PartialState.singletonReg baseReg baseAddr).union
+                  ((PartialState.singletonReg valReg vSrc).union Mnew)).regs r
+                = none := by
+              rw [PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrbase),
+                  PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrval)]
+              exact hMnew.regs r
+            rw [PartialState.union_regs_of_left_none h_outer_h1_none] at hvr
+            apply hcr_regs r vr
+            have h_P_none : h_P.regs r = none := by
+              rw [← hu_base_VM,
+                  PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrbase),
+                  ← hu_val_mem,
+                  PartialState.union_regs_of_left_none
+                    (PartialState.singletonReg_regs_other hrval)]
+              exact hMold.regs r
+            rw [← hu_PR, PartialState.union_regs_of_left_none h_P_none]
+            exact hvr
+      · intro a vm hvm
+        show (wf s.mem) a = vm
+        cases hMa : Mnew.mem a with
+        | some val =>
+          have h_inner :
+              ((PartialState.singletonReg baseReg baseAddr).union
+                ((PartialState.singletonReg valReg vSrc).union Mnew)).mem a
+              = some val := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+                PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_some h_inner] at hvm
+          have : vm = val := (Option.some.inj hvm).symm
+          rw [this]; exact h_write_in s.mem a val hMa
+        | none =>
+          have h_outer_h1_none :
+              ((PartialState.singletonReg baseReg baseAddr).union
+                ((PartialState.singletonReg valReg vSrc).union Mnew)).mem a
+              = none := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+                PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_none h_outer_h1_none] at hvm
+          rw [h_write_out s.mem a hMa]
+          apply hcm_mem a vm
+          rw [← hu_PR,
+              PartialState.union_mem_of_left_none
+                (h_P_mem_none a ((h_foot a).mpr hMa))]
+          exact hvm
+      · intro vp hvp
+        have h_outer_h1_pc :
+            ((PartialState.singletonReg baseReg baseAddr).union
+              ((PartialState.singletonReg valReg vSrc).union Mnew)).pc = none := by
+          rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc,
+              PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+          exact hMnew.pc
+        rw [PartialState.union_pc_of_left_none h_outer_h1_pc, h_R_no_pc] at hvp
+        nomatch hvp
+      · intro rd hva
+        refine hcompat.union_returnData_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hMnew.returnData
+        · rw [← hu_base_VM,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData,
+              ← hu_val_mem,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hMold.returnData
+      · intro cs hva
+        refine hcompat.union_callStack_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hMnew.callStack
+        · rw [← hu_base_VM,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack,
+              ← hu_val_mem,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hMold.callStack
+    -- (b) Outer disjointness: new witness ⊥ h_R.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r
+        by_cases hrbase : r = baseReg
+        · rw [hrbase]; right; exact h_R_no_base
+        · by_cases hrval : r = valReg
+          · rw [hrval]; right; exact h_R_no_val
+          · left
+            rw [PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrbase),
+                PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrval)]
+            exact hMnew.regs r
+      · intro a
+        cases hMa : Mold.mem a with
+        | some val => right; exact h_R_no_mem a val hMa
+        | none =>
+          left
+          rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _),
+              PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+          exact (h_foot a).mp hMa
+      · left
+        rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc,
+            PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+        exact hMnew.pc
+      · left
+        rw [PartialState.union_returnData_of_left_none
+              PartialState.singletonReg_returnData,
+            PartialState.union_returnData_of_left_none
+              PartialState.singletonReg_returnData]
+        exact hMnew.returnData
+      · left
+        rw [PartialState.union_callStack_of_left_none
+              PartialState.singletonReg_callStack,
+            PartialState.union_callStack_of_left_none
+              PartialState.singletonReg_callStack]
+        exact hMnew.callStack
+    -- (c) Inner disjointness: singletonReg baseReg ⊥ (valReg ⊎ Mnew).
+    · refine ⟨fun r => ?_, fun a => ?_, Or.inl rfl, Or.inl rfl, Or.inl rfl⟩
+      · by_cases hrbase : r = baseReg
+        · right
+          rw [hrbase,
+              PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hne_base_val)]
+          exact hMnew.regs baseReg
+        · left; exact PartialState.singletonReg_regs_other hrbase
+      · left; exact PartialState.singletonReg_mem a
+    -- (d) Innermost disjointness: singletonReg valReg ⊥ Mnew.
+    · exact ⟨fun r => Or.inr (hMnew.regs r),
+             fun a => Or.inl (PartialState.singletonReg_mem a),
+             Or.inl rfl, Or.inl rfl, Or.inl rfl⟩
+
+/-- Immediate-value variant of `cuTripleWithinMem_store_cell_via_reg_addr`:
+    no value register (the stored value is the instruction's immediate). -/
+theorem cuTripleWithinMem_store_imm_cell_via_reg_addr
+    (baseReg : Reg) (baseAddr : Nat) (pc : Nat) (insn : Insn)
+    (Mold Mnew : PartialState) (PmOld PmNew : Assertion)
+    (wf : Memory.Mem → Memory.Mem) (rr : Memory.RegionTable → Prop)
+    (hPmOld : ∀ h, PmOld h ↔ h = Mold)
+    (hPmNew : ∀ h, PmNew h ↔ h = Mnew)
+    (hMold : Mold.MemOnly) (hMnew : Mnew.MemOnly)
+    (h_foot : ∀ a, Mold.mem a = none ↔ Mnew.mem a = none)
+    (h_write_in : ∀ (m : Memory.Mem) (a val : Nat),
+        Mnew.mem a = some val → wf m a = val)
+    (h_write_out : ∀ (m : Memory.Mem) (a : Nat),
+        Mnew.mem a = none → wf m a = m a)
+    (h_step : ∀ s : State,
+        s.regs.get baseReg = baseAddr →
+        rr s.regions →
+        step insn s = { s with mem := wf s.mem, pc := s.pc + 1 }) :
+    cuTripleWithinMem 1 0 pc (pc + 1)
+      (CodeReq.singleton pc insn)
+      ((baseReg ↦ᵣ baseAddr) ** PmOld)
+      ((baseReg ↦ᵣ baseAddr) ** PmNew)
+      rr := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud h_region
+  obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
+  obtain ⟨h_base, h_mem, hd_base_mem, hu_base_mem, h_base_pred, h_mem_pred⟩ := h_P_sat
+  rw [h_base_pred] at hu_base_mem hd_base_mem
+  rw [(hPmOld _).mp h_mem_pred] at hu_base_mem hd_base_mem
+  clear h_base_pred h_mem_pred h_base h_mem
+  have hcr_regs := hcompat.regs
+  have hcm_mem := hcompat.mem
+  have h_P_regs_base : h_P.regs baseReg = some baseAddr := by
+    rw [← hu_base_mem]
+    exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+  have h_P_mem : ∀ a val, Mold.mem a = some val → h_P.mem a = some val := by
+    intro a val hMa
+    rw [← hu_base_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have h_P_mem_none : ∀ a, Mold.mem a = none → h_P.mem a = none := by
+    intro a hMa
+    rw [← hu_base_mem,
+        PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+    exact hMa
+  have hp_regs_base : hp.regs baseReg = some baseAddr := by
+    rw [← hu_PR]; exact PartialState.union_regs_of_left_some h_P_regs_base
+  have hs_regs_base : s.regs.get baseReg = baseAddr :=
+    hcr_regs baseReg baseAddr hp_regs_base
+  have hfetch : fetch s.pc = some insn := by
+    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
+  have hexec : executeFn fetch s 1 =
+      chargeCu { s with mem := wf s.mem, pc := s.pc + 1 } := by
+    rw [show (1 : Nat) = 0 + 1 from rfl,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_zero,
+        h_step s hs_regs_base h_region]
+  have h_R_no_base : h_R.regs baseReg = none := by
+    rcases hd_PR.regs baseReg with hl | hr
+    · rw [h_P_regs_base] at hl; nomatch hl
+    · exact hr
+  have h_R_no_mem : ∀ a val, Mold.mem a = some val → h_R.mem a = none := by
+    intro a val hMa
+    rcases hd_PR.mem a with hl | hr
+    · rw [h_P_mem a val hMa] at hl; nomatch hl
+    · exact hr
+  have h_R_no_pc : h_R.pc = none := hRfree _ h_R_sat
+  refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
+  · rw [hexec]; show s.pc + 1 = pc + 1; rw [hpc]
+  · rw [hexec]; exact hex
+  · rw [hexec]; show s.cuConsumed + 1 ≤ s.cuConsumed + 1 + 0; omega
+  · rw [hexec]
+    refine ⟨_, ?_,
+            (PartialState.singletonReg baseReg baseAddr).union Mnew,
+            h_R, ?_, rfl,
+            ⟨PartialState.singletonReg baseReg baseAddr, Mnew,
+             ?_, rfl, rfl, (hPmNew Mnew).mpr rfl⟩,
+            h_R_sat⟩
+    -- (a) Compat of the new witness with the post state.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r vr hvr
+        show s.regs.get r = vr
+        by_cases hrbase : r = baseReg
+        · rw [hrbase] at hvr
+          have h_inner :
+              ((PartialState.singletonReg baseReg baseAddr).union Mnew).regs baseReg
+              = some baseAddr :=
+            PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+          rw [PartialState.union_regs_of_left_some h_inner] at hvr
+          have : vr = baseAddr := (Option.some.inj hvr).symm
+          rw [hrbase, this]; exact hs_regs_base
+        · have h_outer_none :
+              ((PartialState.singletonReg baseReg baseAddr).union Mnew).regs r
+              = none := by
+            rw [PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrbase)]
+            exact hMnew.regs r
+          rw [PartialState.union_regs_of_left_none h_outer_none] at hvr
+          apply hcr_regs r vr
+          have h_P_none : h_P.regs r = none := by
+            rw [← hu_base_mem,
+                PartialState.union_regs_of_left_none
+                  (PartialState.singletonReg_regs_other hrbase)]
+            exact hMold.regs r
+          rw [← hu_PR, PartialState.union_regs_of_left_none h_P_none]
+          exact hvr
+      · intro a vm hvm
+        show (wf s.mem) a = vm
+        cases hMa : Mnew.mem a with
+        | some val =>
+          have h_inner :
+              ((PartialState.singletonReg baseReg baseAddr).union Mnew).mem a
+              = some val := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_some h_inner] at hvm
+          have : vm = val := (Option.some.inj hvm).symm
+          rw [this]; exact h_write_in s.mem a val hMa
+        | none =>
+          have h_outer_none :
+              ((PartialState.singletonReg baseReg baseAddr).union Mnew).mem a
+              = none := by
+            rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+            exact hMa
+          rw [PartialState.union_mem_of_left_none h_outer_none] at hvm
+          rw [h_write_out s.mem a hMa]
+          apply hcm_mem a vm
+          rw [← hu_PR,
+              PartialState.union_mem_of_left_none
+                (h_P_mem_none a ((h_foot a).mpr hMa))]
+          exact hvm
+      · intro vp hvp
+        have h_outer_pc :
+            ((PartialState.singletonReg baseReg baseAddr).union Mnew).pc = none := by
+          rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+          exact hMnew.pc
+        rw [PartialState.union_pc_of_left_none h_outer_pc, h_R_no_pc] at hvp
+        nomatch hvp
+      · intro rd hva
+        refine hcompat.union_returnData_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hMnew.returnData
+        · rw [← hu_base_mem,
+              PartialState.union_returnData_of_left_none
+                PartialState.singletonReg_returnData]
+          exact hMold.returnData
+      · intro cs hva
+        refine hcompat.union_callStack_frame hu_PR ?_ ?_ hva
+        · rw [PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hMnew.callStack
+        · rw [← hu_base_mem,
+              PartialState.union_callStack_of_left_none
+                PartialState.singletonReg_callStack]
+          exact hMold.callStack
+    -- (b) Outer disjointness: new witness ⊥ h_R.
+    · refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · intro r
+        by_cases hrbase : r = baseReg
+        · rw [hrbase]; right; exact h_R_no_base
+        · left
+          rw [PartialState.union_regs_of_left_none
+                (PartialState.singletonReg_regs_other hrbase)]
+          exact hMnew.regs r
+      · intro a
+        cases hMa : Mold.mem a with
+        | some val => right; exact h_R_no_mem a val hMa
+        | none =>
+          left
+          rw [PartialState.union_mem_of_left_none (PartialState.singletonReg_mem _)]
+          exact (h_foot a).mp hMa
+      · left
+        rw [PartialState.union_pc_of_left_none PartialState.singletonReg_pc]
+        exact hMnew.pc
+      · left
+        rw [PartialState.union_returnData_of_left_none
+              PartialState.singletonReg_returnData]
+        exact hMnew.returnData
+      · left
+        rw [PartialState.union_callStack_of_left_none
+              PartialState.singletonReg_callStack]
+        exact hMnew.callStack
+    -- (c) Inner disjointness: singletonReg baseReg ⊥ Mnew.
+    · exact ⟨fun r => Or.inr (hMnew.regs r),
+             fun a => Or.inl (PartialState.singletonReg_mem a),
+             Or.inl rfl, Or.inl rfl, Or.inl rfl⟩
+
 /-! ## Memory loads — byte-width helper + `ldx .byte`
 
 Generic byte-load triple: owns dst+src registers and one memory byte,
