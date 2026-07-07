@@ -6,15 +6,20 @@ on:
   pull_request:
     branches: [main]
 
-# Three parallel jobs, split by what each actually needs:
+# Jobs, split by what each needs:
 #   rust     — standalone Lean-free crates; no toolchain, seconds to run.
-#   lean     — core SVM library + the checks that link the Lean runtime.
-#   examples — the flagship proofs + axiom-audit gate (the long pole),
-#              isolated so it no longer serializes the core build or the
-#              Rust/diff checks.
-# `lean` and `examples` each run `lake build` (core) since both need it and
-# run concurrently; sharing that build via a cache/artifact is a possible
-# follow-up (needs a CI run to validate against the custom rustBridge target).
+#   core     — the core `lake build`, once; caches `.lake` for the two jobs
+#              below (keyed on the run SHA so they restore this exact build).
+#   lean     — restores core's `.lake`, then the checks that link the Lean
+#              runtime (diff-mollusk, qedlift pins) + the soundness gates.
+#   examples — restores core's `.lake`, then the flagship proofs (the long
+#              pole) + axiom-audit gate.
+# `lean`/`examples` no longer rebuild the core library: `needs: core` runs
+# them after core has populated the cache. The SHA-keyed cache is the shared
+# artifact; the restore-keys give core a cross-run incremental build too.
+# The key's hashFiles(...) is evaluated per-step after checkout (it would be
+# empty in a workflow-level env, before the files exist), and is identical
+# across jobs since they check out the same commit.
 
 jobs:
   # Standalone Lean-free lifting-frontend crates: dispatcher recognition,
@@ -33,10 +38,10 @@ jobs:
         working-directory: qedsvm-rs
         run: cargo test -p qedrecover -p qed-analysis
 
-  # Core SVM library + the soundness gates and Rust checks that link the Lean
-  # runtime (diff-mollusk runs the compiled Lean interpreter; the qedlift bin
-  # links the qedsvm crate's Lean bridge). Does NOT build the Examples proofs.
-  lean:
+  # Build the core SVM library ONCE and cache `.lake` for `lean` + `examples`.
+  # Also carries the core soundness gates (no-sorry over the authoritative core
+  # build log; no-axiom source check).
+  core:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,6 +58,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: qedsvm-rs
+
+      - name: Cache .lake (core build, shared with lean + examples)
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          # SHA in the key => lean/examples restore THIS run's build exactly.
+          key: lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-${{ github.sha }}
+          # Fall back to the latest prior build for a cross-run incremental core.
+          restore-keys: |
+            lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-
 
       - name: lake build (core SVM library)
         run: |
@@ -81,26 +96,12 @@ jobs:
             exit 1
           fi
 
-      - name: Differential conformance vs mollusk/agave
-        # Empirical soundness backstop: runs the compiled Lean interpreter
-        # against mollusk on the fixture corpus. Reuses the Lean artifact
-        # `lake build` just produced (avoids the stale-dylib skew).
-        working-directory: qedsvm-rs
-        run: cargo test --features diff-mollusk
-
-      - name: qedlift emitter pins
-        # Re-runs the qedlift emitter on every shipped lift/refinement fixture
-        # and byte-diffs the on-disk artifacts. The H8 overlap-vacuity findings
-        # shipped unnoticed precisely because the p_token arms had no emitter
-        # pins — these must stay in CI.
-        working-directory: qedsvm-rs
-        run: cargo test --features qedrecover --bin qedlift
-
-  # Flagship proofs demonstrating the verification chain + the axiom-audit gate.
-  # AxiomAudit.lean is the first Examples root and fails the build on any
-  # non-standard axiom (sorry / native_decide / crypto). The long pole,
-  # isolated into its own job.
-  examples:
+  # The Rust checks that link the Lean runtime: diff-mollusk runs the compiled
+  # Lean interpreter, and the qedlift bin links the qedsvm crate's Lean bridge.
+  # Reuses core's `.lake` (restored below); the `lake build` is a no-op that
+  # only completes the build if the restore was somehow incomplete.
+  lean:
+    needs: core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -114,7 +115,69 @@ jobs:
       - name: Show toolchain
         run: lean --version
 
-      - name: lake build (core — prerequisite for Examples)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: qedsvm-rs
+
+      - name: Restore .lake (core build)
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-${{ github.sha }}
+          restore-keys: |
+            lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-
+
+      - name: lake build (no-op after restore)
+        run: |
+          set -o pipefail
+          lake build 2>&1 | tee build-core.log
+
+      - name: Differential conformance vs mollusk/agave
+        # Empirical soundness backstop: runs the compiled Lean interpreter
+        # against mollusk on the fixture corpus, linking the restored Lean lib.
+        working-directory: qedsvm-rs
+        run: cargo test --features diff-mollusk
+
+      - name: qedlift emitter pins
+        # Re-runs the qedlift emitter on every shipped lift/refinement fixture
+        # and byte-diffs the on-disk artifacts. The H8 overlap-vacuity findings
+        # shipped unnoticed precisely because the p_token arms had no emitter
+        # pins — these must stay in CI.
+        working-directory: qedsvm-rs
+        run: cargo test --features qedrecover --bin qedlift
+
+  # Flagship proofs demonstrating the verification chain + the axiom-audit gate.
+  # AxiomAudit.lean is the first Examples root and fails the build on any
+  # non-standard axiom (sorry / native_decide / crypto). The long pole; builds
+  # only the Examples layer on top of core's restored `.lake`.
+  examples:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: lean --version
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: qedsvm-rs
+
+      - name: Restore .lake (core build)
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-${{ github.sha }}
+          restore-keys: |
+            lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-
+
+      - name: lake build (no-op after restore — completes core if incomplete)
         run: |
           set -o pipefail
           lake build 2>&1 | tee build-core.log
@@ -126,8 +189,10 @@ jobs:
           lake build ExamplesCpi 2>&1 | tee build-examples-cpi.log
 
       - name: Verify no `sorry` reached the kernel (examples)
+        # Core-module sorries are gated in the `core` job; here we check the
+        # Examples build logs.
         run: |
-          if grep -F "declaration uses 'sorry'" build-core.log build-examples.log; then
+          if grep -F "declaration uses 'sorry'" build-examples.log build-examples-cpi.log; then
             echo "Found a declaration that uses sorry — qedsvm does not ship sorries."
             exit 1
           fi
