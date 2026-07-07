@@ -128,9 +128,14 @@ pub(super) fn run_profile_mode(
 /// (symbolic) syscall operand, an unsupported construct, a CU-budget miss, a
 /// vacuity/witness failure, or a missing/bad trace input (not a real gap).
 fn classify_lift_failure(reason: &str) -> &'static str {
-    if reason.contains("no matching function in the symbol table") {
-        // Internal call_local whose Murmur3 imm the resolver can't map to a PC
-        // without symbols. Closable by feeding the `.debug` sidecar symtab.
+    if reason.contains("unmodeled syscall") {
+        // A syscall with no SYSCALLS-table row: the real "add a syscall" gap.
+        "syscall-unmodeled"
+    } else if reason.contains("modeled syscall") && reason.contains("static walk") {
+        // A modeled syscall the no-trace static walk won't dispatch: needs a
+        // trace, not new capability.
+        "syscall-untraced"
+    } else if reason.contains("unresolved internal call") {
         "call-unresolved"
     } else if reason.contains("not yet modelled") || reason.contains("not yet lifted") {
         "opcode-unmodeled"
