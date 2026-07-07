@@ -6,6 +6,7 @@
 use solana_sbpf::ebpf;
 
 pub mod layout;
+pub mod profile;
 pub mod symbolicate;
 
 /// Static-analysis `ContextObject`: the lifting tools load executables for analysis only and

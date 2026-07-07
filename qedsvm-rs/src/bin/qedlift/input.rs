@@ -56,6 +56,10 @@ pub(super) struct Args {
     /// large-text decode-pins path (fails closed on small inline-bridge
     /// binaries).
     pub(super) shared_text: Option<String>,
+    /// Profiling mode: with `--trace`, symbolicate the trace against the
+    /// `<so>.debug` sidecar and print folded call stacks (flamegraph input)
+    /// plus a per-function step summary. Does not lift or emit Lean.
+    pub(super) profile: bool,
 }
 
 // qedmeta sidecar (#41 Phase 4): v2 adds [instruction.recovered] arm
@@ -450,6 +454,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
     let mut descriptor: Option<PathBuf> = None;
     let mut transition = false;
     let mut shared_text: Option<String> = None;
+    let mut profile = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -479,6 +484,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
             "--shared-text" => {
                 shared_text = Some(it.next().ok_or("--shared-text needs a base name")?)
             }
+            "--profile" => profile = true,
             other => return Err(format!("unknown arg: {}", other)),
         }
     }
@@ -496,6 +502,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
         descriptor,
         transition,
         shared_text,
+        profile,
     })
 }
 
