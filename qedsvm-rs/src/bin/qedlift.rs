@@ -68,7 +68,7 @@ use witness::build_branch_witness;
 
 // Re-exports of the split-out lifter stages: visible at the crate root so the
 // sibling modules (and `layout_tests`' `use super::*`) resolve them here.
-use driver::{run_batch_mode, run_profile_mode, run_qedmeta_mode, run_single_mode, run_transition_mode};
+use driver::{run_batch_mode, run_coverage_mode, run_profile_mode, run_qedmeta_mode, run_single_mode, run_transition_mode};
 #[cfg(test)]
 use driver::run_transition;
 use exec::{imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, WalkResult};
@@ -106,6 +106,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.profile {
         return run_profile_mode(&args, &ctx, trace.as_deref());
+    }
+    if args.coverage {
+        return run_coverage_mode(&args, &ctx, &analysis);
     }
     if args.transition {
         return run_transition_mode(&args, &ctx, &analysis,

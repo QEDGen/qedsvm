@@ -123,6 +123,154 @@ pub(super) fn run_profile_mode(
     Ok(())
 }
 
+/// Bucket a fail-closed lift reason into a coverage category. The frontier
+/// families the report ranks: an unmodeled opcode (walker/ISA), a non-constant
+/// (symbolic) syscall operand, an unsupported construct, a CU-budget miss, a
+/// vacuity/witness failure, or a missing/bad trace input (not a real gap).
+fn classify_lift_failure(reason: &str) -> &'static str {
+    if reason.contains("no matching function in the symbol table") {
+        // Internal call_local whose Murmur3 imm the resolver can't map to a PC
+        // without symbols. Closable by feeding the `.debug` sidecar symtab.
+        "call-unresolved"
+    } else if reason.contains("not yet modelled") || reason.contains("not yet lifted") {
+        "opcode-unmodeled"
+    } else if reason.contains("exceeded") && reason.contains("steps")
+        || reason.contains("back-branch")
+    {
+        // Static walk hit the step cap: a back-branch (loop) it can't follow
+        // without a trace. Often "needs a trace", not an intrinsic gap.
+        "walker-steps"
+    } else if reason.contains("vacuous lift")
+        || reason.contains("overlapping atom")
+        || reason.contains("alias these at byte")
+    {
+        "byte-aliasing"
+    } else if reason.contains("symbolic") {
+        "symbolic-operand"
+    } else if reason.contains("unsupported IDL")
+        || reason.contains("hotUnsupported")
+        || reason.contains("Replicate blob")
+    {
+        "unsupported-construct"
+    } else if reason.contains("cu_budget") {
+        "cu-budget-exceeded"
+    } else if reason.contains("satisfiability witness") {
+        "witness-failed"
+    } else if reason.contains("trace") || reason.contains("no PCs") {
+        "trace-input"
+    } else {
+        "other"
+    }
+}
+
+/// One lift attempt, panic-safe: a survey must not die on a lift that panics
+/// (internal `.expect`/`unwrap`) rather than returning `Err`, so catch it and
+/// report it as a `panic:` reason. Returns `Ok(())` on a lifted triple.
+fn attempt_lift(
+    so: &Path,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+    trace: Option<&[usize]>,
+) -> Result<(), String> {
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        lift_one_with_layouts(
+            so, ctx, analysis, None, None, trace, None, None, None, None, None, None,
+        )
+    }));
+    match r {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(panic) => Err(format!(
+            "panic: {}",
+            panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "<non-string panic>".to_string())
+        )),
+    }
+}
+
+/// Coverage mode (`--coverage`): attempt to lift every discovered
+/// `<stem>_<path>.pcs` arm of the `.so` (or one static probe when none exist),
+/// classify each fail-closed reason, and print a ranked report. Emits no Lean.
+/// The frontier instrument: green pins read ~100%; the signal is which
+/// untraced arms / real programs fail and why.
+pub(super) fn run_coverage_mode(
+    args: &Args,
+    ctx: &BinaryCtx,
+    analysis: &Analysis<'_>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let so = &args.so;
+    let stem = so.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let traces = discover_path_traces(so);
+
+    // Suppress the default panic hook (backtrace spam) during the survey.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+
+    // (arm label, lift result) for each attempt.
+    let attempts: Vec<(String, Result<(), String>)> = if traces.is_empty() {
+        vec![(
+            "<static>".to_string(),
+            match args.trace.as_ref() {
+                Some(p) => match load_trace(p) {
+                    Ok(t) => attempt_lift(so, ctx, analysis, Some(&t)),
+                    Err(e) => Err(format!("trace load: {e}")),
+                },
+                None => attempt_lift(so, ctx, analysis, None),
+            },
+        )]
+    } else {
+        traces
+            .iter()
+            .map(|(label, pcs)| {
+                let r = match load_trace(pcs) {
+                    Ok(t) => attempt_lift(so, ctx, analysis, Some(&t)),
+                    Err(e) => Err(format!("trace load: {e}")),
+                };
+                (label.clone(), r)
+            })
+            .collect()
+    };
+
+    std::panic::set_hook(prev_hook);
+
+    // Bucket the failures.
+    let mut lifted = 0usize;
+    let mut buckets: std::collections::BTreeMap<&'static str, Vec<(String, String)>> =
+        std::collections::BTreeMap::new();
+    for (label, r) in &attempts {
+        match r {
+            Ok(()) => lifted += 1,
+            Err(reason) => buckets
+                .entry(classify_lift_failure(reason))
+                .or_default()
+                .push((label.clone(), reason.clone())),
+        }
+    }
+
+    let total = attempts.len();
+    println!("coverage {stem}: {lifted}/{total} lifted");
+    if lifted == total {
+        println!("  (all attempted arms lift)");
+        return Ok(());
+    }
+
+    // Ranked buckets, most failures first.
+    let mut ranked: Vec<(&'static str, Vec<(String, String)>)> = buckets.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
+    for (bucket, items) in &ranked {
+        println!("  {:>3}  {}", items.len(), bucket);
+        for (label, reason) in items {
+            // First line of the reason keeps the report scannable.
+            let first = reason.lines().next().unwrap_or(reason);
+            println!("         {label}: {first}");
+        }
+    }
+    Ok(())
+}
+
 /// Write a lift result's `.lean` under `out_path` (creating the parent
 /// directory), plus its refinement sibling next to it when one was emitted.
 /// Returns the refinement path, if written. The shared tail of every mode.
