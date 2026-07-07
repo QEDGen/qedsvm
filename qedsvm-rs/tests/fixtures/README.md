@@ -25,15 +25,39 @@ Same shape, progressively more program behavior:
   that actually mutates account data, exercising
   `deserialize_account_writes`.
 
-### Rebuilding any `.so`
+### Rebuilding any `.so` (+ `.debug` sidecar)
+
+```
+cd tests/fixtures
+./build-fixture.sh <name>          # <name>_src/ must exist
+```
+
+`build-fixture.sh` builds with `-C debuginfo=2 -C strip=none` and writes
+two artifacts:
+
+- `<name>.so` — the stripped, deployable binary. **Byte-identical** to a
+  plain release build (debug info lands in separate sections, `.text`
+  codegen is unchanged), so the kernel-checked decode pins (`*.pcs`) and
+  the `Generated.*Lifted` proofs that hash `.text` are untouched. The
+  script refuses to overwrite a committed `.so` whose bytes moved, to
+  fail closed on toolchain drift.
+- `<name>.debug` — the unstripped twin carrying DWARF + symtab, consumed
+  by the PC→function symbolication layer (`qed-analysis`). Same
+  convention as seashell's `ptoken.so` / `ptoken.debug`. Its `.text` PCs
+  align with the `.so` and with qedlift's PcMap (`pc = (addr - 0x120)/8`).
+
+Manual equivalent (what the script runs under the hood):
 
 ```
 cd tests/fixtures/<name>_src
-cargo-build-sbf
-cp target/deploy/qedsvm_<name>.so ../<name>.so
+RUSTFLAGS="-C debuginfo=2 -C strip=none" cargo-build-sbf
+cp target/deploy/*.so                       ../<name>.so     # stripped, unchanged
+cp target/sbpf-solana-solana/release/*.so   ../<name>.debug  # unstripped, DWARF
 ```
 
-Requires the Solana toolchain (cargo-build-sbf) on PATH.
+Requires the Solana toolchain (cargo-build-sbf) on PATH. Sidecars only
+apply to `_src/`-backed fixtures; the vendored third-party `.so` (p_token,
+token, janus, blueshift) have no source here and no upstream `.debug`.
 
 ## `halfword_store.so` (936 bytes)
 
