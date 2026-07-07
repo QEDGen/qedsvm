@@ -6,8 +6,37 @@ on:
   pull_request:
     branches: [main]
 
+# Three parallel jobs, split by what each actually needs:
+#   rust     — standalone Lean-free crates; no toolchain, seconds to run.
+#   lean     — core SVM library + the checks that link the Lean runtime.
+#   examples — the flagship proofs + axiom-audit gate (the long pole),
+#              isolated so it no longer serializes the core build or the
+#              Rust/diff checks.
+# `lean` and `examples` each run `lake build` (core) since both need it and
+# run concurrently; sharing that build via a cache/artifact is a possible
+# follow-up (needs a CI run to validate against the custom rustBridge target).
+
 jobs:
-  lake-build:
+  # Standalone Lean-free lifting-frontend crates: dispatcher recognition,
+  # slot<->logical PC map, IDL account layout, PC symbolication, lift coverage.
+  # No Lean toolchain, no lake — the fastest signal.
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: qedsvm-rs
+
+      - name: qedrecover + qed-analysis crate tests
+        working-directory: qedsvm-rs
+        run: cargo test -p qedrecover -p qed-analysis
+
+  # Core SVM library + the soundness gates and Rust checks that link the Lean
+  # runtime (diff-mollusk runs the compiled Lean interpreter; the qedlift bin
+  # links the qedsvm crate's Lean bridge). Does NOT build the Examples proofs.
+  lean:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,26 +50,21 @@ jobs:
       - name: Show toolchain
         run: lean --version
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: qedsvm-rs
+
       - name: lake build (core SVM library)
         run: |
           set -o pipefail
           lake build 2>&1 | tee build-core.log
 
-      - name: lake build Examples (flagship proofs + axiom-audit gate)
-        # AxiomAudit.lean is the first root of the Examples target: it fails
-        # the build if any flagship theorem depends on a non-standard axiom
-        # (sorry / native_decide / crypto). See examples/lean/AxiomAudit.lean.
-        run: |
-          set -o pipefail
-          lake build Examples 2>&1 | tee build-examples.log
-          lake build ExamplesCpi 2>&1 | tee build-examples-cpi.log
-
-      - name: Verify no `sorry` reached the kernel
+      - name: Verify no `sorry` reached the kernel (core)
         # Lean emits "declaration uses 'sorry'" for any declaration that
-        # elaborated a sorry. Grepping the build log (not the source) avoids
-        # false positives from the word "sorry" appearing in comments.
+        # elaborated a sorry. Grep the build log (not the source) to avoid
+        # false positives from the word "sorry" in comments.
         run: |
-          if grep -F "declaration uses 'sorry'" build-core.log build-examples.log; then
+          if grep -F "declaration uses 'sorry'" build-core.log; then
             echo "Found a declaration that uses sorry — qedsvm does not ship sorries."
             exit 1
           fi
@@ -65,15 +89,45 @@ jobs:
         run: cargo test --features diff-mollusk
 
       - name: qedlift emitter pins
-        # Re-runs the qedlift emitter on every shipped lift/refinement
-        # fixture and byte-diffs the on-disk artifacts. The H8
-        # overlap-vacuity findings shipped unnoticed precisely because
-        # the p_token arms had no emitter pins — these must stay in CI.
+        # Re-runs the qedlift emitter on every shipped lift/refinement fixture
+        # and byte-diffs the on-disk artifacts. The H8 overlap-vacuity findings
+        # shipped unnoticed precisely because the p_token arms had no emitter
+        # pins — these must stay in CI.
         working-directory: qedsvm-rs
         run: cargo test --features qedrecover --bin qedlift
 
-      - name: qedrecover + qed-analysis crate tests
-        # Standalone, Lean-free lifting-frontend crates: dispatcher
-        # recognition, slot<->logical PC map, IDL account layout.
-        working-directory: qedsvm-rs
-        run: cargo test -p qedrecover -p qed-analysis
+  # Flagship proofs demonstrating the verification chain + the axiom-audit gate.
+  # AxiomAudit.lean is the first Examples root and fails the build on any
+  # non-standard axiom (sorry / native_decide / crypto). The long pole,
+  # isolated into its own job.
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: lean --version
+
+      - name: lake build (core — prerequisite for Examples)
+        run: |
+          set -o pipefail
+          lake build 2>&1 | tee build-core.log
+
+      - name: lake build Examples (flagship proofs + axiom-audit gate)
+        run: |
+          set -o pipefail
+          lake build Examples 2>&1 | tee build-examples.log
+          lake build ExamplesCpi 2>&1 | tee build-examples-cpi.log
+
+      - name: Verify no `sorry` reached the kernel (examples)
+        run: |
+          if grep -F "declaration uses 'sorry'" build-core.log build-examples.log; then
+            echo "Found a declaration that uses sorry — qedsvm does not ship sorries."
+            exit 1
+          fi
