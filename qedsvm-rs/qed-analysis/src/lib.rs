@@ -6,6 +6,7 @@
 use solana_sbpf::ebpf;
 
 pub mod layout;
+pub mod symbolicate;
 
 /// Static-analysis `ContextObject`: the lifting tools load executables for analysis only and
 /// never execute them, so metering is a no-op. Shared by qedlift and qedrecover.
