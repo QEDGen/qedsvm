@@ -60,6 +60,11 @@ pub(super) struct Args {
     /// `<so>.debug` sidecar and print folded call stacks (flamegraph input)
     /// plus a per-function step summary. Does not lift or emit Lean.
     pub(super) profile: bool,
+    /// Coverage mode: attempt to lift every discovered `<stem>_<path>.pcs` arm
+    /// of the `.so` (or a single static probe when none exist), classify each
+    /// fail-closed reason, and print a ranked report. Emits no Lean; the
+    /// measurement instrument for the lift frontier.
+    pub(super) coverage: bool,
 }
 
 // qedmeta sidecar (#41 Phase 4): v2 adds [instruction.recovered] arm
@@ -455,6 +460,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
     let mut transition = false;
     let mut shared_text: Option<String> = None;
     let mut profile = false;
+    let mut coverage = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -485,6 +491,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
                 shared_text = Some(it.next().ok_or("--shared-text needs a base name")?)
             }
             "--profile" => profile = true,
+            "--coverage" => coverage = true,
             other => return Err(format!("unknown arg: {}", other)),
         }
     }
@@ -503,6 +510,7 @@ pub(super) fn parse_args() -> Result<Args, String> {
         transition,
         shared_text,
         profile,
+        coverage,
     })
 }
 
