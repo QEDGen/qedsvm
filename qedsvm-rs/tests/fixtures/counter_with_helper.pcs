@@ -1,0 +1,12 @@
+# Execution trace (logical PCs) for counter_with_helper.
+# entrypoint(4,5) -> call_local(6) -> increment_by(0,1,2) -> exit(3)
+# -> return to entrypoint(7) -> exit(8). Straight-line + one call_local.
+4
+5
+6
+0
+1
+2
+3
+7
+8

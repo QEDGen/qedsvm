@@ -69,6 +69,60 @@ pub(super) fn run_transition(
     Ok((path_files, bundle))
 }
 
+/// Profiling mode (`--profile`): symbolicate a `.pcs` trace against the
+/// `<so>.debug` sidecar and print folded call stacks (flamegraph.pl / inferno
+/// input) on stdout, with a per-function step summary on stderr. Does not lift
+/// or emit Lean. Step-weighted, not CU-weighted (see `qed_analysis::profile`).
+pub(super) fn run_profile_mode(
+    args: &Args,
+    ctx: &BinaryCtx,
+    trace: Option<&[usize]>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let trace = trace.ok_or("--profile requires --trace <pcs>")?;
+
+    // Prefer the `.debug` sidecar (tests/fixtures/build-fixture.sh); fall back
+    // to the .so itself, which is stripped, so labels degrade to `fn@slot<N>`.
+    let sidecar = args.so.with_extension("debug");
+    let syms = if sidecar.exists() {
+        SymbolIndex::from_path(&sidecar)?
+    } else {
+        eprintln!(
+            "profile: no `{}` sidecar (run tests/fixtures/build-fixture.sh <name>); \
+             falling back to the stripped .so, symbols will be unavailable.",
+            sidecar.display()
+        );
+        SymbolIndex::from_path(&args.so)?
+    };
+
+    let folded = fold_trace(trace, &ctx.insns, |pc| syms.label_logical(pc, &ctx.pc_map));
+
+    // Per-function self-steps (leaf frame only) for a quick human summary.
+    let steps = symbolicate_trace(trace, &syms, &ctx.pc_map);
+    let mut self_steps: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
+    for s in &steps {
+        *self_steps.entry(s.function.as_str()).or_insert(0) += 1;
+    }
+    let mut summary: Vec<(&str, u64)> = self_steps.into_iter().collect();
+    summary.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    eprintln!(
+        "profile: {} steps across {} function(s){} (weight = instruction steps, not CU)",
+        trace.len(),
+        summary.len(),
+        if syms.has_dwarf() { ", DWARF inline frames available" } else { "" },
+    );
+    for (func, n) in summary.iter().take(20) {
+        eprintln!("  {n:>8}  {func}");
+    }
+
+    // Folded stacks to stdout: `qedlift --profile ... > out.folded`, then
+    // `flamegraph.pl out.folded > out.svg`.
+    for line in folded_lines(&folded) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// Write a lift result's `.lean` under `out_path` (creating the parent
 /// directory), plus its refinement sibling next to it when one was emitted.
 /// Returns the refinement path, if written. The shared tail of every mode.

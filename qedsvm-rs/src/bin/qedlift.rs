@@ -68,7 +68,7 @@ use witness::build_branch_witness;
 
 // Re-exports of the split-out lifter stages: visible at the crate root so the
 // sibling modules (and `layout_tests`' `use super::*`) resolve them here.
-use driver::{run_batch_mode, run_qedmeta_mode, run_single_mode, run_transition_mode};
+use driver::{run_batch_mode, run_profile_mode, run_qedmeta_mode, run_single_mode, run_transition_mode};
 #[cfg(test)]
 use driver::run_transition;
 use exec::{imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, WalkResult};
@@ -77,6 +77,8 @@ use lift::{lift_one_with_layouts, LiftOutput};
 use lift::lift_one;
 use spec_call::{spec_call_for, SpecCall};
 use qed_analysis::layout::AccountLayout;
+use qed_analysis::symbolicate::SymbolIndex;
+use qed_analysis::profile::{fold_trace, folded_lines, symbolicate_trace};
 
 #[cfg(test)]
 #[path = "qedlift/tests.rs"]
@@ -102,6 +104,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
+    if args.profile {
+        return run_profile_mode(&args, &ctx, trace.as_deref());
+    }
     if args.transition {
         return run_transition_mode(&args, &ctx, &analysis,
             descriptor.as_ref(), idl_value.as_ref());
