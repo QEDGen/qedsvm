@@ -241,7 +241,21 @@ pub(super) fn resolve_call_target_logical(
     analysis: &Analysis,
     insn: &ebpf::Insn,
 ) -> Option<usize> {
-    let slot = resolve_call_target(analysis, insn)?;
+    if insn.opc != ebpf::CALL_IMM {
+        return None;
+    }
+    let slot = resolve_call_target(analysis, insn).or_else(|| {
+        // Fallback: the load-time function registry, built from call relocations
+        // at load and thus symbol-independent — the same ground truth Lean's
+        // `FnRegistry` mirrors (audit H2). Resolves internal `call_local`s in
+        // stripped binaries, where the static-analysis `functions` map (derived
+        // from the symbol table) is empty. The call site's imm IS the registry
+        // key, so a direct key lookup hits.
+        ctx.executable
+            .get_function_registry()
+            .lookup_by_key(insn.imm as u32)
+            .map(|(_name, slot)| slot)
+    })?;
     // out of range / mid-lddw: fall back to slot so downstream fails loudly.
     Some(ctx.pc_map.slot_to_logical(slot).unwrap_or(slot))
 }

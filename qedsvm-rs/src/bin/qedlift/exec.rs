@@ -663,6 +663,32 @@ fn syscall_model(imm: u32) -> Option<&'static SyscallModel> {
     SYSCALLS.iter().find(|m| imm == ebpf::hash_symbol_name(m.name))
 }
 
+/// Every syscall name the runtime knows (modeled or not), for turning a bare
+/// CALL_IMM hash into a readable diagnostic. Mirrors `SVM/SBPF/SyscallHash.lean`.
+/// A CALL_IMM whose imm hashes to one of these is a syscall, NOT an internal
+/// `call_local`, so it must not be reported as an unresolved function.
+static SYSCALL_NAMES: &[&[u8]] = &[
+    b"abort", b"sol_alloc_free_", b"sol_alt_bn128_compression", b"sol_alt_bn128_group_op",
+    b"sol_big_mod_exp", b"sol_blake3", b"sol_create_program_address", b"sol_curve_group_op",
+    b"sol_curve_multiscalar_mul", b"sol_curve_validate_point", b"sol_curve_pairing_map",
+    b"sol_curve_decompress", b"sol_get_clock_sysvar", b"sol_get_epoch_rewards_sysvar",
+    b"sol_get_epoch_schedule_sysvar", b"sol_get_epoch_stake", b"sol_get_fees_sysvar",
+    b"sol_get_last_restart_slot", b"sol_get_processed_sibling_instruction", b"sol_get_rent_sysvar",
+    b"sol_get_return_data", b"sol_get_stack_height", b"sol_get_sysvar", b"sol_invoke_signed_c",
+    b"sol_invoke_signed_rust", b"sol_keccak256", b"sol_log_", b"sol_log_64_",
+    b"sol_log_compute_units_", b"sol_log_data", b"sol_log_pubkey", b"sol_memcmp_", b"sol_memcpy_",
+    b"sol_memmove_", b"sol_memset_", b"sol_panic_", b"sol_poseidon", b"sol_remaining_compute_units",
+    b"sol_secp256k1_recover", b"sol_set_return_data", b"sol_sha256", b"sol_try_find_program_address",
+];
+
+/// If `imm` is a syscall hash, return its name. Used to diagnose a CALL_IMM the
+/// walker could not otherwise resolve: a modeled syscall reached in a no-trace
+/// static walk, or an unmodeled syscall, reads very differently from a genuine
+/// unresolved internal call.
+pub(super) fn known_syscall_name(imm: u32) -> Option<&'static [u8]> {
+    SYSCALL_NAMES.iter().copied().find(|n| ebpf::hash_symbol_name(n) == imm)
+}
+
 /// Arithmetic-shift-right value semantics mirroring `arsh_render`'s Lean
 /// let/if form: sign bit replicates into the top `shift` bits.
 fn arsh_value(x: u64, shift: u64, bits: u32) -> u64 {
@@ -892,13 +918,34 @@ pub(super) fn walk_and_exec(
                     pc_iter = jtgt as usize;
                 }
                 ebpf::CALL_IMM => {
-                    // CALL_IMM: imm is a Murmur3 hash; registry maps it to a logical PC.
+                    // CALL_IMM: imm is a Murmur3 hash of either a syscall name or
+                    // (for an internal call) the target PC. Resolve it as an
+                    // internal call; if that misses, distinguish a syscall hash
+                    // from a genuinely unresolved function so the diagnostic (and
+                    // the coverage bucket) names the real gap.
+                    let imm = ins.imm as u32;
                     pc_iter = resolve_call_target_logical(ctx, &analysis, ins).ok_or_else(|| {
-                        format!(
-                            "qedlift: call_local at pc {} has imm 0x{:x} \
-                             but no matching function in the symbol table. \
-                             Recompile with symbols, or extend the resolver.",
-                            pc_iter, ins.imm as u32)
+                        match known_syscall_name(imm) {
+                            Some(name) => {
+                                let name = String::from_utf8_lossy(name);
+                                if syscall_model(imm).map(|m| m.modeled).unwrap_or(false) {
+                                    format!(
+                                        "qedlift: modeled syscall `{}` (imm 0x{:x}) reached at \
+                                         pc {} in a no-trace static walk; provide a --trace to \
+                                         dispatch it.",
+                                        name, imm, pc_iter)
+                                } else {
+                                    format!(
+                                        "qedlift: unmodeled syscall `{}` (imm 0x{:x}) at pc {}; \
+                                         add it to the SYSCALLS table to lift callers.",
+                                        name, imm, pc_iter)
+                                }
+                            }
+                            None => format!(
+                                "qedlift: unresolved internal call at pc {} (imm 0x{:x}): not a \
+                                 known syscall and no registry entry; extend the resolver.",
+                                pc_iter, imm),
+                        }
                     })?;
                 }
                 _ => { pc_iter += 1; }
