@@ -1,6 +1,13 @@
 # qedsvm-rs
 
-The Rust executor for [qedsvm](../README.md): a Solana SVM proven byte-for-byte conformant with agave by differential testing against mollusk. It is the artifact that backs qedsvm's conformance claim, and we publish it for tools that need a fast, agave-faithful SVM: fuzzers, diff-test harnesses, and simulation.
+The Rust executor for [qedsvm](../README.md). It runs compiled Solana programs
+through qedsvm's Lean SVM and is differentially tested against Mollusk/Agave for
+byte-level account changes, return values, faults, and compute units. The finite
+test corpus is conformance evidence, not a universal equivalence proof.
+
+The crate is part of this repository rather than a crates.io package. It is
+intended for fuzzers, differential harnesses, and simulations that need a second
+SVM implementation to cross-check.
 
 **This crate executes, it does not verify.** It tells you what a program does on one input, not what it does on all of them. Verification lives in qedsvm's Lean layer; see the top-level [README](../README.md).
 
@@ -14,7 +21,8 @@ svm.add_program(&program_id, elf_bytes);
 let result = svm.process_instruction(&instruction, &accounts)?;
 ```
 
-Types pin to agave master (`solana-pubkey`, `solana-instruction`, `solana-account`), so a Mollusk test passes data straight in.
+The public types use the pinned Solana interface crates listed in
+[`Cargo.toml`](Cargo.toml), so most Mollusk-shaped test data passes straight in.
 
 ## Differential testing against mollusk
 
@@ -23,6 +31,21 @@ cargo test --manifest-path qedsvm-rs/Cargo.toml --features diff-mollusk
 ```
 
 The Janus harness ([`saicharanpogul/janus/tests-qedsvm`](https://github.com/saicharanpogul/janus/tree/main/tests-qedsvm)) is a complete working example of driving qedsvm and mollusk side by side.
+
+## Proof tooling
+
+The Rust workspace also contains the two analysis stages used by qedsvm's Lean
+proof pipeline:
+
+- [`qedrecover`](qedrecover/README.md) maps IDL/overlay claims to locations and
+  account layouts in a compiled `.so`, then emits a hash-pinned sidecar. It is
+  analysis only and does not link Lean.
+- [`qedlift`](src/bin/qedlift/README.md) symbolically executes a selected bytecode
+  path and emits the Lean theorem, decode pins, CU bound, and supported abstract
+  refinements.
+
+The top-level [`PIPELINE.md`](../docs/PIPELINE.md) shows how the two stages and
+`lake build` fit together.
 
 ## Consuming qedsvm from a downstream crate
 
