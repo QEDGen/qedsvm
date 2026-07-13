@@ -1,0 +1,26 @@
+schema_version = 2
+
+[[account_layout]]
+name = "counter"
+size = 8
+
+[[account_layout.field]]
+name = "value"
+offset = 0
+kind = "u64"
+
+[[instruction]]
+name = "increment"
+cu_budget = 12
+
+[instruction.discriminator]
+value = 1
+
+[[instruction.account]]
+name = "counter"
+layout = "counter"
+
+[instruction.recovered]
+dispatch_load_pc = 2
+dispatch_jeq_pc = 3
+arm_entry_pc = 4

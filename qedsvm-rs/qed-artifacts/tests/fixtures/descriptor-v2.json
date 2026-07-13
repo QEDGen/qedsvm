@@ -1,0 +1,10 @@
+{
+  "schema_version": 2,
+  "account": "counter",
+  "handler": "add",
+  "mutated": "value",
+  "op": { "add_param": "amount" },
+  "layout": [
+    { "offset": 0, "kind": "u64", "name": "value" }
+  ]
+}

@@ -4,42 +4,61 @@
 
 use super::*;
 
-pub(super) struct LiftOutput {
-    pub(super) lean: String,
-    pub(super) module_name: String,
-    pub(super) text_bytes: usize,
-    pub(super) insn_count: usize,
+/// Generated artifacts and execution facts for one selected program path.
+pub struct LiftResult {
+    /// Complete Lean module for the bytecode-level path theorem.
+    pub lean: String,
+    /// Lean module name selected or derived for the lift.
+    pub module_name: String,
+    /// Size of the executable text section in bytes.
+    pub text_bytes: usize,
+    /// Number of decoded logical instructions in the program image.
+    pub insn_count: usize,
     /// CU count of the lifted triple (`n` in `cuTripleWithinMem n …`).
     /// Surfaced so `--qedmeta` can cross-check the claimed `cu_budget`.
-    pub(super) cu: usize,
+    pub cu: usize,
     /// Optional asm-refines-intrinsic theorem `(module_name, lean)`,
     /// emitted when the arm matches the refinement registry.
-    pub(super) refinement: Option<(String, String)>,
+    pub refinement: Option<(String, String)>,
     /// Whole-transition path metadata (#40): present when the lift emitted a
     /// `*_transition_path` corollary; feeds `emit_transition_bundle`.
-    pub(super) transition: Option<TransitionPathInfo>,
+    pub(crate) transition: Option<TransitionPathInfo>,
     /// Shared `.text` module `(module_name, lean)` (batch dedup): emitted when
     /// `shared_text` was requested — the binary's Text/SlotMap/FnRegistry defs,
     /// written ONCE as `Generated/{base}Text.lean` and imported by every arm.
-    pub(super) shared_text: Option<(String, String)>,
+    pub shared_text: Option<(String, String)>,
 }
+
+pub(super) type LiftOutput = LiftResult;
 
 /// Optional inputs for one lift. Keeping these named makes call sites
 /// auditable and gives us one place to reject incompatible modes.
 #[derive(Default)]
-pub(super) struct LiftRequest<'a> {
-    pub(super) target_disc: Option<i64>,
-    pub(super) module_override: Option<String>,
-    pub(super) trace: Option<&'a [usize]>,
-    pub(super) arm_name: Option<&'a str>,
-    pub(super) idl: Option<&'a serde_json::Value>,
-    pub(super) arm_entry: Option<usize>,
-    pub(super) sidecar_layouts: Option<&'a [AccountLayout]>,
-    pub(super) descriptor: Option<&'a RefinementDescriptor>,
-    pub(super) shared_text: Option<&'a str>,
+/// Optional inputs selecting and refining one path through a program image.
+pub struct LiftOptions<'a> {
+    /// Instruction discriminator used by the static branch policy.
+    pub target_disc: Option<i64>,
+    /// Explicit Lean module name; otherwise derived from the program filename.
+    pub module_override: Option<String>,
+    /// Logical PCs selecting a concrete execution path.
+    pub trace: Option<&'a [usize]>,
+    /// Instruction name used by registered refinement emitters.
+    pub arm_name: Option<&'a str>,
+    /// Optional Codama-style IDL value used for account layouts and refinement.
+    pub idl: Option<&'a serde_json::Value>,
+    /// Recovered logical entry PC for the selected instruction arm.
+    pub arm_entry: Option<usize>,
+    /// Account layouts recovered from a qedmeta sidecar.
+    pub sidecar_layouts: Option<&'a [AccountLayout]>,
+    /// Descriptor-driven refinement request.
+    pub descriptor: Option<&'a RefinementDescriptor>,
+    /// Shared-text module base for large multi-arm lifts.
+    pub shared_text: Option<&'a str>,
 }
 
-impl LiftRequest<'_> {
+pub(super) type LiftRequest<'a> = LiftOptions<'a>;
+
+impl LiftOptions<'_> {
     fn validate(&self) -> Result<(), LiftError> {
         if self.module_override.as_deref() == Some("") {
             return Err(LiftError::new(

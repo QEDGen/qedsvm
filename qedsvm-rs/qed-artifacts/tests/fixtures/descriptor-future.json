@@ -1,0 +1,9 @@
+{
+  "schema_version": 999,
+  "account": "counter",
+  "mutated": "value",
+  "op": { "add_const": 1 },
+  "layout": [
+    { "offset": 0, "kind": "u64", "name": "value" }
+  ]
+}

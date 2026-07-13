@@ -13,6 +13,41 @@ use serde::Deserialize;
 pub const QEDMETA_SCHEMA_MAX: u32 = 2;
 pub const DESCRIPTOR_SCHEMA_MAX: u32 = 2;
 
+/// Compatibility of an artifact schema version with the current reader.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SchemaCompatibility {
+    /// Historical files that predate an explicit schema version.
+    Unversioned,
+    /// A supported older schema whose missing fields deserialize to defaults.
+    Legacy,
+    /// The newest schema understood by this reader.
+    Current,
+    /// A newer schema that must be rejected rather than partially interpreted.
+    Future,
+}
+
+/// Classify a qedmeta schema version without reading an artifact.
+pub const fn qedmeta_schema_compatibility(version: u32) -> SchemaCompatibility {
+    schema_compatibility(version, QEDMETA_SCHEMA_MAX)
+}
+
+/// Classify a refinement-descriptor schema version without reading an artifact.
+pub const fn descriptor_schema_compatibility(version: u32) -> SchemaCompatibility {
+    schema_compatibility(version, DESCRIPTOR_SCHEMA_MAX)
+}
+
+const fn schema_compatibility(version: u32, current: u32) -> SchemaCompatibility {
+    if version == 0 {
+        SchemaCompatibility::Unversioned
+    } else if version < current {
+        SchemaCompatibility::Legacy
+    } else if version == current {
+        SchemaCompatibility::Current
+    } else {
+        SchemaCompatibility::Future
+    }
+}
+
 #[derive(Debug)]
 pub enum ArtifactError {
     Read {
@@ -159,7 +194,7 @@ pub fn load_qedmeta(path: &Path) -> Result<QedMeta, ArtifactError> {
         path: path.to_owned(),
         source,
     })?;
-    if meta.schema_version > QEDMETA_SCHEMA_MAX {
+    if qedmeta_schema_compatibility(meta.schema_version) == SchemaCompatibility::Future {
         return Err(ArtifactError::UnsupportedSchema {
             artifact: "qedmeta",
             path: path.to_owned(),
@@ -233,7 +268,7 @@ pub fn load_descriptor(path: &Path) -> Result<RefinementDescriptor, ArtifactErro
             path: path.to_owned(),
             source,
         })?;
-    if descriptor.schema_version > DESCRIPTOR_SCHEMA_MAX {
+    if descriptor_schema_compatibility(descriptor.schema_version) == SchemaCompatibility::Future {
         return Err(ArtifactError::UnsupportedSchema {
             artifact: "descriptor",
             path: path.to_owned(),
