@@ -172,6 +172,11 @@ jobs:
         working-directory: qedsvm-rs
         run: cargo test --workspace
 
+      - name: Lean runner integration tests
+        # RunnerTests is intentionally not imported by the production SVM
+        # aggregator; build its exact native_decide assertions explicitly.
+        run: lake build SVM.SBPF.RunnerTests
+
       - name: Differential conformance vs mollusk/agave
         # Empirical soundness backstop: runs the compiled Lean interpreter
         # against mollusk on the fixture corpus, linking the restored Lean lib.
