@@ -22,6 +22,30 @@ on:
 # across jobs since they check out the same commit.
 
 jobs:
+  # Keep the flagship proof build off Rust-only pull requests. Pushes to main
+  # always run it; on PRs this filter captures every input that can affect the
+  # Lean examples or their native bridge.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      examples: ${{ steps.paths.outputs.examples }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: paths
+        with:
+          filters: |
+            examples:
+              - 'SVM/**'
+              - 'examples/**'
+              - 'lakefile.lean'
+              - 'lake-manifest.json'
+              - 'lean-toolchain'
+              - 'qedsvm-rs/Cargo.toml'
+              - 'qedsvm-rs/Cargo.lock'
+              - 'qedsvm-rs/lean-bridge/**'
+
   # Standalone Lean-free lifting-frontend crates: dispatcher recognition,
   # slot<->logical PC map, IDL account layout, PC symbolication, lift coverage.
   # No Lean toolchain, no lake — the fastest signal.
@@ -167,7 +191,8 @@ jobs:
   # non-standard axiom (sorry / native_decide / crypto). The long pole; builds
   # only the Examples layer on top of core's restored `.lake`.
   examples:
-    needs: core
+    needs: [core, changes]
+    if: github.event_name == 'push' || needs.changes.outputs.examples == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
