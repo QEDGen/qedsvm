@@ -4,6 +4,12 @@
   `Runner.run` and proves the exit code via `native_decide` (the kernel
   commits to decode + execute). Breaking these via Decode/Runner edits
   should fail the build.
+
+  Reproduce with `lake build SVM.SBPF.RunnerTests`. Bare-bytecode runs map
+  exactly `RunConfig.input.size` bytes at `INPUT_START`; syscall fixtures must
+  therefore pad their input to include every output/scratch byte. Total `Mem`
+  still reads zero outside the overlay, but mapped-region checks correctly
+  reject those addresses before a syscall or load can use them.
 -/
 
 import SVM.SBPF.Runner
@@ -16,6 +22,12 @@ import SVM.Syscalls.BigModExp
 namespace SVM.SBPF.RunnerTests
 
 open SVM.SBPF
+
+/-- Bare-bytecode fixtures must explicitly allocate every byte their syscall
+    ABI may read or write. Memory is total underneath, but the runner's mapped
+    input region is intentionally bounded by `RunConfig.input.size`. -/
+private def padInput (input : ByteArray) (size : Nat) : ByteArray :=
+  input ++ ⟨Array.replicate (size - input.size) 0⟩
 
 /-! ## Demo 1 — `mov64 r0, 42; exit`
 
@@ -193,24 +205,23 @@ def helloElf : ByteArray := ⟨#[
 
 example : Runner.runElfForExit helloElf = some 42 := by native_decide
 
-/-! ## Demo 9 — `call <hash>` decoding (internal-call fallback)
+/-! ## Demo 9 — unknown `call <hash>` fails closed
 
-A `0x85 call` whose imm matches no syscall hash routes to
-`.call_local target = pc + 1 + imm` (signed). With `imm = 0` the target
-is the next instruction: a benign self-call pushes one frame; the exit
-pops it and re-runs exit at PC 1, halting `r0 = 0`. Proves the 0x85
-opcode + unknown-hash→call_local fallback. Known hashes take the syscall
-branch instead. -/
+A `0x85 call` whose immediate matches neither a syscall hash nor the function
+registry is unsupported. H2 removed the old slot-offset fallback because it
+could turn an unresolved symbol into a valid local call. The exact typed-fault
+sentinel is pinned here; registered internal calls are covered by the ELF
+fixtures. -/
 
 def callProgram : ByteArray := ⟨#[
-  -- call 0  (no syscall hash matches imm=0; decoder routes to
-  -- call_local target = pc+1+0 = next instruction)
+  -- call 0 (neither a syscall nor a registered function hash)
   0x85, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   -- exit
   0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ]⟩
 
-example : Runner.runForExit callProgram = some 0 := by native_decide
+example : Runner.runForExit callProgram = some ERR_UNSUPPORTED_INSTRUCTION := by
+  native_decide
 
 /-! ## Demo 10 — ELF with `.rodata` (Anchor/Pinocchio pattern)
 
@@ -367,7 +378,8 @@ def memcpyDemo : ByteArray :=
   ]⟩
 
 example :
-    Runner.runForExit memcpyDemo { input := ⟨#[0x55, 0x55, 0x55]⟩ } = some 0x55 := by
+    Runner.runForExit memcpyDemo
+      { input := padInput ⟨#[0x55, 0x55, 0x55]⟩ 19 } = some 0x55 := by
   native_decide
 
 /-! ## Demo 13 — `sol_memset_` fills a region with a constant byte
@@ -398,7 +410,9 @@ def memsetDemo : ByteArray :=
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   ]⟩
 
-example : Runner.runForExit memsetDemo = some 0xAA := by native_decide
+example : Runner.runForExit memsetDemo
+    { input := padInput ByteArray.empty 20 } = some 0xAA := by
+  native_decide
 
 /-! ## Demo 14 — `sol_memcmp_` compares two byte ranges and writes the result
 
@@ -439,17 +453,17 @@ def memcmpDemo : ByteArray :=
 
 /-- Equal bytes (`AAA` vs `AAA`) → result 0, low byte 0. -/
 example : Runner.runForExit memcmpDemo
-    { input := ⟨#[0x41, 0x41, 0x41, 0x41, 0x41, 0x41]⟩ } = some 0 := by
+    { input := padInput ⟨#[0x41, 0x41, 0x41, 0x41, 0x41, 0x41]⟩ 10 } = some 0 := by
   native_decide
 
 /-- Less-than (`AAA` vs `BBB`) → result -1 = 0xFFFFFFFF, low byte 0xFF. -/
 example : Runner.runForExit memcmpDemo
-    { input := ⟨#[0x41, 0x41, 0x41, 0x42, 0x42, 0x42]⟩ } = some 0xFF := by
+    { input := padInput ⟨#[0x41, 0x41, 0x41, 0x42, 0x42, 0x42]⟩ 10 } = some 0xFF := by
   native_decide
 
 /-- Greater-than (`BBB` vs `AAA`) → result 1, low byte 1. -/
 example : Runner.runForExit memcmpDemo
-    { input := ⟨#[0x42, 0x42, 0x42, 0x41, 0x41, 0x41]⟩ } = some 1 := by
+    { input := padInput ⟨#[0x42, 0x42, 0x42, 0x41, 0x41, 0x41]⟩ 10 } = some 1 := by
   native_decide
 
 /-! ## Demo 15 — `sol_log_` writes a message to `state.log`
@@ -538,7 +552,8 @@ def clockSysvarDemo : ByteArray :=
 
 example :
     Runner.runForExit clockSysvarDemo
-      { input := ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ } = some 0 := by
+      { input := padInput ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ 40 }
+      = some 0 := by
   native_decide
 
 /-! ## Demo 22 — `sol_sha256` hashes "abc" and writes the 32-byte digest
@@ -580,10 +595,10 @@ def sha256Demo : ByteArray :=
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   ]⟩
 
-/-- Input layout (19 bytes):
+/-- Input payload (19 bytes), padded to a 96-byte mapped ABI buffer at use:
     - 0..15  : slice descriptor — ptr = INPUT_START + 16 = 0x400000010, len = 3
     - 16..18 : "abc" = 0x61, 0x62, 0x63
-    Result region (INPUT_START + 64 .. + 95) is implicitly zero before the syscall. -/
+    Result region (INPUT_START + 64 .. + 95) is explicitly allocated and zeroed. -/
 def sha256DemoInput : ByteArray := ⟨#[
   -- ptr = 0x400000010 (little-endian u64)
   0x10, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
@@ -593,7 +608,7 @@ def sha256DemoInput : ByteArray := ⟨#[
   0x61, 0x62, 0x63 ]⟩
 
 example :
-    Runner.runForExit sha256Demo { input := sha256DemoInput } = some 0xba := by
+    Runner.runForExit sha256Demo { input := padInput sha256DemoInput 96 } = some 0xba := by
   native_decide
 
 /-! ## Demo 23 — `sol_keccak256` via the Rust bridge
@@ -641,7 +656,7 @@ def keccak256Demo : ByteArray :=
   ]⟩
 
 example :
-    Runner.runForExit keccak256Demo { input := sha256DemoInput } = some 0x4e := by
+    Runner.runForExit keccak256Demo { input := padInput sha256DemoInput 96 } = some 0x4e := by
   native_decide
 
 /-! ## Demo 24 — ELF with an R_BPF_64_64 relocation
@@ -911,7 +926,7 @@ def blake3Demo : ByteArray :=
   ]⟩
 
 example :
-    Runner.runForExit blake3Demo { input := sha256DemoInput } = some 0x64 := by
+    Runner.runForExit blake3Demo { input := padInput sha256DemoInput 96 } = some 0x64 := by
   native_decide
 
 /-! ## Demo 27 — `sol_secp256k1_recover` via the Rust bridge
@@ -1010,10 +1025,10 @@ example :
     ≠ Secp256k1.RecoverResult.invalidSignature := by
   native_decide
 
-/-- Runner demo. Input layout:
+/-- Runner demo. Input payload:
     - bytes 0..31  : 32-byte message hash
     - bytes 32..95 : 64-byte compact signature
-    - bytes 96+    : implicitly zero (output buffer at INPUT_START+128)
+    - bytes 96..191: explicit zero padding, including the 64-byte output at +128
 
 ```
   mov64 r2, 0                  ; recovery_id = 0
@@ -1063,7 +1078,8 @@ def secp256k1DemoInput : ByteArray := ⟨#[
   0xe7, 0x09, 0xc2, 0xb3, 0x53, 0xbe, 0xd9, 0x5f ]⟩
 
 example :
-    Runner.runForExit secp256k1Demo { input := secp256k1DemoInput } = some 0x84 := by
+    Runner.runForExit secp256k1Demo
+      { input := padInput secp256k1DemoInput 192 } = some 0x84 := by
   native_decide
 
 /-! ## Demo 28 — agave-conformance audit for SHA-256
@@ -1304,7 +1320,8 @@ def curveGroupOpAddDemo : ByteArray :=
   ]⟩
 
 example :
-    Runner.runForExit curveGroupOpAddDemo { input := ed25519Basepoint ++ ed25519Basepoint }
+    Runner.runForExit curveGroupOpAddDemo
+      { input := padInput (ed25519Basepoint ++ ed25519Basepoint) 96 }
     = some 0xc9 := by
   native_decide
 
@@ -1363,7 +1380,8 @@ example : Curve25519.edwardsMSM ByteArray.empty ByteArray.empty = none := by
   native_decide
 
 /-- Runner demo: N=2, scalars=[1,1], points=[BP,BP], result = 2·BP.
-    Input layout (128 bytes): 32+32 scalars, then 32+32 points.
+    The 128-byte payload is padded to a 160-byte mapped buffer: 32+32
+    scalars, 32+32 points, then 32 writable result bytes.
     First byte of 2·BP (Edwards) = `0xc9`.
 
 ```
@@ -1403,7 +1421,8 @@ def curveMsmDemo : ByteArray :=
 
 example :
     Runner.runForExit curveMsmDemo {
-      input := scalarOne ++ scalarOne ++ ed25519Basepoint ++ ed25519Basepoint
+      input := padInput
+        (scalarOne ++ scalarOne ++ ed25519Basepoint ++ ed25519Basepoint) 160
     } = some 0xc9 := by
   native_decide
 
@@ -1478,14 +1497,15 @@ example :
 
 /-- Runner demo for `sol_create_program_address`.
 
-Input layout (length 80):
+Input payload (length 96, padded to 128/129 bytes at use):
 - bytes 0..15  : SliceDesc 0 = ptr=INPUT_START+48, len=7        ("Talking")
 - bytes 16..31 : SliceDesc 1 = ptr=INPUT_START+55, len=9        ("Squirrels")
 - bytes 32..47 : 16 bytes of padding (reserved for output area)
 - bytes 48..54 : "Talking"
 - bytes 55..63 : "Squirrels"
 - bytes 64..95 : program_id (BPFLoaderUpgradeable)
-- bytes 96..127: output buffer (PDA writes here)
+- bytes 96..127: output buffer (PDA writes here; supplied by `padInput`)
+- byte 128: bump output for `try_find` (supplied only for that fixture)
 
 `INPUT_START = 0x400000000`. SliceDesc.ptr values are big numbers
 (64-bit LE) — see `pdaInput` below.
@@ -1543,7 +1563,7 @@ def pdaCreateDemo : ByteArray :=
   ]⟩
 
 example :
-    Runner.runForExit pdaCreateDemo { input := pdaInput } = some 0x18 := by
+    Runner.runForExit pdaCreateDemo { input := padInput pdaInput 128 } = some 0x18 := by
   native_decide
 
 /-- Runner demo for `sol_try_find_program_address`. Same input layout
@@ -1571,7 +1591,7 @@ def pdaTryFindDemo : ByteArray :=
   ]⟩
 
 example :
-    Runner.runForExit pdaTryFindDemo { input := pdaInput } = some 0xf4 := by
+    Runner.runForExit pdaTryFindDemo { input := padInput pdaInput 129 } = some 0xf4 := by
   native_decide
 
 /-! ## Demo 33 — `sol_sha512` via the Rust bridge
@@ -1653,11 +1673,13 @@ example : Poseidon.hash 0 0 poseidonTwoInputs 13 = none := by native_decide
 example : Poseidon.hash 1 0 poseidonTwoInputs 2  = none := by native_decide  -- bad parameters
 example : Poseidon.hash 0 2 poseidonTwoInputs 2  = none := by native_decide  -- bad endianness
 
-/-- Runner demo. Input layout (96 bytes):
+/-- Runner demo. The 96-byte payload is padded to a 160-byte mapped buffer:
 - 0..15  : SliceDesc 0 = ptr=INPUT_START+32, len=32   (0x01 × 32)
 - 16..31 : SliceDesc 1 = ptr=INPUT_START+64, len=32   (0x02 × 32)
 - 32..63 : 32 × 0x01
 - 64..95 : 32 × 0x02
+- 96..127: reserved gap
+- 128..159: writable result buffer
 
 ```
   ; r1 starts at INPUT_START (which we want as vals_addr in r3)
@@ -1702,7 +1724,8 @@ private def poseidonRunnerInput : ByteArray :=
    Array.replicate 32 0x02⟩
 
 example :
-    Runner.runForExit poseidonDemo { input := poseidonRunnerInput } = some 0x0d := by
+    Runner.runForExit poseidonDemo
+      { input := padInput poseidonRunnerInput 160 } = some 0x0d := by
   native_decide
 
 /-! ## Demo 35 — `sol_curve_decompress` + `sol_curve_pairing_map` (BLS12-381)
@@ -1854,8 +1877,9 @@ example :
     AltBn128.compression 0xff bn254G1BeBp = none := by native_decide
 
 /-- Runner demo. Computes G1+G1 = 2·G1 on BN254 BE.
-Input layout (128 bytes total): two copies of G1 BP = 64 + 64 bytes.
-Output (64 bytes) at offset 128. Exit with first byte = `0x03`.
+The 128-byte payload contains two 64-byte G1 points and is padded to a
+192-byte mapped buffer. The 64-byte output starts at offset 128. Exit with
+first byte = `0x03`.
 
 ```
   mov64 r1, 0                   ; op_id = G1_ADD_BE
@@ -1896,7 +1920,8 @@ def altBn128AddDemo : ByteArray :=
   ]⟩
 
 example :
-    Runner.runForExit altBn128AddDemo { input := bn254G1AddInput } = some 0x03 := by
+    Runner.runForExit altBn128AddDemo
+      { input := padInput bn254G1AddInput 192 } = some 0x03 := by
   native_decide
 
 /-! ## Demo 37 — hygiene-pass syscalls
