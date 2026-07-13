@@ -16,7 +16,7 @@ pub(super) fn step(
     insn: &ebpf::Insn,
     pc: Option<usize>,
     branch_taken: Option<bool>,
-) -> Result<bool, String> {
+) -> Result<bool, LiftError> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
     match insn.opc {
@@ -528,9 +528,9 @@ pub(super) fn step(
             }
         }
         opc => {
-            return Err(format!(
-                "symbolic executor: opcode 0x{:02x} not yet modelled",
-                opc
+            return Err(LiftError::new(
+                DiagnosticKind::OpcodeUnmodeled,
+                format!("symbolic executor: opcode 0x{:02x} not yet modelled", opc),
             ))
         }
     }
@@ -954,7 +954,7 @@ pub(super) fn walk_and_exec(
     target_disc: Option<i64>,
     arm_entry: Option<usize>,
     entry_pc: usize,
-) -> Result<WalkResult, Box<dyn std::error::Error>> {
+) -> Result<WalkResult, LiftError> {
     let insns = &ctx.insns;
 
     // Hot regions: grow monotonically across walk retries (H8 Phase B); attempt cap is a safety net.
@@ -964,9 +964,10 @@ pub(super) fn walk_and_exec(
     loop {
         walk_attempts += 1;
         if walk_attempts > 8 {
-            return Err("qedlift: hot-region demotion did not converge after 8 \
-                    walk retries"
-                .into());
+            return Err(LiftError::new(
+                DiagnosticKind::Other,
+                "qedlift: hot-region demotion did not converge after 8 walk retries",
+            ));
         }
         let mut spec_calls: Vec<SpecCall> = Vec::new();
 
@@ -990,13 +991,15 @@ pub(super) fn walk_and_exec(
                     // #41 Phase 4: cross-check sidecar arm_entry_pc is on the trace (mismatch → fail-closed).
                     if let Some(arm) = arm_entry {
                         if !t.contains(&arm) {
-                            return Err(format!(
-                                "qedmeta/trace mismatch: recovered arm_entry_pc {} \
+                            return Err(LiftError::new(
+                                DiagnosticKind::TraceInput,
+                                format!(
+                                    "qedmeta/trace mismatch: recovered arm_entry_pc {} \
                              is not on the execution trace (the sidecar describes \
                              a different arm than the trace executes)",
-                                arm
-                            )
-                            .into());
+                                    arm
+                                ),
+                            ));
                         }
                     }
                     t[0] // load_trace guarantees non-empty
@@ -1013,12 +1016,14 @@ pub(super) fn walk_and_exec(
             loop {
                 walk_steps += 1;
                 if walk_steps > walk_cap {
-                    return Err(format!(
-                        "walker exceeded {} steps at pc={} (likely back-branch \
+                    return Err(LiftError::new(
+                        DiagnosticKind::WalkerSteps,
+                        format!(
+                            "walker exceeded {} steps at pc={} (likely back-branch \
                      defaulted to fall-through)",
-                        walk_cap, pc_iter
-                    )
-                    .into());
+                            walk_cap, pc_iter
+                        ),
+                    ));
                 }
                 if let Some(t) = trace {
                     if ti >= t.len() {
@@ -1102,7 +1107,8 @@ pub(super) fn walk_and_exec(
                                 pc_iter,
                                 imm,
                                 ctx,
-                            )?;
+                            )
+                            .map_err(LiftError::other)?;
                             ti += 1;
                             continue;
                         }
@@ -1199,22 +1205,31 @@ pub(super) fn walk_and_exec(
                                     Some(name) => {
                                         let name = String::from_utf8_lossy(name);
                                         if syscall_model(imm).map(|m| m.modeled).unwrap_or(false) {
-                                            format!(
+                                            LiftError::new(
+                                                DiagnosticKind::SyscallUntraced,
+                                                format!(
                                         "qedlift: modeled syscall `{}` (imm 0x{:x}) reached at \
                                          pc {} in a no-trace static walk; provide a --trace to \
                                          dispatch it.",
-                                        name, imm, pc_iter)
+                                        name, imm, pc_iter),
+                                            )
                                         } else {
-                                            format!(
+                                            LiftError::new(
+                                                DiagnosticKind::SyscallUnmodeled,
+                                                format!(
                                         "qedlift: unmodeled syscall `{}` (imm 0x{:x}) at pc {}; \
                                          add it to the SYSCALLS table to lift callers.",
-                                        name, imm, pc_iter)
+                                        name, imm, pc_iter),
+                                            )
                                         }
                                     }
-                                    None => format!(
+                                    None => LiftError::new(
+                                        DiagnosticKind::CallUnresolved,
+                                        format!(
                                 "qedlift: unresolved internal call at pc {} (imm 0x{:x}): not a \
                                  known syscall and no registry entry; extend the resolver.",
                                 pc_iter, imm),
+                                    ),
                                 }
                             })?;
                     }
@@ -1252,15 +1267,17 @@ pub(super) fn walk_and_exec(
         }
         // H8 FAIL CLOSED: overlapping atom footprints make precondition's sepConj unsatisfiable (vacuous).
         if !state.overlap_errors.is_empty() {
-            return Err(format!(
-                "qedlift: refusing to emit a vacuous lift — overlapping atom \
+            return Err(LiftError::new(
+                DiagnosticKind::ByteAliasing,
+                format!(
+                    "qedlift: refusing to emit a vacuous lift — overlapping atom \
              footprints would make the precondition's sepConj \
              unsatisfiable. The walker does not yet alias these at byte \
              granularity (soundness-audit H8, \
              docs/QEDLIFT_ALIASING_DESIGN.md):\n  - {}",
-                state.overlap_errors.join("\n  - ")
-            )
-            .into());
+                    state.overlap_errors.join("\n  - ")
+                ),
+            ));
         }
         return Ok(WalkResult {
             state,
@@ -1366,7 +1383,7 @@ fn resolve_branch_taken(
     jtgt: i64,
     is_cond_jump: bool,
     target_disc: Option<i64>,
-) -> Result<Option<bool>, Box<dyn std::error::Error>> {
+) -> Result<Option<bool>, LiftError> {
     let branch_taken: Option<bool> = if let Some(t) = trace {
         if is_cond_jump {
             let next = t.get(ti + 1).copied();
@@ -1374,12 +1391,14 @@ fn resolve_branch_taken(
             if taken {
                 if let Some(n) = next {
                     if n as i64 != jtgt {
-                        return Err(format!(
-                            "trace/decoder mismatch at pc {}: trace goes to {} \
+                        return Err(LiftError::new(
+                            DiagnosticKind::TraceInput,
+                            format!(
+                                "trace/decoder mismatch at pc {}: trace goes to {} \
                              but the decoded jump target is {} (off={})",
-                            pc_iter, n, jtgt, ins.off
-                        )
-                        .into());
+                                pc_iter, n, jtgt, ins.off
+                            ),
+                        ));
                     }
                 }
             }

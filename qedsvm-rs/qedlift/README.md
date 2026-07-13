@@ -22,7 +22,7 @@ From the repository root:
 
 ```bash
 cargo run --manifest-path qedsvm-rs/Cargo.toml \
-  --features qedrecover --bin qedlift -- \
+  -p qedlift -- \
   --so qedsvm-rs/tests/fixtures/byte_increment.so \
   --output examples/lean/Generated/ByteIncrementLifted.lean
 
@@ -54,14 +54,14 @@ program.so + program.qedmeta.toml + selected_path.pcs
                      lake build
 ```
 
-[`qedrecover`](../../../qedrecover/README.md) produces the hash-pinned
+[`qedrecover`](../qedrecover/README.md) produces the hash-pinned
 `qedmeta.toml` from the program's `.so`, Codama IDL, and qedsvm overlay. A `.pcs`
 trace contains one decimal logical PC per line and selects the concrete path
 through branchy bytecode.
 
 ```bash
 cargo run --manifest-path qedsvm-rs/Cargo.toml \
-  --features qedrecover --bin qedlift -- \
+  -p qedlift -- \
   --so qedsvm-rs/tests/fixtures/p_token.so \
   --qedmeta qedsvm-rs/tests/fixtures/p_token.transfer.recovered.qedmeta.toml \
   --trace qedsvm-rs/tests/fixtures/p_token_transfer.pcs \
@@ -69,7 +69,7 @@ cargo run --manifest-path qedsvm-rs/Cargo.toml \
 ```
 
 See the repository-level
-[`PIPELINE.md`](../../../../docs/PIPELINE.md) for trace capture and the complete
+[`PIPELINE.md`](../../docs/PIPELINE.md) for trace capture and the complete
 sidecar contract.
 
 ## Modes
@@ -97,7 +97,7 @@ vault-field updates.
 A trace is path selection, not a theorem that the path is reachable for every
 input. The emitted precondition, branch hypotheses, bytecode pins, and
 satisfiability witness are what make the selected-path theorem precise. See
-[`COVERAGE.md`](../../../../docs/COVERAGE.md) for the current instruction, syscall,
+[`COVERAGE.md`](../../docs/COVERAGE.md) for the current instruction, syscall,
 control-flow, and refinement boundary.
 
 ## Regression tests
@@ -107,5 +107,5 @@ it byte-for-byte with the checked-in Lean:
 
 ```bash
 cargo test --manifest-path qedsvm-rs/Cargo.toml \
-  --features qedrecover --bin qedlift
+  -p qedlift --lib
 ```

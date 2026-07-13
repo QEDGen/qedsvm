@@ -5,12 +5,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
-[[bin]]
-name = "qedrecover"
-path = "src/main.rs"
-
 [dependencies]
 qed-analysis = { path = "../qed-analysis" }
+qed-artifacts = { path = "../qed-artifacts" }
 # ELF loader + static analysis (CFG, basic blocks). JIT disabled.
 solana-sbpf = { version = "0.14.4", default-features = false }
 # IDL parsing (serde) + overlay parsing (toml).

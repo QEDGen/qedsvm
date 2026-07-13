@@ -72,7 +72,7 @@ is documented in [`docs/API.md`](docs/API.md).
 1. **[`qedrecover`](qedsvm-rs/qedrecover/README.md) scopes the claim.** It binds an IDL and qedsvm overlay to
    instruction arms and locations in the compiled binary, producing a
    hash-pinned `qedmeta.toml` sidecar.
-2. **[`qedlift`](qedsvm-rs/src/bin/qedlift/README.md) walks one selected path.** It pins the walked instructions back to
+2. **[`qedlift`](qedsvm-rs/qedlift/README.md) walks one selected path.** It pins the walked instructions back to
    the `.so` bytes, symbolically executes them, and emits a Lean Hoare triple.
 3. **Supported shapes get an abstract refinement.** Registered token, counter,
    vault, heap, and transition shapes connect concrete memory effects to
@@ -94,7 +94,7 @@ This minimal fixture does not need an IDL or trace:
 
 ```bash
 cargo run --manifest-path qedsvm-rs/Cargo.toml \
-  --features qedrecover --bin qedlift -- \
+  -p qedlift -- \
   --so qedsvm-rs/tests/fixtures/byte_increment.so \
   --output examples/lean/Generated/ByteIncrementLifted.lean
 ```
@@ -175,7 +175,9 @@ SVM/                      Lean interpreter, specification layer, and Solana pred
 examples/lean/            Checked Hoare-proof examples
 examples/lean/Generated/  qedlift output: .so to sorry-free Lean triples
 qedsvm-rs/                Rust workspace
-├── (root)                Executor API and qedlift binary
+├── (root)                Executor API and CLI
+├── qed-artifacts/        Shared metadata and descriptor contracts
+├── qedlift/              Selected-path symbolic executor and Lean emitter
 ├── qedrecover/           .so + IDL + overlay to qedmeta sidecar
 ├── qed-analysis/         Shared sBPF and account-layout analysis
 └── lean-bridge/          Agave-pinned native crypto bridge called by Lean

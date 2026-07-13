@@ -4,7 +4,7 @@ use qed_analysis::layout::{parse_account_layout, FieldKind};
 /// Diffs the emitter output on `counter.so` against both on-disk artifacts, guarding the counter-codec (non-token) path.
 #[test]
 fn counter_refinement_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/counter.so");
+    let so = std::path::Path::new("../tests/fixtures/counter.so");
     let ctx = load_binary(so).expect("load counter.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse counter.so");
     let result = lift_one(
@@ -21,7 +21,7 @@ fn counter_refinement_is_mechanically_emitted() {
     .expect("lift counter.so");
 
     let lift_on_disk =
-        std::fs::read_to_string("../examples/lean/Generated/CounterTracedLifted.lean")
+        std::fs::read_to_string("../../examples/lean/Generated/CounterTracedLifted.lean")
             .expect("read CounterTracedLifted.lean");
     assert_eq!(
         result.lean, lift_on_disk,
@@ -31,7 +31,7 @@ fn counter_refinement_is_mechanically_emitted() {
 
     let (_, rlean) = result.refinement.expect("counter refinement emitted");
     let refine_on_disk =
-        std::fs::read_to_string("../examples/lean/Generated/CounterRefinement.lean")
+        std::fs::read_to_string("../../examples/lean/Generated/CounterRefinement.lean")
             .expect("read CounterRefinement.lean");
     assert_eq!(
         rlean, refine_on_disk,
@@ -48,10 +48,10 @@ fn counter_refinement_is_mechanically_emitted() {
 fn descriptor_refinement_is_mechanically_emitted() {
     // (a) counter.so — single u64 field at offset 0, empty frame (no refine_registry entry).
     let desc = load_descriptor(std::path::Path::new(
-        "tests/fixtures/counter.descriptor.json",
+        "../tests/fixtures/counter.descriptor.json",
     ))
     .expect("load counter descriptor");
-    let so = std::path::Path::new("tests/fixtures/counter.so");
+    let so = std::path::Path::new("../tests/fixtures/counter.so");
     let ctx = load_binary(so).expect("load counter.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse counter.so");
     let result = lift_one_with_layouts(
@@ -69,7 +69,7 @@ fn descriptor_refinement_is_mechanically_emitted() {
         .refinement
         .expect("descriptor refinement emitted (counter)");
     let on_disk =
-        std::fs::read_to_string("../examples/lean/Generated/CounterDescriptorRefinement.lean")
+        std::fs::read_to_string("../../examples/lean/Generated/CounterDescriptorRefinement.lean")
             .expect("read CounterDescriptorRefinement.lean");
     assert_eq!(
         rlean, on_disk,
@@ -80,14 +80,16 @@ fn descriptor_refinement_is_mechanically_emitted() {
     // (b) vault.so — multi-field {owner:Pubkey, total:u64, bump:u8}; `total` mutated.
     // Name-level descriptor (no inline layout, no registry entry): the shape is resolved
     // from the IDL by account name, exactly the path `resolve_layout` uses.
-    let vdesc = load_descriptor(std::path::Path::new("tests/fixtures/vault.descriptor.json"))
-        .expect("load vault descriptor");
+    let vdesc = load_descriptor(std::path::Path::new(
+        "../tests/fixtures/vault.descriptor.json",
+    ))
+    .expect("load vault descriptor");
     let vidl: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+        &std::fs::read_to_string("../tests/fixtures/vault.codama.json")
             .expect("read vault.codama.json"),
     )
     .expect("parse vault IDL");
-    let vso = std::path::Path::new("tests/fixtures/vault.so");
+    let vso = std::path::Path::new("../tests/fixtures/vault.so");
     let vctx = load_binary(vso).expect("load vault.so");
     let vanalysis = Analysis::from_executable(&vctx.executable).expect("analyse vault.so");
     let vresult = lift_one_with_layouts(
@@ -106,7 +108,7 @@ fn descriptor_refinement_is_mechanically_emitted() {
         .refinement
         .expect("descriptor refinement emitted (vault)");
     let von_disk =
-        std::fs::read_to_string("../examples/lean/Generated/VaultDescriptorRefinement.lean")
+        std::fs::read_to_string("../../examples/lean/Generated/VaultDescriptorRefinement.lean")
             .expect("read VaultDescriptorRefinement.lean");
     assert_eq!(
         vrlean, von_disk,
@@ -122,15 +124,15 @@ fn descriptor_refinement_is_mechanically_emitted() {
 #[test]
 fn descriptor_literal_delta_is_mechanically_emitted() {
     let desc = load_descriptor(std::path::Path::new(
-        "tests/fixtures/vault_add5.descriptor.json",
+        "../tests/fixtures/vault_add5.descriptor.json",
     ))
     .expect("load vault_add5 descriptor");
     let idl: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+        &std::fs::read_to_string("../tests/fixtures/vault.codama.json")
             .expect("read vault.codama.json"),
     )
     .expect("parse vault IDL");
-    let so = std::path::Path::new("tests/fixtures/vault_add5.so");
+    let so = std::path::Path::new("../tests/fixtures/vault_add5.so");
     let ctx = load_binary(so).expect("load vault_add5.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_add5.so");
     let result = lift_one_with_layouts(
@@ -148,7 +150,7 @@ fn descriptor_literal_delta_is_mechanically_emitted() {
     let (_, rlean) = result
         .refinement
         .expect("descriptor refinement emitted (vault_add5)");
-    let on_disk = std::fs::read_to_string("../examples/lean/Generated/VaultAdd5Refinement.lean")
+    let on_disk = std::fs::read_to_string("../../examples/lean/Generated/VaultAdd5Refinement.lean")
         .expect("read VaultAdd5Refinement.lean");
     assert_eq!(
         rlean, on_disk,
@@ -164,15 +166,15 @@ fn descriptor_literal_delta_is_mechanically_emitted() {
 #[test]
 fn descriptor_param_delta_is_mechanically_emitted() {
     let desc = load_descriptor(std::path::Path::new(
-        "tests/fixtures/vault_deposit.descriptor.json",
+        "../tests/fixtures/vault_deposit.descriptor.json",
     ))
     .expect("load vault_deposit descriptor");
     let idl: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+        &std::fs::read_to_string("../tests/fixtures/vault.codama.json")
             .expect("read vault.codama.json"),
     )
     .expect("parse vault IDL");
-    let so = std::path::Path::new("tests/fixtures/vault_deposit.so");
+    let so = std::path::Path::new("../tests/fixtures/vault_deposit.so");
     let ctx = load_binary(so).expect("load vault_deposit.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse vault_deposit.so");
     let result = lift_one_with_layouts(
@@ -190,8 +192,9 @@ fn descriptor_param_delta_is_mechanically_emitted() {
     let (_, rlean) = result
         .refinement
         .expect("descriptor refinement emitted (vault_deposit)");
-    let on_disk = std::fs::read_to_string("../examples/lean/Generated/VaultDepositRefinement.lean")
-        .expect("read VaultDepositRefinement.lean");
+    let on_disk =
+        std::fs::read_to_string("../../examples/lean/Generated/VaultDepositRefinement.lean")
+            .expect("read VaultDepositRefinement.lean");
     assert_eq!(
         rlean, on_disk,
         "VaultDepositRefinement.lean is out of sync with the qedlift descriptor \
@@ -204,7 +207,7 @@ fn descriptor_param_delta_is_mechanically_emitted() {
 #[test]
 fn descriptor_rejects_newer_schema() {
     let err = load_descriptor(std::path::Path::new(
-        "tests/fixtures/descriptor_future_schema.json",
+        "../tests/fixtures/descriptor_future_schema.json",
     ))
     .expect_err("a future descriptor schema must be refused");
     assert!(
@@ -216,9 +219,9 @@ fn descriptor_rejects_newer_schema() {
 /// Diffs the emitter output on `vault.so` + `vault.codama.json` against both on-disk artifacts, guarding the layout-general account-codec path.
 #[test]
 fn vault_refinement_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/vault.so");
+    let so = std::path::Path::new("../tests/fixtures/vault.so");
     let idl: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+        &std::fs::read_to_string("../tests/fixtures/vault.codama.json")
             .expect("read vault.codama.json"),
     )
     .expect("parse vault IDL");
@@ -237,8 +240,9 @@ fn vault_refinement_is_mechanically_emitted() {
     )
     .expect("lift vault.so");
 
-    let lift_on_disk = std::fs::read_to_string("../examples/lean/Generated/VaultTracedLifted.lean")
-        .expect("read VaultTracedLifted.lean");
+    let lift_on_disk =
+        std::fs::read_to_string("../../examples/lean/Generated/VaultTracedLifted.lean")
+            .expect("read VaultTracedLifted.lean");
     assert_eq!(
         result.lean, lift_on_disk,
         "VaultTracedLifted.lean is out of sync with the qedlift emitter \
@@ -246,8 +250,9 @@ fn vault_refinement_is_mechanically_emitted() {
     );
 
     let (_, rlean) = result.refinement.expect("vault refinement emitted");
-    let refine_on_disk = std::fs::read_to_string("../examples/lean/Generated/VaultRefinement.lean")
-        .expect("read VaultRefinement.lean");
+    let refine_on_disk =
+        std::fs::read_to_string("../../examples/lean/Generated/VaultRefinement.lean")
+            .expect("read VaultRefinement.lean");
     assert_eq!(
         rlean, refine_on_disk,
         "VaultRefinement.lean is out of sync with the qedlift emitter \
@@ -262,9 +267,9 @@ fn vault_refinement_is_mechanically_emitted() {
 /// refinement exactly, and dropping every layout source must suppress the refinement.
 #[test]
 fn vault_refinement_consumes_sidecar_layout() {
-    let so = std::path::Path::new("tests/fixtures/vault.so");
+    let so = std::path::Path::new("../tests/fixtures/vault.so");
     let idl: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/vault.codama.json")
+        &std::fs::read_to_string("../tests/fixtures/vault.codama.json")
             .expect("read vault.codama.json"),
     )
     .expect("parse vault IDL");
@@ -332,7 +337,7 @@ fn vault_refinement_consumes_sidecar_layout() {
 #[test]
 fn sidecar_account_layout_roundtrip() {
     let meta = load_qedmeta(std::path::Path::new(
-        "tests/fixtures/p_token.transfer.recovered.qedmeta.toml",
+        "../tests/fixtures/p_token.transfer.recovered.qedmeta.toml",
     ))
     .expect("load recovered sidecar");
     let layouts = sidecar_account_layouts(&meta);
@@ -373,9 +378,9 @@ fn sidecar_account_layout_roundtrip() {
 /// `vault.so` with a `[u8;32]` owner field: framed as opaque `.blob [.gap g]` (`↦Bytes`), exercising the `memBytesIs_segs` blob aggregation path.
 #[test]
 fn vault_blob_refinement_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/vault.so");
+    let so = std::path::Path::new("../tests/fixtures/vault.so");
     let idl: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/vault_blob.codama.json")
+        &std::fs::read_to_string("../tests/fixtures/vault_blob.codama.json")
             .expect("read vault_blob.codama.json"),
     )
     .expect("parse vault_blob IDL");
@@ -395,7 +400,7 @@ fn vault_blob_refinement_is_mechanically_emitted() {
     .expect("lift vault.so (blob)");
 
     let lift_on_disk =
-        std::fs::read_to_string("../examples/lean/Generated/VaultBlobTracedLifted.lean")
+        std::fs::read_to_string("../../examples/lean/Generated/VaultBlobTracedLifted.lean")
             .expect("read VaultBlobTracedLifted.lean");
     assert_eq!(
         result.lean, lift_on_disk,
@@ -405,7 +410,7 @@ fn vault_blob_refinement_is_mechanically_emitted() {
 
     let (_, rlean) = result.refinement.expect("vault blob refinement emitted");
     let refine_on_disk =
-        std::fs::read_to_string("../examples/lean/Generated/VaultBlobRefinement.lean")
+        std::fs::read_to_string("../../examples/lean/Generated/VaultBlobRefinement.lean")
             .expect("read VaultBlobRefinement.lean");
     assert_eq!(
         rlean, refine_on_disk,
@@ -417,9 +422,9 @@ fn vault_blob_refinement_is_mechanically_emitted() {
 /// `vault_split.so` owns `owner[5]`, forcing the blob to split into `[.gap, .byte, .gap]` — the multisig-style partial-blob path.
 #[test]
 fn vault_split_refinement_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/vault_split.so");
+    let so = std::path::Path::new("../tests/fixtures/vault_split.so");
     let idl: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/vault_blob.codama.json")
+        &std::fs::read_to_string("../tests/fixtures/vault_blob.codama.json")
             .expect("read vault_blob.codama.json"),
     )
     .expect("parse vault_blob IDL");
@@ -438,8 +443,8 @@ fn vault_split_refinement_is_mechanically_emitted() {
     )
     .expect("lift vault_split.so");
 
-    let lift_path = "../examples/lean/Generated/VaultSplitTracedLifted.lean";
-    let refine_path = "../examples/lean/Generated/VaultSplitRefinement.lean";
+    let lift_path = "../../examples/lean/Generated/VaultSplitTracedLifted.lean";
+    let refine_path = "../../examples/lean/Generated/VaultSplitRefinement.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(lift_path, &result.lean).expect("write lift");
         if let Some((_, rlean)) = result.refinement.as_ref() {
@@ -462,7 +467,7 @@ fn vault_split_refinement_is_mechanically_emitted() {
 /// Guards the heap-corollary codegen: `heapBumpPtr`/`heapBlockU64` fold + conditional `HeapSL` import.
 #[test]
 fn heap_alloc_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/heap_alloc.so");
+    let so = std::path::Path::new("../tests/fixtures/heap_alloc.so");
     let ctx = load_binary(so).expect("load heap_alloc.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse heap_alloc.so");
     let result = lift_one(
@@ -478,7 +483,7 @@ fn heap_alloc_lift_is_mechanically_emitted() {
     )
     .expect("lift heap_alloc.so");
 
-    let on_disk = std::fs::read_to_string("../examples/lean/Generated/HeapAllocLifted.lean")
+    let on_disk = std::fs::read_to_string("../../examples/lean/Generated/HeapAllocLifted.lean")
         .expect("read HeapAllocLifted.lean");
     assert_eq!(
         result.lean, on_disk,
@@ -495,7 +500,7 @@ fn heap_alloc_lift_is_mechanically_emitted() {
 /// lift (the abort terminates the straight-line walk; no trace needed).
 #[test]
 fn abort_caller_fault_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/abort_caller.so");
+    let so = std::path::Path::new("../tests/fixtures/abort_caller.so");
     let ctx = load_binary(so).expect("load abort_caller.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse abort_caller.so");
     let result = lift_one(
@@ -511,7 +516,7 @@ fn abort_caller_fault_lift_is_mechanically_emitted() {
     )
     .expect("lift abort_caller.so");
 
-    let path = "../examples/lean/Generated/AbortCallerLifted.lean";
+    let path = "../../examples/lean/Generated/AbortCallerLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write AbortCallerLifted.lean");
     }
@@ -532,10 +537,10 @@ fn abort_caller_fault_lift_is_mechanically_emitted() {
 /// (the OOB terminal is detected by the syscall NOT returning to pc+1).
 #[test]
 fn oob_secp256k1_fault_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/oob_secp256k1.so");
+    let so = std::path::Path::new("../tests/fixtures/oob_secp256k1.so");
     let ctx = load_binary(so).expect("load oob_secp256k1.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_secp256k1.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/oob_secp256k1.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/oob_secp256k1.pcs"))
         .expect("load oob_secp256k1 trace");
     let result = lift_one(
         so,
@@ -550,7 +555,7 @@ fn oob_secp256k1_fault_lift_is_mechanically_emitted() {
     )
     .expect("lift oob_secp256k1.so");
 
-    let path = "../examples/lean/Generated/OobSecp256k1Lifted.lean";
+    let path = "../../examples/lean/Generated/OobSecp256k1Lifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write OobSecp256k1Lifted.lean");
     }
@@ -568,11 +573,13 @@ fn oob_secp256k1_fault_lift_is_mechanically_emitted() {
 /// fault spec applies bare, no `frame_right`) — the OOB arm across families.
 #[test]
 fn oob_clock_sysvar_fault_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/oob_clock_sysvar.so");
+    let so = std::path::Path::new("../tests/fixtures/oob_clock_sysvar.so");
     let ctx = load_binary(so).expect("load oob_clock_sysvar.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_clock_sysvar.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/oob_clock_sysvar.pcs"))
-        .expect("load oob_clock_sysvar trace");
+    let trace = load_trace(std::path::Path::new(
+        "../tests/fixtures/oob_clock_sysvar.pcs",
+    ))
+    .expect("load oob_clock_sysvar trace");
     let result = lift_one(
         so,
         &ctx,
@@ -586,7 +593,7 @@ fn oob_clock_sysvar_fault_lift_is_mechanically_emitted() {
     )
     .expect("lift oob_clock_sysvar.so");
 
-    let path = "../examples/lean/Generated/OobClockSysvarLifted.lean";
+    let path = "../../examples/lean/Generated/OobClockSysvarLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write OobClockSysvarLifted.lean");
     }
@@ -604,11 +611,13 @@ fn oob_clock_sysvar_fault_lift_is_mechanically_emitted() {
 /// pure registration (no emitter changes).
 #[test]
 fn oob_rent_sysvar_fault_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/oob_rent_sysvar.so");
+    let so = std::path::Path::new("../tests/fixtures/oob_rent_sysvar.so");
     let ctx = load_binary(so).expect("load oob_rent_sysvar.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_rent_sysvar.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/oob_rent_sysvar.pcs"))
-        .expect("load oob_rent_sysvar trace");
+    let trace = load_trace(std::path::Path::new(
+        "../tests/fixtures/oob_rent_sysvar.pcs",
+    ))
+    .expect("load oob_rent_sysvar trace");
     let result = lift_one(
         so,
         &ctx,
@@ -622,7 +631,7 @@ fn oob_rent_sysvar_fault_lift_is_mechanically_emitted() {
     )
     .expect("lift oob_rent_sysvar.so");
 
-    let path = "../examples/lean/Generated/OobRentSysvarLifted.lean";
+    let path = "../../examples/lean/Generated/OobRentSysvarLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write OobRentSysvarLifted.lean");
     }
@@ -641,12 +650,12 @@ fn oob_rent_sysvar_fault_lift_is_mechanically_emitted() {
 /// discharge `by decide`.
 #[test]
 fn oob_set_return_data_fault_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/oob_set_return_data.so");
+    let so = std::path::Path::new("../tests/fixtures/oob_set_return_data.so");
     let ctx = load_binary(so).expect("load oob_set_return_data.so");
     let analysis =
         Analysis::from_executable(&ctx.executable).expect("analyse oob_set_return_data.so");
     let trace = load_trace(std::path::Path::new(
-        "tests/fixtures/oob_set_return_data.pcs",
+        "../tests/fixtures/oob_set_return_data.pcs",
     ))
     .expect("load oob_set_return_data trace");
     let result = lift_one(
@@ -662,7 +671,7 @@ fn oob_set_return_data_fault_lift_is_mechanically_emitted() {
     )
     .expect("lift oob_set_return_data.so");
 
-    let path = "../examples/lean/Generated/OobSetReturnDataLifted.lean";
+    let path = "../../examples/lean/Generated/OobSetReturnDataLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write OobSetReturnDataLifted.lean");
     }
@@ -680,10 +689,10 @@ fn oob_set_return_data_fault_lift_is_mechanically_emitted() {
 /// pre/post (frame_right arrangement) before composing the fault spec.
 #[test]
 fn oob_create_pda_fault_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/oob_create_pda.so");
+    let so = std::path::Path::new("../tests/fixtures/oob_create_pda.so");
     let ctx = load_binary(so).expect("load oob_create_pda.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_create_pda.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/oob_create_pda.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/oob_create_pda.pcs"))
         .expect("load oob_create_pda trace");
     let result = lift_one(
         so,
@@ -698,7 +707,7 @@ fn oob_create_pda_fault_lift_is_mechanically_emitted() {
     )
     .expect("lift oob_create_pda.so");
 
-    let path = "../examples/lean/Generated/OobCreatePdaLifted.lean";
+    let path = "../../examples/lean/Generated/OobCreatePdaLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write OobCreatePdaLifted.lean");
     }
@@ -715,10 +724,10 @@ fn oob_create_pda_fault_lift_is_mechanically_emitted() {
 /// rotation on the WRITE side.
 #[test]
 fn oob_sha256_fault_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/oob_sha256.so");
+    let so = std::path::Path::new("../tests/fixtures/oob_sha256.so");
     let ctx = load_binary(so).expect("load oob_sha256.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse oob_sha256.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/oob_sha256.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/oob_sha256.pcs"))
         .expect("load oob_sha256 trace");
     let result = lift_one(
         so,
@@ -733,7 +742,7 @@ fn oob_sha256_fault_lift_is_mechanically_emitted() {
     )
     .expect("lift oob_sha256.so");
 
-    let path = "../examples/lean/Generated/OobSha256Lifted.lean";
+    let path = "../../examples/lean/Generated/OobSha256Lifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write OobSha256Lifted.lean");
     }
@@ -755,10 +764,10 @@ fn oob_sha256_fault_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_insufficient_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_insufficient.pcs",
+        "../tests/fixtures/p_token_transfer_insufficient.pcs",
         "PTokenTransferInsufficient",
         None,
-        "../examples/lean/Generated/PTokenTransferInsufficientLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferInsufficientLifted.lean",
         None,
     );
 }
@@ -770,10 +779,10 @@ fn p_token_transfer_insufficient_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_frozen.pcs",
+        "../tests/fixtures/p_token_transfer_frozen.pcs",
         "PTokenTransferFrozen",
         None,
-        "../examples/lean/Generated/PTokenTransferFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferFrozenLifted.lean",
         None,
     );
 }
@@ -784,10 +793,10 @@ fn p_token_transfer_frozen_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_dest_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_dest_frozen.pcs",
+        "../tests/fixtures/p_token_transfer_dest_frozen.pcs",
         "PTokenTransferDestFrozen",
         None,
-        "../examples/lean/Generated/PTokenTransferDestFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferDestFrozenLifted.lean",
         None,
     );
 }
@@ -801,10 +810,10 @@ fn p_token_transfer_dest_frozen_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_mint_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_mint_mismatch.pcs",
+        "../tests/fixtures/p_token_transfer_mint_mismatch.pcs",
         "PTokenTransferMintMismatch",
         None,
-        "../examples/lean/Generated/PTokenTransferMintMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferMintMismatchLifted.lean",
         None,
     );
 }
@@ -822,10 +831,10 @@ fn p_token_transfer_mint_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_src_uninit_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_src_uninit.pcs",
+        "../tests/fixtures/p_token_transfer_src_uninit.pcs",
         "PTokenTransferSrcUninit",
         None,
-        "../examples/lean/Generated/PTokenTransferSrcUninitLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferSrcUninitLifted.lean",
         None,
     );
 }
@@ -833,10 +842,10 @@ fn p_token_transfer_src_uninit_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_dest_uninit_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_dest_uninit.pcs",
+        "../tests/fixtures/p_token_transfer_dest_uninit.pcs",
         "PTokenTransferDestUninit",
         None,
-        "../examples/lean/Generated/PTokenTransferDestUninitLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferDestUninitLifted.lean",
         None,
     );
 }
@@ -844,10 +853,10 @@ fn p_token_transfer_dest_uninit_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_src_bad_state_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_src_bad_state.pcs",
+        "../tests/fixtures/p_token_transfer_src_bad_state.pcs",
         "PTokenTransferSrcBadState",
         None,
-        "../examples/lean/Generated/PTokenTransferSrcBadStateLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferSrcBadStateLifted.lean",
         None,
     );
 }
@@ -855,10 +864,10 @@ fn p_token_transfer_src_bad_state_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_dest_bad_state_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_dest_bad_state.pcs",
+        "../tests/fixtures/p_token_transfer_dest_bad_state.pcs",
         "PTokenTransferDestBadState",
         None,
-        "../examples/lean/Generated/PTokenTransferDestBadStateLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferDestBadStateLifted.lean",
         None,
     );
 }
@@ -866,10 +875,10 @@ fn p_token_transfer_dest_bad_state_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_short_ix_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_short_ix.pcs",
+        "../tests/fixtures/p_token_transfer_short_ix.pcs",
         "PTokenTransferShortIx",
         None,
-        "../examples/lean/Generated/PTokenTransferShortIxLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferShortIxLifted.lean",
         None,
     );
 }
@@ -877,10 +886,10 @@ fn p_token_transfer_short_ix_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_mint_mismatch_limb1_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_mint_mismatch_limb1.pcs",
+        "../tests/fixtures/p_token_transfer_mint_mismatch_limb1.pcs",
         "PTokenTransferMintMismatchLimb1",
         None,
-        "../examples/lean/Generated/PTokenTransferMintMismatchLimb1Lifted.lean",
+        "../../examples/lean/Generated/PTokenTransferMintMismatchLimb1Lifted.lean",
         None,
     );
 }
@@ -888,10 +897,10 @@ fn p_token_transfer_mint_mismatch_limb1_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_mint_mismatch_limb2_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_mint_mismatch_limb2.pcs",
+        "../tests/fixtures/p_token_transfer_mint_mismatch_limb2.pcs",
         "PTokenTransferMintMismatchLimb2",
         None,
-        "../examples/lean/Generated/PTokenTransferMintMismatchLimb2Lifted.lean",
+        "../../examples/lean/Generated/PTokenTransferMintMismatchLimb2Lifted.lean",
         None,
     );
 }
@@ -899,10 +908,10 @@ fn p_token_transfer_mint_mismatch_limb2_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_mint_mismatch_limb3_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_mint_mismatch_limb3.pcs",
+        "../tests/fixtures/p_token_transfer_mint_mismatch_limb3.pcs",
         "PTokenTransferMintMismatchLimb3",
         None,
-        "../examples/lean/Generated/PTokenTransferMintMismatchLimb3Lifted.lean",
+        "../../examples/lean/Generated/PTokenTransferMintMismatchLimb3Lifted.lean",
         None,
     );
 }
@@ -919,10 +928,10 @@ fn p_token_transfer_mint_mismatch_limb3_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_owner_not_signer_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_owner_not_signer.pcs",
+        "../tests/fixtures/p_token_transfer_owner_not_signer.pcs",
         "PTokenTransferOwnerNotSigner",
         None,
-        "../examples/lean/Generated/PTokenTransferOwnerNotSignerLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferOwnerNotSignerLifted.lean",
         None,
     );
 }
@@ -930,10 +939,10 @@ fn p_token_transfer_owner_not_signer_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_delegate_not_signer_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_delegate_not_signer.pcs",
+        "../tests/fixtures/p_token_transfer_delegate_not_signer.pcs",
         "PTokenTransferDelegateNotSigner",
         None,
-        "../examples/lean/Generated/PTokenTransferDelegateNotSignerLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferDelegateNotSignerLifted.lean",
         None,
     );
 }
@@ -941,10 +950,10 @@ fn p_token_transfer_delegate_not_signer_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_owner_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_owner_mismatch.pcs",
+        "../tests/fixtures/p_token_transfer_owner_mismatch.pcs",
         "PTokenTransferOwnerMismatch",
         None,
-        "../examples/lean/Generated/PTokenTransferOwnerMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferOwnerMismatchLifted.lean",
         None,
     );
 }
@@ -952,10 +961,10 @@ fn p_token_transfer_owner_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_delegate_insufficient_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_delegate_insufficient.pcs",
+        "../tests/fixtures/p_token_transfer_delegate_insufficient.pcs",
         "PTokenTransferDelegateInsufficient",
         None,
-        "../examples/lean/Generated/PTokenTransferDelegateInsufficientLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferDelegateInsufficientLifted.lean",
         None,
     );
 }
@@ -973,10 +982,10 @@ fn p_token_transfer_delegate_insufficient_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_mint_to_supply_overflow_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_mint_to_supply_overflow.pcs",
+        "../tests/fixtures/p_token_mint_to_supply_overflow.pcs",
         "PTokenMintToSupplyOverflow",
         None,
-        "../examples/lean/Generated/PTokenMintToSupplyOverflowLifted.lean",
+        "../../examples/lean/Generated/PTokenMintToSupplyOverflowLifted.lean",
         None,
     );
 }
@@ -984,10 +993,10 @@ fn p_token_mint_to_supply_overflow_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_mint_to_fixed_supply_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_mint_to_fixed_supply.pcs",
+        "../tests/fixtures/p_token_mint_to_fixed_supply.pcs",
         "PTokenMintToFixedSupply",
         None,
-        "../examples/lean/Generated/PTokenMintToFixedSupplyLifted.lean",
+        "../../examples/lean/Generated/PTokenMintToFixedSupplyLifted.lean",
         None,
     );
 }
@@ -995,10 +1004,10 @@ fn p_token_mint_to_fixed_supply_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_mint_to_authority_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_mint_to_authority_mismatch.pcs",
+        "../tests/fixtures/p_token_mint_to_authority_mismatch.pcs",
         "PTokenMintToAuthorityMismatch",
         None,
-        "../examples/lean/Generated/PTokenMintToAuthorityMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenMintToAuthorityMismatchLifted.lean",
         None,
     );
 }
@@ -1006,10 +1015,10 @@ fn p_token_mint_to_authority_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_mint_to_mint_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_mint_to_mint_mismatch.pcs",
+        "../tests/fixtures/p_token_mint_to_mint_mismatch.pcs",
         "PTokenMintToMintMismatch",
         None,
-        "../examples/lean/Generated/PTokenMintToMintMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenMintToMintMismatchLifted.lean",
         None,
     );
 }
@@ -1017,10 +1026,10 @@ fn p_token_mint_to_mint_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_mint_to_dest_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_mint_to_dest_frozen.pcs",
+        "../tests/fixtures/p_token_mint_to_dest_frozen.pcs",
         "PTokenMintToDestFrozen",
         None,
-        "../examples/lean/Generated/PTokenMintToDestFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenMintToDestFrozenLifted.lean",
         None,
     );
 }
@@ -1028,10 +1037,10 @@ fn p_token_mint_to_dest_frozen_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_burn_insufficient_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_burn_insufficient.pcs",
+        "../tests/fixtures/p_token_burn_insufficient.pcs",
         "PTokenBurnInsufficient",
         None,
-        "../examples/lean/Generated/PTokenBurnInsufficientLifted.lean",
+        "../../examples/lean/Generated/PTokenBurnInsufficientLifted.lean",
         None,
     );
 }
@@ -1039,10 +1048,10 @@ fn p_token_burn_insufficient_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_burn_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_burn_frozen.pcs",
+        "../tests/fixtures/p_token_burn_frozen.pcs",
         "PTokenBurnFrozen",
         None,
-        "../examples/lean/Generated/PTokenBurnFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenBurnFrozenLifted.lean",
         None,
     );
 }
@@ -1050,10 +1059,10 @@ fn p_token_burn_frozen_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_checked_decimals_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_checked_decimals_mismatch.pcs",
+        "../tests/fixtures/p_token_transfer_checked_decimals_mismatch.pcs",
         "PTokenTransferCheckedDecimalsMismatch",
         None,
-        "../examples/lean/Generated/PTokenTransferCheckedDecimalsMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferCheckedDecimalsMismatchLifted.lean",
         None,
     );
 }
@@ -1061,10 +1070,10 @@ fn p_token_transfer_checked_decimals_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_transfer_checked_mint_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_checked_mint_mismatch.pcs",
+        "../tests/fixtures/p_token_transfer_checked_mint_mismatch.pcs",
         "PTokenTransferCheckedMintMismatch",
         None,
-        "../examples/lean/Generated/PTokenTransferCheckedMintMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenTransferCheckedMintMismatchLifted.lean",
         None,
     );
 }
@@ -1072,10 +1081,10 @@ fn p_token_transfer_checked_mint_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_close_account_nonzero_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_close_account_nonzero.pcs",
+        "../tests/fixtures/p_token_close_account_nonzero.pcs",
         "PTokenCloseAccountNonzero",
         None,
-        "../examples/lean/Generated/PTokenCloseAccountNonzeroLifted.lean",
+        "../../examples/lean/Generated/PTokenCloseAccountNonzeroLifted.lean",
         None,
     );
 }
@@ -1090,10 +1099,10 @@ fn p_token_close_account_nonzero_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_approve_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_approve_frozen.pcs",
+        "../tests/fixtures/p_token_approve_frozen.pcs",
         "PTokenApproveFrozen",
         None,
-        "../examples/lean/Generated/PTokenApproveFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenApproveFrozenLifted.lean",
         None,
     );
 }
@@ -1101,10 +1110,10 @@ fn p_token_approve_frozen_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_approve_owner_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_approve_owner_mismatch.pcs",
+        "../tests/fixtures/p_token_approve_owner_mismatch.pcs",
         "PTokenApproveOwnerMismatch",
         None,
-        "../examples/lean/Generated/PTokenApproveOwnerMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenApproveOwnerMismatchLifted.lean",
         None,
     );
 }
@@ -1112,10 +1121,10 @@ fn p_token_approve_owner_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_revoke_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_revoke_frozen.pcs",
+        "../tests/fixtures/p_token_revoke_frozen.pcs",
         "PTokenRevokeFrozen",
         None,
-        "../examples/lean/Generated/PTokenRevokeFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenRevokeFrozenLifted.lean",
         None,
     );
 }
@@ -1123,10 +1132,10 @@ fn p_token_revoke_frozen_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_revoke_owner_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_revoke_owner_mismatch.pcs",
+        "../tests/fixtures/p_token_revoke_owner_mismatch.pcs",
         "PTokenRevokeOwnerMismatch",
         None,
-        "../examples/lean/Generated/PTokenRevokeOwnerMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenRevokeOwnerMismatchLifted.lean",
         None,
     );
 }
@@ -1134,10 +1143,10 @@ fn p_token_revoke_owner_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_set_authority_owner_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_set_authority_owner_mismatch.pcs",
+        "../tests/fixtures/p_token_set_authority_owner_mismatch.pcs",
         "PTokenSetAuthorityOwnerMismatch",
         None,
-        "../examples/lean/Generated/PTokenSetAuthorityOwnerMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenSetAuthorityOwnerMismatchLifted.lean",
         None,
     );
 }
@@ -1145,10 +1154,10 @@ fn p_token_set_authority_owner_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_set_authority_bad_type_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_set_authority_bad_type.pcs",
+        "../tests/fixtures/p_token_set_authority_bad_type.pcs",
         "PTokenSetAuthorityBadType",
         None,
-        "../examples/lean/Generated/PTokenSetAuthorityBadTypeLifted.lean",
+        "../../examples/lean/Generated/PTokenSetAuthorityBadTypeLifted.lean",
         None,
     );
 }
@@ -1156,10 +1165,10 @@ fn p_token_set_authority_bad_type_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_freeze_cannot_freeze_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_freeze_cannot_freeze.pcs",
+        "../tests/fixtures/p_token_freeze_cannot_freeze.pcs",
         "PTokenFreezeCannotFreeze",
         None,
-        "../examples/lean/Generated/PTokenFreezeCannotFreezeLifted.lean",
+        "../../examples/lean/Generated/PTokenFreezeCannotFreezeLifted.lean",
         None,
     );
 }
@@ -1167,10 +1176,10 @@ fn p_token_freeze_cannot_freeze_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_freeze_authority_mismatch_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_freeze_authority_mismatch.pcs",
+        "../tests/fixtures/p_token_freeze_authority_mismatch.pcs",
         "PTokenFreezeAuthorityMismatch",
         None,
-        "../examples/lean/Generated/PTokenFreezeAuthorityMismatchLifted.lean",
+        "../../examples/lean/Generated/PTokenFreezeAuthorityMismatchLifted.lean",
         None,
     );
 }
@@ -1178,10 +1187,10 @@ fn p_token_freeze_authority_mismatch_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_freeze_already_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_freeze_already_frozen.pcs",
+        "../tests/fixtures/p_token_freeze_already_frozen.pcs",
         "PTokenFreezeAlreadyFrozen",
         None,
-        "../examples/lean/Generated/PTokenFreezeAlreadyFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenFreezeAlreadyFrozenLifted.lean",
         None,
     );
 }
@@ -1189,10 +1198,10 @@ fn p_token_freeze_already_frozen_lift_is_mechanically_emitted() {
 #[test]
 fn p_token_thaw_not_frozen_lift_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_thaw_not_frozen.pcs",
+        "../tests/fixtures/p_token_thaw_not_frozen.pcs",
         "PTokenThawNotFrozen",
         None,
-        "../examples/lean/Generated/PTokenThawNotFrozenLifted.lean",
+        "../../examples/lean/Generated/PTokenThawNotFrozenLifted.lean",
         None,
     );
 }
@@ -1202,10 +1211,10 @@ fn p_token_thaw_not_frozen_lift_is_mechanically_emitted() {
 /// Trace-driven (syscall dispatch only fires on a trace).
 #[test]
 fn memcpy_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/memcpy_caller.so");
+    let so = std::path::Path::new("../tests/fixtures/memcpy_caller.so");
     let ctx = load_binary(so).expect("load memcpy_caller.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse memcpy_caller.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/memcpy_caller.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/memcpy_caller.pcs"))
         .expect("load memcpy trace");
     let result = lift_one(
         so,
@@ -1220,7 +1229,7 @@ fn memcpy_lift_is_mechanically_emitted() {
     )
     .expect("lift memcpy_caller.so");
 
-    let path = "../examples/lean/Generated/MemcpyLifted.lean";
+    let path = "../../examples/lean/Generated/MemcpyLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write MemcpyLifted.lean");
     }
@@ -1237,10 +1246,10 @@ fn memcpy_lift_is_mechanically_emitted() {
 /// hashes the input slice into a 32-byte output. Trace-driven.
 #[test]
 fn sha256_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/sha256_caller.so");
+    let so = std::path::Path::new("../tests/fixtures/sha256_caller.so");
     let ctx = load_binary(so).expect("load sha256_caller.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse sha256_caller.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/sha256_caller.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/sha256_caller.pcs"))
         .expect("load sha256 trace");
     let result = lift_one(
         so,
@@ -1255,7 +1264,7 @@ fn sha256_lift_is_mechanically_emitted() {
     )
     .expect("lift sha256_caller.so");
 
-    let path = "../examples/lean/Generated/Sha256CallerLifted.lean";
+    let path = "../../examples/lean/Generated/Sha256CallerLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write Sha256CallerLifted.lean");
     }
@@ -1272,10 +1281,10 @@ fn sha256_lift_is_mechanically_emitted() {
 /// SliceDesc, derives a PDA from seed + program_id. Trace-driven.
 #[test]
 fn pda_create_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/pda_create.so");
+    let so = std::path::Path::new("../tests/fixtures/pda_create.so");
     let ctx = load_binary(so).expect("load pda_create.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse pda_create.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/pda_create.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/pda_create.pcs"))
         .expect("load pda_create trace");
     let result = lift_one(
         so,
@@ -1290,7 +1299,7 @@ fn pda_create_lift_is_mechanically_emitted() {
     )
     .expect("lift pda_create.so");
 
-    let path = "../examples/lean/Generated/PdaCreateLifted.lean";
+    let path = "../../examples/lean/Generated/PdaCreateLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write PdaCreateLifted.lean");
     }
@@ -1306,10 +1315,10 @@ fn pda_create_lift_is_mechanically_emitted() {
 /// `is_move` arm of the shared memcpy emitter. Trace-driven.
 #[test]
 fn memmove_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/memmove_caller.so");
+    let so = std::path::Path::new("../tests/fixtures/memmove_caller.so");
     let ctx = load_binary(so).expect("load memmove_caller.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse memmove_caller.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/memmove_caller.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/memmove_caller.pcs"))
         .expect("load memmove trace");
     let result = lift_one(
         so,
@@ -1324,7 +1333,7 @@ fn memmove_lift_is_mechanically_emitted() {
     )
     .expect("lift memmove_caller.so");
 
-    let path = "../examples/lean/Generated/MemmoveLifted.lean";
+    let path = "../../examples/lean/Generated/MemmoveLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write MemmoveLifted.lean");
     }
@@ -1340,10 +1349,10 @@ fn memmove_lift_is_mechanically_emitted() {
 /// `↦Bytes` inputs + one `↦U32` output, post value `memcmpResultU32`.
 #[test]
 fn memcmp_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/memcmp_caller.so");
+    let so = std::path::Path::new("../tests/fixtures/memcmp_caller.so");
     let ctx = load_binary(so).expect("load memcmp_caller.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse memcmp_caller.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/memcmp_caller.pcs"))
+    let trace = load_trace(std::path::Path::new("../tests/fixtures/memcmp_caller.pcs"))
         .expect("load memcmp trace");
     let result = lift_one(
         so,
@@ -1358,7 +1367,7 @@ fn memcmp_lift_is_mechanically_emitted() {
     )
     .expect("lift memcmp_caller.so");
 
-    let path = "../examples/lean/Generated/MemcmpLifted.lean";
+    let path = "../../examples/lean/Generated/MemcmpLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write MemcmpLifted.lean");
     }
@@ -1375,12 +1384,12 @@ fn memcmp_lift_is_mechanically_emitted() {
 /// `↦ReturnData` atom (flips old → input blob), r0 := 0. Trace-driven.
 #[test]
 fn set_return_data_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/set_return_data_caller.so");
+    let so = std::path::Path::new("../tests/fixtures/set_return_data_caller.so");
     let ctx = load_binary(so).expect("load set_return_data_caller.so");
     let analysis =
         Analysis::from_executable(&ctx.executable).expect("analyse set_return_data_caller.so");
     let trace = load_trace(std::path::Path::new(
-        "tests/fixtures/set_return_data_caller.pcs",
+        "../tests/fixtures/set_return_data_caller.pcs",
     ))
     .expect("load set_return_data trace");
     let result = lift_one(
@@ -1396,7 +1405,7 @@ fn set_return_data_lift_is_mechanically_emitted() {
     )
     .expect("lift set_return_data_caller.so");
 
-    let path = "../examples/lean/Generated/SetReturnDataLifted.lean";
+    let path = "../../examples/lean/Generated/SetReturnDataLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write SetReturnDataLifted.lean");
     }
@@ -1411,7 +1420,7 @@ fn set_return_data_lift_is_mechanically_emitted() {
 /// Pins ldxh/stxh and ST_H_IMM (`sth_spec`) on real cargo-build-sbf bytecode.
 #[test]
 fn halfword_store_lift_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/halfword_store.so");
+    let so = std::path::Path::new("../tests/fixtures/halfword_store.so");
     let ctx = load_binary(so).expect("load halfword_store.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse halfword_store.so");
     let result = lift_one(
@@ -1427,7 +1436,7 @@ fn halfword_store_lift_is_mechanically_emitted() {
     )
     .expect("lift halfword_store.so");
 
-    let on_disk = std::fs::read_to_string("../examples/lean/Generated/HalfwordStoreLifted.lean")
+    let on_disk = std::fs::read_to_string("../../examples/lean/Generated/HalfwordStoreLifted.lean")
         .expect("read HalfwordStoreLifted.lean");
     assert_eq!(
         result.lean, on_disk,
@@ -1439,8 +1448,10 @@ fn halfword_store_lift_is_mechanically_emitted() {
 /// The real p_token sidecar's `arm_entry_pc` must parse as logical 304 (#41: the formerly-dropped `[instruction.recovered]` is now consumed).
 #[test]
 fn qedmeta_recovered_arm_is_parsed() {
-    let meta = load_qedmeta(std::path::Path::new("tests/fixtures/p_token.qedmeta.toml"))
-        .expect("load p_token.qedmeta.toml");
+    let meta = load_qedmeta(std::path::Path::new(
+        "../tests/fixtures/p_token.qedmeta.toml",
+    ))
+    .expect("load p_token.qedmeta.toml");
     let transfer = meta
         .instructions
         .iter()
@@ -1459,11 +1470,13 @@ fn qedmeta_recovered_arm_is_parsed() {
 /// Recovered arm_entry_pc cross-checks that the trace reaches it and leaves emitted Lean byte-identical to the trace-only path.
 #[test]
 fn qedmeta_arm_entry_trace_lift_is_byte_identical() {
-    let so = std::path::Path::new("tests/fixtures/p_token.so");
+    let so = std::path::Path::new("../tests/fixtures/p_token.so");
     let ctx = load_binary(so).expect("load p_token.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer.pcs"))
-        .expect("load transfer trace");
+    let trace = load_trace(std::path::Path::new(
+        "../tests/fixtures/p_token_transfer.pcs",
+    ))
+    .expect("load transfer trace");
     let result = lift_one_with_layouts(
         so,
         &ctx,
@@ -1479,7 +1492,7 @@ fn qedmeta_arm_entry_trace_lift_is_byte_identical() {
     )
     .expect("lift transfer with recovered arm");
     let on_disk =
-        std::fs::read_to_string("../examples/lean/Generated/PTokenTransferTracedLifted.lean")
+        std::fs::read_to_string("../../examples/lean/Generated/PTokenTransferTracedLifted.lean")
             .expect("read PTokenTransferTracedLifted.lean");
     assert_eq!(
         result.lean, on_disk,
@@ -1490,11 +1503,13 @@ fn qedmeta_arm_entry_trace_lift_is_byte_identical() {
 /// A recovered arm_entry_pc not on the execution trace must be rejected, not silently lifted against the wrong arm.
 #[test]
 fn qedmeta_arm_entry_off_trace_is_rejected() {
-    let so = std::path::Path::new("tests/fixtures/p_token.so");
+    let so = std::path::Path::new("../tests/fixtures/p_token.so");
     let ctx = load_binary(so).expect("load p_token.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
-    let trace = load_trace(std::path::Path::new("tests/fixtures/p_token_transfer.pcs"))
-        .expect("load transfer trace");
+    let trace = load_trace(std::path::Path::new(
+        "../tests/fixtures/p_token_transfer.pcs",
+    ))
+    .expect("load transfer trace");
     let err = lift_one(
         so,
         &ctx,
@@ -1515,7 +1530,7 @@ fn qedmeta_arm_entry_off_trace_is_rejected() {
 /// Seeding the static walk at the natural entrypoint must reproduce the unseeded walk byte-for-byte, pinning `unwrap_or(entry_pc)` fallback.
 #[test]
 fn qedmeta_arm_entry_seed_at_entrypoint_is_noop() {
-    let so = std::path::Path::new("tests/fixtures/heap_alloc.so");
+    let so = std::path::Path::new("../tests/fixtures/heap_alloc.so");
     let ctx = load_binary(so).expect("load heap_alloc.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse heap_alloc.so");
     let entry = ctx.executable.get_entrypoint_instruction_offset();
@@ -1557,7 +1572,7 @@ fn pin_p_token_arm(
     lift_path: &str,
     refine_path: Option<&str>,
 ) {
-    let so = std::path::Path::new("tests/fixtures/p_token.so");
+    let so = std::path::Path::new("../tests/fixtures/p_token.so");
     let ctx = load_binary(so).expect("load p_token.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse p_token.so");
     let trace = load_trace(std::path::Path::new(pcs)).expect("load trace");
@@ -1604,7 +1619,7 @@ fn pin_p_token_arm(
     // pins `Generated/PTokenText.lean` (identical for all arms of the binary).
     let (smod, slean) = result.shared_text.expect("shared text module emitted");
     assert_eq!(smod, "PTokenText");
-    let spath = "../examples/lean/Generated/PTokenText.lean";
+    let spath = "../../examples/lean/Generated/PTokenText.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(spath, &slean).expect("write shared text module");
     }
@@ -1619,22 +1634,22 @@ fn pin_p_token_arm(
 #[test]
 fn p_token_transfer_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer.pcs",
+        "../tests/fixtures/p_token_transfer.pcs",
         "PTokenTransfer",
         Some("Transfer"),
-        "../examples/lean/Generated/PTokenTransferTracedLifted.lean",
-        Some("../examples/lean/PToken/TransferRefinement.lean"),
+        "../../examples/lean/Generated/PTokenTransferTracedLifted.lean",
+        Some("../../examples/lean/PToken/TransferRefinement.lean"),
     );
 }
 
 #[test]
 fn p_token_transfer_checked_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_transfer_checked.pcs",
+        "../tests/fixtures/p_token_transfer_checked.pcs",
         "PTokenTransferChecked",
         Some("TransferChecked"),
-        "../examples/lean/Generated/PTokenTransferCheckedTracedLifted.lean",
-        Some("../examples/lean/PToken/TransferCheckedRefinement.lean"),
+        "../../examples/lean/Generated/PTokenTransferCheckedTracedLifted.lean",
+        Some("../../examples/lean/PToken/TransferCheckedRefinement.lean"),
     );
 }
 
@@ -1642,11 +1657,11 @@ fn p_token_transfer_checked_is_mechanically_emitted() {
 #[test]
 fn p_token_mint_to_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_mint_to.pcs",
+        "../tests/fixtures/p_token_mint_to.pcs",
         "PTokenMintTo",
         Some("MintTo"),
-        "../examples/lean/Generated/PTokenMintToTracedLifted.lean",
-        Some("../examples/lean/PToken/MintToRefinement.lean"),
+        "../../examples/lean/Generated/PTokenMintToTracedLifted.lean",
+        Some("../../examples/lean/PToken/MintToRefinement.lean"),
     );
 }
 
@@ -1654,10 +1669,10 @@ fn p_token_mint_to_is_mechanically_emitted() {
 #[test]
 fn p_token_close_account_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_close_account.pcs",
+        "../tests/fixtures/p_token_close_account.pcs",
         "PTokenCloseAccount",
         None,
-        "../examples/lean/Generated/PTokenCloseAccountTracedLifted.lean",
+        "../../examples/lean/Generated/PTokenCloseAccountTracedLifted.lean",
         None,
     );
 }
@@ -1666,10 +1681,10 @@ fn p_token_close_account_is_mechanically_emitted() {
 #[test]
 fn p_token_initialize_mint2_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_initialize_mint2.pcs",
+        "../tests/fixtures/p_token_initialize_mint2.pcs",
         "PTokenInitializeMint2",
         None,
-        "../examples/lean/Generated/PTokenInitializeMint2TracedLifted.lean",
+        "../../examples/lean/Generated/PTokenInitializeMint2TracedLifted.lean",
         None,
     );
 }
@@ -1677,11 +1692,11 @@ fn p_token_initialize_mint2_is_mechanically_emitted() {
 #[test]
 fn p_token_burn_is_mechanically_emitted() {
     pin_p_token_arm(
-        "tests/fixtures/p_token_burn.pcs",
+        "../tests/fixtures/p_token_burn.pcs",
         "PTokenBurn",
         Some("Burn"),
-        "../examples/lean/Generated/PTokenBurnTracedLifted.lean",
-        Some("../examples/lean/PToken/BurnRefinement.lean"),
+        "../../examples/lean/Generated/PTokenBurnTracedLifted.lean",
+        Some("../../examples/lean/PToken/BurnRefinement.lean"),
     );
 }
 
@@ -1693,7 +1708,7 @@ fn p_token_burn_is_mechanically_emitted() {
 /// `SVM.Solana.cpiEnvelope` — the per-call-site envelope theorem.
 #[test]
 fn cpi_envelope_caller_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/cpi_envelope_caller.so");
+    let so = std::path::Path::new("../tests/fixtures/cpi_envelope_caller.so");
     let ctx = load_binary(so).expect("load cpi_envelope_caller.so");
     let analysis =
         Analysis::from_executable(&ctx.executable).expect("analyse cpi_envelope_caller.so");
@@ -1709,7 +1724,7 @@ fn cpi_envelope_caller_is_mechanically_emitted() {
         None,
     )
     .expect("lift cpi_envelope_caller");
-    let path = "../examples/lean/Generated/CpiEnvelopeCallerLifted.lean";
+    let path = "../../examples/lean/Generated/CpiEnvelopeCallerLifted.lean";
     if std::env::var("QEDLIFT_BLESS").is_ok() {
         std::fs::write(path, &result.lean).expect("write lift");
     }
@@ -1727,11 +1742,11 @@ fn cpi_envelope_caller_is_mechanically_emitted() {
 /// Mem-Mem `cuTripleWithinMem_seq_fault` (combined rr = prefix ∧ OOB).
 #[test]
 fn guarded_oob_transition_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/guarded_oob.so");
+    let so = std::path::Path::new("../tests/fixtures/guarded_oob.so");
     let ctx = load_binary(so).expect("load guarded_oob.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse guarded_oob.so");
     let desc = load_descriptor(std::path::Path::new(
-        "tests/fixtures/guarded_oob.descriptor.json",
+        "../tests/fixtures/guarded_oob.descriptor.json",
     ))
     .expect("descriptor");
     let (paths, (bmod, blean)) =
@@ -1741,12 +1756,15 @@ fn guarded_oob_transition_is_mechanically_emitted() {
         .iter()
         .map(|(m, l)| {
             (
-                format!("../examples/lean/Generated/{}Lifted.lean", m),
+                format!("../../examples/lean/Generated/{}Lifted.lean", m),
                 l.clone(),
             )
         })
         .collect();
-    artifacts.push((format!("../examples/lean/Generated/{}.lean", bmod), blean));
+    artifacts.push((
+        format!("../../examples/lean/Generated/{}.lean", bmod),
+        blean,
+    ));
     for (path, lean) in &artifacts {
         if std::env::var("QEDLIFT_BLESS").is_ok() {
             std::fs::write(path, lean).expect("write artifact");
@@ -1766,11 +1784,11 @@ fn guarded_oob_transition_is_mechanically_emitted() {
 /// `cuTripleWithinMem_seq_fault_pure`; the bundle mixes obligation kinds.
 #[test]
 fn guarded_abort_transition_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/guarded_abort.so");
+    let so = std::path::Path::new("../tests/fixtures/guarded_abort.so");
     let ctx = load_binary(so).expect("load guarded_abort.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse guarded_abort.so");
     let desc = load_descriptor(std::path::Path::new(
-        "tests/fixtures/guarded_abort.descriptor.json",
+        "../tests/fixtures/guarded_abort.descriptor.json",
     ))
     .expect("descriptor");
     let (paths, (bmod, blean)) =
@@ -1780,12 +1798,15 @@ fn guarded_abort_transition_is_mechanically_emitted() {
         .iter()
         .map(|(m, l)| {
             (
-                format!("../examples/lean/Generated/{}Lifted.lean", m),
+                format!("../../examples/lean/Generated/{}Lifted.lean", m),
                 l.clone(),
             )
         })
         .collect();
-    artifacts.push((format!("../examples/lean/Generated/{}.lean", bmod), blean));
+    artifacts.push((
+        format!("../../examples/lean/Generated/{}.lean", bmod),
+        blean,
+    ));
     for (path, lean) in &artifacts {
         if std::env::var("QEDLIFT_BLESS").is_ok() {
             std::fs::write(path, lean).expect("write artifact");
@@ -1805,11 +1826,11 @@ fn guarded_abort_transition_is_mechanically_emitted() {
 /// bundle theorem, all pinned.
 #[test]
 fn guarded_counter_transition_is_mechanically_emitted() {
-    let so = std::path::Path::new("tests/fixtures/guarded_counter.so");
+    let so = std::path::Path::new("../tests/fixtures/guarded_counter.so");
     let ctx = load_binary(so).expect("load guarded_counter.so");
     let analysis = Analysis::from_executable(&ctx.executable).expect("analyse guarded_counter.so");
     let desc = load_descriptor(std::path::Path::new(
-        "tests/fixtures/guarded_counter.descriptor.json",
+        "../tests/fixtures/guarded_counter.descriptor.json",
     ))
     .expect("descriptor");
     let (paths, (bmod, blean)) =
@@ -1819,12 +1840,15 @@ fn guarded_counter_transition_is_mechanically_emitted() {
         .iter()
         .map(|(m, l)| {
             (
-                format!("../examples/lean/Generated/{}Lifted.lean", m),
+                format!("../../examples/lean/Generated/{}Lifted.lean", m),
                 l.clone(),
             )
         })
         .collect();
-    artifacts.push((format!("../examples/lean/Generated/{}.lean", bmod), blean));
+    artifacts.push((
+        format!("../../examples/lean/Generated/{}.lean", bmod),
+        blean,
+    ));
     for (path, lean) in &artifacts {
         // QEDLIFT_BLESS=1 re-blesses artifacts after an intentional emitter change.
         if std::env::var("QEDLIFT_BLESS").is_ok() {

@@ -64,11 +64,13 @@ jobs:
 
       - name: Strict Lean-free Clippy
         working-directory: qedsvm-rs
-        run: cargo clippy -p qedrecover -p qed-analysis --all-targets -- -D warnings
+        run: cargo clippy -p qedrecover -p qedlift -p qed-artifacts -p qed-analysis --all-targets -- -D warnings
 
-      - name: qedrecover + qed-analysis crate tests
+      - name: Proof-tooling crate tests
         working-directory: qedsvm-rs
-        run: cargo test -p qedrecover -p qed-analysis
+        # Includes all qedlift generated-artifact byte pins. These crates do
+        # not link the Lean runtime and belong on the fast Rust path.
+        run: cargo test -p qedrecover -p qedlift -p qed-artifacts -p qed-analysis
 
   # Build the core SVM library ONCE and cache `.lake` for `lean` + `examples`.
   # Also carries the core soundness gates (no-sorry over the authoritative core
@@ -128,8 +130,8 @@ jobs:
             exit 1
           fi
 
-  # The Rust checks that link the Lean runtime: diff-mollusk runs the compiled
-  # Lean interpreter, and the qedlift bin links the qedsvm crate's Lean bridge.
+  # The Rust checks that link the Lean runtime: the qedsvm executor and
+  # diff-mollusk run the compiled Lean interpreter.
   # Reuses core's `.lake` (restored below); the `lake build` is a no-op that
   # only completes the build if the restore was somehow incomplete.
   lean:
@@ -170,9 +172,9 @@ jobs:
         working-directory: qedsvm-rs
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-      - name: Default workspace tests
+      - name: Lean-linked Rust tests
         working-directory: qedsvm-rs
-        run: cargo test --workspace
+        run: cargo test -p qedsvm -p qedsvm-bridge -p qedsvm-buildscript
 
       - name: Lean runner integration tests
         # RunnerTests is intentionally not imported by the production SVM
@@ -184,14 +186,6 @@ jobs:
         # against mollusk on the fixture corpus, linking the restored Lean lib.
         working-directory: qedsvm-rs
         run: cargo test --features diff-mollusk
-
-      - name: qedlift emitter pins
-        # Re-runs the qedlift emitter on every shipped lift/refinement fixture
-        # and byte-diffs the on-disk artifacts. The H8 overlap-vacuity findings
-        # shipped unnoticed precisely because the p_token arms had no emitter
-        # pins — these must stay in CI.
-        working-directory: qedsvm-rs
-        run: cargo test --features qedrecover --bin qedlift
 
   # Flagship proofs demonstrating the verification chain + the axiom-audit gate.
   # AxiomAudit.lean is the first Examples root and fails the build on any

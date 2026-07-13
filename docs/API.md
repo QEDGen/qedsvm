@@ -16,7 +16,7 @@ The public Lean surface is `lean_lib SVM`. The `Examples` library is a proof and
 | `SVM.*` Lean modules | Public | Importable package surface. |
 | `examples/lean/*` | Not API | Demo proofs, generated lifts, and regression pins. |
 | `qedsvm-rs` library crate | Public Rust executor surface | Conformant execution and diff-test support. |
-| Rust binaries and analysis tools | Tooling, not API | Includes `qedlift`, `disasm_to_lean`, `cli`, `qedrecover`, and `qed-analysis`. |
+| Rust binaries and analysis tools | Tooling, not API | Includes `qedlift`, `disasm_to_lean`, `cli`, `qedrecover`, `qed-artifacts`, and `qed-analysis`. |
 
 ## Lift Engine
 

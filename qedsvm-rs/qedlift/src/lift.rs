@@ -92,6 +92,18 @@ pub(super) fn lift_one_with_layouts(
     request: LiftRequest<'_>,
 ) -> Result<LiftOutput, Box<dyn std::error::Error>> {
     request.validate()?;
+    // Cargo runs a package's unit tests from that package directory. After
+    // qedlift became its own workspace crate, fixtures are reached through
+    // `../tests`, but generated provenance should remain byte-identical to the
+    // public invocation from the qedsvm-rs workspace root.
+    #[cfg(test)]
+    let emitted_path = so_path
+        .strip_prefix("..")
+        .ok()
+        .filter(|p| p.starts_with("tests/fixtures"))
+        .unwrap_or(so_path);
+    #[cfg(not(test))]
+    let emitted_path = so_path;
     let LiftRequest {
         target_disc,
         module_override,
@@ -107,9 +119,15 @@ pub(super) fn lift_one_with_layouts(
 
     debug_dump_insns(insns);
 
-    let (so_stem, module_name) = derive_module_name(so_path, module_override);
-    let (out, emit_decode_bridge) =
-        emit_prelude(so_path, ctx, analysis, &so_stem, &module_name, shared_text);
+    let (so_stem, module_name) = derive_module_name(emitted_path, module_override);
+    let (out, emit_decode_bridge) = emit_prelude(
+        emitted_path,
+        ctx,
+        analysis,
+        &so_stem,
+        &module_name,
+        shared_text,
+    );
     if shared_text.is_some() && emit_decode_bridge {
         return Err(
             "qedlift: --shared-text requires the large-text decode-pins \
@@ -265,7 +283,7 @@ pub(super) fn lift_one_with_layouts(
             format!("{}Text", base),
             render::shared_text_module(
                 base,
-                so_path,
+                emitted_path,
                 ctx.text_bytes.as_slice(),
                 &function_registry_lean(&reg),
             ),
