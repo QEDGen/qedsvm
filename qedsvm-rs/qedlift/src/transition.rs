@@ -4,10 +4,13 @@
 //! implementation layout. This keeps the subsequent move of the large
 //! transition walkers mechanically reviewable and byte-for-byte testable.
 
-use super::input::{resolve_layout, DescriptorOp};
-use super::refinement::{cell_val, cell_val_dword};
-use super::*;
 use qed_analysis::layout::FieldKind;
+use qed_artifacts::RefinementDescriptor;
+
+use crate::core::{Atom, Expr, Width};
+use crate::emit::{atoms_to_lean, fold_abstractions};
+use crate::input::{resolve_layout, DescriptorOp};
+use crate::refinement::{cell_val, cell_val_dword, RefinementCtx};
 
 /// Structured binder metadata for one path corollary's signature, in
 /// signature order. Drives the bundle's canonical renaming.

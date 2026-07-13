@@ -1,7 +1,8 @@
 use super::core::{canon_addr, const_of_expr, eval_expr, Atom, BytesVal, Expr, MemCell, Width};
 use super::diagnostic::{DiagnosticKind, LiftError};
 use super::input::BinaryCtx;
-use super::{SpecCall, SymState};
+use super::spec_call::SpecCall;
+use super::state::SymState;
 
 /// Register the finished syscall in the walk artifacts: the `nCu`/`hCu` CU
 /// hypothesis (data-dependent cost the lift can't discharge), the `.call

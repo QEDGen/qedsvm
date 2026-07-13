@@ -4,9 +4,9 @@ use std::path::Path;
 
 use solana_sbpf::static_analysis::Analysis;
 
-use crate::{
-    lift_one_with_layouts, DiagnosticKind, LiftError, LiftOptions, LiftResult, ProgramImage,
-};
+use crate::diagnostic::{DiagnosticKind, LiftError};
+use crate::lift::{lift_one_with_layouts, LiftOptions, LiftResult};
+use qed_analysis::image::ProgramImage;
 
 /// Reusable analysis session for lifting one or more paths through a program.
 ///

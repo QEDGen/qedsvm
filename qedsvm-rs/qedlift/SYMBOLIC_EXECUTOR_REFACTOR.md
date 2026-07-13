@@ -1,6 +1,6 @@
 # Symbolic Executor Refactor Plan
 
-Status: ready for implementation in a follow-up session
+Status: Phases 0–2 implemented; Phase 3 is next
 
 Baseline: `fea7dff` on `refactor/rust-tooling-architecture` / PR #67
 
