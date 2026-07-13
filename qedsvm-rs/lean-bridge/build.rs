@@ -18,8 +18,8 @@ fn main() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let prefix = String::from_utf8(output.stdout)
-        .expect("lean --print-prefix produced non-UTF8 output");
+    let prefix =
+        String::from_utf8(output.stdout).expect("lean --print-prefix produced non-UTF8 output");
     let prefix = prefix.trim();
     let include_dir = format!("{}/include", prefix);
 

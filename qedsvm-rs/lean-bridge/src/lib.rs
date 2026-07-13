@@ -171,7 +171,8 @@ fn none_obj() -> lean_obj_res {
 
 #[no_mangle]
 pub extern "C" fn lean_curve_edwards_add(
-    left: b_lean_obj_arg, right: b_lean_obj_arg,
+    left: b_lean_obj_arg,
+    right: b_lean_obj_arg,
 ) -> lean_obj_res {
     let l = unsafe { sarray_as_slice(left) };
     let r = unsafe { sarray_as_slice(right) };
@@ -184,7 +185,8 @@ pub extern "C" fn lean_curve_edwards_add(
 
 #[no_mangle]
 pub extern "C" fn lean_curve_edwards_sub(
-    left: b_lean_obj_arg, right: b_lean_obj_arg,
+    left: b_lean_obj_arg,
+    right: b_lean_obj_arg,
 ) -> lean_obj_res {
     let l = unsafe { sarray_as_slice(left) };
     let r = unsafe { sarray_as_slice(right) };
@@ -197,7 +199,8 @@ pub extern "C" fn lean_curve_edwards_sub(
 
 #[no_mangle]
 pub extern "C" fn lean_curve_edwards_mul(
-    scalar: b_lean_obj_arg, point: b_lean_obj_arg,
+    scalar: b_lean_obj_arg,
+    point: b_lean_obj_arg,
 ) -> lean_obj_res {
     let s = unsafe { sarray_as_slice(scalar) };
     let p = unsafe { sarray_as_slice(point) };
@@ -210,7 +213,8 @@ pub extern "C" fn lean_curve_edwards_mul(
 
 #[no_mangle]
 pub extern "C" fn lean_curve_ristretto_add(
-    left: b_lean_obj_arg, right: b_lean_obj_arg,
+    left: b_lean_obj_arg,
+    right: b_lean_obj_arg,
 ) -> lean_obj_res {
     let l = unsafe { sarray_as_slice(left) };
     let r = unsafe { sarray_as_slice(right) };
@@ -223,7 +227,8 @@ pub extern "C" fn lean_curve_ristretto_add(
 
 #[no_mangle]
 pub extern "C" fn lean_curve_ristretto_sub(
-    left: b_lean_obj_arg, right: b_lean_obj_arg,
+    left: b_lean_obj_arg,
+    right: b_lean_obj_arg,
 ) -> lean_obj_res {
     let l = unsafe { sarray_as_slice(left) };
     let r = unsafe { sarray_as_slice(right) };
@@ -236,7 +241,8 @@ pub extern "C" fn lean_curve_ristretto_sub(
 
 #[no_mangle]
 pub extern "C" fn lean_curve_ristretto_mul(
-    scalar: b_lean_obj_arg, point: b_lean_obj_arg,
+    scalar: b_lean_obj_arg,
+    point: b_lean_obj_arg,
 ) -> lean_obj_res {
     let s = unsafe { sarray_as_slice(scalar) };
     let p = unsafe { sarray_as_slice(point) };
@@ -253,7 +259,9 @@ pub extern "C" fn lean_curve_ristretto_mul(
 use curve25519_dalek::traits::VartimeMultiscalarMul;
 
 fn msm_decode_scalars_points<F, P>(
-    scalars: &[u8], points: &[u8], decompress: F,
+    scalars: &[u8],
+    points: &[u8],
+    decompress: F,
 ) -> Option<(Vec<Scalar>, Vec<P>)>
 where
     F: Fn(&[u8]) -> Option<P>,
@@ -261,7 +269,7 @@ where
     if scalars.is_empty() || scalars.len() != points.len() {
         return None;
     }
-    if scalars.len() % 32 != 0 {
+    if !scalars.len().is_multiple_of(32) {
         return None;
     }
     let n = scalars.len() / 32;
@@ -276,7 +284,8 @@ where
 
 #[no_mangle]
 pub extern "C" fn lean_curve_edwards_msm(
-    scalars: b_lean_obj_arg, points: b_lean_obj_arg,
+    scalars: b_lean_obj_arg,
+    points: b_lean_obj_arg,
 ) -> lean_obj_res {
     let s = unsafe { sarray_as_slice(scalars) };
     let p = unsafe { sarray_as_slice(points) };
@@ -291,7 +300,8 @@ pub extern "C" fn lean_curve_edwards_msm(
 
 #[no_mangle]
 pub extern "C" fn lean_curve_ristretto_msm(
-    scalars: b_lean_obj_arg, points: b_lean_obj_arg,
+    scalars: b_lean_obj_arg,
+    points: b_lean_obj_arg,
 ) -> lean_obj_res {
     let s = unsafe { sarray_as_slice(scalars) };
     let p = unsafe { sarray_as_slice(points) };
@@ -316,9 +326,7 @@ pub extern "C" fn lean_bls12_381_g1_decompress(
     input: b_lean_obj_arg,
     endianness: u8,
 ) -> lean_obj_res {
-    use solana_bls12_381_syscall::{
-        bls12_381_g1_decompress, Endianness, PodG1Compressed, Version,
-    };
+    use solana_bls12_381_syscall::{bls12_381_g1_decompress, Endianness, PodG1Compressed, Version};
     let bytes = unsafe { sarray_as_slice(input) };
     if bytes.len() != 48 {
         return none_obj();
@@ -341,9 +349,7 @@ pub extern "C" fn lean_bls12_381_g2_decompress(
     input: b_lean_obj_arg,
     endianness: u8,
 ) -> lean_obj_res {
-    use solana_bls12_381_syscall::{
-        bls12_381_g2_decompress, Endianness, PodG2Compressed, Version,
-    };
+    use solana_bls12_381_syscall::{bls12_381_g2_decompress, Endianness, PodG2Compressed, Version};
     let bytes = unsafe { sarray_as_slice(input) };
     if bytes.len() != 96 {
         return none_obj();
@@ -420,42 +426,56 @@ fn some_bytearray_slice(bytes: &[u8]) -> lean_obj_res {
 // Versions match agave: G1/G2 add=V0, mul=V0/V0, pairing=V1.
 
 #[no_mangle]
-pub extern "C" fn lean_alt_bn128_group_op(
-    op_id: u64,
-    input: b_lean_obj_arg,
-) -> lean_obj_res {
+pub extern "C" fn lean_alt_bn128_group_op(op_id: u64, input: b_lean_obj_arg) -> lean_obj_res {
     use solana_bn254::versioned::{
         alt_bn128_versioned_g1_addition, alt_bn128_versioned_g1_multiplication,
         alt_bn128_versioned_g2_addition, alt_bn128_versioned_g2_multiplication,
-        alt_bn128_versioned_pairing, Endianness, VersionedG1Addition,
-        VersionedG1Multiplication, VersionedG2Addition, VersionedG2Multiplication,
-        VersionedPairing, ALT_BN128_G1_ADD_BE, ALT_BN128_G1_ADD_LE, ALT_BN128_G1_MUL_BE,
-        ALT_BN128_G1_MUL_LE, ALT_BN128_G2_ADD_BE, ALT_BN128_G2_ADD_LE,
-        ALT_BN128_G2_MUL_BE, ALT_BN128_G2_MUL_LE, ALT_BN128_PAIRING_BE,
+        alt_bn128_versioned_pairing, Endianness, VersionedG1Addition, VersionedG1Multiplication,
+        VersionedG2Addition, VersionedG2Multiplication, VersionedPairing, ALT_BN128_G1_ADD_BE,
+        ALT_BN128_G1_ADD_LE, ALT_BN128_G1_MUL_BE, ALT_BN128_G1_MUL_LE, ALT_BN128_G2_ADD_BE,
+        ALT_BN128_G2_ADD_LE, ALT_BN128_G2_MUL_BE, ALT_BN128_G2_MUL_LE, ALT_BN128_PAIRING_BE,
         ALT_BN128_PAIRING_LE,
     };
     let bytes = unsafe { sarray_as_slice(input) };
     let result = match op_id {
-        ALT_BN128_G1_ADD_BE =>
-            alt_bn128_versioned_g1_addition(VersionedG1Addition::V0, bytes, Endianness::BE),
-        ALT_BN128_G1_ADD_LE =>
-            alt_bn128_versioned_g1_addition(VersionedG1Addition::V0, bytes, Endianness::LE),
-        ALT_BN128_G2_ADD_BE =>
-            alt_bn128_versioned_g2_addition(VersionedG2Addition::V0, bytes, Endianness::BE),
-        ALT_BN128_G2_ADD_LE =>
-            alt_bn128_versioned_g2_addition(VersionedG2Addition::V0, bytes, Endianness::LE),
-        ALT_BN128_G1_MUL_BE =>
-            alt_bn128_versioned_g1_multiplication(VersionedG1Multiplication::V1, bytes, Endianness::BE),
-        ALT_BN128_G1_MUL_LE =>
-            alt_bn128_versioned_g1_multiplication(VersionedG1Multiplication::V1, bytes, Endianness::LE),
-        ALT_BN128_G2_MUL_BE =>
-            alt_bn128_versioned_g2_multiplication(VersionedG2Multiplication::V0, bytes, Endianness::BE),
-        ALT_BN128_G2_MUL_LE =>
-            alt_bn128_versioned_g2_multiplication(VersionedG2Multiplication::V0, bytes, Endianness::LE),
-        ALT_BN128_PAIRING_BE =>
-            alt_bn128_versioned_pairing(VersionedPairing::V1, bytes, Endianness::BE),
-        ALT_BN128_PAIRING_LE =>
-            alt_bn128_versioned_pairing(VersionedPairing::V1, bytes, Endianness::LE),
+        ALT_BN128_G1_ADD_BE => {
+            alt_bn128_versioned_g1_addition(VersionedG1Addition::V0, bytes, Endianness::BE)
+        }
+        ALT_BN128_G1_ADD_LE => {
+            alt_bn128_versioned_g1_addition(VersionedG1Addition::V0, bytes, Endianness::LE)
+        }
+        ALT_BN128_G2_ADD_BE => {
+            alt_bn128_versioned_g2_addition(VersionedG2Addition::V0, bytes, Endianness::BE)
+        }
+        ALT_BN128_G2_ADD_LE => {
+            alt_bn128_versioned_g2_addition(VersionedG2Addition::V0, bytes, Endianness::LE)
+        }
+        ALT_BN128_G1_MUL_BE => alt_bn128_versioned_g1_multiplication(
+            VersionedG1Multiplication::V1,
+            bytes,
+            Endianness::BE,
+        ),
+        ALT_BN128_G1_MUL_LE => alt_bn128_versioned_g1_multiplication(
+            VersionedG1Multiplication::V1,
+            bytes,
+            Endianness::LE,
+        ),
+        ALT_BN128_G2_MUL_BE => alt_bn128_versioned_g2_multiplication(
+            VersionedG2Multiplication::V0,
+            bytes,
+            Endianness::BE,
+        ),
+        ALT_BN128_G2_MUL_LE => alt_bn128_versioned_g2_multiplication(
+            VersionedG2Multiplication::V0,
+            bytes,
+            Endianness::LE,
+        ),
+        ALT_BN128_PAIRING_BE => {
+            alt_bn128_versioned_pairing(VersionedPairing::V1, bytes, Endianness::BE)
+        }
+        ALT_BN128_PAIRING_LE => {
+            alt_bn128_versioned_pairing(VersionedPairing::V1, bytes, Endianness::LE)
+        }
         _ => return none_obj(),
     };
     match result {
@@ -474,17 +494,14 @@ pub extern "C" fn lean_big_mod_exp(
     modulus: b_lean_obj_arg,
 ) -> lean_obj_res {
     let base_b = unsafe { sarray_as_slice(base) };
-    let exp_b  = unsafe { sarray_as_slice(exponent) };
-    let mod_b  = unsafe { sarray_as_slice(modulus) };
+    let exp_b = unsafe { sarray_as_slice(exponent) };
+    let mod_b = unsafe { sarray_as_slice(modulus) };
     let out = solana_big_mod_exp::big_mod_exp(base_b, exp_b, mod_b);
     alloc_bytearray(&out)
 }
 
 #[no_mangle]
-pub extern "C" fn lean_alt_bn128_compression(
-    op_id: u64,
-    input: b_lean_obj_arg,
-) -> lean_obj_res {
+pub extern "C" fn lean_alt_bn128_compression(op_id: u64, input: b_lean_obj_arg) -> lean_obj_res {
     use solana_bn254::compression::prelude::{
         alt_bn128_g1_compress_be, alt_bn128_g1_compress_le, alt_bn128_g1_decompress_be,
         alt_bn128_g1_decompress_le, alt_bn128_g2_compress_be, alt_bn128_g2_compress_le,

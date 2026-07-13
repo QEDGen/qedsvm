@@ -6,17 +6,23 @@ const HELLO_ELF: &[u8] = include_bytes!("fixtures/hello.elf"); // 289B ELF: `mov
 
 #[test]
 fn hello_elf_runs_through_lean_to_exit_42() {
-    let result = run_buffer(HELLO_ELF, &[], 200_000)
-        .expect("ELF should decode and run");
+    let result = run_buffer(HELLO_ELF, &[], 200_000).expect("ELF should decode and run");
     assert_eq!(result.outcome, ExitOutcome::Halted(42));
-    assert!(result.modified_input.is_empty(), "no input given → empty output region");
+    assert!(
+        result.modified_input.is_empty(),
+        "no input given → empty output region"
+    );
     assert!(result.logs.is_empty(), "program emits no logs");
     assert!(result.return_data.is_empty(), "program sets no return data");
 }
 
 #[test]
 fn hello_elf_length_matches_lean_fixture() {
-    assert_eq!(HELLO_ELF.len(), 289, "must match SVM.SBPF.RunnerDemo.helloElf");
+    assert_eq!(
+        HELLO_ELF.len(),
+        289,
+        "must match SVM.SBPF.RunnerDemo.helloElf"
+    );
 }
 
 #[test]

@@ -15,7 +15,11 @@ fn byte_increment_runs_and_exits_cleanly() {
     let mut svm = Svm::default();
     svm.add_program(&program_id, BYTE_INCREMENT_SO);
 
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
     println!(
         "byte_increment.so: program_result={:?} cu={}",

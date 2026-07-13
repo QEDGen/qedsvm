@@ -21,12 +21,15 @@ unsafe fn deserialize_via_solana<'a>(
 }
 
 fn make_ix(metas: Vec<AccountMeta>, data: Vec<u8>, program_id: Pubkey) -> Instruction {
-    Instruction { program_id, accounts: metas, data }
+    Instruction {
+        program_id,
+        accounts: metas,
+        data,
+    }
 }
 
 mod common;
 use common::{shared_executable, unique_pubkey};
-
 
 #[test]
 fn single_account_round_trips() {
@@ -38,7 +41,10 @@ fn single_account_round_trips() {
         vec![0xAA, 0xBB, 0xCC],
         program_id,
     );
-    let accounts = vec![(key, shared_executable(1_000_000, vec![1, 2, 3, 4, 5], owner, false))];
+    let accounts = vec![(
+        key,
+        shared_executable(1_000_000, vec![1, 2, 3, 4, 5], owner, false),
+    )];
 
     let mut buf = AlignedBuf {
         bytes: serialize_parameters(&ix, &accounts, &program_id).expect("valid inputs"),
@@ -106,7 +112,7 @@ fn duplicate_account_meta_compresses() {
     let ix = make_ix(
         vec![
             AccountMeta::new(k1, true),
-            AccountMeta::new(k1, true),  // same pubkey — should become dup
+            AccountMeta::new(k1, true), // same pubkey — should become dup
         ],
         vec![],
         program_id,
@@ -114,11 +120,11 @@ fn duplicate_account_meta_compresses() {
     let accounts = vec![(k1, shared_executable(42, vec![9, 9, 9], owner, false))];
 
     let bytes = serialize_parameters(&ix, &accounts, &program_id).expect("valid inputs");
-    assert_eq!(bytes[0..8], 2u64.to_le_bytes());  // num_accounts = 2
-    assert_eq!(bytes[8], 0xFF);                    // first is non-dup; data_len=3 align_pad=5
+    assert_eq!(bytes[0..8], 2u64.to_le_bytes()); // num_accounts = 2
+    assert_eq!(bytes[8], 0xFF); // first is non-dup; data_len=3 align_pad=5
     let first_acct_len = 1 + 1 + 1 + 1 + 4 + 32 + 32 + 8 + 8 + 3 + 5 + 10240 + 8;
     let dup_byte_off = 8 + first_acct_len;
-    assert_eq!(bytes[dup_byte_off], 0);  // dup → index 0
+    assert_eq!(bytes[dup_byte_off], 0); // dup → index 0
     assert_eq!(bytes[dup_byte_off + 1..dup_byte_off + 8], [0u8; 7]);
 
     let mut buf = AlignedBuf { bytes };

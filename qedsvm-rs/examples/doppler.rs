@@ -12,10 +12,8 @@ use solana_pubkey::Pubkey;
 
 // `admnz5UvRa93HM5nTrxXmsJ1rw2tvXMBFGauvCgzQhE` — doppler's hardcoded admin pubkey (doppler/src/admin.rs)
 const ADMIN: [u8; 32] = [
-    0x08, 0x9d, 0xbe, 0xc9, 0x64, 0x97, 0xab, 0xd0,
-    0xdb, 0x21, 0x79, 0x52, 0x69, 0xba, 0xb9, 0x4b,
-    0xc8, 0xb8, 0x49, 0xcc, 0x05, 0xaa, 0x94, 0x54,
-    0xd0, 0xa5, 0xdc, 0x76, 0xec, 0xcb, 0x51, 0xd1,
+    0x08, 0x9d, 0xbe, 0xc9, 0x64, 0x97, 0xab, 0xd0, 0xdb, 0x21, 0x79, 0x52, 0x69, 0xba, 0xb9, 0x4b,
+    0xc8, 0xb8, 0x49, 0xcc, 0x05, 0xaa, 0x94, 0x54, 0xd0, 0xa5, 0xdc, 0x76, 0xec, 0xcb, 0x51, 0xd1,
 ];
 
 /// Oracle account data: `{ sequence: u64, payload: u64 }` as 16 LE bytes.
@@ -33,28 +31,26 @@ fn pid(seed: u64) -> Pubkey {
 }
 
 /// Doppler update ix: data = [new_sequence:u64, new_payload:u64].
-fn update_ix(admin: Pubkey, oracle: Pubkey, new_sequence: u64, new_payload: u64)
-    -> Instruction
-{
+fn update_ix(admin: Pubkey, oracle: Pubkey, new_sequence: u64, new_payload: u64) -> Instruction {
     let program_id = pid(0xd0);
     Instruction {
         program_id,
         accounts: vec![
-            AccountMeta::new_readonly(admin, true),   // admin (signer, ro)
-            AccountMeta::new(oracle, false),          // oracle (writable)
+            AccountMeta::new_readonly(admin, true), // admin (signer, ro)
+            AccountMeta::new(oracle, false),        // oracle (writable)
         ],
         data: oracle_bytes(new_sequence, new_payload),
     }
 }
 
-fn scenario(label: &str, svm: &Svm, ix: &Instruction,
-            accounts: &[(Pubkey, AccountSharedData)]) {
+fn scenario(label: &str, svm: &Svm, ix: &Instruction, accounts: &[(Pubkey, AccountSharedData)]) {
     let r = svm.process_instruction(ix, accounts).expect("runs");
     println!("── {label} ──");
     println!("  program_result:        {:?}", r.program_result);
     println!("  compute_units_consumed: {}", r.compute_units_consumed);
 
-    if let Some((_, oracle_post)) = r.resulting_accounts.get(1) { // print oracle post-state if present
+    if let Some((_, oracle_post)) = r.resulting_accounts.get(1) {
+        // print oracle post-state if present
         let data = oracle_post.data();
         if data.len() >= 16 {
             let seq = u64::from_le_bytes(data[..8].try_into().unwrap());
@@ -82,15 +78,23 @@ fn locate_doppler_so() -> PathBuf {
 
     let src_dir = cache_dir.join("src");
     if !src_dir.exists() {
-        run(Command::new("git")
-            .args(["clone", "--depth", "1", "https://github.com/blueshift-gg/doppler.git"])
-            .arg(&src_dir),
-            "git clone doppler");
+        run(
+            Command::new("git")
+                .args([
+                    "clone",
+                    "--depth",
+                    "1",
+                    "https://github.com/blueshift-gg/doppler.git",
+                ])
+                .arg(&src_dir),
+            "git clone doppler",
+        );
     }
     patch_panic_handler(&src_dir.join("doppler/src/panic_handler.rs")); // remove #[no_mangle] from #[panic_handler]
-    run(Command::new("cargo-build-sbf")
-        .current_dir(src_dir.join("program")),
-        "cargo-build-sbf");
+    run(
+        Command::new("cargo-build-sbf").current_dir(src_dir.join("program")),
+        "cargo-build-sbf",
+    );
     let built = src_dir.join("target/deploy/doppler_program.so");
     std::fs::copy(&built, &so_path)
         .unwrap_or_else(|e| panic!("copy {} → {}: {e}", built.display(), so_path.display()));
@@ -105,13 +109,12 @@ fn run(cmd: &mut Command, label: &str) {
 }
 
 fn patch_panic_handler(path: &Path) {
-    let content = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let content =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     let needle = "        #[no_mangle]\n        #[panic_handler]";
     let patched = content.replace(needle, "        #[panic_handler]");
     if patched != content {
-        std::fs::write(path, patched)
-            .unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
+        std::fs::write(path, patched).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
     }
 }
 
@@ -142,23 +145,35 @@ fn main() {
         rent_epoch: 0,
     });
     let ix = update_ix(admin_pk, oracle_pk, 101, 1500);
-    scenario("admin OK + new_seq=101 > current=100 → update",
-             &svm, &ix,
-             &[(admin_pk, admin_acct.clone()),
-               (oracle_pk, oracle_acct_pre.clone())]);
+    scenario(
+        "admin OK + new_seq=101 > current=100 → update",
+        &svm,
+        &ix,
+        &[
+            (admin_pk, admin_acct.clone()),
+            (oracle_pk, oracle_acct_pre.clone()),
+        ],
+    );
 
     let bad_admin_pk = pid(0xbad); // wrong admin → Admin::check fast-exit (r0=1)
     let ix_bad = update_ix(bad_admin_pk, oracle_pk, 101, 1500);
-    scenario("bad admin pubkey → Admin::check fast-exit (r0=1)",
-             &svm, &ix_bad,
-             &[(bad_admin_pk, admin_acct.clone()),
-               (oracle_pk, oracle_acct_pre.clone())]);
+    scenario(
+        "bad admin pubkey → Admin::check fast-exit (r0=1)",
+        &svm,
+        &ix_bad,
+        &[
+            (bad_admin_pk, admin_acct.clone()),
+            (oracle_pk, oracle_acct_pre.clone()),
+        ],
+    );
 
     let ix_stale = update_ix(admin_pk, oracle_pk, 100, 1500); // stale: new_seq=current → Oracle::check fast-exit (r0=2)
-    scenario("stale oracle (new_seq=100 = current=100) → Oracle::check_and_update fast-exit (r0=2)",
-             &svm, &ix_stale,
-             &[(admin_pk, admin_acct),
-               (oracle_pk, oracle_acct_pre)]);
+    scenario(
+        "stale oracle (new_seq=100 = current=100) → Oracle::check_and_update fast-exit (r0=2)",
+        &svm,
+        &ix_stale,
+        &[(admin_pk, admin_acct), (oracle_pk, oracle_acct_pre)],
+    );
 
     println!("Done — 3 scenarios, all run via Svm::process_instruction.");
     let _: ProgramResult = ProgramResult::Success;

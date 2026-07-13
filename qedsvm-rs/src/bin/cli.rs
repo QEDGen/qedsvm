@@ -53,17 +53,23 @@ fn real_main() -> Result<ExitCode, String> {
     while i < args.len() {
         let a = &args[i];
         match a.as_str() {
-            "--elf"        => { elf_path      = Some(next_arg(&args, &mut i, "--elf")?); }
-            "--input"      => { input_path    = Some(next_arg(&args, &mut i, "--input")?); }
-            "--registry"   => { registry_path = Some(next_arg(&args, &mut i, "--registry")?); }
-            "--cu-budget"  => {
+            "--elf" => {
+                elf_path = Some(next_arg(&args, &mut i, "--elf")?);
+            }
+            "--input" => {
+                input_path = Some(next_arg(&args, &mut i, "--input")?);
+            }
+            "--registry" => {
+                registry_path = Some(next_arg(&args, &mut i, "--registry")?);
+            }
+            "--cu-budget" => {
                 let v = next_arg(&args, &mut i, "--cu-budget")?;
-                cu_budget = v.parse::<u64>()
-                    .map_err(|e| format!("--cu-budget: {e}"))?;
+                cu_budget = v.parse::<u64>().map_err(|e| format!("--cu-budget: {e}"))?;
             }
             "--hex-bytes" => {
                 let v = next_arg(&args, &mut i, "--hex-bytes")?;
-                hex_bytes = v.parse::<usize>()
+                hex_bytes = v
+                    .parse::<usize>()
                     .map_err(|e| format!("--hex-bytes: {e}"))?;
             }
             _ => return Err(format!("unexpected argument: {a}")),
@@ -74,14 +80,13 @@ fn real_main() -> Result<ExitCode, String> {
     let elf_path = elf_path.ok_or("missing required --elf")?;
     let input_path = input_path.ok_or("missing required --input")?;
 
-    let elf = std::fs::read(&elf_path)
-        .map_err(|e| format!("read --elf {elf_path}: {e}"))?;
-    let input = std::fs::read(&input_path)
-        .map_err(|e| format!("read --input {input_path}: {e}"))?;
+    let elf = std::fs::read(&elf_path).map_err(|e| format!("read --elf {elf_path}: {e}"))?;
+    let input =
+        std::fs::read(&input_path).map_err(|e| format!("read --input {input_path}: {e}"))?;
 
     let result = if let Some(reg_path) = registry_path {
-        let registry = std::fs::read(&reg_path)
-            .map_err(|e| format!("read --registry {reg_path}: {e}"))?;
+        let registry =
+            std::fs::read(&reg_path).map_err(|e| format!("read --registry {reg_path}: {e}"))?;
         run_buffer_with_registry(&elf, &input, &registry, cu_budget)
     } else {
         run_buffer(&elf, &input, cu_budget)
@@ -104,7 +109,10 @@ fn real_main() -> Result<ExitCode, String> {
     if !result.return_data.is_empty() {
         println!("  hex: {}", hex_trunc(&result.return_data, hex_bytes));
     }
-    println!("modified_input:         {} bytes", result.modified_input.len());
+    println!(
+        "modified_input:         {} bytes",
+        result.modified_input.len()
+    );
     if !result.modified_input.is_empty() {
         println!("  hex: {}", hex_trunc(&result.modified_input, hex_bytes));
     }
@@ -118,7 +126,9 @@ fn real_main() -> Result<ExitCode, String> {
 
 fn next_arg(args: &[String], i: &mut usize, flag: &str) -> Result<String, String> {
     *i += 1;
-    args.get(*i).cloned().ok_or_else(|| format!("{flag} requires a value"))
+    args.get(*i)
+        .cloned()
+        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 fn hex_trunc(bytes: &[u8], cap: usize) -> String {

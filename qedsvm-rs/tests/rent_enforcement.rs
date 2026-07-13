@@ -9,8 +9,7 @@ use solana_pubkey::Pubkey;
 
 // BPF program that CPIs `system_instruction::transfer(from, to, lamports_to_send)`.
 // Source: `tests/fixtures/system_transfer_caller_src/`.
-const SYSTEM_TRANSFER_CALLER_SO: &[u8] =
-    include_bytes!("fixtures/system_transfer_caller.so");
+const SYSTEM_TRANSFER_CALLER_SO: &[u8] = include_bytes!("fixtures/system_transfer_caller.so");
 
 mod common;
 use common::{pid, shared};
@@ -56,10 +55,7 @@ fn rent_enforcement_off_admits_invalid_transition() {
     let from_pre = shared(5_000_000, vec![], system_owner); // RentExempt for 0-data
     let to_pre = shared(100, vec![0u8; 1000], system_owner); // RentPaying: 100 < (128+1000)*6960
 
-    let (ix, accounts) = build_transfer_scenario(
-        caller_id, from_pk, to_pk,
-        500, from_pre, to_pre,
-    );
+    let (ix, accounts) = build_transfer_scenario(caller_id, from_pk, to_pk, 500, from_pre, to_pre);
 
     let mut svm = Svm::default().with_cu_budget(1_400_000);
     svm.add_program(&caller_id, SYSTEM_TRANSFER_CALLER_SO);
@@ -84,10 +80,7 @@ fn rent_enforcement_on_rejects_credit_to_rent_paying() {
     let from_pre = shared(5_000_000, vec![], system_owner);
     let to_pre = shared(100, vec![0u8; 1000], system_owner); // RentPaying
 
-    let (ix, accounts) = build_transfer_scenario(
-        caller_id, from_pk, to_pk,
-        500, from_pre, to_pre,
-    );
+    let (ix, accounts) = build_transfer_scenario(caller_id, from_pk, to_pk, 500, from_pre, to_pre);
 
     let mut svm = Svm::default()
         .with_cu_budget(1_400_000)
@@ -121,10 +114,8 @@ fn rent_enforcement_on_admits_exempt_to_exempt_transfer() {
     let from_pre = shared(5_000_000, vec![], system_owner); // both RentExempt at 0-data (> 891_360)
     let to_pre = shared(2_000_000, vec![], system_owner);
 
-    let (ix, accounts) = build_transfer_scenario(
-        caller_id, from_pk, to_pk,
-        1_000, from_pre, to_pre,
-    );
+    let (ix, accounts) =
+        build_transfer_scenario(caller_id, from_pk, to_pk, 1_000, from_pre, to_pre);
 
     let mut svm = Svm::default()
         .with_cu_budget(1_400_000)

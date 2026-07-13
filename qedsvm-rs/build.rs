@@ -37,8 +37,7 @@ fn main() {
         .parent()
         .expect("CARGO_MANIFEST_DIR has a parent")
         .to_path_buf();
-    qedsvm_buildscript::emit_link_args(&qedsvm_root)
-        .expect("emit qedsvm link args");
+    qedsvm_buildscript::emit_link_args(&qedsvm_root).expect("emit qedsvm link args");
 
     // ─ Local rebuild trigger. ─────────────────────────────────────
     println!("cargo:rerun-if-changed=build.rs");

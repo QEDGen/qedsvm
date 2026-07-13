@@ -48,7 +48,10 @@ impl PcMap {
             }
             slot += span;
         }
-        PcMap { logical_to_slot, slot_to_logical }
+        PcMap {
+            logical_to_slot,
+            slot_to_logical,
+        }
     }
 
     /// Logical index for `slot` (both slots of an `lddw` resolve to its logical index). `None` past the end.
@@ -93,12 +96,23 @@ mod tests {
 
     // Only `.opc` matters to PcMap; other fields are zeroed.
     fn insn(opc: u8) -> ebpf::Insn {
-        ebpf::Insn { ptr: 0, opc, dst: 0, src: 0, off: 0, imm: 0 }
+        ebpf::Insn {
+            ptr: 0,
+            opc,
+            dst: 0,
+            src: 0,
+            off: 0,
+            imm: 0,
+        }
     }
 
     #[test]
     fn lddw_free_is_identity() {
-        let insns = vec![insn(ebpf::MOV64_IMM), insn(ebpf::ADD64_IMM), insn(ebpf::EXIT)];
+        let insns = vec![
+            insn(ebpf::MOV64_IMM),
+            insn(ebpf::ADD64_IMM),
+            insn(ebpf::EXIT),
+        ];
         let m = PcMap::from_insns(&insns);
         for i in 0..insns.len() {
             assert_eq!(m.logical_to_slot(i), Some(i));
@@ -112,11 +126,11 @@ mod tests {
     fn lddw_drifts_by_one_slot_each() {
         // [mov, lddw, add, lddw, exit] → slots [0, 1+2, 3, 4+5, 6].
         let insns = vec![
-            insn(ebpf::MOV64_IMM),  // logical 0 @ slot 0
-            insn(ebpf::LD_DW_IMM),  // logical 1 @ slots 1,2
-            insn(ebpf::ADD64_IMM),  // logical 2 @ slot 3
-            insn(ebpf::LD_DW_IMM),  // logical 3 @ slots 4,5
-            insn(ebpf::EXIT),       // logical 4 @ slot 6
+            insn(ebpf::MOV64_IMM), // logical 0 @ slot 0
+            insn(ebpf::LD_DW_IMM), // logical 1 @ slots 1,2
+            insn(ebpf::ADD64_IMM), // logical 2 @ slot 3
+            insn(ebpf::LD_DW_IMM), // logical 3 @ slots 4,5
+            insn(ebpf::EXIT),      // logical 4 @ slot 6
         ];
         let m = PcMap::from_insns(&insns);
         assert_eq!(m.logical_to_slot(0), Some(0));

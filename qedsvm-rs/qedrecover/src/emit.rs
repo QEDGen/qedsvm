@@ -58,7 +58,13 @@ pub(crate) fn emit_lean<W: std::io::Write>(
     pc_map: &PcMap,
     ctx: &EmitCtx<'_>,
 ) -> std::io::Result<()> {
-    let EmitCtx { overlay, ovix, idl_ix, recovered, trace } = *ctx;
+    let EmitCtx {
+        overlay,
+        ovix,
+        idl_ix,
+        recovered,
+        trace,
+    } = *ctx;
     let module = format!("QedRecover.{}", pascal(&ovix.name));
     let on_trace = |b: &CfgNode| -> bool {
         trace.is_some_and(|t| {
@@ -367,7 +373,13 @@ pub(crate) fn emit_qedmeta<W: std::io::Write>(
     idl_sha256: &str,
     ctx: &EmitCtx<'_>,
 ) -> std::io::Result<()> {
-    let EmitCtx { overlay, ovix, idl_ix, recovered, trace } = *ctx;
+    let EmitCtx {
+        overlay,
+        ovix,
+        idl_ix,
+        recovered,
+        trace,
+    } = *ctx;
     writeln!(
         out,
         "# qedmeta sidecar — emitted by qedrecover (do not edit by hand)."

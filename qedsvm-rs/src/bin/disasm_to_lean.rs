@@ -2,7 +2,8 @@
 //!
 //! Gotchas: branch targets use byte-slot arithmetic — a `lddw` between branch and target skews the PC;
 //! fix manually. `call IMM` emits `.call_local`; syscall `call` (src=0) needs a manual rewrite to
-//! `.call <Syscall>`. Unsupported opcodes emit `/* TODO: <mnem> <ops> */`.
+//! `.call <Syscall>`. Unsupported or malformed instructions fail the command;
+//! pass `--allow-partial` to emit diagnostic comments during exploratory work.
 
 use std::io::{self, Read, Write};
 
@@ -10,9 +11,14 @@ fn main() -> io::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut path: Option<String> = None;
     let mut range: Option<(u64, u64)> = None;
+    let mut allow_partial = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--allow-partial" => {
+                allow_partial = true;
+                i += 1;
+            }
             "--range" => {
                 let r = args.get(i + 1).expect("--range requires an argument");
                 range = Some(parse_range(r));
@@ -47,7 +53,18 @@ fn main() -> io::Result<()> {
                 continue;
             }
         }
-        let lean = encode_insn(pc, &mnem, &operands);
+        let lean = match encode_insn(pc, &mnem, &operands) {
+            Ok(lean) => lean,
+            Err(message) if allow_partial => format!("/* ERROR: {message} */"),
+            Err(message) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "{byte_off:#x}: {message}; rerun with --allow-partial to emit a comment"
+                    ),
+                ));
+            }
+        };
         lines_out.push(format!(
             "  (CodeReq.singleton {} ({}))  -- {:#x}: {} {}",
             pc, lean, byte_off, mnem, operands
@@ -64,7 +81,11 @@ fn main() -> io::Result<()> {
     }
 
     // Left-folded singleton.union chain: shape expected by Macros.lean / PTokenValidationPrelude.lean.
-    writeln!(out, "/- {} instructions, paste under `def myCr : CodeReq := ...` -/", lines_out.len())?;
+    writeln!(
+        out,
+        "/- {} instructions, paste under `def myCr : CodeReq := ...` -/",
+        lines_out.len()
+    )?;
     let n = lines_out.len();
     if n == 1 {
         writeln!(out, "{}", lines_out[0])?;
@@ -120,16 +141,42 @@ fn strip_label_annotation(s: &str) -> &str {
     }
 }
 
-fn encode_insn(pc: u64, mnem: &str, operands: &str) -> String {
+fn encode_insn(pc: u64, mnem: &str, operands: &str) -> Result<String, String> {
     let ops: Vec<&str> = operands.split(',').map(str::trim).collect();
-    match mnem {
-        "mov64" | "add64" | "sub64" | "mul64" | "div64" | "mod64"
-        | "or64" | "and64" | "xor64" | "lsh64" | "rsh64" | "arsh64" => {
+    let expected = match mnem {
+        "exit" => 0,
+        "neg64" | "neg32" | "ja" | "call" | "callx" => 1,
+        "jeq" | "jne" | "jgt" | "jge" | "jlt" | "jle" | "jsgt" | "jsge" | "jslt" | "jsle"
+        | "jset" => 3,
+        "mov64" | "add64" | "sub64" | "mul64" | "div64" | "mod64" | "or64" | "and64" | "xor64"
+        | "lsh64" | "rsh64" | "arsh64" | "mov32" | "add32" | "sub32" | "mul32" | "div32"
+        | "mod32" | "or32" | "and32" | "xor32" | "lsh32" | "rsh32" | "arsh32" | "ldxb" | "ldxh"
+        | "ldxw" | "ldxdw" | "stxb" | "stxh" | "stxw" | "stxdw" | "lddw" => 2,
+        _ => {
+            return Err(format!(
+                "unsupported opcode `{mnem}` with operands `{operands}`"
+            ))
+        }
+    };
+    let actual = if operands.trim().is_empty() {
+        0
+    } else {
+        ops.len()
+    };
+    if actual != expected {
+        return Err(format!(
+            "opcode `{mnem}` expects {expected} operand(s), got {actual}"
+        ));
+    }
+
+    let encoded = match mnem {
+        "mov64" | "add64" | "sub64" | "mul64" | "div64" | "mod64" | "or64" | "and64" | "xor64"
+        | "lsh64" | "rsh64" | "arsh64" => {
             format!(".{} {} {}", mnem, parse_reg(ops[0]), parse_src(ops[1]))
         }
         "neg64" => format!(".neg64 {}", parse_reg(ops[0])),
-        "mov32" | "add32" | "sub32" | "mul32" | "div32" | "mod32"
-        | "or32" | "and32" | "xor32" | "lsh32" | "rsh32" | "arsh32" => {
+        "mov32" | "add32" | "sub32" | "mul32" | "div32" | "mod32" | "or32" | "and32" | "xor32"
+        | "lsh32" | "rsh32" | "arsh32" => {
             format!(".{} {} {}", mnem, parse_reg(ops[0]), parse_src(ops[1]))
         }
         "neg32" => format!(".neg32 {}", parse_reg(ops[0])),
@@ -142,8 +189,8 @@ fn encode_insn(pc: u64, mnem: &str, operands: &str) -> String {
         "stxw" => encode_stx("word", &ops),
         "stxdw" => encode_stx("dword", &ops),
         // `target` = absolute PC = current_pc + 1 + relative_offset.
-        "jeq" | "jne" | "jgt" | "jge" | "jlt" | "jle"
-        | "jsgt" | "jsge" | "jslt" | "jsle" | "jset" => encode_jcc(mnem, pc, &ops),
+        "jeq" | "jne" | "jgt" | "jge" | "jlt" | "jle" | "jsgt" | "jsge" | "jslt" | "jsle"
+        | "jset" => encode_jcc(mnem, pc, &ops),
         "ja" => {
             let off_str = strip_label_annotation(ops[0]).trim_start_matches('+');
             let off = parse_int(off_str);
@@ -155,7 +202,12 @@ fn encode_insn(pc: u64, mnem: &str, operands: &str) -> String {
         "call" => format!(".call_local {}", parse_int(strip_label_annotation(ops[0]))),
         "callx" => format!(".callx {}", parse_reg(ops[0])),
         "exit" => ".exit".to_string(),
-        _ => format!("/* TODO: {} {} */", mnem, operands),
+        _ => unreachable!("supported opcode set checked above"),
+    };
+    if encoded.contains("/*") {
+        Err(format!("malformed `{mnem} {operands}`"))
+    } else {
+        Ok(encoded)
     }
 }
 
@@ -182,7 +234,11 @@ fn parse_int(s: &str) -> i64 {
     } else {
         body.parse::<i64>().unwrap_or(0)
     };
-    if neg { -n } else { n }
+    if neg {
+        -n
+    } else {
+        n
+    }
 }
 
 fn parse_src(s: &str) -> String {
@@ -195,7 +251,11 @@ fn parse_src(s: &str) -> String {
 }
 
 fn parse_mem_operand(s: &str) -> (String, i64) {
-    let s = s.trim().trim_start_matches('[').trim_end_matches(']').trim();
+    let s = s
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
     // Reg names contain only digits, so the first `+`/`-` always delimits the offset.
     let split = s.bytes().position(|b| b == b'+' || b == b'-');
     match split {
@@ -224,7 +284,11 @@ fn encode_stx(width: &str, ops: &[&str]) -> String {
 /// Wrap negative literals in parens so Lean parses them as a single
 /// argument rather than `Neg.neg` applied to the next token.
 fn paren_signed(n: i64) -> String {
-    if n < 0 { format!("({})", n) } else { format!("{}", n) }
+    if n < 0 {
+        format!("({})", n)
+    } else {
+        format!("{}", n)
+    }
 }
 
 fn encode_jcc(mnem: &str, pc: u64, ops: &[&str]) -> String {
@@ -234,4 +298,28 @@ fn encode_jcc(mnem: &str, pc: u64, ops: &[&str]) -> String {
     let off = parse_int(off_str);
     let target = (pc as i64) + 1 + off;
     format!(".{} {} {} {}", mnem, dst, src, paren_signed(target))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_insn;
+
+    #[test]
+    fn unsupported_opcode_fails_closed() {
+        assert!(encode_insn(0, "atomic", "r0, r1").is_err());
+    }
+
+    #[test]
+    fn malformed_operands_fail_closed() {
+        assert!(encode_insn(0, "add64", "r0").is_err());
+        assert!(encode_insn(0, "add64", "not_a_register, 1").is_err());
+    }
+
+    #[test]
+    fn supported_opcode_is_unchanged() {
+        assert_eq!(
+            encode_insn(0, "add64", "r0, 1").unwrap(),
+            ".add64 .r0 (.imm 1)"
+        );
+    }
 }

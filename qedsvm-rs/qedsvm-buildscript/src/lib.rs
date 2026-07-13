@@ -44,7 +44,10 @@ impl std::fmt::Display for Error {
                 "`lean --print-prefix` failed — is the Lean toolchain on PATH?",
             ),
             Self::LeanPrefixUnreadable => {
-                write!(f, "`lean --print-prefix` returned a non-zero status or invalid output")
+                write!(
+                    f,
+                    "`lean --print-prefix` returned a non-zero status or invalid output"
+                )
             }
             Self::LakeArtifactsMissing(p) => write!(
                 f,
@@ -128,7 +131,9 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
     {
         let Ok(entry) = entry else { continue };
         let path = entry.path();
-        let Some(name) = path.file_name().and_then(|s| s.to_str()) else { continue };
+        let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
         let is_dyn = name.ends_with(".dylib") || name.ends_with(".so");
         if !is_dyn || !name.starts_with("qedsvm_") {
             continue;
@@ -171,7 +176,11 @@ pub fn emit_link_args(qedsvm_root: &Path) -> Result<(), Error> {
 
     // Pass libleanshared + libLake_shared positionally so cargo can't strip them as "unreferenced".
     // Extension is .dylib on macOS, .so on Linux.
-    let dylib_ext = if cfg!(target_os = "macos") { "dylib" } else { "so" };
+    let dylib_ext = if cfg!(target_os = "macos") {
+        "dylib"
+    } else {
+        "so"
+    };
     let leanshared = lean_lib_dir.join(format!("libleanshared.{dylib_ext}"));
     let lake_shared = lean_lib_dir.join(format!("libLake_shared.{dylib_ext}"));
     for p in [&leanshared, &lake_shared] {
@@ -218,7 +227,9 @@ fn parse_lean_exports(path: &Path) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
     for line in src.lines() {
         let line = line.trim_start();
-        let Some(rest) = line.strip_prefix(needle) else { continue };
+        let Some(rest) = line.strip_prefix(needle) else {
+            continue;
+        };
         let name_tail: String = rest
             .chars()
             .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')

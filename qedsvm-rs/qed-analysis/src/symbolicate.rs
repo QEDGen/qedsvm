@@ -75,7 +75,11 @@ impl SymbolIndex {
         }
 
         let dwarf = build_dwarf_index(bytes, text_base);
-        Ok(SymbolIndex { text_base, functions, dwarf })
+        Ok(SymbolIndex {
+            text_base,
+            functions,
+            dwarf,
+        })
     }
 
     /// Convenience wrapper over [`SymbolIndex::from_elf_bytes`] reading a file.
@@ -267,18 +271,16 @@ fn build_dwarf_index(elf_bytes: &[u8], text_base: u64) -> Option<DwarfIndex> {
     let mut frames = Vec::new();
     let mut units = dwarf.units();
     while let Ok(Some(header)) = units.next() {
-        let Ok(unit) = dwarf.unit(header) else { continue };
+        let Ok(unit) = dwarf.unit(header) else {
+            continue;
+        };
         let mut entries = unit.entries();
         let mut depth = 0isize;
         // Frame nesting depth per DIE tree depth, for the inline `depth` key.
         let mut frame_stack: Vec<isize> = Vec::new();
         // When a subtree resolves below text_base it is dead code; skip it.
         let mut dead_at: Option<isize> = None;
-        loop {
-            let (delta, entry) = match entries.next_dfs() {
-                Ok(Some(step)) => step,
-                _ => break,
-            };
+        while let Ok(Some((delta, entry))) = entries.next_dfs() {
             depth += delta;
             match dead_at {
                 Some(d) if depth > d => continue,
@@ -306,7 +308,12 @@ fn build_dwarf_index(elf_bytes: &[u8], text_base: u64) -> Option<DwarfIndex> {
             }
             if let Some(name) = die_name(&dwarf, &unit, entry, 0) {
                 for (low, high) in ranges {
-                    frames.push(DwarfFrame { low, high, depth: frame_depth, name: name.clone() });
+                    frames.push(DwarfFrame {
+                        low,
+                        high,
+                        depth: frame_depth,
+                        name: name.clone(),
+                    });
                 }
             }
         }
@@ -350,7 +357,14 @@ mod tests {
         // identity PcMap (9 slots of .text / 8 bytes) and confirm the logical
         // API agrees with the slot API.
         let insns: Vec<ebpf::Insn> = (0..9)
-            .map(|_| ebpf::Insn { ptr: 0, opc: ebpf::MOV64_IMM, dst: 0, src: 0, off: 0, imm: 0 })
+            .map(|_| ebpf::Insn {
+                ptr: 0,
+                opc: ebpf::MOV64_IMM,
+                dst: 0,
+                src: 0,
+                off: 0,
+                imm: 0,
+            })
             .collect();
         let map = PcMap::from_insns(&insns);
         assert_eq!(idx.label_logical(0, &map), idx.label_slot(0));

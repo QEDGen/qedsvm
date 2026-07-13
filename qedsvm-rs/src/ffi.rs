@@ -87,7 +87,8 @@ pub fn lock() -> LeanGuard<'static> {
             let res = initialize_qedsvm_SVM_Ffi(/* builtin = */ 1);
             if leanfsvm_io_result_is_error(res) != 0 {
                 leanfsvm_dec_ref(res);
-                panic!( // no recovery from a failed init
+                panic!(
+                    // no recovery from a failed init
                     "SVM.Ffi module init failed. Likely cause: stale \
                      .dylib in .lake/build/ from a different Lean version. \
                      Run `lake clean && lake build` and try again."
