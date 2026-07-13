@@ -87,6 +87,37 @@ sidecar contract.
 `--shared-text <name>` lets large batch lifts share one bytecode/slot-map module
 instead of embedding the same `.text` in every generated file.
 
+## Rust API
+
+Callers can lift paths in memory without constructing CLI arguments or writing
+temporary files. A `Lifter` reuses one loaded and analyzed program across
+multiple path-specific calls:
+
+```rust
+use std::path::Path;
+use qedlift::{LiftOptions, Lifter, ProgramImage};
+
+fn lift_transfer() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("program.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let trace = [12, 13, 20, 21];
+
+    let result = lifter.lift(LiftOptions {
+        trace: Some(&trace),
+        arm_name: Some("Transfer"),
+        ..LiftOptions::default()
+    })?;
+
+    // Complete generated modules are returned in memory.
+    assert!(!result.lean.is_empty());
+    Ok(())
+}
+```
+
+`LiftError::kind()` provides a stable `DiagnosticKind`; callers do not need to
+classify human-readable error messages.
+
 ## What is and is not proved
 
 Every successful raw lift proves a bounded Hoare triple for the selected path over
@@ -108,4 +139,16 @@ it byte-for-byte with the checked-in Lean:
 ```bash
 cargo test --manifest-path qedsvm-rs/Cargo.toml \
   -p qedlift --lib
+```
+
+The golden suite is grouped by concern, so individual areas can be run without
+the slower p-token set:
+
+```bash
+cargo test --manifest-path qedsvm-rs/Cargo.toml -p qedlift tests::bytecode
+cargo test --manifest-path qedsvm-rs/Cargo.toml -p qedlift tests::syscalls
+cargo test --manifest-path qedsvm-rs/Cargo.toml -p qedlift tests::refinement
+cargo test --manifest-path qedsvm-rs/Cargo.toml -p qedlift tests::metadata
+cargo test --manifest-path qedsvm-rs/Cargo.toml -p qedlift tests::transitions
+cargo test --manifest-path qedsvm-rs/Cargo.toml -p qedlift tests::p_token
 ```

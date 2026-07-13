@@ -1,0 +1,7 @@
+schema_version = 999
+
+[[instruction]]
+name = "increment"
+
+[instruction.discriminator]
+value = 1

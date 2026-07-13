@@ -16,7 +16,8 @@ The public Lean surface is `lean_lib SVM`. The `Examples` library is a proof and
 | `SVM.*` Lean modules | Public | Importable package surface. |
 | `examples/lean/*` | Not API | Demo proofs, generated lifts, and regression pins. |
 | `qedsvm-rs` library crate | Public Rust executor surface | Conformant execution and diff-test support. |
-| Rust binaries and analysis tools | Tooling, not API | Includes `qedlift`, `disasm_to_lean`, `cli`, `qedrecover`, `qed-artifacts`, and `qed-analysis`. |
+| `qedlift` library crate | Public Rust lift surface | In-memory path lifting through `ProgramImage`, `Lifter`, and `LiftOptions`. |
+| Rust binaries and internal analysis tools | Tooling, not API | Includes the CLI surfaces, `disasm_to_lean`, `qedrecover`, and internal analysis modules. |
 
 ## Lift Engine
 
@@ -87,6 +88,16 @@ The `qedsvm-rs` library crate exposes the conformant executor and harness-facing
 
 The Rust crate executes programs on the qedsvm model. It does not prove program properties by itself; verification is through generated Lean and `lake build`.
 
+The `qedlift` crate exposes the programmatic proof-generation boundary:
+
+| Type | Provides |
+| --- | --- |
+| `ProgramImage` | Loaded ELF bytes, executable text, decoded instructions, and PC map. |
+| `Lifter` | Reusable static-analysis session for lifting multiple selected paths. |
+| `LiftOptions` | Trace, discriminator, arm, layout, descriptor, and shared-text inputs. |
+| `LiftResult` | Generated Lean plus optional refinement/shared-text modules and lift metrics. |
+| `LiftError`, `DiagnosticKind` | Typed fail-closed diagnostics with stable category labels. |
+
 ## Versioning
 
-qedsvm is pre-1.0. Consumers should pin an exact tag. Breaking changes to the `SVM` Lean surface are expected to receive a new minor tag. `Examples` modules and Rust binaries/tools may change without API compatibility guarantees.
+qedsvm is pre-1.0. Consumers should pin an exact tag. Breaking changes to the `SVM` Lean surface or public Rust library surfaces are expected to receive a new minor tag. `Examples` modules, CLIs, and internal analysis tools may change without API compatibility guarantees.

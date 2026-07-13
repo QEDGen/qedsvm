@@ -528,27 +528,21 @@ pub(super) fn run_batch_mode(
 /// written to --output or streamed to stdout.
 pub(super) fn run_single_mode(
     args: &Args,
-    ctx: &BinaryCtx,
-    analysis: &Analysis<'_>,
+    lifter: &Lifter<'_>,
     trace: Option<&[usize]>,
     descriptor: Option<&RefinementDescriptor>,
     idl_value: Option<&serde_json::Value>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = lift_one_with_layouts(
-        &args.so,
-        ctx,
-        analysis,
-        LiftRequest {
-            target_disc: args.target_disc,
-            module_override: args.module.clone(),
-            trace,
-            arm_name: args.arm_name.as_deref(),
-            idl: idl_value,
-            descriptor,
-            shared_text: args.shared_text.as_deref(),
-            ..LiftRequest::default()
-        },
-    )?;
+    let result = lifter.lift(LiftOptions {
+        target_disc: args.target_disc,
+        module_override: args.module.clone(),
+        trace,
+        arm_name: args.arm_name.as_deref(),
+        idl: idl_value,
+        descriptor,
+        shared_text: args.shared_text.as_deref(),
+        ..LiftOptions::default()
+    })?;
     match args.output.as_ref() {
         Some(path) => {
             let rpath = write_lift_result(&result, path)?;

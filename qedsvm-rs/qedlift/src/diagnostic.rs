@@ -1,7 +1,9 @@
 use std::fmt;
 
+/// Stable category for a fail-closed lift diagnostic.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum DiagnosticKind {
+#[non_exhaustive]
+pub enum DiagnosticKind {
     SyscallUnmodeled,
     SyscallUntraced,
     CallUnresolved,
@@ -17,7 +19,8 @@ pub(super) enum DiagnosticKind {
 }
 
 impl DiagnosticKind {
-    pub(super) const fn label(self) -> &'static str {
+    /// Machine-readable label used by coverage reports.
+    pub const fn label(self) -> &'static str {
         match self {
             Self::SyscallUnmodeled => "syscall-unmodeled",
             Self::SyscallUntraced => "syscall-untraced",
@@ -35,8 +38,9 @@ impl DiagnosticKind {
     }
 }
 
+/// A typed failure produced while analyzing or lifting a program path.
 #[derive(Debug)]
-pub(super) struct LiftError {
+pub struct LiftError {
     kind: DiagnosticKind,
     message: String,
 }
@@ -53,7 +57,8 @@ impl LiftError {
         Self::new(self.kind, format!("{context}{}", self.message))
     }
 
-    pub(super) const fn kind(&self) -> DiagnosticKind {
+    /// Return the stable diagnostic category without inspecting the message.
+    pub const fn kind(&self) -> DiagnosticKind {
         self.kind
     }
 }

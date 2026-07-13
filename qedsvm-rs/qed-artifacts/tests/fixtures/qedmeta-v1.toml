@@ -1,0 +1,11 @@
+schema_version = 1
+
+[[instruction]]
+name = "increment"
+cu_budget = 12
+
+[instruction.discriminator]
+value = 1
+
+[[instruction.account]]
+name = "counter"

@@ -7,6 +7,7 @@ use std::path::Path;
 
 use solana_sbpf::{ebpf, static_analysis::Analysis};
 
+mod api;
 mod branch;
 mod core;
 mod diagnostic;
@@ -24,18 +25,19 @@ mod syscalls;
 mod transition;
 mod witness;
 
+pub use api::Lifter;
 use branch::{BranchHyp, BranchKind};
 use core::{
     arsh_render, canon_addr, eval_expr, lean_off, reg_initial_name, reg_lit, Atom, Expr, Width,
 };
-use diagnostic::{DiagnosticKind, LiftError};
+pub use diagnostic::{DiagnosticKind, LiftError};
 use emit::{
     atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
     post_atoms, region_req,
 };
 use input::{
     load_binary, load_descriptor, load_idl, load_idl_value, load_qedmeta, load_trace, parse_args,
-    pascal_case, sidecar_account_layouts, Args, BinaryCtx, Command, RefinementDescriptor,
+    pascal_case, sidecar_account_layouts, Args, BinaryCtx, Command,
 };
 use isa::{
     function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full, render_callstack,
@@ -65,9 +67,11 @@ use exec::{imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, Walk
 #[cfg(test)]
 use lift::lift_one;
 use lift::{lift_one_with_layouts, LiftOutput, LiftRequest};
-use qed_analysis::layout::AccountLayout;
+pub use lift::{LiftOptions, LiftResult};
 use qed_analysis::profile::{fold_trace, folded_lines, symbolicate_trace};
 use qed_analysis::symbolicate::SymbolIndex;
+pub use qed_analysis::{image::ProgramImage, layout::AccountLayout};
+pub use qed_artifacts::RefinementDescriptor;
 use spec_call::{spec_call_for, SpecCall};
 
 #[cfg(test)]
@@ -120,13 +124,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             output_dir.as_path(),
             idl_value.as_ref(),
         ),
-        Command::Single => run_single_mode(
-            &args,
-            &ctx,
-            &analysis,
-            trace.as_deref(),
-            descriptor.as_ref(),
-            idl_value.as_ref(),
-        ),
+        Command::Single => {
+            let lifter = Lifter::from_analysis(&args.so, &ctx, analysis);
+            run_single_mode(
+                &args,
+                &lifter,
+                trace.as_deref(),
+                descriptor.as_ref(),
+                idl_value.as_ref(),
+            )
+        }
     }
 }
