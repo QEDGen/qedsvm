@@ -20,9 +20,9 @@ fn finish_syscall(
     have_line: String,
 ) {
     state
-        .syscall_cu_vars
+        .syscall_cu_vars_mut()
         .push((ncu_name.to_string(), hcu_name.to_string(), ctor));
-    state.syscall_pcs.insert(pc, ctor);
+    state.syscall_pcs_mut().insert(pc, ctor);
     spec_calls.push(SpecCall {
         hyp_name: format!("h_{}", pc),
         have_line,
@@ -47,7 +47,7 @@ pub(super) fn emit_sol_memset(
 
     // H6: record writable rr for [r1V, r1V+r3V) so the goal rr matches the `containsWritable`
     // clause that `sl_block_iter` folds in from `call_sol_memset_*_spec`.
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r1v.clone(),
         0,
         Width::Byte,
@@ -66,9 +66,9 @@ pub(super) fn emit_sol_memset(
     // Register blob for H8 Phase C split planning (a later dword read at the tail triggers a split).
     let fill_const = const_of_expr(&r2v).map(|f| f as u8);
     if const_of_expr(&r3v).is_some() {
-        state.blobs.push((root.clone(), lo, blob_len, fill_const));
+        state.register_blob(root.clone(), lo, blob_len, fill_const);
     }
-    let split_n = state.blob_splits.get(&(root.clone(), lo)).copied();
+    let split_n = state.blob_split(&root, lo);
     // PRE-SPLIT: lift already owns a dword at the blob tail (CloseAccount reads lamports BEFORE
     // zeroing). Collect trailing owned dwords at [len-8k, len-8(k-1)) for k=1,2;
     // `tail_cells[0]` = last 8 bytes. Pre-split specs own prefix-blob + those cells.
@@ -79,7 +79,7 @@ pub(super) fn emit_sol_memset(
                 break;
             }
             let want = lo + blob_len - 8 * k;
-            match state.mem.iter().position(|c| {
+            match state.mem_cells_mut().iter().position(|c| {
                 matches!(c.width, Width::Dword) && {
                     let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
                     cr == root && cd + c.delta == want
@@ -93,11 +93,13 @@ pub(super) fn emit_sol_memset(
     if !tail_cells.is_empty() {
         size_rendered = format!("{}", blob_len - 8 * tail_cells.len() as i64);
     }
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: r1v.clone(),
         value: BytesVal::Sym(bs_name.clone()),
     });
-    state.memset_blobs.push((bs_name.clone(), size_rendered));
+    state
+        .memset_blobs_mut()
+        .push((bs_name.clone(), size_rendered));
 
     // Post: r0=0; blob -> `replicateByte (r2V%256) r3V`, or under tail-split: prefix blob +
     // a `↦U64` cell with fill across all 8 lanes (`call_sol_memset_split_u64_spec`).
@@ -107,12 +109,12 @@ pub(super) fn emit_sol_memset(
             let ci = tail_cells[0];
             let n = blob_len - 8;
             let w: u64 = u64::from_le_bytes([fill; 8]);
-            let a_render = SymState::cell_render(&state.mem[ci]);
-            let old_v = state.mem[ci].value.atom_lean();
+            let a_render = SymState::cell_render(&state.mem_cells_mut()[ci]);
+            let old_v = state.mem_cells_mut()[ci].value.atom_lean();
             // Post: cell holds fill across all 8 lanes; blob shrinks to prefix.
-            state.mem[ci].value = Expr::Const(w as i64);
+            state.mem_cells_mut()[ci].value = Expr::Const(w as i64);
             state.note_access(&r1v, 0, n, format!("blob:{}", r1v.to_lean()));
-            state.byte_blob_post.insert(
+            state.byte_blob_post_mut().insert(
                 r1v.to_lean(),
                 BytesVal::Replicate {
                     fill: r2v.clone(),
@@ -120,7 +122,7 @@ pub(super) fn emit_sol_memset(
                 },
             );
             let ha_name = format!("h_msplit_{}", pc);
-            state.side_hyps.push((
+            state.side_hypotheses_mut().push((
                 ha_name.clone(),
                 format!("{} = {} + {}", a_render, r1v.atom_lean(), n),
             ));
@@ -152,14 +154,14 @@ pub(super) fn emit_sol_memset(
             let (c2, c1) = (tail_cells[0], tail_cells[1]);
             let n = blob_len - 16;
             let w: u64 = u64::from_le_bytes([fill; 8]);
-            let a1_render = SymState::cell_render(&state.mem[c1]);
-            let a2_render = SymState::cell_render(&state.mem[c2]);
-            let old1 = state.mem[c1].value.atom_lean();
-            let old2 = state.mem[c2].value.atom_lean();
-            state.mem[c1].value = Expr::Const(w as i64);
-            state.mem[c2].value = Expr::Const(w as i64);
+            let a1_render = SymState::cell_render(&state.mem_cells_mut()[c1]);
+            let a2_render = SymState::cell_render(&state.mem_cells_mut()[c2]);
+            let old1 = state.mem_cells_mut()[c1].value.atom_lean();
+            let old2 = state.mem_cells_mut()[c2].value.atom_lean();
+            state.mem_cells_mut()[c1].value = Expr::Const(w as i64);
+            state.mem_cells_mut()[c2].value = Expr::Const(w as i64);
             state.note_access(&r1v, 0, n, format!("blob:{}", r1v.to_lean()));
-            state.byte_blob_post.insert(
+            state.byte_blob_post_mut().insert(
                 r1v.to_lean(),
                 BytesVal::Replicate {
                     fill: r2v.clone(),
@@ -168,11 +170,11 @@ pub(super) fn emit_sol_memset(
             );
             let ha1_name = format!("h_msplit_{}_a1", pc);
             let ha2_name = format!("h_msplit_{}_a2", pc);
-            state.side_hyps.push((
+            state.side_hypotheses_mut().push((
                 ha1_name.clone(),
                 format!("{} = {} + {}", a1_render, r1v.atom_lean(), n),
             ));
-            state.side_hyps.push((
+            state.side_hypotheses_mut().push((
                 ha2_name.clone(),
                 format!("{} = {} + {} + 8", a2_render, r1v.atom_lean(), n),
             ));
@@ -206,7 +208,7 @@ pub(super) fn emit_sol_memset(
             // Footprints: shrunk blob + the split cell.
             state.note_access(&r1v, 0, n, format!("blob:{}", r1v.to_lean()));
             state.note_access(&r1v, n, 8, format!("blobtail:{}", r1v.to_lean()));
-            state.byte_blob_post.insert(
+            state.byte_blob_post_mut().insert(
                 r1v.to_lean(),
                 BytesVal::Replicate {
                     fill: r2v.clone(),
@@ -215,7 +217,7 @@ pub(super) fn emit_sol_memset(
             );
             // Split `↦U64` cell registered at blob-base; later aliased reads reach it via `h_alias`.
             let w: u64 = u64::from_le_bytes([fill; 8]);
-            state.mem.push(MemCell {
+            state.mem_cells_mut().push(MemCell {
                 addr_base: r1v.clone(),
                 addr_off: n,
                 width: Width::Dword,
@@ -224,7 +226,7 @@ pub(super) fn emit_sol_memset(
             });
             // Split-cell address equation, consumer-discharged like h_addr* abstractions.
             let ha_name = format!("h_msplit_{}", pc);
-            state.side_hyps.push((
+            state.side_hypotheses_mut().push((
                 ha_name.clone(),
                 format!(
                     "effectiveAddr ({}) ({}) = {} + {}",
@@ -260,7 +262,7 @@ pub(super) fn emit_sol_memset(
             // Blob overlap accounting (symbolic count => 1-byte footprint at base, no split).
             // Catches exact-base collisions; full symbolic-length support is part of H8 byte-aliasing.
             state.note_access(&r1v, 0, blob_len, format!("blob:{}", r1v.to_lean()));
-            state.byte_blob_post.insert(
+            state.byte_blob_post_mut().insert(
                 r1v.to_lean(),
                 BytesVal::Replicate {
                     fill: r2v.clone(),
@@ -314,21 +316,21 @@ pub(super) fn emit_sol_memcmp(
 
     // rr in the spec's conjunct order: p1 readable, p2 readable, then the
     // fixed 4-byte output writable.
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r1v.clone(),
         0,
         Width::Byte,
         false,
         Some((r1v.clone(), r3v.clone())),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r2v.clone(),
         0,
         Width::Byte,
         false,
         Some((r2v.clone(), r3v.clone())),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r4v.clone(),
         0,
         Width::Word,
@@ -343,36 +345,36 @@ pub(super) fn emit_sol_memcmp(
     let blob_len = const_of_expr(&r3v).unwrap_or(1).max(1);
 
     // Pre: `(r1V ↦Bytes p1) ** (r2V ↦Bytes p2)`.
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: r1v.clone(),
         value: BytesVal::Sym(p1_name.clone()),
     });
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: r2v.clone(),
         value: BytesVal::Sym(p2_name.clone()),
     });
     state
-        .memset_blobs
+        .memset_blobs_mut()
         .push((p1_name.clone(), size_rendered.clone()));
     state
-        .memset_blobs
+        .memset_blobs_mut()
         .push((p2_name.clone(), size_rendered.clone()));
 
     // Pre: the 4-byte `↦U32` output cell at r4 (old value = fresh var,
     // surfaced as a theorem param via `u64_load_vars` like the sysvar cells).
     let out_idx = state.alloc_fresh_name();
     let out_name = format!("oldMemW_{}", out_idx);
-    state.u64_load_vars.push((out_name.clone(), 32));
+    state.load_vars_mut().push((out_name.clone(), 32));
     let out_old = Expr::InitMem(out_name.clone());
-    state.mem.push(MemCell {
+    state.mem_cells_mut().push(MemCell {
         addr_base: r4v.clone(),
         addr_off: 0,
         width: Width::Word,
         value: out_old.clone(),
         delta: 0,
     });
-    let out_ci = state.mem.len() - 1;
-    state.pre.push(Atom::Mem {
+    let out_ci = state.mem_cells_mut().len() - 1;
+    state.pre_atoms_mut().push(Atom::Mem {
         addr_base: r4v.clone(),
         addr_off: 0,
         width: Width::Word,
@@ -386,7 +388,7 @@ pub(super) fn emit_sol_memcmp(
     state.note_access(&r4v, 0, 4, format!("memcmpOut:{}", r4v.to_lean()));
 
     // Post: out cell ← `memcmpResultU32 p1 p2 r3`; r0 := 0.
-    state.mem[out_ci].value = Expr::Raw(format!(
+    state.mem_cells_mut()[out_ci].value = Expr::Raw(format!(
         "(memcmpResultU32 {} {} {})",
         p1_name, p2_name, size_rendered
     ));
@@ -474,7 +476,7 @@ pub(super) fn emit_sol_get_sysvar(
 
     let (_idx, ncu_name, hcu_name) = state.alloc_syscall("GetSysvar");
 
-    state.pre.push(Atom::Bytes32 {
+    state.pre_atoms_mut().push(Atom::Bytes32 {
         addr: r1v.clone(),
         name: "SysvarData.rentId".to_string(),
     });
@@ -497,16 +499,16 @@ pub(super) fn emit_sol_get_sysvar(
             },
             i
         );
-        state.u64_load_vars.push((name.clone(), bits));
+        state.load_vars_mut().push((name.clone(), bits));
         let v = Expr::InitMem(name.clone());
-        state.mem.push(MemCell {
+        state.mem_cells_mut().push(MemCell {
             addr_base: r2v.clone(),
             addr_off: coff,
             width: w,
             value: v.clone(),
             delta: 0,
         });
-        state.pre.push(Atom::Mem {
+        state.pre_atoms_mut().push(Atom::Mem {
             addr_base: r2v.clone(),
             addr_off: coff,
             width: w,
@@ -521,8 +523,8 @@ pub(super) fn emit_sol_get_sysvar(
             format!("sysvarOut:{}@{}", r2v.to_lean(), coff),
         );
         old_names.push(name);
-        let ci = state.mem.len() - 1;
-        state.mem[ci].value = Expr::Const(post);
+        let ci = state.mem_cells_mut().len() - 1;
+        state.mem_cells_mut()[ci].value = Expr::Const(post);
     }
     state.write_reg(0, Expr::Const(0));
 
@@ -536,23 +538,23 @@ pub(super) fn emit_sol_get_sysvar(
     let ha1 = format!("h_sysvar_a1_{}", pc);
     let ha2 = format!("h_sysvar_a2_{}", pc);
     state
-        .side_hyps
+        .side_hypotheses_mut()
         .push((h_out.clone(), format!("{} < Memory.INPUT_START", out_atom)));
     state
-        .side_hyps
+        .side_hypotheses_mut()
         .push((h_outlen.clone(), format!("{} + 17 < U64_MODULUS", out_atom)));
-    state.side_hyps.push((
+    state.side_hypotheses_mut().push((
         h_disj.clone(),
         format!(
             "{} + 32 ≤ {} ∨ {} + 17 ≤ {}",
             id_atom, out_atom, out_atom, id_atom
         ),
     ));
-    state.side_hyps.push((
+    state.side_hypotheses_mut().push((
         ha1.clone(),
         format!("effectiveAddr ({}) (8) = {} + 8", out, out_atom),
     ));
-    state.side_hyps.push((
+    state.side_hypotheses_mut().push((
         ha2.clone(),
         format!("effectiveAddr ({}) (16) = {} + 8 + 8", out, out_atom),
     ));
@@ -610,7 +612,7 @@ pub(super) fn emit_sol_log(
     let r1v = state.read_reg(1);
     let r2v = state.read_reg(2);
     // The logged slice `[r1, r1+r2)` must be in a readable region.
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r1v.clone(),
         0,
         Width::Byte,
@@ -661,14 +663,14 @@ pub(super) fn emit_sol_memcpy(
 
     // rr in the spec's conjunct order: src `[r2, r2+r3)` readable, then dst
     // `[r1, r1+r3)` writable. Left-fold order matches `slBlockIter`.
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r2v.clone(),
         0,
         Width::Byte,
         false,
         Some((r2v.clone(), r3v.clone())),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r1v.clone(),
         0,
         Width::Byte,
@@ -688,18 +690,20 @@ pub(super) fn emit_sol_memcpy(
     let blob_len = const_of_expr(&r3v).unwrap_or(1).max(1);
 
     // Pre atoms in spec order: `(r2V ↦Bytes srcBytes) ** (r1V ↦Bytes bsOld)`.
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: r2v.clone(),
         value: BytesVal::Sym(src_name.clone()),
     });
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: r1v.clone(),
         value: BytesVal::Sym(dst_name.clone()),
     });
     state
-        .memset_blobs
+        .memset_blobs_mut()
         .push((src_name.clone(), size_rendered.clone()));
-    state.memset_blobs.push((dst_name.clone(), size_rendered));
+    state
+        .memset_blobs_mut()
+        .push((dst_name.clone(), size_rendered));
 
     // Footprints: disjoint src-read + dst-write regions (overlap ⇒ vacuous, fail closed).
     state.note_access(&r2v, 0, blob_len, format!("{}Src:{}", mnem, r2v.to_lean()));
@@ -707,7 +711,7 @@ pub(super) fn emit_sol_memcpy(
 
     // Post: dst blob (at r1V) holds `srcBytes`; src blob unchanged; r0 := 0.
     state
-        .byte_blob_post
+        .byte_blob_post_mut()
         .insert(r1v.to_lean(), BytesVal::Sym(src_name.clone()));
     state.write_reg(0, Expr::Const(0));
 
@@ -754,7 +758,7 @@ pub(super) fn emit_sol_set_return_data(
     let r2v = state.read_reg(2); // len
 
     // H6: the input slice `[r1, r1+r2)` must be in a readable region.
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r1v.clone(),
         0,
         Width::Byte,
@@ -770,21 +774,23 @@ pub(super) fn emit_sol_set_return_data(
     let blob_len = const_of_expr(&r2v).unwrap_or(1).max(1);
 
     // Pre atoms in spec order: `(r1V ↦Bytes inputBlob) ** (↦ReturnData rdOld)`.
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: r1v.clone(),
         value: BytesVal::Sym(blob_name.clone()),
     });
-    state.pre.push(Atom::ReturnData {
+    state.pre_atoms_mut().push(Atom::ReturnData {
         value: BytesVal::Sym(rd_old_name.clone()),
     });
-    state.memset_blobs.push((blob_name.clone(), size_rendered));
-    state.bytearray_vars.push(rd_old_name.clone());
+    state
+        .memset_blobs_mut()
+        .push((blob_name.clone(), size_rendered));
+    state.bytearray_vars_mut().push(rd_old_name.clone());
 
     // Footprint: the read input slice (must be disjoint from other owned regions).
     state.note_access(&r1v, 0, blob_len, format!("setRetData:{}", r1v.to_lean()));
 
     // Post: returnData holds the input blob; input blob unchanged; r0 := 0.
-    state.returndata_post = Some(BytesVal::Sym(blob_name.clone()));
+    state.set_returndata_post(BytesVal::Sym(blob_name.clone()));
     state.write_reg(0, Expr::Const(0));
 
     // call_sol_set_return_data_spec r0Old r1V r2V pc nCu inputBlob rdOld hsize hlen hCu
@@ -862,10 +868,10 @@ pub(super) fn emit_sol_sha256(
                 "sha256 at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]"
             ))
         })?;
-    let a1 = SymState::cell_render(&state.mem[i_ptr]);
-    let a2 = SymState::cell_render(&state.mem[i_len]);
-    let ptr_expr = state.mem[i_ptr].value.clone();
-    let len_expr = state.mem[i_len].value.clone();
+    let a1 = SymState::cell_render(&state.mem_cells_mut()[i_ptr]);
+    let a2 = SymState::cell_render(&state.mem_cells_mut()[i_len]);
+    let ptr_expr = state.mem_cells_mut()[i_ptr].value.clone();
+    let len_expr = state.mem_cells_mut()[i_len].value.clone();
     if eval_expr(&ptr_expr, &env).is_none() {
         return Err(symbolic(format!(
             "sha256 at pc {pc}: symbolic descriptor.ptr"
@@ -881,22 +887,22 @@ pub(super) fn emit_sol_sha256(
 
     // Pre atoms (spec order, AFTER the descriptor cells already present from the
     // stores): `(ptr ↦Bytes inputBytes) ** (out ↦Bytes32 oldOut)`.
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: ptr_expr.clone(),
         value: BytesVal::Sym(in_name.clone()),
     });
-    state.pre.push(Atom::Bytes32 {
+    state.pre_atoms_mut().push(Atom::Bytes32 {
         addr: r3v.clone(),
         name: out_name.clone(),
     });
     state
-        .memset_blobs
+        .memset_blobs_mut()
         .push((in_name.clone(), len_rendered.clone()));
-    state.bytearray_vars.push(out_name.clone());
+    state.bytearray_vars_mut().push(out_name.clone());
     // The descriptor `len` is pinned concretely in the spec call (it is the
     // input-blob size + the descriptor cell value), so it must not be
     // `generalizing`-abstracted (would desync the hand-written `h_<pc>`).
-    state.gen_exclude.push(len_expr.to_lean());
+    state.generation_exclusions_mut().push(len_expr.to_lean());
 
     // Footprints: input read + 32-byte output write (disjoint from the
     // descriptor and each other; overlap ⇒ vacuous, fail closed).
@@ -911,35 +917,35 @@ pub(super) fn emit_sol_sha256(
     // rr in the spec's left-assoc order, kept as ONE grouped fold-unit (the 2nd
     // and 3rd clauses CONTINUE the group) so the goal matches sl_block_iter's
     // per-instruction composition `(prior_stores) ∧ ((wOut ∧ rVals) ∧ rPtr)`:
-    let g0 = state.rr_walk.len();
-    state.rr_walk.push((
+    let g0 = state.region_requirements_mut().len();
+    state.region_requirements_mut().push((
         r3v.clone(),
         0,
         Width::Byte,
         true,
         Some((r3v.clone(), Expr::Const(32))),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r1v.clone(),
         0,
         Width::Byte,
         false,
         Some((r1v.clone(), Expr::Const(16))),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         ptr_expr.clone(),
         0,
         Width::Byte,
         false,
         Some((ptr_expr.clone(), len_expr.clone())),
     ));
-    state.rr_continuations.insert(g0 + 1);
-    state.rr_continuations.insert(g0 + 2);
+    state.region_continuations_mut().insert(g0 + 1);
+    state.region_continuations_mut().insert(g0 + 2);
 
     // Post: output flips to `Sha256.hash inputBytes`; input + descriptor
     // unchanged; r0 := 0.
     state
-        .bytes32_post
+        .bytes32_post_mut()
         .insert(r3v.to_lean(), format!("(Sha256.hash {})", in_name));
     state.write_reg(0, Expr::Const(0));
 
@@ -1025,10 +1031,10 @@ pub(super) fn emit_sol_create_program_address(
                 "create_pda at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]"
             ))
         })?;
-    let a1 = SymState::cell_render(&state.mem[i_ptr]);
-    let a2 = SymState::cell_render(&state.mem[i_len]);
-    let ptr_expr = state.mem[i_ptr].value.clone();
-    let len_expr = state.mem[i_len].value.clone();
+    let a1 = SymState::cell_render(&state.mem_cells_mut()[i_ptr]);
+    let a2 = SymState::cell_render(&state.mem_cells_mut()[i_len]);
+    let ptr_expr = state.mem_cells_mut()[i_ptr].value.clone();
+    let len_expr = state.mem_cells_mut()[i_len].value.clone();
     if eval_expr(&ptr_expr, &env).is_none() {
         return Err(symbolic(format!(
             "create_pda at pc {pc}: symbolic descriptor.ptr"
@@ -1051,32 +1057,32 @@ pub(super) fn emit_sol_create_program_address(
 
     // Pre atoms (spec order, after the descriptor cells already present from the
     // stores): seed `↦Bytes`, program_id `↦Bytes32` (read-only), output `↦Bytes32`.
-    state.pre.push(Atom::Bytes {
+    state.pre_atoms_mut().push(Atom::Bytes {
         addr: ptr_expr.clone(),
         value: BytesVal::Sym(seed_name.clone()),
     });
-    state.pre.push(Atom::Bytes32 {
+    state.pre_atoms_mut().push(Atom::Bytes32 {
         addr: r3v.clone(),
         name: pid_name.clone(),
     });
-    state.pre.push(Atom::Bytes32 {
+    state.pre_atoms_mut().push(Atom::Bytes32 {
         addr: r4v.clone(),
         name: out_name.clone(),
     });
     state
-        .memset_blobs
+        .memset_blobs_mut()
         .push((seed_name.clone(), len_rendered.clone()));
-    state.bytearray_vars.push(pid_name.clone());
-    state.bytearray_vars.push(out_name.clone());
-    state.gen_exclude.push(len_expr.to_lean());
+    state.bytearray_vars_mut().push(pid_name.clone());
+    state.bytearray_vars_mut().push(out_name.clone());
+    state.generation_exclusions_mut().push(len_expr.to_lean());
 
     // Symbolic obligations the consumer discharges: program_id is 32 bytes, and
     // the derivation is off the ed25519 curve (opaque FFI). These reference the
     // blob params, so they go in `blob_side_hyps` (emitted AFTER the blob decls).
     state
-        .blob_side_hyps
+        .blob_side_hypotheses_mut()
         .push((hpid_sz.clone(), format!("{}.size = 32", pid_name)));
-    state.blob_side_hyps.push((
+    state.blob_side_hypotheses_mut().push((
         hoff.clone(),
         format!("¬ Curve25519.validateEdwards {} = true", payload),
     ));
@@ -1093,42 +1099,42 @@ pub(super) fn emit_sol_create_program_address(
 
     // rr in the spec's left-assoc envelope order, ONE grouped fold-unit:
     // `(((range pid 32 ∧ writable out 32) ∧ range vals 16) ∧ range ptr len)`.
-    let g0 = state.rr_walk.len();
-    state.rr_walk.push((
+    let g0 = state.region_requirements_mut().len();
+    state.region_requirements_mut().push((
         r3v.clone(),
         0,
         Width::Byte,
         false,
         Some((r3v.clone(), Expr::Const(32))),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r4v.clone(),
         0,
         Width::Byte,
         true,
         Some((r4v.clone(), Expr::Const(32))),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         r1v.clone(),
         0,
         Width::Byte,
         false,
         Some((r1v.clone(), Expr::Const(16))),
     ));
-    state.rr_walk.push((
+    state.region_requirements_mut().push((
         ptr_expr.clone(),
         0,
         Width::Byte,
         false,
         Some((ptr_expr.clone(), len_expr.clone())),
     ));
-    state.rr_continuations.insert(g0 + 1);
-    state.rr_continuations.insert(g0 + 2);
-    state.rr_continuations.insert(g0 + 3);
+    state.region_continuations_mut().insert(g0 + 1);
+    state.region_continuations_mut().insert(g0 + 2);
+    state.region_continuations_mut().insert(g0 + 3);
 
     // Post: output flips to the derived PDA; seed + pid + descriptor unchanged;
     // r0 := 0.
-    state.bytes32_post.insert(r4v.to_lean(), payload);
+    state.bytes32_post_mut().insert(r4v.to_lean(), payload);
     state.write_reg(0, Expr::Const(0));
 
     // call_sol_create_program_address_spec r0Old vals ptr len pid out a1 a2 n2

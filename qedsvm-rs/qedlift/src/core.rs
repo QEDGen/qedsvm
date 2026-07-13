@@ -238,7 +238,7 @@ pub(super) enum Atom {
         addr: Expr,
         name: String,
     },
-    /// `↦ReturnData <bytes>`. The global `State.returnData` buffer (not memory-addressed). Pre is a fresh symbolic `ByteArray` (`sol_set_return_data`'s old value); the post flips it to the input blob via `state.returndata_post`.
+    /// `↦ReturnData <bytes>`. The global `State.returnData` buffer (not memory-addressed). Pre is a fresh symbolic `ByteArray` (`sol_set_return_data`'s old value); the post flips it to the input blob via `state.returndata_post()`.
     ReturnData {
         value: BytesVal,
     },

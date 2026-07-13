@@ -42,69 +42,231 @@ impl FreshNames {
 /// `(base, offset, width, writable, variable-length override)`.
 pub(super) type RegionRequirement = (Expr, i64, Width, bool, Option<(Expr, Expr)>);
 
+pub(super) enum RetryPlan {
+    BlobSplits(Vec<(String, i64, i64)>),
+    HotRegions(Vec<(String, i64, i64)>),
+    Ready,
+}
+
 #[derive(Default)]
 pub(super) struct SymState {
     /// Symbolic register values; absent entries are treated as `InitReg(reg_initial_name(r))`.
-    pub(super) regs: std::collections::BTreeMap<u8, Expr>,
+    regs: std::collections::BTreeMap<u8, Expr>,
     /// Pre-condition atoms collected in *first-touched* order.
-    pub(super) pre: Vec<Atom>,
+    pre: Vec<Atom>,
     /// Memory cells the slice touched; `base` is the SYMBOLIC register value at access time (so `[r1+0]` after `add64 r1,8` is a distinct cell). Linear search; small N.
-    pub(super) mem: Vec<MemCell>,
+    mem: Vec<MemCell>,
     /// Single allocator for memory, syscall, and prepared-step identifiers.
     names: FreshNames,
     /// `(var, k)` pairs for memory loads with a `< 2^k` side condition (k=16/32/64 for ldxh/ldxw/ldxdw). Emitted as `h<var>_lt` hypotheses in the theorem signature.
-    pub(super) u64_load_vars: Vec<(String, u32)>,
+    u64_load_vars: Vec<(String, u32)>,
     /// Conditional jumps on the happy-path walk; each adds a path hypothesis to the theorem signature.
-    pub(super) branch_hyps: Vec<BranchHyp>,
+    branch_hyps: Vec<BranchHyp>,
     /// `(resume_pc, [r6..r10] at call time)` pushed by `call_local`, popped by `exit`. Full r6..r10 saved because a callee may clobber r6..r9 — `exit_pops` needs the frame from call time, not exit time.
-    pub(super) call_stack: Vec<(usize, [Expr; 5])>,
+    call_stack: Vec<(usize, [Expr; 5])>,
     /// Set on first `call_local`; emission then adds `r6..r10` and `callStackIs []` to the pre-condition.
-    pub(super) saw_call: bool,
+    saw_call: bool,
     /// rr clauses in walk order (load → `containsRange`, store → `containsWritable`), matching `slBlockIter`'s left-fold. `memset_override = Some((dst, count))` is a variable-length `containsWritable` clause (H6: `MemOps.execSet.guardWrite`); fixed fields ignored, address rendered raw without `effectiveAddr`.
-    pub(super) rr_walk: Vec<RegionRequirement>,
+    rr_walk: Vec<RegionRequirement>,
     /// Post-state of `↦Bytes` blobs written by `sol_memset_`, keyed by rendered address. Read by `post_atoms` to transform pre `Sym` → post `Replicate`.
-    pub(super) byte_blob_post: std::collections::BTreeMap<String, BytesVal>,
+    byte_blob_post: std::collections::BTreeMap<String, BytesVal>,
     /// PC → Lean `Syscall` constructor for identified host syscalls; CodeReq renders as `.call <ctor>` instead of `.call_local`.
-    pub(super) syscall_pcs: std::collections::BTreeMap<usize, &'static str>,
+    syscall_pcs: std::collections::BTreeMap<usize, &'static str>,
     /// `(nCu_var, hCu_hyp, syscall_ctor)` per syscall with surfaced CU cost. `syscallCu` is data-dependent (∝ r3 for mem ops), so the upper bound is an assumption the lift can't discharge.
-    pub(super) syscall_cu_vars: Vec<(String, String, &'static str)>,
+    syscall_cu_vars: Vec<(String, String, &'static str)>,
     /// `(bytes_sym, size_rendered)` per memset blob; emitted as a `ByteArray` param + `.size = <count>` hypothesis (spec's `hbs` obligation).
-    pub(super) memset_blobs: Vec<(String, String)>,
+    memset_blobs: Vec<(String, String)>,
     /// Bare `ByteArray` params (no size hypothesis), e.g. `sol_set_return_data`'s old returnData buffer — arbitrary, so unconstrained.
-    pub(super) bytearray_vars: Vec<String>,
+    bytearray_vars: Vec<String>,
     /// Post-state value of the `↦ReturnData` atom (`sol_set_return_data` copies the input blob into returnData). `None` = no returnData atom in the pre.
-    pub(super) returndata_post: Option<BytesVal>,
+    returndata_post: Option<BytesVal>,
     /// `(hyp_name, prop)` side-condition hypotheses emitted verbatim (e.g. divisor `v ≠ 0` for `div/mod` reg-form — symbolic divisor, so caller's obligation).
-    pub(super) side_hyps: Vec<(String, String)>,
+    side_hyps: Vec<(String, String)>,
     /// Canonical `(root, lo, hi_exclusive, key_render)` footprint of every materialized atom. Consulted on each new materialization to detect overlaps — an overlapping sepConj is unsatisfiable (vacuous theorem, soundness audit H8).
-    pub(super) atom_spans: Vec<(String, i64, i64, String)>,
+    atom_spans: Vec<(String, i64, i64, String)>,
     /// Footprint-overlap errors from `note_access`; reported as a hard error after the walk (fail-closed: never emit a vacuous theorem; full inventory aids Phase B planning).
-    pub(super) overlap_errors: Vec<String>,
+    overlap_errors: Vec<String>,
     /// `(lhs, rhs)` set when an access resolved to an existing cell under a DIFFERENT rendering (Phase A aliasing). Walk loop drains it into `h_alias_<pc> : lhs = rhs` (discharged by `decide`); the spec-call `rw`s it so the chain composes on one atom.
-    pub(super) pending_alias: Option<(String, String)>,
+    pending_alias: Option<(String, String)>,
     /// Per-root byte-granular ("hot") regions for mixed-width accesses; kept as per-byte atoms so the sepConj stays satisfiable (H8 Phase B). Computed by the retry loop in `lift_one`.
-    pub(super) hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>>,
+    hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>>,
     /// Demotion requests from this pass (wide access over cells outside the current hot set). Merged into `hot_regions` by the retry loop; this pass's output is discarded.
-    pub(super) new_hot: Vec<(String, i64, i64)>,
+    new_hot: Vec<(String, i64, i64)>,
     /// `(root, lo, len, fill)` for constant-count memset blobs; registered by `emit_sol_memset` so later reads can plan a tail split (H8 Phase C).
-    pub(super) blobs: Vec<(String, i64, i64, Option<u8>)>,
+    blobs: Vec<(String, i64, i64, Option<u8>)>,
     /// `(root, lo)` → split offset `n` plan: blob's last 8 bytes (`[n, n+8)`) become a `↦U64` cell. Input to the walk; grown by `new_blob_splits` + retry.
-    pub(super) blob_splits: std::collections::BTreeMap<(String, i64), i64>,
+    blob_splits: std::collections::BTreeMap<(String, i64), i64>,
     /// Tail-split requests from this pass (dword read at a blob's 8-byte tail); merged by the retry loop.
-    pub(super) new_blob_splits: Vec<(String, i64, i64)>,
+    new_blob_splits: Vec<(String, i64, i64)>,
     /// Per-slot alias equations for the current instruction (a hot wide access whose byte slots live under foreign renderings). Each `(lhs, rhs)` becomes `h_alias_<pc>_<i> : lhs = rhs`, rewritten into the spec hypothesis.
-    pub(super) pending_slot_aliases: Vec<(String, String)>,
+    pending_slot_aliases: Vec<(String, String)>,
     /// Post-state value (rendered Lean term) of a `↦Bytes32` atom, keyed by rendered address. Set by `emit_sol_sha256` (output flips to `Sha256.hash inputBytes`); read by `post_atoms`. Default = read-only (pre name unchanged), e.g. `sol_get_sysvar`'s id read.
-    pub(super) bytes32_post: std::collections::BTreeMap<String, String>,
+    bytes32_post: std::collections::BTreeMap<String, String>,
     /// Rendered values a syscall spec PINS concretely (e.g. `sol_sha256`'s descriptor `len`), so they must NOT be `generalizing`-abstracted — the hand-written spec call passes them literally and would not match an abstracted goal.
-    pub(super) gen_exclude: Vec<String>,
+    gen_exclude: Vec<String>,
     /// `rr_walk` indices that CONTINUE the previous clause's rr group rather than start a new one. A multi-clause syscall rr (e.g. sha256's `((wOut ∧ rVals) ∧ rPtr)`) must stay a grouped fold-unit so the goal rr matches `sl_block_iter`'s per-instruction (`cuTripleWithinMem_seq`) composition; absent entries default to one-clause-per-group (the flat left-fold, unchanged for existing lifts).
-    pub(super) rr_continuations: std::collections::BTreeSet<usize>,
+    rr_continuations: std::collections::BTreeSet<usize>,
     /// `(hyp_name, prop)` side conditions that REFERENCE blob params (`↦Bytes`/`↦Bytes32` names), e.g. PDA's `pid.size = 32` + off-curve. Emitted in the signature AFTER the blob declarations (unlike `side_hyps`, which precede them and may only reference Nat/register vars), so the forward reference resolves.
-    pub(super) blob_side_hyps: Vec<(String, String)>,
+    blob_side_hyps: Vec<(String, String)>,
 }
 
 impl SymState {
+    pub(super) fn regs(&self) -> &std::collections::BTreeMap<u8, Expr> {
+        &self.regs
+    }
+
+    pub(super) fn pre_atoms(&self) -> &[Atom] {
+        &self.pre
+    }
+
+    pub(super) fn pre_atoms_mut(&mut self) -> &mut Vec<Atom> {
+        &mut self.pre
+    }
+
+    pub(super) fn mem_cells(&self) -> &[MemCell] {
+        &self.mem
+    }
+
+    pub(super) fn mem_cells_mut(&mut self) -> &mut Vec<MemCell> {
+        &mut self.mem
+    }
+
+    pub(super) fn load_vars(&self) -> &[(String, u32)] {
+        &self.u64_load_vars
+    }
+
+    pub(super) fn load_vars_mut(&mut self) -> &mut Vec<(String, u32)> {
+        &mut self.u64_load_vars
+    }
+
+    pub(super) fn branches(&self) -> &[BranchHyp] {
+        &self.branch_hyps
+    }
+
+    pub(super) fn record_branch(&mut self, branch: BranchHyp) {
+        self.branch_hyps.push(branch);
+    }
+
+    pub(super) fn call_stack(&self) -> &[(usize, [Expr; 5])] {
+        &self.call_stack
+    }
+
+    pub(super) fn push_call_frame(&mut self, pc: usize, saved: [Expr; 5]) {
+        self.saw_call = true;
+        self.call_stack.push((pc, saved));
+    }
+
+    pub(super) fn pop_call_frame(&mut self) -> Option<(usize, [Expr; 5])> {
+        self.call_stack.pop()
+    }
+
+    pub(super) fn saw_call(&self) -> bool {
+        self.saw_call
+    }
+
+    pub(super) fn region_requirements(&self) -> &[RegionRequirement] {
+        &self.rr_walk
+    }
+
+    pub(super) fn region_requirements_mut(&mut self) -> &mut Vec<RegionRequirement> {
+        &mut self.rr_walk
+    }
+
+    pub(super) fn region_continuations(&self) -> &std::collections::BTreeSet<usize> {
+        &self.rr_continuations
+    }
+
+    pub(super) fn region_continuations_mut(&mut self) -> &mut std::collections::BTreeSet<usize> {
+        &mut self.rr_continuations
+    }
+
+    pub(super) fn byte_blob_post(&self) -> &std::collections::BTreeMap<String, BytesVal> {
+        &self.byte_blob_post
+    }
+
+    pub(super) fn byte_blob_post_mut(
+        &mut self,
+    ) -> &mut std::collections::BTreeMap<String, BytesVal> {
+        &mut self.byte_blob_post
+    }
+
+    pub(super) fn syscall_pcs(&self) -> &std::collections::BTreeMap<usize, &'static str> {
+        &self.syscall_pcs
+    }
+
+    pub(super) fn syscall_pcs_mut(
+        &mut self,
+    ) -> &mut std::collections::BTreeMap<usize, &'static str> {
+        &mut self.syscall_pcs
+    }
+
+    pub(super) fn syscall_cu_vars(&self) -> &[(String, String, &'static str)] {
+        &self.syscall_cu_vars
+    }
+
+    pub(super) fn syscall_cu_vars_mut(&mut self) -> &mut Vec<(String, String, &'static str)> {
+        &mut self.syscall_cu_vars
+    }
+
+    pub(super) fn memset_blobs(&self) -> &[(String, String)] {
+        &self.memset_blobs
+    }
+
+    pub(super) fn memset_blobs_mut(&mut self) -> &mut Vec<(String, String)> {
+        &mut self.memset_blobs
+    }
+
+    pub(super) fn bytearray_vars(&self) -> &[String] {
+        &self.bytearray_vars
+    }
+
+    pub(super) fn bytearray_vars_mut(&mut self) -> &mut Vec<String> {
+        &mut self.bytearray_vars
+    }
+
+    pub(super) fn returndata_post(&self) -> Option<&BytesVal> {
+        self.returndata_post.as_ref()
+    }
+
+    pub(super) fn set_returndata_post(&mut self, value: BytesVal) {
+        self.returndata_post = Some(value);
+    }
+
+    pub(super) fn side_hypotheses(&self) -> &[(String, String)] {
+        &self.side_hyps
+    }
+
+    pub(super) fn side_hypotheses_mut(&mut self) -> &mut Vec<(String, String)> {
+        &mut self.side_hyps
+    }
+
+    pub(super) fn record_side_hypothesis(&mut self, name: String, proposition: String) {
+        self.side_hyps.push((name, proposition));
+    }
+
+    pub(super) fn bytes32_post(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.bytes32_post
+    }
+
+    pub(super) fn bytes32_post_mut(&mut self) -> &mut std::collections::BTreeMap<String, String> {
+        &mut self.bytes32_post
+    }
+
+    pub(super) fn generation_exclusions(&self) -> &[String] {
+        &self.gen_exclude
+    }
+
+    pub(super) fn generation_exclusions_mut(&mut self) -> &mut Vec<String> {
+        &mut self.gen_exclude
+    }
+
+    pub(super) fn blob_side_hypotheses(&self) -> &[(String, String)] {
+        &self.blob_side_hyps
+    }
+
+    pub(super) fn blob_side_hypotheses_mut(&mut self) -> &mut Vec<(String, String)> {
+        &mut self.blob_side_hyps
+    }
     pub(super) fn with_retry_plans(
         hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>>,
         blob_splits: std::collections::BTreeMap<(String, i64), i64>,
@@ -126,6 +288,54 @@ impl SymState {
 
     pub(super) fn finish_prepared_step(&self) -> Result<(), LiftError> {
         self.names.finish_prepared_step()
+    }
+
+    pub(super) fn has_hot_regions(&self) -> bool {
+        !self.hot_regions.is_empty()
+    }
+
+    pub(super) fn register_blob(
+        &mut self,
+        root: String,
+        offset: i64,
+        length: i64,
+        fill: Option<u8>,
+    ) {
+        self.blobs.push((root, offset, length, fill));
+    }
+
+    pub(super) fn blob_split(&self, root: &str, offset: i64) -> Option<i64> {
+        self.blob_splits.get(&(root.to_string(), offset)).copied()
+    }
+
+    pub(super) fn take_alias_hypotheses(&mut self, pc: usize) -> Vec<(String, String)> {
+        let mut hypotheses = Vec::new();
+        if let Some((lhs, rhs)) = self.pending_alias.take() {
+            hypotheses.push((format!("h_alias_{}", pc), format!("{} = {}", lhs, rhs)));
+        }
+        hypotheses.extend(self.pending_slot_aliases.drain(..).enumerate().map(
+            |(index, (lhs, rhs))| {
+                (
+                    format!("h_alias_{}_{}", pc, index),
+                    format!("{} = {}", lhs, rhs),
+                )
+            },
+        ));
+        hypotheses
+    }
+
+    pub(super) fn take_retry_plan(&mut self) -> RetryPlan {
+        if !self.new_blob_splits.is_empty() {
+            RetryPlan::BlobSplits(self.new_blob_splits.drain(..).collect())
+        } else if !self.new_hot.is_empty() {
+            RetryPlan::HotRegions(self.new_hot.drain(..).collect())
+        } else {
+            RetryPlan::Ready
+        }
+    }
+
+    pub(super) fn overlap_errors(&self) -> &[String] {
+        &self.overlap_errors
     }
 
     /// Allocate the per-syscall fresh index plus the `nCu<Tag><idx>` /

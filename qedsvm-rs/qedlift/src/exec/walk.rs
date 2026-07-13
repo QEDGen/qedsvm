@@ -4,7 +4,7 @@ use crate::diagnostic::{DiagnosticKind, LiftError};
 use crate::input::BinaryCtx;
 use crate::isa::{resolve_call_target_logical, resolve_jump_target};
 use crate::spec_call::{spec_call_for, SpecCall};
-use crate::state::SymState;
+use crate::state::{RetryPlan, SymState};
 
 use super::control::{is_cond_jump_opc, resolve_branch_taken, TraceCursor};
 use super::step::step;
@@ -37,7 +37,7 @@ pub(super) enum ExitDisposition {
 }
 
 pub(super) fn exit_disposition(state: &SymState) -> ExitDisposition {
-    if state.call_stack.is_empty() {
+    if state.call_stack().is_empty() {
         ExitDisposition::TopLevel
     } else {
         ExitDisposition::NestedReturn
@@ -224,7 +224,7 @@ pub(crate) fn walk_and_exec(
                         {
                             spec_calls.push(sc);
                         }
-                        let (call_pc, saved) = state.call_stack.pop().unwrap();
+                        let (call_pc, saved) = state.pop_call_frame().unwrap();
                         // Mirror exit_pops_spec: restore saved r6..r10 so post-state matches (callee may have clobbered them).
                         for (i, r) in (6u8..=10).enumerate() {
                             state.write_reg(r, saved[i].clone());
@@ -290,7 +290,7 @@ pub(crate) fn walk_and_exec(
                 block_pcs.push(pc_iter);
                 let call_target = resolve_call_target_logical(ctx, analysis, ins);
                 // Branch hyp name indexed by number of branches seen so far.
-                let branch_idx = state.branch_hyps.len();
+                let branch_idx = state.branches().len();
                 let branch_hyp = format!("h_branch{}", branch_idx);
                 let is_cond_jump = is_cond_jump_opc(ins.opc);
                 let branch_hyp_for_call = if is_cond_jump {
@@ -325,16 +325,8 @@ pub(crate) fn walk_and_exec(
                     spec_calls.push(sc);
                 }
                 // Phase A aliasing: surface address equation for same-cell different-rendering (consumed by rw [h_alias_<pc>]).
-                if let Some((lhs, rhs)) = state.pending_alias.take() {
-                    state
-                        .side_hyps
-                        .push((format!("h_alias_{}", pc_iter), format!("{} = {}", lhs, rhs)));
-                }
-                for (i, (lhs, rhs)) in state.pending_slot_aliases.drain(..).enumerate() {
-                    state.side_hyps.push((
-                        format!("h_alias_{}_{}", pc_iter, i),
-                        format!("{} = {}", lhs, rhs),
-                    ));
+                for hypothesis in state.take_alias_hypotheses(pc_iter) {
+                    state.side_hypotheses_mut().push(hypothesis);
                 }
 
                 if let Some(cursor) = trace_cursor.as_mut() {
@@ -419,18 +411,19 @@ pub(crate) fn walk_and_exec(
             }
         }
 
-        // Blob tail-splits requested: record and re-walk.
-        if !state.new_blob_splits.is_empty() {
-            merge_blob_splits(&mut blob_splits, state.new_blob_splits.drain(..));
-            continue;
-        }
-        // Demotion requested: merge new spans into hot set and re-walk (this pass discarded).
-        if !state.new_hot.is_empty() {
-            merge_hot_regions(&mut hot_regions, state.new_hot.drain(..));
-            continue;
+        match state.take_retry_plan() {
+            RetryPlan::BlobSplits(splits) => {
+                merge_blob_splits(&mut blob_splits, splits);
+                continue;
+            }
+            RetryPlan::HotRegions(regions) => {
+                merge_hot_regions(&mut hot_regions, regions);
+                continue;
+            }
+            RetryPlan::Ready => {}
         }
         // H8 FAIL CLOSED: overlapping atom footprints make precondition's sepConj unsatisfiable (vacuous).
-        if !state.overlap_errors.is_empty() {
+        if !state.overlap_errors().is_empty() {
             return Err(LiftError::new(
                 DiagnosticKind::ByteAliasing,
                 format!(
@@ -439,7 +432,7 @@ pub(crate) fn walk_and_exec(
              unsatisfiable. The walker does not yet alias these at byte \
              granularity (soundness-audit H8, \
              docs/QEDLIFT_ALIASING_DESIGN.md):\n  - {}",
-                    state.overlap_errors.join("\n  - ")
+                    state.overlap_errors().join("\n  - ")
                 ),
             ));
         }

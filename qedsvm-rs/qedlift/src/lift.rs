@@ -216,7 +216,7 @@ pub(super) fn lift_one_with_layouts(
 
     let out_patched = out.replace(
         "@@HEARTBEATS@@",
-        if state.hot_regions.is_empty() {
+        if !state.has_hot_regions() {
             "4000000"
         } else {
             "16000000"
@@ -499,7 +499,7 @@ fn build_code_req(
         s.push_str(&opens);
         for (i, &pc) in block_pcs.iter().enumerate() {
             // Syscall renders as `.call <ctor>` (not `.call_local`) to match syscall spec's CR singleton.
-            let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
+            let lean_insn = if let Some(ctor) = state.syscall_pcs().get(&pc) {
                 format!(".call {}", ctor)
             } else {
                 let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc]);
@@ -537,7 +537,7 @@ fn emit_decode_pins(
     let mut pin_offs: Vec<String> = Vec::new();
     let mut pin_exps: Vec<String> = Vec::new();
     for &pc in block_pcs {
-        let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
+        let lean_insn = if let Some(ctor) = state.syscall_pcs().get(&pc) {
             format!(".call {}", ctor)
         } else {
             let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc]);
@@ -619,7 +619,7 @@ fn assemble_triple(
     entry_pc: usize,
     exit_pc: usize,
 ) -> TripleCtx {
-    let mut pre = state.pre.clone();
+    let mut pre = state.pre_atoms().to_vec();
     let mut post = post_atoms(&pre, state);
     // An OOB fault terminal composes its fault spec against the FRONT of the
     // prefix post (`frame_right` appends the rest on the right), so rotate the
@@ -641,7 +641,7 @@ fn assemble_triple(
     }
 
     // Drop `< 2^k` bounds for cells only STORED to (stxdw_spec takes but doesn't bound them).
-    state.u64_load_vars.retain(|(v, _)| {
+    state.load_vars_mut().retain(|(v, _)| {
         let h = format!("h{}_lt", v);
         spec_calls.iter().any(|sc| sc.have_line.contains(&h))
     });
@@ -655,7 +655,7 @@ fn assemble_triple(
     let rr = region_req(&pre, state, &abs_subst);
     // call_local requires `callStackIs []` in pre+post (call_local_spec takes it, exit_pops_spec returns it).
     // Net change = none, but sl_block_iter must thread it through the chain.
-    let cs_atom = if state.saw_call {
+    let cs_atom = if state.saw_call() {
         " ** callStackIs []"
     } else {
         ""
@@ -670,35 +670,35 @@ fn assemble_triple(
     };
     // u64-load bounds: ldxdw_spec leaves `< 2^64` residuals; surface as hyps, discharge with `<;> assumption`.
     let mut u64_hyps = String::new();
-    for (v, k) in &state.u64_load_vars {
+    for (v, k) in state.load_vars() {
         u64_hyps.push_str(&format!("(h{}_lt : {} < 2 ^ {})\n    ", v, v, k));
     }
     // Path hyps for conditional jumps (e.g. JeqImm fall-through: `dst ≠ toU64 imm`).
     let mut branch_hyps_sig = String::new();
-    for (i, bh) in state.branch_hyps.iter().enumerate() {
+    for (i, bh) in state.branches().iter().enumerate() {
         branch_hyps_sig.push_str(&format!("({} : {})\n    ", bh.name(i), bh.lean_hyp()));
     }
     // Memset: ByteArray param + `.size = count` hyp (spec's hbs) + nCu + CU-bound hyp (honest model assumption).
     // Side-condition hyps (e.g. div/mod divisor ≠ 0).
     let mut side_hyps_sig = String::new();
-    for (name, prop) in &state.side_hyps {
+    for (name, prop) in state.side_hypotheses() {
         side_hyps_sig.push_str(&format!("({} : {})\n    ", name, prop));
     }
     let mut syscall_sig = String::new();
     // Bare `ByteArray` params with no size constraint (e.g. sol_set_return_data's old buffer).
-    for ba in &state.bytearray_vars {
+    for ba in state.bytearray_vars() {
         syscall_sig.push_str(&format!("({} : ByteArray)\n    ", ba));
     }
-    for (bs, size) in &state.memset_blobs {
+    for (bs, size) in state.memset_blobs() {
         syscall_sig.push_str(&format!("({} : ByteArray)\n    ", bs));
         syscall_sig.push_str(&format!("(h{}_sz : {}.size = {})\n    ", bs, bs, size));
     }
     // Hyps referencing the blob params (e.g. PDA pid.size / off-curve) — after
     // the blob decls so the forward references resolve.
-    for (name, prop) in &state.blob_side_hyps {
+    for (name, prop) in state.blob_side_hypotheses() {
         syscall_sig.push_str(&format!("({} : {})\n    ", name, prop));
     }
-    for (ncu, hcu, ctor) in &state.syscall_cu_vars {
+    for (ncu, hcu, ctor) in state.syscall_cu_vars() {
         syscall_sig.push_str(&format!("({} : Nat)\n    ", ncu));
         syscall_sig.push_str(&format!(
             "({} : ∀ s : State, (step (.call {}) s).cuConsumed \
@@ -707,11 +707,11 @@ fn assemble_triple(
         ));
     }
     // CU bound M = sum of nCu vars; sl_block_iter's cuTripleWithinMem_cast closes via omega.
-    let m_bound: String = if state.syscall_cu_vars.is_empty() {
+    let m_bound: String = if state.syscall_cu_vars().is_empty() {
         "0".to_string()
     } else {
         state
-            .syscall_cu_vars
+            .syscall_cu_vars()
             .iter()
             .map(|(n, _, _)| n.clone())
             .collect::<Vec<_>>()
@@ -729,17 +729,17 @@ fn assemble_triple(
     // against the binder. Existing reload-using lifts already trip
     // `u64_load_vars`/`use_block_iter`, so this only flips the reload-only case.
     let has_reload_hyp = state
-        .side_hyps
+        .side_hypotheses()
         .iter()
         .any(|(n, _)| n.starts_with("hReloadLt"));
     let needs_assumption =
-        !state.branch_hyps.is_empty() || !state.u64_load_vars.is_empty() || has_reload_hyp;
+        !state.branches().is_empty() || !state.load_vars().is_empty() || has_reload_hyp;
     // Use sl_block_iter when: call_local crossed (sl_block_auto diverges on wrapAdd addresses),
     // any cond-jump taken (SpecGen.mkSpec only has _not_taken; taken arms need explicit spec calls),
     // or a syscall was walked (SpecGen has no `.call <Syscall>` dispatch — the effect is supplied by
     // the emitted `call_<name>_spec` preamble, which only sl_block_iter threads).
-    let any_taken = state.branch_hyps.iter().any(|b| b.taken);
-    let use_block_iter = state.saw_call || any_taken || !state.syscall_pcs.is_empty();
+    let any_taken = state.branches().iter().any(|b| b.taken);
+    let use_block_iter = state.saw_call() || any_taken || !state.syscall_pcs().is_empty();
 
     let value_gens = build_value_gens(state, &pre, &post, &abs_subst, use_block_iter);
     let tactic = build_proof_body(
@@ -907,7 +907,7 @@ fn build_value_gens(
                 // Skip address abstractions: generalizing an address rewrites it everywhere, breaking post/rr matching.
                 let is_addr_abs = abs_subst.contains_key(&r) || abs_subst.values().any(|p| *p == r);
                 // Skip values a syscall spec pins concretely (e.g. sha256's `len`).
-                let is_pinned = state.gen_exclude.contains(&r);
+                let is_pinned = state.generation_exclusions().contains(&r);
                 if !is_addr_abs && !is_pinned && seen.insert(r.clone()) {
                     gens.push(r);
                 }
@@ -1013,27 +1013,27 @@ fn lifted_param_names(tc: &TripleCtx, state: &SymState) -> Vec<String> {
             names.push(h.clone());
         }
     }
-    for (v, _) in &state.u64_load_vars {
+    for (v, _) in state.load_vars() {
         names.push(format!("h{}_lt", v));
     }
-    for i in 0..state.branch_hyps.len() {
+    for i in 0..state.branches().len() {
         names.push(format!("h_branch{}", i));
     }
-    for (name, _) in &state.side_hyps {
+    for (name, _) in state.side_hypotheses() {
         names.push(name.clone());
     }
     // Mirror `syscall_sig` order: bytearray_vars, memset blobs, blob hyps, CU.
-    for ba in &state.bytearray_vars {
+    for ba in state.bytearray_vars() {
         names.push(ba.clone());
     }
-    for (bs, _) in &state.memset_blobs {
+    for (bs, _) in state.memset_blobs() {
         names.push(bs.clone());
         names.push(format!("h{}_sz", bs));
     }
-    for (name, _) in &state.blob_side_hyps {
+    for (name, _) in state.blob_side_hypotheses() {
         names.push(name.clone());
     }
-    for (ncu, hcu, _) in &state.syscall_cu_vars {
+    for (ncu, hcu, _) in state.syscall_cu_vars() {
         names.push(ncu.clone());
         names.push(hcu.clone());
     }
@@ -1504,10 +1504,10 @@ fn emit_transition_corollary(
     // abort/panic fault. OOB fault terminals fall closed for now.
     let wired_binders = has_trace
         && cs_atom.is_empty()
-        && state.bytearray_vars.is_empty()
-        && state.memset_blobs.is_empty()
-        && state.blob_side_hyps.is_empty()
-        && state.syscall_cu_vars.is_empty();
+        && state.bytearray_vars().is_empty()
+        && state.memset_blobs().is_empty()
+        && state.blob_side_hypotheses().is_empty()
+        && state.syscall_cu_vars().is_empty();
     let terminal_fault = matches!(fault_terminal,
         Some(FaultTerminal::Abort(k))
             if !matches!(k, AbortKind::Invoke | AbortKind::InvokeC));
@@ -1535,20 +1535,20 @@ fn emit_transition_corollary(
                 names.push(h.clone());
             }
         }
-        for (v, k) in &state.u64_load_vars {
+        for (v, k) in state.load_vars() {
             bitems.push(BItem::Hyp {
                 name: format!("h{}_lt", v),
                 prop: format!("{} < 2 ^ {}", v, k),
             });
             names.push(format!("h{}_lt", v));
         }
-        for (i, bh) in state.branch_hyps.iter().enumerate() {
+        for (i, bh) in state.branches().iter().enumerate() {
             bitems.push(BItem::Guard {
                 prop: bh.lean_hyp(),
             });
             names.push(bh.name(i));
         }
-        for (name, prop) in &state.side_hyps {
+        for (name, prop) in state.side_hypotheses() {
             bitems.push(BItem::Hyp {
                 name: name.clone(),
                 prop: prop.clone(),

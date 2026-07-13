@@ -48,7 +48,7 @@ pub(super) fn spec_call_for(
     let reg = |r: u8| -> String { format!(".{}", reg_lit(r)) };
     // Lean string for register r; falls back to initial-name convention (`baseAddr` for r1, `vR<N>Old` otherwise).
     let reg_val_lean = |r: u8| -> String {
-        match state.regs.get(&r) {
+        match state.regs().get(&r) {
             Some(e) => e.to_lean(),
             None => reg_initial_name(r),
         }
@@ -56,7 +56,7 @@ pub(super) fn spec_call_for(
     // Expr form of register r, for canon-aware cell lookups.
     let reg_val_expr = |r: u8| -> Expr {
         state
-            .regs
+            .regs()
             .get(&r)
             .cloned()
             .unwrap_or_else(|| Expr::InitReg(reg_initial_name(r)))
@@ -76,7 +76,7 @@ pub(super) fn spec_call_for(
             let base_addr = reg_val_lean(src);
             let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, Width::Byte);
             let v_name = lookup
-                .map(|(i, _)| state.mem[i].value.atom_lean())
+                .map(|(i, _)| state.mem_cells()[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemB_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             if dst == src {
@@ -93,7 +93,7 @@ pub(super) fn spec_call_for(
                 )
             } else {
                 let v_old_dst = state
-                    .regs
+                    .regs()
                     .get(&dst)
                     .map(|e| e.to_lean())
                     .unwrap_or_else(|| reg_initial_name(dst));
@@ -125,7 +125,7 @@ pub(super) fn spec_call_for(
                     let mut haddrs = String::new();
                     let mut n_alias = 0usize;
                     for k in 0..8i64 {
-                        let found = state.mem.iter().find(|c| {
+                        let found = state.mem_cells().iter().find(|c| {
                             matches!(c.width, Width::Byte) && {
                                 let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
                                 cr == root && cd + c.delta == lo + k
@@ -166,7 +166,7 @@ pub(super) fn spec_call_for(
                         }
                     }
                     let v_old_dst = state
-                        .regs
+                        .regs()
                         .get(&dst)
                         .map(|e| e.to_lean())
                         .unwrap_or_else(|| reg_initial_name(dst));
@@ -192,7 +192,7 @@ pub(super) fn spec_call_for(
             // Re-read: reuse existing cell value. First access allocates oldMemD_<fresh> with h<var>_lt.
             // Reloaded compound (spilled reg) surfaces `hReloadLt_<pc>` as the hv bound.
             let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, Width::Dword);
-            let cell_val = lookup.map(|(i, _)| state.mem[i].value.clone());
+            let cell_val = lookup.map(|(i, _)| state.mem_cells()[i].value.clone());
             let alias = alias_suffix(&lookup);
             let (v_arg, hv) = match &cell_val {
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
@@ -217,7 +217,7 @@ pub(super) fn spec_call_for(
                 )
             } else {
                 let v_old_dst = state
-                    .regs
+                    .regs()
                     .get(&dst)
                     .map(|e| e.to_lean())
                     .unwrap_or_else(|| reg_initial_name(dst));
@@ -247,7 +247,7 @@ pub(super) fn spec_call_for(
             };
             let base_addr = reg_val_lean(src);
             let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, w);
-            let cell_val = lookup.map(|(i, _)| state.mem[i].value.clone());
+            let cell_val = lookup.map(|(i, _)| state.mem_cells()[i].value.clone());
             let alias = alias_suffix(&lookup);
             let (v_arg, hv) = match &cell_val {
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
@@ -258,7 +258,7 @@ pub(super) fn spec_call_for(
                 }
             };
             let v_old_dst = state
-                .regs
+                .regs()
                 .get(&dst)
                 .map(|e| e.to_lean())
                 .unwrap_or_else(|| reg_initial_name(dst));
@@ -291,7 +291,7 @@ pub(super) fn spec_call_for(
             // atom_lean() parenthesises compound prior values, leaving bare `oldMem*_N` unparenthesised.
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, w);
             let old_v = lookup
-                .map(|(i, _)| state.mem[i].value.atom_lean())
+                .map(|(i, _)| state.mem_cells()[i].value.atom_lean())
                 .unwrap_or_else(|| format!("{}_{}", pfx, state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
@@ -546,7 +546,7 @@ pub(super) fn spec_call_for(
             let base_addr = reg_val_lean(dst);
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Byte);
             let old_v = lookup
-                .map(|(i, _)| state.mem[i].value.atom_lean())
+                .map(|(i, _)| state.mem_cells()[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemB_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
@@ -566,7 +566,7 @@ pub(super) fn spec_call_for(
             let base_addr = reg_val_lean(dst);
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Halfword);
             let old_v = lookup
-                .map(|(i, _)| state.mem[i].value.atom_lean())
+                .map(|(i, _)| state.mem_cells()[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemH_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
@@ -595,7 +595,7 @@ pub(super) fn spec_call_for(
                     let mut haddrs = String::new();
                     let mut n_alias = 0usize;
                     for k in 0..4i64 {
-                        let found = state.mem.iter().find(|c| {
+                        let found = state.mem_cells().iter().find(|c| {
                             matches!(c.width, Width::Byte) && {
                                 let (cr, cd) = canon_addr(&c.addr_base, c.addr_off);
                                 cr == root && cd + c.delta == lo + k
@@ -662,7 +662,7 @@ pub(super) fn spec_call_for(
             }
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Word);
             let old_v = lookup
-                .map(|(i, _)| state.mem[i].value.atom_lean())
+                .map(|(i, _)| state.mem_cells()[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemW_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
@@ -682,7 +682,7 @@ pub(super) fn spec_call_for(
             let base_addr = reg_val_lean(dst);
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Dword);
             let old_v = lookup
-                .map(|(i, _)| state.mem[i].value.atom_lean())
+                .map(|(i, _)| state.mem_cells()[i].value.atom_lean())
                 .unwrap_or_else(|| format!("oldMemD_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
@@ -792,7 +792,7 @@ pub(super) fn spec_call_for(
             let r8 = reg_val_lean(8);
             let r9 = reg_val_lean(9);
             let r10 = reg_val_lean(10);
-            let cs = render_callstack(&state.call_stack);
+            let cs = render_callstack(state.call_stack());
             format!(
                 "have {} := call_local_spec {} {} ({}) ({}) ({}) ({}) ({}) {}",
                 hyp_name, target, cs, r6, r7, r8, r9, r10, pc,
@@ -808,9 +808,9 @@ pub(super) fn spec_call_for(
             let r10 = reg_val_lean(10);
             // `frame`: retPc = `<callpc> + 1`, savedR6..savedR10 = CALL-TIME snapshot (NOT current — callee may clobber).
             // `cs` = stack below frame (empty at top-level).
-            let n = state.call_stack.len();
+            let n = state.call_stack().len();
             let (call_pc, saved) = state
-                .call_stack
+                .call_stack()
                 .last()
                 .map(|(p, s)| (*p, s.clone()))
                 .unwrap_or((0, std::array::from_fn(|_| Expr::InitReg("?".into()))));
@@ -821,7 +821,7 @@ pub(super) fn spec_call_for(
                 saved[3].atom_lean(),
                 saved[4].atom_lean(),
             );
-            let cs = render_callstack(&state.call_stack[..n.saturating_sub(1)]);
+            let cs = render_callstack(&state.call_stack()[..n.saturating_sub(1)]);
             // `dsimp` forces iota reduction on `frame.savedR6..savedR10` fields (sl_block_iter doesn't run it).
             format!(
                 "have {0} := exit_pops_spec ⟨{1} + 1, ({2}), ({3}), ({4}), ({5}), ({6})⟩ {7} ({8}) ({9}) ({10}) ({11}) ({12}) {13}\n  \
