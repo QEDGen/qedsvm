@@ -23,7 +23,7 @@ mod input;
 mod isa;
 #[path = "qedlift/lift.rs"]
 mod lift;
-#[path = "qedlift/refinement.rs"]
+#[path = "qedlift/refinement/mod.rs"]
 mod refinement;
 #[path = "qedlift/render.rs"]
 mod render;
