@@ -3,9 +3,7 @@
 //! derived from the execution, discharged by `sl_block_auto`. Also emits
 //! asm-refines theorems for known program shapes.
 
-use std::path::Path;
-
-use solana_sbpf::{ebpf, static_analysis::Analysis};
+use solana_sbpf::static_analysis::Analysis;
 
 mod api;
 mod branch;
@@ -26,53 +24,24 @@ mod transition;
 mod witness;
 
 pub use api::Lifter;
-use branch::{BranchHyp, BranchKind};
-use core::{
-    arsh_render, canon_addr, eval_expr, lean_off, reg_initial_name, reg_lit, Atom, Expr, Width,
-};
 pub use diagnostic::{DiagnosticKind, LiftError};
-use emit::{
-    atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
-    post_atoms, region_req,
-};
-use input::{
-    load_binary, load_descriptor, load_idl, load_idl_value, load_qedmeta, load_trace, parse_args,
-    pascal_case, sidecar_account_layouts, Args, BinaryCtx, Command,
-};
-use isa::{
-    function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full, render_callstack,
-    resolve_call_target_logical, resolve_jump_target,
-};
-use refinement::{emit_descriptor_refinement, emit_refinement, is_const_delta_arm, RefinementCtx};
-use state::SymState;
-use syscalls::{
-    emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log, emit_sol_memcmp,
-    emit_sol_memcpy, emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
-};
-use transition::{
-    emit_transition_bundle, emit_transition_fault, emit_transition_path, BItem, FaultTail,
-    RefineTarget, TransitionPathInfo,
-};
-use witness::build_branch_witness;
+use input::{load_binary, load_descriptor, load_idl_value, load_trace, parse_args, Command};
+#[cfg(test)]
+use input::{load_qedmeta, sidecar_account_layouts};
 
-// Re-exports of the split-out lifter stages: visible at the crate root so the
-// sibling modules (and the test suite's `use super::*`) resolve them here.
 #[cfg(test)]
 use driver::run_transition;
 use driver::{
     run_batch_mode, run_coverage_mode, run_profile_mode, run_qedmeta_mode, run_single_mode,
     run_transition_mode,
 };
-use exec::{imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, WalkResult};
 #[cfg(test)]
 use lift::lift_one;
-use lift::{lift_one_with_layouts, LiftOutput, LiftRequest};
+#[cfg(test)]
+use lift::{lift_one_with_layouts, LiftRequest};
 pub use lift::{LiftOptions, LiftResult};
-use qed_analysis::profile::{fold_trace, folded_lines, symbolicate_trace};
-use qed_analysis::symbolicate::SymbolIndex;
 pub use qed_analysis::{image::ProgramImage, layout::AccountLayout};
 pub use qed_artifacts::RefinementDescriptor;
-use spec_call::{spec_call_for, SpecCall};
 
 #[cfg(test)]
 mod tests;

@@ -1,7 +1,11 @@
 //! Per-instruction spec-call emission: the `have h_<pc> := <spec> <args>`
 //! preamble lines `sl_block_iter` proof bodies consume.
 
-use super::*;
+use solana_sbpf::ebpf;
+
+use crate::core::{canon_addr, lean_off, reg_initial_name, reg_lit, Expr, Width};
+use crate::isa::render_callstack;
+use crate::state::SymState;
 
 /// One emitted `have h_<pc> := <spec_name> <args>` line; used by `sl_block_iter` proof bodies when `sl_block_auto` diverges (call_local programs).
 #[derive(Clone, Debug)]

@@ -2,7 +2,34 @@
 //! (`TripleCtx`) and the corollary emitters (heap-alloc / balance /
 //! typed-fault / transition) around `lift_one_with_layouts`.
 
-use super::*;
+use std::path::Path;
+
+use solana_sbpf::{ebpf, static_analysis::Analysis};
+
+use crate::core::{Atom, Expr, Width};
+use crate::diagnostic::{DiagnosticKind, LiftError};
+use crate::emit::{
+    atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
+    post_atoms, region_req,
+};
+use crate::exec::{imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, WalkResult};
+use crate::input::BinaryCtx;
+use crate::isa::{
+    function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full,
+    resolve_call_target_logical, resolve_jump_target,
+};
+use crate::refinement::{
+    emit_descriptor_refinement, emit_refinement, is_const_delta_arm, RefinementCtx,
+};
+use crate::render;
+use crate::spec_call::SpecCall;
+use crate::state::SymState;
+use crate::transition::{
+    emit_transition_fault, emit_transition_path, BItem, FaultTail, RefineTarget, TransitionPathInfo,
+};
+use crate::witness::build_branch_witness;
+use qed_analysis::layout::AccountLayout;
+use qed_artifacts::RefinementDescriptor;
 
 /// Generated artifacts and execution facts for one selected program path.
 pub struct LiftResult {
