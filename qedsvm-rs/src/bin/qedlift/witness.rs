@@ -336,9 +336,18 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
                         _ => true,
                     };
                 let ok = if src_first {
-                    solve_src(&mut trial) && solve_expr(&bh.dst_value, dt, &mut trial)
+                    // These calls mutate `trial`, so their order is semantically
+                    // significant even though the boolean results are combined
+                    // with `&&`.
+                    if !solve_src(&mut trial) {
+                        false
+                    } else {
+                        solve_expr(&bh.dst_value, dt, &mut trial)
+                    }
+                } else if !solve_expr(&bh.dst_value, dt, &mut trial) {
+                    false
                 } else {
-                    solve_expr(&bh.dst_value, dt, &mut trial) && solve_src(&mut trial)
+                    solve_src(&mut trial)
                 };
                 if ok && eval_branch(bh, &trial) == Some(true) {
                     env = trial;
