@@ -360,8 +360,7 @@ pub(super) fn emit_sol_memcmp(
 
     // Pre: the 4-byte `↦U32` output cell at r4 (old value = fresh var,
     // surfaced as a theorem param via `u64_load_vars` like the sysvar cells).
-    let out_idx = state.fresh;
-    state.fresh += 1;
+    let out_idx = state.alloc_fresh_name();
     let out_name = format!("oldMemW_{}", out_idx);
     state.u64_load_vars.push((out_name.clone(), 32));
     let out_old = Expr::InitMem(out_name.clone());
@@ -488,8 +487,7 @@ pub(super) fn emit_sol_get_sysvar(
     ];
     let mut old_names: Vec<String> = Vec::new();
     for (coff, w, bits, post) in cells.drain(..) {
-        let i = state.fresh;
-        state.fresh += 1;
+        let i = state.alloc_fresh_name();
         let name = format!(
             "{}_{}",
             if matches!(w, Width::Dword) {

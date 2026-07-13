@@ -77,7 +77,7 @@ pub(super) fn spec_call_for(
             let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, Width::Byte);
             let v_name = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
-                .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
+                .unwrap_or_else(|| format!("oldMemB_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             if dst == src {
                 // dst == src: generic ldxb_spec would emit two `r ↦ᵣ` atoms (unsatisfiable); use ldxb_same_spec.
@@ -113,9 +113,8 @@ pub(super) fn spec_call_for(
         }
         LD_DW_REG => {
             // ldxdw_spec dst src off vOldDst baseAddr v pc hne hv.
-            // Runs BEFORE step()'s read_mem; predicts fresh name `oldMemD_{state.fresh}`, bound `h<var>_lt`.
+            // Hot (byte-demoted) region: use `ldxdw_bytes_spec` (H8 Phase B).
             let base_addr = reg_val_lean(src);
-            // Hot (byte-demoted) region: use `ldxdw_bytes_spec` (H8 Phase B); predictions mirror `read_hot_wide`.
             {
                 let bexpr = reg_val_expr(src);
                 let (root, lo) = canon_addr(&bexpr, off);
@@ -125,7 +124,6 @@ pub(super) fn spec_call_for(
                     let mut bounds = String::new();
                     let mut haddrs = String::new();
                     let mut n_alias = 0usize;
-                    let mut fresh = state.fresh;
                     for k in 0..8i64 {
                         let found = state.mem.iter().find(|c| {
                             matches!(c.width, Width::Byte) && {
@@ -156,8 +154,7 @@ pub(super) fn spec_call_for(
                                 }
                             }
                             None => {
-                                let n = format!("oldMemB_{}", fresh);
-                                fresh += 1;
+                                let n = format!("oldMemB_{}", state.reserve_fresh_name());
                                 addrs.push_str(&format!(
                                     " ({})",
                                     SymState::slot_expected_render(&bexpr, off, k)
@@ -201,7 +198,7 @@ pub(super) fn spec_call_for(
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
                 Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
                 None => {
-                    let n = format!("oldMemD_{}", state.fresh);
+                    let n = format!("oldMemD_{}", state.reserve_fresh_name());
                     (n.clone(), format!("h{}_lt", n))
                 }
             };
@@ -256,7 +253,7 @@ pub(super) fn spec_call_for(
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
                 Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
                 None => {
-                    let n = format!("{}_{}", pfx, state.fresh);
+                    let n = format!("{}_{}", pfx, state.reserve_fresh_name());
                     (n.clone(), format!("h{}_lt", n))
                 }
             };
@@ -295,8 +292,7 @@ pub(super) fn spec_call_for(
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, w);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
-                // First access: step()'s write_mem allocates `oldMem*_{fresh}`; predict that name.
-                .unwrap_or_else(|| format!("{}_{}", pfx, state.fresh));
+                .unwrap_or_else(|| format!("{}_{}", pfx, state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := {} {} {} {} ({}) ({}) {} {}{}",
@@ -551,7 +547,7 @@ pub(super) fn spec_call_for(
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Byte);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
-                .unwrap_or_else(|| format!("oldMemB_{}", state.fresh));
+                .unwrap_or_else(|| format!("oldMemB_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := stb_spec {} {} {} ({}) ({}) {}{}",
@@ -571,7 +567,7 @@ pub(super) fn spec_call_for(
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Halfword);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
-                .unwrap_or_else(|| format!("oldMemH_{}", state.fresh));
+                .unwrap_or_else(|| format!("oldMemH_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := sth_spec {} {} {} ({}) ({}) {}{}",
@@ -598,7 +594,6 @@ pub(super) fn spec_call_for(
                     let mut bounds = String::new();
                     let mut haddrs = String::new();
                     let mut n_alias = 0usize;
-                    let mut fresh = state.fresh;
                     for k in 0..4i64 {
                         let found = state.mem.iter().find(|c| {
                             matches!(c.width, Width::Byte) && {
@@ -629,8 +624,7 @@ pub(super) fn spec_call_for(
                                 }
                             }
                             None => {
-                                let n = format!("oldMemB_{}", fresh);
-                                fresh += 1;
+                                let n = format!("oldMemB_{}", state.reserve_fresh_name());
                                 addrs.push_str(&format!(
                                     " ({})",
                                     SymState::slot_expected_render(&bexpr, off, k)
@@ -669,7 +663,7 @@ pub(super) fn spec_call_for(
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Word);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
-                .unwrap_or_else(|| format!("oldMemW_{}", state.fresh));
+                .unwrap_or_else(|| format!("oldMemW_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := stw_spec {} {} {} ({}) ({}) {}{}",
@@ -689,7 +683,7 @@ pub(super) fn spec_call_for(
             let lookup = state.lookup_cell_aliased(&reg_val_expr(dst), off, Width::Dword);
             let old_v = lookup
                 .map(|(i, _)| state.mem[i].value.atom_lean())
-                .unwrap_or_else(|| format!("oldMemD_{}", state.fresh));
+                .unwrap_or_else(|| format!("oldMemD_{}", state.reserve_fresh_name()));
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := stdw_spec {} {} {} ({}) ({}) {}{}",
