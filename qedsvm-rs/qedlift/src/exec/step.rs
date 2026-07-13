@@ -7,9 +7,9 @@ use crate::state::SymState;
 
 use super::syscall_registry::arsh_value;
 
-/// was `exit` (slice terminates); Err for opcodes the executor
-/// doesn't model yet. `pc` is the analysis-PC of `insn` (only used
-/// to resolve relative jump targets). `branch_taken` (when `Some`)
+/// Apply one non-terminal instruction's data effect to `state`.
+/// Control-flow routing and exits are owned by the walker. `pc` is the
+/// analysis-PC of `insn`; `branch_taken` (when `Some`)
 /// records the walker's branch decision so the path hypothesis is
 /// the right shape (taken vs fall-through).
 pub(super) fn step(
@@ -17,7 +17,7 @@ pub(super) fn step(
     insn: &ebpf::Insn,
     pc: Option<usize>,
     branch_taken: Option<bool>,
-) -> Result<bool, LiftError> {
+) -> Result<(), LiftError> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
     match insn.opc {
@@ -514,20 +514,6 @@ pub(super) fn step(
             let call_pc = pc.unwrap_or(0);
             state.call_stack.push((call_pc, [r6, r7, r8, r9, r10_old]));
         }
-        EXIT => {
-            if state.call_stack.is_empty() {
-                return Ok(false);
-            } else {
-                // Nested exit: pop frame + undo r10's +0x1000 bump. Callee must not touch r6..r9 (Solana ABI);
-                // ABI violation → chain won't compose → sl_block_iter residual.
-                let _ = state.call_stack.pop();
-                let r10_cur = state.read_reg(10);
-                state.write_reg(
-                    10,
-                    Expr::WrapSub(Box::new(r10_cur), Box::new(Expr::Const(0x1000))),
-                );
-            }
-        }
         opc => {
             return Err(LiftError::new(
                 DiagnosticKind::OpcodeUnmodeled,
@@ -535,5 +521,5 @@ pub(super) fn step(
             ))
         }
     }
-    Ok(true)
+    Ok(())
 }

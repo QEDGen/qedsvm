@@ -8,4 +8,4 @@ mod syscall_registry;
 mod walk;
 
 pub(super) use syscall_registry::{imm_is_modeled_syscall, AbortKind};
-pub(super) use walk::{walk_and_exec, FaultTerminal, WalkResult};
+pub(super) use walk::{walk_and_exec, FaultTerminal, WalkOptions, WalkResult};

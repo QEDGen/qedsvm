@@ -6,7 +6,7 @@ use crate::isa::{resolve_call_target_logical, resolve_jump_target};
 use crate::spec_call::{spec_call_for, SpecCall};
 use crate::state::SymState;
 
-use super::control::{is_cond_jump_opc, resolve_branch_taken};
+use super::control::{is_cond_jump_opc, resolve_branch_taken, TraceCursor};
 use super::step::step;
 use super::syscall_registry::{
     classify_call_imm, dispatch_traced_syscall, AbortKind, CallImmClassification, OobSyscall,
@@ -73,6 +73,13 @@ pub(super) fn merge_hot_regions(
     }
 }
 
+pub(crate) struct WalkOptions<'a> {
+    pub(crate) trace: Option<&'a [usize]>,
+    pub(crate) target_discriminator: Option<i64>,
+    pub(crate) arm_entry: Option<usize>,
+    pub(crate) program_entry: usize,
+}
+
 /// CFG walk + symbolic execution + the hot-region/blob-split retry loop +
 /// syscall dispatch. Straight-line→pc+1, ja→target, cond-jump→fall-through,
 /// call_local→push+jump, exit/empty-stack→done, exit/non-empty→pop+resume.
@@ -81,12 +88,15 @@ pub(super) fn merge_hot_regions(
 pub(crate) fn walk_and_exec(
     ctx: &BinaryCtx,
     analysis: &Analysis<'_>,
-    trace: Option<&[usize]>,
-    target_disc: Option<i64>,
-    arm_entry: Option<usize>,
-    entry_pc: usize,
+    options: WalkOptions<'_>,
 ) -> Result<WalkResult, LiftError> {
     let insns = &ctx.insns;
+    let WalkOptions {
+        trace,
+        target_discriminator,
+        arm_entry,
+        program_entry,
+    } = options;
 
     // Hot regions: grow monotonically across walk retries (H8 Phase B); attempt cap is a safety net.
     let mut hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>> = Default::default();
@@ -116,12 +126,12 @@ pub(crate) fn walk_and_exec(
             ..SymState::default()
         };
         {
-            let mut ti: usize = 0; // trace cursor; pc_iter mirrors trace[ti] in trace mode
-            let mut pc_iter: usize = match trace {
-                Some(t) => {
+            let mut trace_cursor = trace.map(TraceCursor::new).transpose()?;
+            let mut pc_iter: usize = match trace_cursor.as_ref() {
+                Some(cursor) => {
                     // #41 Phase 4: cross-check sidecar arm_entry_pc is on the trace (mismatch → fail-closed).
                     if let Some(arm) = arm_entry {
-                        if !t.contains(&arm) {
+                        if !cursor.contains(arm) {
                             return Err(LiftError::new(
                                 DiagnosticKind::TraceInput,
                                 format!(
@@ -133,16 +143,13 @@ pub(crate) fn walk_and_exec(
                             ));
                         }
                     }
-                    t[0] // load_trace guarantees non-empty
+                    cursor.current().expect("TraceCursor rejects empty traces")
                 }
                 // #41 Phase 4: seed from recovered arm_entry (no disc-cascade nav); fallback = entry_pc.
-                None => arm_entry.unwrap_or(entry_pc),
+                None => arm_entry.unwrap_or(program_entry),
             };
             // Walk cap: prevents runaway on unmodelled back-branches; generous for deep dispatcher cascades.
-            let walk_cap: usize = match trace {
-                Some(t) => t.len() + 8,
-                None => 1024,
-            };
+            let walk_cap = trace_cursor.as_ref().map_or(1024, TraceCursor::walk_cap);
             let mut walk_steps: usize = 0;
             loop {
                 walk_steps += 1;
@@ -156,12 +163,12 @@ pub(crate) fn walk_and_exec(
                         ),
                     ));
                 }
-                if let Some(t) = trace {
-                    if ti >= t.len() {
+                if let Some(cursor) = trace_cursor.as_ref() {
+                    let Some(current) = cursor.current() else {
                         exit_pc = pc_iter;
                         break;
-                    }
-                    pc_iter = t[ti];
+                    };
+                    pc_iter = current;
                 }
                 if pc_iter >= insns.len() {
                     exit_pc = pc_iter;
@@ -188,8 +195,8 @@ pub(crate) fn walk_and_exec(
                             state.write_reg(r, saved[i].clone());
                         }
                         // Trace: next PC from trace; static: jump to callpc+1.
-                        if trace.is_some() {
-                            ti += 1;
+                        if let Some(cursor) = trace_cursor.as_mut() {
+                            cursor.advance();
                         } else {
                             pc_iter = call_pc + 1;
                         }
@@ -216,8 +223,8 @@ pub(crate) fn walk_and_exec(
                     // this trace, does NOT return to pc+1 (the OOB access is stuck).
                     // Trace-only: in static mode the same syscall might succeed.
                     if let Some(oob) = OobSyscall::from_hash(imm) {
-                        if let Some(t) = trace {
-                            if t.get(ti + 1).copied() != Some(pc_iter + 1) {
+                        if let Some(cursor) = trace_cursor.as_ref() {
+                            if cursor.next() != Some(pc_iter + 1) {
                                 fault_terminal = Some(FaultTerminal::Oob(oob));
                                 exit_pc = pc_iter;
                                 break;
@@ -228,8 +235,8 @@ pub(crate) fn walk_and_exec(
 
                 // Syscall (trace): call_imm returning to pc+1 (no BPF frame push) → dispatch on hash.
                 if ins.opc == ebpf::CALL_IMM {
-                    if let Some(t) = trace {
-                        if t.get(ti + 1).copied() == Some(pc_iter + 1) {
+                    if let Some(cursor) = trace_cursor.as_mut() {
+                        if cursor.next() == Some(pc_iter + 1) {
                             let imm = ins.imm as u32;
                             dispatch_traced_syscall(
                                 &mut state,
@@ -239,7 +246,7 @@ pub(crate) fn walk_and_exec(
                                 imm,
                                 ctx,
                             )?;
-                            ti += 1;
+                            cursor.advance();
                             continue;
                         }
                     }
@@ -260,8 +267,15 @@ pub(crate) fn walk_and_exec(
                 let jtgt = resolve_jump_target(ctx, pc_iter, ins.off as i64);
                 // Trace: taken iff next PC ≠ pc+1; target mismatch vs decoded offset = fail-closed.
                 // Static: discriminator-driven where possible, else fall-through.
-                let branch_taken =
-                    resolve_branch_taken(trace, ti, pc_iter, ins, jtgt, is_cond_jump, target_disc)?;
+                let branch_decision = resolve_branch_taken(
+                    trace_cursor.as_ref(),
+                    pc_iter,
+                    ins,
+                    jtgt,
+                    is_cond_jump,
+                    target_discriminator,
+                )?;
+                let branch_taken = branch_decision.as_option();
 
                 if let Some(sc) = spec_call_for(
                     &state,
@@ -288,8 +302,8 @@ pub(crate) fn walk_and_exec(
                     ));
                 }
 
-                if trace.is_some() {
-                    ti += 1;
+                if let Some(cursor) = trace_cursor.as_mut() {
+                    cursor.advance();
                     continue;
                 }
                 match ins.opc {
@@ -318,7 +332,7 @@ pub(crate) fn walk_and_exec(
                     | ebpf::JLT32_REG
                     | ebpf::JSLE64_REG
                     | ebpf::JSLE32_REG
-                        if branch_taken == Some(true) =>
+                        if branch_decision.is_taken() =>
                     {
                         pc_iter = jtgt as usize;
                     }
