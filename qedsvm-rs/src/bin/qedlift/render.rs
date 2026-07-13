@@ -265,7 +265,12 @@ pub(super) fn large_text_decode_section(
     pin_expected: &[String],
 ) -> String {
     let mut out = text_defs(module_name, text_bytes, fn_registry_lean, "the pins below");
-    out.push_str(&decode_pins_theorem(module_name, module_name, pin_offsets, pin_expected));
+    out.push_str(&decode_pins_theorem(
+        module_name,
+        module_name,
+        pin_offsets,
+        pin_expected,
+    ));
     out
 }
 
@@ -295,7 +300,12 @@ pub(super) fn shared_text_module(
     out.push_str("import SVM.SBPF.Decode\n\n");
     out.push_str("namespace Examples.Lifted\n\n");
     out.push_str("open SVM.SBPF\n\n");
-    out.push_str(&text_defs(base, text_bytes, fn_registry_lean, "the per-arm pins"));
+    out.push_str(&text_defs(
+        base,
+        text_bytes,
+        fn_registry_lean,
+        "the per-arm pins",
+    ));
     out.push_str("end Examples.Lifted\n");
     out
 }
@@ -372,16 +382,7 @@ pub(super) fn faults_triple_theorem(t: &FaultsTriple<'_>) -> String {
          (fun rt => {})\n      \
          {} := by\n\
          {}\n\n",
-        t.name,
-        t.binders,
-        t.n_steps,
-        t.n_cu,
-        t.entry,
-        t.cr,
-        t.pre,
-        t.rr,
-        t.vm_error,
-        t.proof,
+        t.name, t.binders, t.n_steps, t.n_cu, t.entry, t.cr, t.pre, t.rr, t.vm_error, t.proof,
     )
 }
 

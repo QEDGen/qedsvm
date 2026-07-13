@@ -118,9 +118,10 @@ pub(super) fn emit_sol_memset(
                 },
             );
             let ha_name = format!("h_msplit_{}", pc);
-            state
-                .side_hyps
-                .push((ha_name.clone(), format!("{} = {} + {}", a_render, r1v.atom_lean(), n)));
+            state.side_hyps.push((
+                ha_name.clone(),
+                format!("{} = {} + {}", a_render, r1v.atom_lean(), n),
+            ));
             // call_sol_memset_presplit_u64_spec r0Old r1V r2V r3V n w a
             //   oldV pc nCu bsOld hbs hn ha hw0..hw7 hCu
             format!(
@@ -279,8 +280,16 @@ pub(super) fn emit_sol_memset(
             )
         }
     };
-    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_memset",
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state,
+        spec_calls,
+        block_pcs,
+        pc,
+        ".sol_memset",
+        &ncu_name,
+        &hcu_name,
+        have_line,
+    );
 }
 
 /// Emit `sol_memcmp_(p1 = r1, p2 = r2, n = r3, out = r4)` (H6). Reads `n`
@@ -340,8 +349,12 @@ pub(super) fn emit_sol_memcmp(
         addr: r2v.clone(),
         value: BytesVal::Sym(p2_name.clone()),
     });
-    state.memset_blobs.push((p1_name.clone(), size_rendered.clone()));
-    state.memset_blobs.push((p2_name.clone(), size_rendered.clone()));
+    state
+        .memset_blobs
+        .push((p1_name.clone(), size_rendered.clone()));
+    state
+        .memset_blobs
+        .push((p2_name.clone(), size_rendered.clone()));
 
     // Pre: the 4-byte `↦U32` output cell at r4 (old value = fresh var,
     // surfaced as a theorem param via `u64_load_vars` like the sysvar cells).
@@ -393,16 +406,23 @@ pub(super) fn emit_sol_memcmp(
         p2 = p2_name,
         hcu = hcu_name,
     );
-    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_memcmp",
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state,
+        spec_calls,
+        block_pcs,
+        pc,
+        ".sol_memcmp",
+        &ncu_name,
+        &hcu_name,
+        have_line,
+    );
 }
 
 /// The 32-byte rent sysvar id (`SysvarRent111…`), mirroring
 /// `SysvarData.rentId`.
 const RENT_ID_BYTES: [u8; 32] = [
-    0x06, 0xa7, 0xd5, 0x17, 0x19, 0x2c, 0x5c, 0x51, 0x21, 0x8c, 0xc9, 0x4c, 0x3d, 0x4a, 0xf1,
-    0x7f, 0x58, 0xda, 0xee, 0x08, 0x9b, 0xa1, 0xfd, 0x44, 0xe3, 0xdb, 0xd9, 0x8a, 0x00, 0x00,
-    0x00, 0x00,
+    0x06, 0xa7, 0xd5, 0x17, 0x19, 0x2c, 0x5c, 0x51, 0x21, 0x8c, 0xc9, 0x4c, 0x3d, 0x4a, 0xf1, 0x7f,
+    0x58, 0xda, 0xee, 0x08, 0x9b, 0xa1, 0xfd, 0x44, 0xe3, 0xdb, 0xd9, 0x8a, 0x00, 0x00, 0x00, 0x00,
 ];
 
 /// Emit `sol_get_sysvar` (H8 Phase C-2). Only the RENT id at offset 0, length 17 (pinocchio
@@ -424,8 +444,10 @@ pub(super) fn emit_sol_get_sysvar(
     let id_addr = const_of_expr(&r1v)
         .ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic sysvar-id address"))?
         as u64;
-    let off = const_of_expr(&r3v).ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic offset"))?;
-    let len = const_of_expr(&r4v).ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic length"))?;
+    let off =
+        const_of_expr(&r3v).ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic offset"))?;
+    let len =
+        const_of_expr(&r4v).ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic length"))?;
     let region = ctx.executable.get_ro_region();
     let rel = id_addr
         .checked_sub(region.vm_addr)
@@ -491,7 +513,12 @@ pub(super) fn emit_sol_get_sysvar(
             delta: 0,
         });
         let wl = if matches!(w, Width::Dword) { 8 } else { 1 };
-        state.note_access(&r2v, coff, wl, format!("sysvarOut:{}@{}", r2v.to_lean(), coff));
+        state.note_access(
+            &r2v,
+            coff,
+            wl,
+            format!("sysvarOut:{}@{}", r2v.to_lean(), coff),
+        );
         old_names.push(name);
         let ci = state.mem.len() - 1;
         state.mem[ci].value = Expr::Const(post);
@@ -520,9 +547,10 @@ pub(super) fn emit_sol_get_sysvar(
             id_atom, out_atom, out_atom, id_atom
         ),
     ));
-    state
-        .side_hyps
-        .push((ha1.clone(), format!("effectiveAddr ({}) (8) = {} + 8", out, out_atom)));
+    state.side_hyps.push((
+        ha1.clone(),
+        format!("effectiveAddr ({}) (8) = {} + 8", out, out_atom),
+    ));
     state.side_hyps.push((
         ha2.clone(),
         format!("effectiveAddr ({}) (16) = {} + 8 + 8", out, out_atom),
@@ -556,8 +584,16 @@ rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) h{o2}_lt \
         hdisj = h_disj,
         hcu = hcu_name,
     );
-    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_get_sysvar",
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state,
+        spec_calls,
+        block_pcs,
+        pc,
+        ".sol_get_sysvar",
+        &ncu_name,
+        &hcu_name,
+        have_line,
+    );
     Ok(())
 }
 
@@ -591,8 +627,16 @@ pub(super) fn emit_sol_log(
         ncu = ncu_name,
         hcu = hcu_name,
     );
-    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_log_",
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state,
+        spec_calls,
+        block_pcs,
+        pc,
+        ".sol_log_",
+        &ncu_name,
+        &hcu_name,
+        have_line,
+    );
 }
 
 /// Emit `sol_memcpy_`/`sol_memmove_(dst = r1, src = r2, n = r3)` (H6). Both share
@@ -651,7 +695,9 @@ pub(super) fn emit_sol_memcpy(
         addr: r1v.clone(),
         value: BytesVal::Sym(dst_name.clone()),
     });
-    state.memset_blobs.push((src_name.clone(), size_rendered.clone()));
+    state
+        .memset_blobs
+        .push((src_name.clone(), size_rendered.clone()));
     state.memset_blobs.push((dst_name.clone(), size_rendered));
 
     // Footprints: disjoint src-read + dst-write regions (overlap ⇒ vacuous, fail closed).
@@ -683,8 +729,9 @@ pub(super) fn emit_sol_memcpy(
         dst = dst_name,
         hcu = hcu_name,
     );
-    finish_syscall(state, spec_calls, block_pcs, pc, ctor,
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
+    );
 }
 
 /// Emit `sol_set_return_data(ptr = r1, len = r2)` (H6 + H7). Reads the input
@@ -752,8 +799,16 @@ pub(super) fn emit_sol_set_return_data(
         rd = rd_old_name,
         hcu = hcu_name,
     );
-    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_set_return_data",
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state,
+        spec_calls,
+        block_pcs,
+        pc,
+        ".sol_set_return_data",
+        &ncu_name,
+        &hcu_name,
+        have_line,
+    );
 }
 
 /// Emit single-slice `sol_sha256(r1 = vals, r2 = 1, r3 = out)` (H6). The one
@@ -776,25 +831,30 @@ pub(super) fn emit_sol_sha256(
     let r2v = state.read_reg(2); // n_vals
     let r3v = state.read_reg(3); // out (32-byte digest)
 
-    let n = const_of_expr(&r2v)
-        .ok_or_else(|| format!("sha256 at pc {pc}: symbolic n_vals"))?;
+    let n = const_of_expr(&r2v).ok_or_else(|| format!("sha256 at pc {pc}: symbolic n_vals"))?;
     if n != 1 {
         return Err(format!(
             "sha256 at pc {pc}: only the single-slice (n_vals = 1) shape is \
-             modelled so far, got {n}").into());
+             modelled so far, got {n}"
+        )
+        .into());
     }
 
     // The two descriptor cells, written by the program before the call. Read
     // their (concrete) ptr/len and the `effectiveAddr` renderings the spec
     // consumes as `a1`/`a2`.
     let env = std::collections::BTreeMap::new();
-    let (i_ptr, _) = state.lookup_cell_aliased(&r1v, 0, Width::Dword).ok_or_else(|| {
-        format!("sha256 at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
-                 — the slice descriptor must be written before the call")
-    })?;
-    let (i_len, _) = state.lookup_cell_aliased(&r1v, 8, Width::Dword).ok_or_else(|| {
-        format!("sha256 at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]")
-    })?;
+    let (i_ptr, _) = state
+        .lookup_cell_aliased(&r1v, 0, Width::Dword)
+        .ok_or_else(|| {
+            format!(
+                "sha256 at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
+                 — the slice descriptor must be written before the call"
+            )
+        })?;
+    let (i_len, _) = state
+        .lookup_cell_aliased(&r1v, 8, Width::Dword)
+        .ok_or_else(|| format!("sha256 at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]"))?;
     let a1 = SymState::cell_render(&state.mem[i_ptr]);
     let a2 = SymState::cell_render(&state.mem[i_len]);
     let ptr_expr = state.mem[i_ptr].value.clone();
@@ -820,7 +880,9 @@ pub(super) fn emit_sol_sha256(
         addr: r3v.clone(),
         name: out_name.clone(),
     });
-    state.memset_blobs.push((in_name.clone(), len_rendered.clone()));
+    state
+        .memset_blobs
+        .push((in_name.clone(), len_rendered.clone()));
     state.bytearray_vars.push(out_name.clone());
     // The descriptor `len` is pinned concretely in the spec call (it is the
     // input-blob size + the descriptor cell value), so it must not be
@@ -829,8 +891,12 @@ pub(super) fn emit_sol_sha256(
 
     // Footprints: input read + 32-byte output write (disjoint from the
     // descriptor and each other; overlap ⇒ vacuous, fail closed).
-    state.note_access(&ptr_expr, 0, len_val.max(1) as i64,
-        format!("sha256In:{}", ptr_expr.to_lean()));
+    state.note_access(
+        &ptr_expr,
+        0,
+        len_val.max(1) as i64,
+        format!("sha256In:{}", ptr_expr.to_lean()),
+    );
     state.note_access(&r3v, 0, 32, format!("sha256Out:{}", r3v.to_lean()));
 
     // rr in the spec's left-assoc order, kept as ONE grouped fold-unit (the 2nd
@@ -838,20 +904,34 @@ pub(super) fn emit_sol_sha256(
     // per-instruction composition `(prior_stores) ∧ ((wOut ∧ rVals) ∧ rPtr)`:
     let g0 = state.rr_walk.len();
     state.rr_walk.push((
-        r3v.clone(), 0, Width::Byte, true, Some((r3v.clone(), Expr::Const(32))),
+        r3v.clone(),
+        0,
+        Width::Byte,
+        true,
+        Some((r3v.clone(), Expr::Const(32))),
     ));
     state.rr_walk.push((
-        r1v.clone(), 0, Width::Byte, false, Some((r1v.clone(), Expr::Const(16))),
+        r1v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r1v.clone(), Expr::Const(16))),
     ));
     state.rr_walk.push((
-        ptr_expr.clone(), 0, Width::Byte, false, Some((ptr_expr.clone(), len_expr.clone())),
+        ptr_expr.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((ptr_expr.clone(), len_expr.clone())),
     ));
     state.rr_continuations.insert(g0 + 1);
     state.rr_continuations.insert(g0 + 2);
 
     // Post: output flips to `Sha256.hash inputBytes`; input + descriptor
     // unchanged; r0 := 0.
-    state.bytes32_post.insert(r3v.to_lean(), format!("(Sha256.hash {})", in_name));
+    state
+        .bytes32_post
+        .insert(r3v.to_lean(), format!("(Sha256.hash {})", in_name));
     state.write_reg(0, Expr::Const(0));
 
     // call_sol_sha256_spec r0Old vals ptr len out a1 a2 n2 inputBytes oldOut pc
@@ -875,8 +955,16 @@ pub(super) fn emit_sol_sha256(
         ncu = ncu_name,
         hcu = hcu_name,
     );
-    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_sha256",
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state,
+        spec_calls,
+        block_pcs,
+        pc,
+        ".sol_sha256",
+        &ncu_name,
+        &hcu_name,
+        have_line,
+    );
     Ok(())
 }
 
@@ -901,22 +989,30 @@ pub(super) fn emit_sol_create_program_address(
     let r3v = state.read_reg(3); // program_id
     let r4v = state.read_reg(4); // out (32-byte PDA)
 
-    let n = const_of_expr(&r2v)
-        .ok_or_else(|| format!("create_pda at pc {pc}: symbolic n_seeds"))?;
+    let n =
+        const_of_expr(&r2v).ok_or_else(|| format!("create_pda at pc {pc}: symbolic n_seeds"))?;
     if n != 1 {
         return Err(format!(
             "create_pda at pc {pc}: only the single-seed (n_seeds = 1) shape is \
-             modelled so far, got {n}").into());
+             modelled so far, got {n}"
+        )
+        .into());
     }
 
     let env = std::collections::BTreeMap::new();
-    let (i_ptr, _) = state.lookup_cell_aliased(&r1v, 0, Width::Dword).ok_or_else(|| {
-        format!("create_pda at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
-                 — the seed descriptor must be written before the call")
-    })?;
-    let (i_len, _) = state.lookup_cell_aliased(&r1v, 8, Width::Dword).ok_or_else(|| {
-        format!("create_pda at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]")
-    })?;
+    let (i_ptr, _) = state
+        .lookup_cell_aliased(&r1v, 0, Width::Dword)
+        .ok_or_else(|| {
+            format!(
+                "create_pda at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
+                 — the seed descriptor must be written before the call"
+            )
+        })?;
+    let (i_len, _) = state
+        .lookup_cell_aliased(&r1v, 8, Width::Dword)
+        .ok_or_else(|| {
+            format!("create_pda at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]")
+        })?;
     let a1 = SymState::cell_render(&state.mem[i_ptr]);
     let a2 = SymState::cell_render(&state.mem[i_len]);
     let ptr_expr = state.mem[i_ptr].value.clone();
@@ -934,7 +1030,10 @@ pub(super) fn emit_sol_create_program_address(
     let hpid_sz = format!("hPdaPidSz{}", idx);
     let hoff = format!("hPdaOffCurve{}", idx);
     let len_rendered = len_expr.atom_lean();
-    let payload = format!("(Sha256.hash ({} ++ {} ++ Pda.PDA_MARKER))", seed_name, pid_name);
+    let payload = format!(
+        "(Sha256.hash ({} ++ {} ++ Pda.PDA_MARKER))",
+        seed_name, pid_name
+    );
 
     // Pre atoms (spec order, after the descriptor cells already present from the
     // stores): seed `↦Bytes`, program_id `↦Bytes32` (read-only), output `↦Bytes32`.
@@ -950,7 +1049,9 @@ pub(super) fn emit_sol_create_program_address(
         addr: r4v.clone(),
         name: out_name.clone(),
     });
-    state.memset_blobs.push((seed_name.clone(), len_rendered.clone()));
+    state
+        .memset_blobs
+        .push((seed_name.clone(), len_rendered.clone()));
     state.bytearray_vars.push(pid_name.clone());
     state.bytearray_vars.push(out_name.clone());
     state.gen_exclude.push(len_expr.to_lean());
@@ -958,13 +1059,21 @@ pub(super) fn emit_sol_create_program_address(
     // Symbolic obligations the consumer discharges: program_id is 32 bytes, and
     // the derivation is off the ed25519 curve (opaque FFI). These reference the
     // blob params, so they go in `blob_side_hyps` (emitted AFTER the blob decls).
-    state.blob_side_hyps.push((hpid_sz.clone(), format!("{}.size = 32", pid_name)));
-    state.blob_side_hyps.push((hoff.clone(),
-        format!("¬ Curve25519.validateEdwards {} = true", payload)));
+    state
+        .blob_side_hyps
+        .push((hpid_sz.clone(), format!("{}.size = 32", pid_name)));
+    state.blob_side_hyps.push((
+        hoff.clone(),
+        format!("¬ Curve25519.validateEdwards {} = true", payload),
+    ));
 
     // Footprints: seed read + program_id read + 32-byte output write.
-    state.note_access(&ptr_expr, 0, len_val.max(1) as i64,
-        format!("pdaSeed:{}", ptr_expr.to_lean()));
+    state.note_access(
+        &ptr_expr,
+        0,
+        len_val.max(1) as i64,
+        format!("pdaSeed:{}", ptr_expr.to_lean()),
+    );
     state.note_access(&r3v, 0, 32, format!("pdaPid:{}", r3v.to_lean()));
     state.note_access(&r4v, 0, 32, format!("pdaOut:{}", r4v.to_lean()));
 
@@ -972,16 +1081,32 @@ pub(super) fn emit_sol_create_program_address(
     // `(((range pid 32 ∧ writable out 32) ∧ range vals 16) ∧ range ptr len)`.
     let g0 = state.rr_walk.len();
     state.rr_walk.push((
-        r3v.clone(), 0, Width::Byte, false, Some((r3v.clone(), Expr::Const(32))),
+        r3v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r3v.clone(), Expr::Const(32))),
     ));
     state.rr_walk.push((
-        r4v.clone(), 0, Width::Byte, true, Some((r4v.clone(), Expr::Const(32))),
+        r4v.clone(),
+        0,
+        Width::Byte,
+        true,
+        Some((r4v.clone(), Expr::Const(32))),
     ));
     state.rr_walk.push((
-        r1v.clone(), 0, Width::Byte, false, Some((r1v.clone(), Expr::Const(16))),
+        r1v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r1v.clone(), Expr::Const(16))),
     ));
     state.rr_walk.push((
-        ptr_expr.clone(), 0, Width::Byte, false, Some((ptr_expr.clone(), len_expr.clone())),
+        ptr_expr.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((ptr_expr.clone(), len_expr.clone())),
     ));
     state.rr_continuations.insert(g0 + 1);
     state.rr_continuations.insert(g0 + 2);
@@ -1019,7 +1144,15 @@ pub(super) fn emit_sol_create_program_address(
         hoff = hoff,
         hcu = hcu_name,
     );
-    finish_syscall(state, spec_calls, block_pcs, pc, ".sol_create_program_address",
-        &ncu_name, &hcu_name, have_line);
+    finish_syscall(
+        state,
+        spec_calls,
+        block_pcs,
+        pc,
+        ".sol_create_program_address",
+        &ncu_name,
+        &hcu_name,
+        have_line,
+    );
     Ok(())
 }

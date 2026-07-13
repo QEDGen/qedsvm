@@ -1,6 +1,5 @@
 //! qedrecover — recover Lean metadata for a compiled Solana program from a `.so` + Codama IDL + qedsvm overlay.
 
-
 mod args;
 mod emit;
 mod idioms;
@@ -71,8 +70,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Overlay claims decorate the summary line but their absence does NOT skip recovery.
     println!("=== whole-program recovery ===");
     println!(
-        "  {:24}  {:>4}  {:>15}  {:>6}  {:>5}  {:>5}  {}",
-        "instruction", "disc", "dispatch (pc)", "armPc", "blks", "insns", "claim"
+        "  {:24}  {:>4}  {:>15}  {:>6}  {:>5}  {:>5}  claim",
+        "instruction", "disc", "dispatch (pc)", "armPc", "blks", "insns"
     );
     println!("  {}", "-".repeat(96));
 
@@ -416,7 +415,7 @@ mod tests {
         static_analysis::{Analysis, CfgNode},
     };
 
-    use qed_analysis::{layout::codama_number_size, NoopCtx, PcMap};
+    use qed_analysis::{NoopCtx, PcMap};
 
     use crate::emit::{emit_qedmeta, EmitCtx};
     use crate::idioms;
@@ -737,4 +736,3 @@ mod tests {
         assert_eq!((rec.dispatch_load_pc, rec.dispatch_jeq_pc), (198, 199));
     }
 }
-

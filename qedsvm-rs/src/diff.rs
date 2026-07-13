@@ -56,7 +56,12 @@ pub fn shared_to_mollusk_account(a: &AccountSharedData) -> mollusk_account::Acco
 mod tests {
     use super::*;
 
-    fn mollusk_acct(lamports: u64, data: Vec<u8>, exec: bool, epoch: u64) -> mollusk_account::Account {
+    fn mollusk_acct(
+        lamports: u64,
+        data: Vec<u8>,
+        exec: bool,
+        epoch: u64,
+    ) -> mollusk_account::Account {
         mollusk_account::Account {
             lamports,
             data,
@@ -128,8 +133,14 @@ mod tests {
                 b.owner.as_array(),
                 "owner mismatch at index {i}",
             );
-            assert_eq!(a.executable, b.executable, "executable mismatch at index {i}");
-            assert_eq!(a.rent_epoch, b.rent_epoch, "rent_epoch mismatch at index {i}");
+            assert_eq!(
+                a.executable, b.executable,
+                "executable mismatch at index {i}"
+            );
+            assert_eq!(
+                a.rent_epoch, b.rent_epoch,
+                "rent_epoch mismatch at index {i}"
+            );
         }
     }
 }

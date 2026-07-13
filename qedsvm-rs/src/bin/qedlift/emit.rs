@@ -10,8 +10,13 @@ pub(super) fn atoms_to_lean(
     atoms: &[Atom],
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    if atoms.is_empty() { return "emp".to_string(); }
-    let parts: Vec<String> = atoms.iter().map(|a| atom_to_lean_with_subst(a, subst)).collect();
+    if atoms.is_empty() {
+        return "emp".to_string();
+    }
+    let parts: Vec<String> = atoms
+        .iter()
+        .map(|a| atom_to_lean_with_subst(a, subst))
+        .collect();
     parts.join(" **\n      ")
 }
 
@@ -35,7 +40,9 @@ pub(super) fn fold_abstractions(
 /// Word-boundary-aware replace: substitutes `needle` only where surrounding bytes aren't
 /// alphanumeric/underscore — without this, `toU64 3` would corrupt `toU64 32` into `addr02`.
 pub(super) fn replace_token(haystack: &str, needle: &str, repl: &str) -> String {
-    if needle.is_empty() { return haystack.to_string(); }
+    if needle.is_empty() {
+        return haystack.to_string();
+    }
     let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     let hb = haystack.as_bytes();
     let nb = needle.as_bytes();
@@ -65,16 +72,21 @@ fn atom_to_lean_with_subst(
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
     // Fold whole OR sub-expression abstractions to param names, matching the sl_rw_abs-rewritten goal.
-    let sub = |e: &Expr| -> String {
-        fold_abstractions(e.to_lean(), subst)
-    };
+    let sub = |e: &Expr| -> String { fold_abstractions(e.to_lean(), subst) };
     match atom {
         Atom::Reg(r, v) => {
             format!("(.{} ↦ᵣ {})", reg_lit(*r), sub(v))
         }
-        Atom::Mem { addr_base, addr_off, width, value, delta } => {
+        Atom::Mem {
+            addr_base,
+            addr_off,
+            width,
+            value,
+            delta,
+        } => {
             let rendered = addr_base.to_lean();
-            let addr_str = subst.get(&rendered)
+            let addr_str = subst
+                .get(&rendered)
                 .map(|p| p.clone())
                 .unwrap_or_else(|| addr_base.atom_lean());
             if *delta != 0 {
@@ -82,13 +94,22 @@ fn atom_to_lean_with_subst(
                 return format!(
                     "(effectiveAddr {} {} + {} {} {})",
                     addr_str,
-                    if *addr_off < 0 { format!("({})", addr_off) } else { format!("{}", addr_off) },
-                    delta, width.lean_arrow(), sub(value),
+                    if *addr_off < 0 {
+                        format!("({})", addr_off)
+                    } else {
+                        format!("{}", addr_off)
+                    },
+                    delta,
+                    width.lean_arrow(),
+                    sub(value),
                 );
             }
             format!(
                 "(effectiveAddr {} {} {} {})",
-                addr_str, lean_off(*addr_off), width.lean_arrow(), sub(value),
+                addr_str,
+                lean_off(*addr_off),
+                width.lean_arrow(),
+                sub(value),
             )
         }
         Atom::Bytes { addr, value } => {
@@ -125,7 +146,11 @@ fn const_blob_size(s: &str) -> Option<u64> {
     }
     // `toU64 N % 2 ^ (8 * 8)` — a dword store-immediate (`ST_DW_IMM`) render;
     // `% 2^64` is a no-op for the in-range immediate, so the size is N.
-    after.strip_suffix("% 2 ^ (8 * 8)")?.trim().parse::<u64>().ok()
+    after
+        .strip_suffix("% 2 ^ (8 * 8)")?
+        .trim()
+        .parse::<u64>()
+        .ok()
 }
 
 /// Build the H8 satisfiability-witness: a concrete variable assignment proving the precondition
@@ -150,28 +175,35 @@ pub(super) fn build_sat_witness(
     for atom in pre {
         if let Atom::Mem { addr_base, .. } = atom {
             if let Some(p) = abs_subst.get(&addr_base.to_lean()) {
-                param_expr.entry(p.clone()).or_insert_with(|| addr_base.clone());
+                param_expr
+                    .entry(p.clone())
+                    .or_insert_with(|| addr_base.clone());
             }
         }
     }
 
     let mut env: BTreeMap<String, u64> = BTreeMap::new();
     let mut next_base: u64 = 0x4_0000_0000;
-    let mut alloc_base = || { let t = next_base; next_base += 0x1000_0000; t };
+    let mut alloc_base = || {
+        let t = next_base;
+        next_base += 0x1000_0000;
+        t
+    };
 
-    let addr_exprs: Vec<&Expr> = pre.iter().filter_map(|a| match a {
-        Atom::Mem { addr_base, .. } => Some(addr_base),
-        Atom::Bytes { addr, .. } => Some(addr),
-        Atom::Bytes32 { addr, .. } => Some(addr),
-        Atom::Reg(..) => None,
-        Atom::ReturnData { .. } => None,
-    }).collect();
+    let addr_exprs: Vec<&Expr> = pre
+        .iter()
+        .filter_map(|a| match a {
+            Atom::Mem { addr_base, .. } => Some(addr_base),
+            Atom::Bytes { addr, .. } => Some(addr),
+            Atom::Bytes32 { addr, .. } => Some(addr),
+            Atom::Reg(..) => None,
+            Atom::ReturnData { .. } => None,
+        })
+        .collect();
 
     // Pass 1: variable roots get bases directly.
     for e in &addr_exprs {
-        if let (Some(Expr::InitReg(n)), _) | (Some(Expr::InitMem(n)), _) =
-            canon_root_expr(e, 0)
-        {
+        if let (Some(Expr::InitReg(n)), _) | (Some(Expr::InitMem(n)), _) = canon_root_expr(e, 0) {
             if !env.contains_key(n) {
                 let b = alloc_base();
                 env.insert(n.clone(), b);
@@ -182,9 +214,13 @@ pub(super) fn build_sat_witness(
     let mut solved_roots: std::collections::BTreeSet<String> = Default::default();
     for e in &addr_exprs {
         if let (Some(root), _) = canon_root_expr(e, 0) {
-            if matches!(root, Expr::InitReg(_) | Expr::InitMem(_)) { continue; }
+            if matches!(root, Expr::InitReg(_) | Expr::InitMem(_)) {
+                continue;
+            }
             let key = root.to_lean();
-            if !solved_roots.insert(key.clone()) { continue; }
+            if !solved_roots.insert(key.clone()) {
+                continue;
+            }
             // A CLOSED root (no free variables — e.g. a constant rodata
             // table address built through `|||`/`arsh` chains, carried as
             // `Expr::RawConst`) needs no steering: its value is forced and
@@ -196,7 +232,9 @@ pub(super) fn build_sat_witness(
             if !solve_expr(root, target, &mut env) {
                 return Err(format!(
                     "cannot steer derived address root `{}` to a witness \
-                     base (unsupported expression shape)", key));
+                     base (unsupported expression shape)",
+                    key
+                ));
             }
         }
     }
@@ -207,10 +245,18 @@ pub(super) fn build_sat_witness(
 
     let mut param_vals: BTreeMap<String, u64> = BTreeMap::new();
     for (param, _, _) in abstractions {
-        let e = param_expr.get(param).ok_or_else(|| format!(
-            "no defining expression recorded for abstraction `{}`", param))?;
-        let v = eval_expr(e, &env).ok_or_else(|| format!(
-            "cannot evaluate abstraction `{}` under the witness assignment", param))?;
+        let e = param_expr.get(param).ok_or_else(|| {
+            format!(
+                "no defining expression recorded for abstraction `{}`",
+                param
+            )
+        })?;
+        let v = eval_expr(e, &env).ok_or_else(|| {
+            format!(
+                "cannot evaluate abstraction `{}` under the witness assignment",
+                param
+            )
+        })?;
         param_vals.insert(param.clone(), v);
     }
 
@@ -222,25 +268,41 @@ pub(super) fn build_sat_witness(
         (a + delta as u128) as u64
     };
 
-    struct Foot { mem: Option<(u64, u64)>, reg: Option<u8>, cs: bool, desc: String }
+    struct Foot {
+        mem: Option<(u64, u64)>,
+        reg: Option<u8>,
+        cs: bool,
+        desc: String,
+    }
     let mut sat_atoms: Vec<String> = Vec::new();
     let mut feet: Vec<Foot> = Vec::new();
     let mut blob_subst: Vec<(String, String)> = Vec::new();
     for atom in pre {
         match atom {
             Atom::Reg(r, v) => {
-                let vv = eval_expr(v, &env).ok_or_else(|| format!(
-                    "cannot evaluate register r{} initial value", r))?;
+                let vv = eval_expr(v, &env)
+                    .ok_or_else(|| format!("cannot evaluate register r{} initial value", r))?;
                 sat_atoms.push(format!(".reg .{} {}", reg_lit(*r), vv));
-                feet.push(Foot { mem: None, reg: Some(*r), cs: false,
-                                 desc: format!("r{}", r) });
+                feet.push(Foot {
+                    mem: None,
+                    reg: Some(*r),
+                    cs: false,
+                    desc: format!("r{}", r),
+                });
             }
-            Atom::Mem { addr_base, addr_off, width, value, delta } => {
-                let base = eval_expr(addr_base, &env).ok_or_else(|| format!(
-                    "cannot evaluate address base `{}`", addr_base.to_lean()))?;
+            Atom::Mem {
+                addr_base,
+                addr_off,
+                width,
+                value,
+                delta,
+            } => {
+                let base = eval_expr(addr_base, &env).ok_or_else(|| {
+                    format!("cannot evaluate address base `{}`", addr_base.to_lean())
+                })?;
                 let a = eff(base, *addr_off, *delta);
-                let vv = eval_expr(value, &env).ok_or_else(|| format!(
-                    "cannot evaluate cell value `{}`", value.to_lean()))?;
+                let vv = eval_expr(value, &env)
+                    .ok_or_else(|| format!("cannot evaluate cell value `{}`", value.to_lean()))?;
                 let (ctor, sz) = match width {
                     Width::Byte => (".byte", 1u64),
                     Width::Halfword => (".u16", 2),
@@ -248,31 +310,45 @@ pub(super) fn build_sat_witness(
                     Width::Dword => (".u64", 8),
                 };
                 sat_atoms.push(format!("{} {} {}", ctor, a, vv));
-                feet.push(Foot { mem: Some((a, sz)), reg: None, cs: false,
-                                 desc: format!("{} cell at {}", ctor, a) });
+                feet.push(Foot {
+                    mem: Some((a, sz)),
+                    reg: None,
+                    cs: false,
+                    desc: format!("{} cell at {}", ctor, a),
+                });
             }
             Atom::Bytes { addr, value } => {
-                let a = eval_expr(addr, &env).ok_or_else(|| format!(
-                    "cannot evaluate blob address `{}`", addr.to_lean()))?;
+                let a = eval_expr(addr, &env)
+                    .ok_or_else(|| format!("cannot evaluate blob address `{}`", addr.to_lean()))?;
                 let name = match value {
                     BytesVal::Sym(n) => n,
-                    BytesVal::Replicate { .. } => return Err(
-                        "unexpected Replicate blob in a precondition".into()),
+                    BytesVal::Replicate { .. } => {
+                        return Err("unexpected Replicate blob in a precondition".into())
+                    }
                 };
-                let size_s = state.memset_blobs.iter()
-                    .find(|(n, _)| n == name).map(|(_, s)| s.clone())
+                let size_s = state
+                    .memset_blobs
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, s)| s.clone())
                     .ok_or_else(|| format!("no size recorded for blob `{}`", name))?;
-                let sz: u64 = const_blob_size(&size_s).ok_or_else(|| format!(
-                    "blob `{}` has a non-constant size `{}`", name, size_s))?;
+                let sz: u64 = const_blob_size(&size_s).ok_or_else(|| {
+                    format!("blob `{}` has a non-constant size `{}`", name, size_s)
+                })?;
                 let repl = format!("(replicateByte 0 {})", sz);
                 sat_atoms.push(format!(".bytes {} {}", a, repl));
                 blob_subst.push((name.clone(), repl));
-                feet.push(Foot { mem: Some((a, sz)), reg: None, cs: false,
-                                 desc: format!("blob `{}` at {}", name, a) });
+                feet.push(Foot {
+                    mem: Some((a, sz)),
+                    reg: None,
+                    cs: false,
+                    desc: format!("blob `{}` at {}", name, a),
+                });
             }
             Atom::Bytes32 { addr, name } => {
-                let a = eval_expr(addr, &env).ok_or_else(|| format!(
-                    "cannot evaluate Bytes32 address `{}`", addr.to_lean()))?;
+                let a = eval_expr(addr, &env).ok_or_else(|| {
+                    format!("cannot evaluate Bytes32 address `{}`", addr.to_lean())
+                })?;
                 // A fresh symbolic 32-byte blob (e.g. sha256's old output) is
                 // grounded to a concrete witness + substituted; a named constant
                 // (a sysvar id) is used verbatim.
@@ -283,8 +359,12 @@ pub(super) fn build_sat_witness(
                 } else {
                     sat_atoms.push(format!(".bytes32 {} {}", a, name));
                 }
-                feet.push(Foot { mem: Some((a, 32)), reg: None, cs: false,
-                                 desc: format!("`{}` at {}", name, a) });
+                feet.push(Foot {
+                    mem: Some((a, 32)),
+                    reg: None,
+                    cs: false,
+                    desc: format!("`{}` at {}", name, a),
+                });
             }
             Atom::ReturnData { value } => {
                 // Old returnData is arbitrary (no size hyp): witness it as the
@@ -292,20 +372,29 @@ pub(super) fn build_sat_witness(
                 // `interp` stays defeq to the rendered pre. Owns no mem/reg.
                 let name = match value {
                     BytesVal::Sym(n) => n,
-                    BytesVal::Replicate { .. } => return Err(
-                        "unexpected Replicate blob in a returnData precondition".into()),
+                    BytesVal::Replicate { .. } => {
+                        return Err("unexpected Replicate blob in a returnData precondition".into())
+                    }
                 };
                 sat_atoms.push(".retData ByteArray.empty".to_string());
                 blob_subst.push((name.clone(), "ByteArray.empty".to_string()));
-                feet.push(Foot { mem: None, reg: None, cs: false,
-                                 desc: format!("returnData `{}`", name) });
+                feet.push(Foot {
+                    mem: None,
+                    reg: None,
+                    cs: false,
+                    desc: format!("returnData `{}`", name),
+                });
             }
         }
     }
     if state.saw_call {
         sat_atoms.push(".callStack []".to_string());
-        feet.push(Foot { mem: None, reg: None, cs: true,
-                         desc: "callStack".to_string() });
+        feet.push(Foot {
+            mem: None,
+            reg: None,
+            cs: true,
+            desc: "callStack".to_string(),
+        });
     }
 
     // Rust-side pairwise disjointness (mirrored kernel-side by `satCheck`). Overlap = H8 vacuity; fail.
@@ -313,8 +402,9 @@ pub(super) fn build_sat_witness(
         for j in (i + 1)..feet.len() {
             let (x, y) = (&feet[i], &feet[j]);
             let mem_clash = match (x.mem, y.mem) {
-                (Some((s1, n1)), Some((s2, n2))) =>
-                    n1 > 0 && n2 > 0 && s1 + n1 > s2 && s2 + n2 > s1,
+                (Some((s1, n1)), Some((s2, n2))) => {
+                    n1 > 0 && n2 > 0 && s1 + n1 > s2 && s2 + n2 > s1
+                }
                 _ => false,
             };
             let reg_clash = matches!((x.reg, y.reg), (Some(a), Some(b)) if a == b);
@@ -322,7 +412,8 @@ pub(super) fn build_sat_witness(
                 return Err(format!(
                     "precondition atoms overlap under the witness assignment \
                      ({} vs {}) — the theorem would be vacuous",
-                    x.desc, y.desc));
+                    x.desc, y.desc
+                ));
             }
         }
     }
@@ -357,21 +448,31 @@ pub(super) fn build_sat_witness(
          are tied to the real pre by the elaborator's defeq check.\n\
          Value-level path hypotheses (`h_branch*`) are not certified\n\
          consistent — they are outside the overlap-vacuity class this\n\
-         guards against. -/\n\n");
+         guards against. -/\n\n",
+    );
     for (i, (param, _, _)) in abstractions.iter().enumerate() {
         w.push_str(&format!(
             "example : {} = {} := by native_decide\n",
-            param_vals[param], subst(&folded_rhs[i])));
+            param_vals[param],
+            subst(&folded_rhs[i])
+        ));
     }
-    if !abstractions.is_empty() { w.push('\n'); }
-    let cs = if state.saw_call { " ** callStackIs []" } else { "" };
+    if !abstractions.is_empty() {
+        w.push('\n');
+    }
+    let cs = if state.saw_call {
+        " ** callStackIs []"
+    } else {
+        ""
+    };
     // `have` before `exact`: with an expected `∃ s, interp [..] s` type the unifier postpones
     // list metavariables and gets stuck; `have` elaborates the list closed, then `exact` unifies.
     w.push_str(&format!(
         "open Memory in\nexample : ∃ s,\n    ({}{}) s := by\n  \
          have w := SatWitness.sat_witness\n    [{}]\n    (by native_decide)\n  \
          exact w\n\n",
-        subst(&atoms_to_lean(pre, abs_subst)), cs,
+        subst(&atoms_to_lean(pre, abs_subst)),
+        cs,
         sat_atoms.join(",\n     "),
     ));
     Ok(w)
@@ -379,7 +480,7 @@ pub(super) fn build_sat_witness(
 
 /// The BPF program heap: `[MM_HEAP_START, MM_HEAP_START + 0x8000)`.
 const HEAP_START_I: i64 = 0x300000000;
-const HEAP_END_I:   i64 = 0x300000000 + 0x8000;
+const HEAP_END_I: i64 = 0x300000000 + 0x8000;
 
 /// If `addr_base` is an `lddw`-loaded constant in `[MM_HEAP_START, MM_HEAP_END)`, return its
 /// absolute address — used to fold heap cells into `heapBumpPtr`/`heapBlockU64` predicates.
@@ -393,16 +494,24 @@ pub(super) fn heap_cell_addr(addr_base: &Expr, off: i64) -> Option<i64> {
         _ => return None,
     };
     let abs = k.checked_add(off)?;
-    if (HEAP_START_I..HEAP_END_I).contains(&abs) { Some(abs) } else { None }
+    if (HEAP_START_I..HEAP_END_I).contains(&abs) {
+        Some(abs)
+    } else {
+        None
+    }
 }
 
 /// Render an atom for the heap corollary: the `u64` cell at `MM_HEAP_START` -> `heapBumpPtr v`;
 /// any other heap cell -> `heapBlockU64 addr v`; everything else renders normally.
-fn atom_to_lean_heap(
-    atom: &Atom,
-    subst: &std::collections::BTreeMap<String, String>,
-) -> String {
-    if let Atom::Mem { addr_base, addr_off, width, value, .. } = atom {
+fn atom_to_lean_heap(atom: &Atom, subst: &std::collections::BTreeMap<String, String>) -> String {
+    if let Atom::Mem {
+        addr_base,
+        addr_off,
+        width,
+        value,
+        ..
+    } = atom
+    {
         if matches!(width, Width::Dword) {
             if let Some(abs) = heap_cell_addr(addr_base, *addr_off) {
                 let v = fold_abstractions(value.to_lean(), subst);
@@ -421,7 +530,8 @@ pub(super) fn atoms_to_lean_heap(
     atoms: &[Atom],
     subst: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    atoms.iter()
+    atoms
+        .iter()
         .map(|a| atom_to_lean_heap(a, subst))
         .collect::<Vec<_>>()
         .join(" **\n      ")
@@ -432,42 +542,65 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
     for atom in initial_pre {
         match atom {
             Atom::Reg(r, _) => {
-                let v = state.regs.get(r).cloned()
+                let v = state
+                    .regs
+                    .get(r)
+                    .cloned()
                     .unwrap_or_else(|| Expr::InitReg(reg_initial_name(*r)));
                 out.push(Atom::Reg(*r, v));
             }
-            Atom::Mem { addr_base, addr_off, width, delta, .. } => {
+            Atom::Mem {
+                addr_base,
+                addr_off,
+                width,
+                delta,
+                ..
+            } => {
                 let key = (addr_base.to_lean(), *addr_off, *delta, *width as u8);
-                let v = state.mem.iter()
+                let v = state
+                    .mem
+                    .iter()
                     .find(|c| c.key() == key)
                     .map(|c| c.value.clone())
                     .unwrap_or_else(|| Expr::InitMem("?".to_string()));
                 out.push(Atom::Mem {
                     addr_base: addr_base.clone(),
-                    addr_off:  *addr_off,
-                    width:     *width,
-                    value:     v,
-                    delta:     *delta,
+                    addr_off: *addr_off,
+                    width: *width,
+                    value: v,
+                    delta: *delta,
                 });
             }
             Atom::Bytes { addr, value } => {
                 // Look up post blob contents by rendered address (set by memory syscall emitters).
-                let post_val = state.byte_blob_post.get(&addr.to_lean())
+                let post_val = state
+                    .byte_blob_post
+                    .get(&addr.to_lean())
                     .cloned()
                     .unwrap_or_else(|| value.clone());
-                out.push(Atom::Bytes { addr: addr.clone(), value: post_val });
+                out.push(Atom::Bytes {
+                    addr: addr.clone(),
+                    value: post_val,
+                });
             }
             Atom::Bytes32 { addr, name } => {
                 // Default read-only (sysvar id) — unchanged. A digest-writing
                 // syscall (sol_sha256) flips the post via `bytes32_post`.
-                let post_name = state.bytes32_post.get(&addr.to_lean())
+                let post_name = state
+                    .bytes32_post
+                    .get(&addr.to_lean())
                     .cloned()
                     .unwrap_or_else(|| name.clone());
-                out.push(Atom::Bytes32 { addr: addr.clone(), name: post_name });
+                out.push(Atom::Bytes32 {
+                    addr: addr.clone(),
+                    name: post_name,
+                });
             }
             Atom::ReturnData { value } => {
                 // returnData flips to the syscall-set value (`returndata_post`).
-                let post_val = state.returndata_post.clone()
+                let post_val = state
+                    .returndata_post
+                    .clone()
                     .unwrap_or_else(|| value.clone());
                 out.push(Atom::ReturnData { value: post_val });
             }
@@ -501,19 +634,35 @@ pub(super) fn region_req(
         // `effectiveAddr`) address — matches the rr from `call_sol_{memset,log}_*_spec` after sl_rw_abs.
         if let Some((addr, count)) = raw {
             let addr_str = fold_abstractions(addr.to_lean(), subst);
-            let kind = if *writable { "containsWritable" } else { "containsRange" };
+            let kind = if *writable {
+                "containsWritable"
+            } else {
+                "containsRange"
+            };
             clauses.push(format!(
-                "rt.{} ({}) ({}) = true", kind, addr_str, count.to_lean()));
+                "rt.{} ({}) ({}) = true",
+                kind,
+                addr_str,
+                count.to_lean()
+            ));
             continue;
         }
         let width_bytes = match width {
-            Width::Byte => 1, Width::Halfword => 2, Width::Word => 4, Width::Dword => 8,
+            Width::Byte => 1,
+            Width::Halfword => 2,
+            Width::Word => 4,
+            Width::Dword => 8,
         };
-        let addr_str = subst.get(&addr_base.to_lean())
+        let addr_str = subst
+            .get(&addr_base.to_lean())
             .map(|p| p.clone())
             .unwrap_or_else(|| addr_base.atom_lean());
         let addr = format!("effectiveAddr {} {}", addr_str, lean_off(*addr_off));
-        let kind = if *writable { "containsWritable" } else { "containsRange" };
+        let kind = if *writable {
+            "containsWritable"
+        } else {
+            "containsRange"
+        };
         clauses.push(format!("rt.{} ({}) {} = true", kind, addr, width_bytes));
     }
     if clauses.is_empty() {

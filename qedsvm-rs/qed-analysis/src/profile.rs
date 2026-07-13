@@ -98,7 +98,14 @@ mod tests {
     use super::*;
 
     fn insn(opc: u8) -> ebpf::Insn {
-        ebpf::Insn { ptr: 0, opc, dst: 0, src: 0, off: 0, imm: 0 }
+        ebpf::Insn {
+            ptr: 0,
+            opc,
+            dst: 0,
+            src: 0,
+            off: 0,
+            imm: 0,
+        }
     }
 
     // Two functions: "main" occupies logical PCs 0..10, "helper" 10.. .
@@ -146,6 +153,9 @@ mod tests {
         let steps = symbolicate_trace(&[0, 4], &syms, &map);
         assert_eq!(steps[0].function, "increment_by");
         assert_eq!(steps[1].function, "entrypoint");
-        assert_eq!(steps[0].inline.first().map(String::as_str), Some("increment_by"));
+        assert_eq!(
+            steps[0].inline.first().map(String::as_str),
+            Some("increment_by")
+        );
     }
 }

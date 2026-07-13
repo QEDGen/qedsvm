@@ -50,8 +50,10 @@ fn varied_input_buffer_lengths_under_concurrency() {
                 let result = run_buffer(HELLO_ELF, &input, 200_000)
                     .unwrap_or_else(|e| panic!("t{t} i{i}: {e}"));
                 assert_eq!(result.outcome, ExitOutcome::Halted(42));
-                assert_eq!(result.modified_input, input,
-                    "input region was perturbed under contention");
+                assert_eq!(
+                    result.modified_input, input,
+                    "input region was perturbed under contention"
+                );
             }
         }));
     }

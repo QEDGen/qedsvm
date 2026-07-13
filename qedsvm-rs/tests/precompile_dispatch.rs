@@ -41,16 +41,25 @@ fn ed25519_precompile_accepts_valid_signature() {
     let dummy = unique_pubkey();
 
     let r = Svm::default()
-        .process_instruction(&ix, &[
-            (dummy, AccountSharedData::default()),
-            (ed_id, precompile_native_account()),
-        ])
+        .process_instruction(
+            &ix,
+            &[
+                (dummy, AccountSharedData::default()),
+                (ed_id, precompile_native_account()),
+            ],
+        )
         .expect("ed25519 precompile dispatches without harness error");
 
-    assert!(matches!(r.program_result, ProgramResult::Success),
-        "ed25519 precompile: expected Success, got {:?}", r.program_result);
-    assert_eq!(r.compute_units_consumed, 2_400,
-        "ed25519 per-sig CU: expected 2400, got {}", r.compute_units_consumed);
+    assert!(
+        matches!(r.program_result, ProgramResult::Success),
+        "ed25519 precompile: expected Success, got {:?}",
+        r.program_result
+    );
+    assert_eq!(
+        r.compute_units_consumed, 2_400,
+        "ed25519 per-sig CU: expected 2400, got {}",
+        r.compute_units_consumed
+    );
 }
 
 #[test]
@@ -72,13 +81,22 @@ fn ed25519_precompile_rejects_corrupted_signature() {
             .unwrap(),
     );
     let r = Svm::default()
-        .process_instruction(&ix, &[
-            (unique_pubkey(), AccountSharedData::default()),
-            (solana_sdk_ids::ed25519_program::id(), precompile_native_account()),
-        ])
+        .process_instruction(
+            &ix,
+            &[
+                (unique_pubkey(), AccountSharedData::default()),
+                (
+                    solana_sdk_ids::ed25519_program::id(),
+                    precompile_native_account(),
+                ),
+            ],
+        )
         .expect("corrupted-sig precompile still dispatches");
-    assert!(matches!(r.program_result, ProgramResult::Failure { exit_code: 1 }),
-        "expected r0=1 on bad sig, got {:?}", r.program_result);
+    assert!(
+        matches!(r.program_result, ProgramResult::Failure { exit_code: 1 }),
+        "expected r0=1 on bad sig, got {:?}",
+        r.program_result
+    );
 }
 
 #[test]
@@ -92,29 +110,40 @@ fn secp256k1_precompile_accepts_valid_signature() {
 
     let msg = b"qedsvm secp256k1 precompile";
     let sk_bytes = secret_key.serialize();
-    let (sig, recid) = solana_secp256k1_program::sign_message(&sk_bytes, msg)
-        .expect("sign_message");
+    let (sig, recid) =
+        solana_secp256k1_program::sign_message(&sk_bytes, msg).expect("sign_message");
     let pk = libsecp256k1::PublicKey::from_secret_key(&secret_key);
     let uncompressed = pk.serialize();
     let mut uncompressed_64 = [0u8; 64];
     uncompressed_64.copy_from_slice(&uncompressed[1..65]);
-    let eth_address =
-        solana_secp256k1_program::eth_address_from_pubkey(&uncompressed_64);
+    let eth_address = solana_secp256k1_program::eth_address_from_pubkey(&uncompressed_64);
     let ix = solana_secp256k1_program::new_secp256k1_instruction_with_signature(
-        msg, &sig, recid, &eth_address,
+        msg,
+        &sig,
+        recid,
+        &eth_address,
     );
     let sk_id = solana_sdk_ids::secp256k1_program::id();
     let dummy = unique_pubkey();
     let r = Svm::default()
-        .process_instruction(&ix, &[
-            (dummy, AccountSharedData::default()),
-            (sk_id, precompile_native_account()),
-        ])
+        .process_instruction(
+            &ix,
+            &[
+                (dummy, AccountSharedData::default()),
+                (sk_id, precompile_native_account()),
+            ],
+        )
         .expect("secp256k1 precompile dispatches");
-    assert!(matches!(r.program_result, ProgramResult::Success),
-        "secp256k1 precompile: expected Success, got {:?}", r.program_result);
-    assert_eq!(r.compute_units_consumed, 6_690,
-        "secp256k1 per-sig CU: expected 6690, got {}", r.compute_units_consumed);
+    assert!(
+        matches!(r.program_result, ProgramResult::Success),
+        "secp256k1 precompile: expected Success, got {:?}",
+        r.program_result
+    );
+    assert_eq!(
+        r.compute_units_consumed, 6_690,
+        "secp256k1 per-sig CU: expected 6690, got {}",
+        r.compute_units_consumed
+    );
 }
 
 #[test]
@@ -124,47 +153,57 @@ fn secp256r1_precompile_accepts_valid_signature() {
         ec::{EcGroup, EcKey, PointConversionForm},
         nid::Nid,
     };
-    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1)
-        .expect("P-256 curve");
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).expect("P-256 curve");
     let secret_key = EcKey::generate(&group).expect("p256 keygen");
     let msg = b"qedsvm secp256r1 precompile";
-    let sig = solana_secp256r1_program::sign_message(
-        msg,
-        &secret_key.private_key_to_der().unwrap(),
-    ).expect("sign_message");
+    let sig =
+        solana_secp256r1_program::sign_message(msg, &secret_key.private_key_to_der().unwrap())
+            .expect("sign_message");
     let mut ctx = BigNumContext::new().unwrap();
-    let pub_bytes = secret_key.public_key().to_bytes(
-        secret_key.group(),
-        PointConversionForm::COMPRESSED,
-        &mut ctx,
-    ).expect("compressed pubkey");
-    let mut pubkey =
-        [0u8; solana_secp256r1_program::COMPRESSED_PUBKEY_SERIALIZED_SIZE];
+    let pub_bytes = secret_key
+        .public_key()
+        .to_bytes(
+            secret_key.group(),
+            PointConversionForm::COMPRESSED,
+            &mut ctx,
+        )
+        .expect("compressed pubkey");
+    let mut pubkey = [0u8; solana_secp256r1_program::COMPRESSED_PUBKEY_SERIALIZED_SIZE];
     pubkey.copy_from_slice(&pub_bytes);
-    let ix = solana_secp256r1_program::new_secp256r1_instruction_with_signature(
-        msg, &sig, &pubkey,
-    );
+    let ix = solana_secp256r1_program::new_secp256r1_instruction_with_signature(msg, &sig, &pubkey);
     let r1_id = solana_sdk_ids::secp256r1_program::id();
     let dummy = unique_pubkey();
     let r = Svm::default()
-        .process_instruction(&ix, &[
-            (dummy, AccountSharedData::default()),
-            (r1_id, precompile_native_account()),
-        ])
+        .process_instruction(
+            &ix,
+            &[
+                (dummy, AccountSharedData::default()),
+                (r1_id, precompile_native_account()),
+            ],
+        )
         .expect("secp256r1 precompile dispatches");
-    assert!(matches!(r.program_result, ProgramResult::Success),
-        "secp256r1 precompile: expected Success, got {:?}", r.program_result);
-    assert_eq!(r.compute_units_consumed, 4_800,
-        "secp256r1 per-sig CU: expected 4800, got {}", r.compute_units_consumed);
+    assert!(
+        matches!(r.program_result, ProgramResult::Success),
+        "secp256r1 precompile: expected Success, got {:?}",
+        r.program_result
+    );
+    assert_eq!(
+        r.compute_units_consumed, 4_800,
+        "secp256r1 per-sig CU: expected 4800, got {}",
+        r.compute_units_consumed
+    );
 }
 
 #[test]
 fn unknown_pid_does_not_match_precompile_path() {
     let pid = unique_pubkey(); // unknown pid must not route through precompile path — expect UnknownProgram
     let ix = solana_instruction::Instruction {
-        program_id: pid, accounts: vec![], data: vec![1, 2, 3],
+        program_id: pid,
+        accounts: vec![],
+        data: vec![1, 2, 3],
     };
-    let err = Svm::default().process_instruction(&ix, &[])
+    let err = Svm::default()
+        .process_instruction(&ix, &[])
         .expect_err("unknown pid must surface SvmError, not run precompile");
     assert!(
         matches!(err, qedsvm::SvmError::UnknownProgram(p) if p == pid),

@@ -15,13 +15,23 @@ fn minimal_noop_program_runs() {
     let program_id = pid(1);
     let mut svm = Svm::default();
     svm.add_program(&program_id, NOOP_SO);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
-    println!("noop.so: program_result={:?} cu={}",
-        result.program_result, result.compute_units_consumed);
-    assert!(matches!(result.program_result,
-        ProgramResult::Success | ProgramResult::Failure { .. }
-    ), "got OOG — runner couldn't finish a noop within default budget");
+    println!(
+        "noop.so: program_result={:?} cu={}",
+        result.program_result, result.compute_units_consumed
+    );
+    assert!(
+        matches!(
+            result.program_result,
+            ProgramResult::Success | ProgramResult::Failure { .. }
+        ),
+        "got OOG — runner couldn't finish a noop within default budget"
+    );
 }
 
 #[test]
@@ -29,11 +39,21 @@ fn solana_program_entrypoint_noop_runs() {
     let program_id = pid(2); // 18KB cargo-build-sbf noop; exercises full BPF input buffer deserialization
     let mut svm = Svm::default();
     svm.add_program(&program_id, SOLANA_NOOP_SO);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
-    println!("solana_noop.so: program_result={:?} cu={}",
-        result.program_result, result.compute_units_consumed);
-    assert!(matches!(result.program_result,
-        ProgramResult::Success | ProgramResult::Failure { .. }
-    ), "got OOG on cargo-build-sbf noop");
+    println!(
+        "solana_noop.so: program_result={:?} cu={}",
+        result.program_result, result.compute_units_consumed
+    );
+    assert!(
+        matches!(
+            result.program_result,
+            ProgramResult::Success | ProgramResult::Failure { .. }
+        ),
+        "got OOG on cargo-build-sbf noop"
+    );
 }

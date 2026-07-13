@@ -34,6 +34,14 @@ jobs:
         with:
           workspaces: qedsvm-rs
 
+      - name: Rust formatting
+        working-directory: qedsvm-rs
+        run: cargo fmt --all -- --check
+
+      - name: Strict Lean-free Clippy
+        working-directory: qedsvm-rs
+        run: cargo clippy -p qedrecover -p qed-analysis --all-targets -- -D warnings
+
       - name: qedrecover + qed-analysis crate tests
         working-directory: qedsvm-rs
         run: cargo test -p qedrecover -p qed-analysis
@@ -131,6 +139,14 @@ jobs:
         run: |
           set -o pipefail
           lake build 2>&1 | tee build-core.log
+
+      - name: Strict core Rust Clippy
+        working-directory: qedsvm-rs
+        run: cargo clippy --lib --bins -- -D warnings
+
+      - name: Default workspace tests
+        working-directory: qedsvm-rs
+        run: cargo test --workspace
 
       - name: Differential conformance vs mollusk/agave
         # Empirical soundness backstop: runs the compiled Lean interpreter

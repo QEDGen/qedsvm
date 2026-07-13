@@ -46,12 +46,15 @@ pub(super) fn spec_call_for(
     let reg_val_lean = |r: u8| -> String {
         match state.regs.get(&r) {
             Some(e) => e.to_lean(),
-            None    => reg_initial_name(r),
+            None => reg_initial_name(r),
         }
     };
     // Expr form of register r, for canon-aware cell lookups.
     let reg_val_expr = |r: u8| -> Expr {
-        state.regs.get(&r).cloned()
+        state
+            .regs
+            .get(&r)
+            .cloned()
             .unwrap_or_else(|| Expr::InitReg(reg_initial_name(r)))
     };
     // Phase A aliasing (QEDLIFT_ALIASING_DESIGN.md): same cell under different rendering
@@ -76,16 +79,31 @@ pub(super) fn spec_call_for(
                 // dst == src: generic ldxb_spec would emit two `r ↦ᵣ` atoms (unsatisfiable); use ldxb_same_spec.
                 format!(
                     "have {} := ldxb_same_spec {} {} ({}) {} {} (by decide){}",
-                    hyp_name, reg(dst), offl, base_addr, v_name, pc, alias,
+                    hyp_name,
+                    reg(dst),
+                    offl,
+                    base_addr,
+                    v_name,
+                    pc,
+                    alias,
                 )
             } else {
-                let v_old_dst = state.regs.get(&dst)
+                let v_old_dst = state
+                    .regs
+                    .get(&dst)
                     .map(|e| e.to_lean())
                     .unwrap_or_else(|| reg_initial_name(dst));
                 format!(
                     "have {} := ldxb_spec {} {} {} ({}) ({}) {} {} (by decide){}",
-                    hyp_name, reg(dst), reg(src), offl,
-                    v_old_dst, base_addr, v_name, pc, alias,
+                    hyp_name,
+                    reg(dst),
+                    reg(src),
+                    offl,
+                    v_old_dst,
+                    base_addr,
+                    v_name,
+                    pc,
+                    alias,
                 )
             }
         }
@@ -117,43 +135,55 @@ pub(super) fn spec_call_for(
                                     && c.addr_off == off
                                     && ((k == 0 && c.delta == 0) || c.delta == k);
                                 if render_ok {
-                                    addrs.push_str(&format!(" ({})",
-                                        SymState::slot_expected_render(&bexpr, off, k)));
+                                    addrs.push_str(&format!(
+                                        " ({})",
+                                        SymState::slot_expected_render(&bexpr, off, k)
+                                    ));
                                     haddrs.push_str(" rfl");
                                 } else {
-                                    addrs.push_str(&format!(" ({})",
-                                        SymState::cell_render(c)));
-                                    haddrs.push_str(&format!(
-                                        " h_alias_{}_{}", pc, n_alias));
+                                    addrs.push_str(&format!(" ({})", SymState::cell_render(c)));
+                                    haddrs.push_str(&format!(" h_alias_{}_{}", pc, n_alias));
                                     n_alias += 1;
                                 }
                                 args.push_str(&format!(" {}", c.value.atom_lean()));
                                 match &c.value {
-                                    Expr::InitMem(n) =>
-                                        bounds.push_str(&format!(" h{}_lt", n)),
+                                    Expr::InitMem(n) => bounds.push_str(&format!(" h{}_lt", n)),
                                     _ => bounds.push_str(" (by omega)"),
                                 }
                             }
                             None => {
                                 let n = format!("oldMemB_{}", fresh);
                                 fresh += 1;
-                                addrs.push_str(&format!(" ({})",
-                                    SymState::slot_expected_render(&bexpr, off, k)));
+                                addrs.push_str(&format!(
+                                    " ({})",
+                                    SymState::slot_expected_render(&bexpr, off, k)
+                                ));
                                 haddrs.push_str(" rfl");
                                 args.push_str(&format!(" {}", n));
                                 bounds.push_str(&format!(" h{}_lt", n));
                             }
                         }
                     }
-                    let v_old_dst = state.regs.get(&dst)
+                    let v_old_dst = state
+                        .regs
+                        .get(&dst)
                         .map(|e| e.to_lean())
                         .unwrap_or_else(|| reg_initial_name(dst));
                     return Some(SpecCall {
                         hyp_name: hyp_name.clone(),
                         have_line: format!(
                             "have {} := ldxdw_bytes_spec {} {} {} ({}) ({}){}{} {} (by decide){}{}",
-                            hyp_name, reg(dst), reg(src), offl,
-                            v_old_dst, base_addr, args, addrs, pc, bounds, haddrs,
+                            hyp_name,
+                            reg(dst),
+                            reg(src),
+                            offl,
+                            v_old_dst,
+                            base_addr,
+                            args,
+                            addrs,
+                            pc,
+                            bounds,
+                            haddrs,
                         ),
                     });
                 }
@@ -166,22 +196,42 @@ pub(super) fn spec_call_for(
             let (v_arg, hv) = match &cell_val {
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
                 Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
-                None => { let n = format!("oldMemD_{}", state.fresh); (n.clone(), format!("h{}_lt", n)) }
+                None => {
+                    let n = format!("oldMemD_{}", state.fresh);
+                    (n.clone(), format!("h{}_lt", n))
+                }
             };
             if dst == src {
                 // dst == src: use ldxdw_same_spec.
                 format!(
                     "have {} := ldxdw_same_spec {} {} ({}) {} {} (by decide) {}{}",
-                    hyp_name, reg(dst), offl, base_addr, v_arg, pc, hv, alias,
+                    hyp_name,
+                    reg(dst),
+                    offl,
+                    base_addr,
+                    v_arg,
+                    pc,
+                    hv,
+                    alias,
                 )
             } else {
-                let v_old_dst = state.regs.get(&dst)
+                let v_old_dst = state
+                    .regs
+                    .get(&dst)
                     .map(|e| e.to_lean())
                     .unwrap_or_else(|| reg_initial_name(dst));
                 format!(
                     "have {} := ldxdw_spec {} {} {} ({}) ({}) {} {} (by decide) {}{}",
-                    hyp_name, reg(dst), reg(src), offl,
-                    v_old_dst, base_addr, v_arg, pc, hv, alias,
+                    hyp_name,
+                    reg(dst),
+                    reg(src),
+                    offl,
+                    v_old_dst,
+                    base_addr,
+                    v_arg,
+                    pc,
+                    hv,
+                    alias,
                 )
             }
         }
@@ -191,7 +241,9 @@ pub(super) fn spec_call_for(
         LD_W_REG | LD_H_REG => {
             let (spec, w, pfx) = if insn.opc == LD_W_REG {
                 ("ldxw_spec", Width::Word, "oldMemW")
-            } else { ("ldxh_spec", Width::Halfword, "oldMemH") };
+            } else {
+                ("ldxh_spec", Width::Halfword, "oldMemH")
+            };
             let base_addr = reg_val_lean(src);
             let lookup = state.lookup_cell_aliased(&reg_val_expr(src), off, w);
             let cell_val = lookup.map(|(i, _)| state.mem[i].value.clone());
@@ -199,24 +251,38 @@ pub(super) fn spec_call_for(
             let (v_arg, hv) = match &cell_val {
                 Some(Expr::InitMem(name)) => (name.clone(), format!("h{}_lt", name)),
                 Some(v) => (v.atom_lean(), format!("hReloadLt_{}", pc)),
-                None => { let n = format!("{}_{}", pfx, state.fresh); (n.clone(), format!("h{}_lt", n)) }
+                None => {
+                    let n = format!("{}_{}", pfx, state.fresh);
+                    (n.clone(), format!("h{}_lt", n))
+                }
             };
-            let v_old_dst = state.regs.get(&dst)
+            let v_old_dst = state
+                .regs
+                .get(&dst)
                 .map(|e| e.to_lean())
                 .unwrap_or_else(|| reg_initial_name(dst));
             format!(
                 "have {} := {} {} {} {} ({}) ({}) {} {} (by decide) {}{}",
-                hyp_name, spec, reg(dst), reg(src), offl,
-                v_old_dst, base_addr, v_arg, pc, hv, alias,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                offl,
+                v_old_dst,
+                base_addr,
+                v_arg,
+                pc,
+                hv,
+                alias,
             )
         }
         ST_B_REG | ST_H_REG | ST_W_REG | ST_DW_REG => {
             // stx{b,h,w,dw}_spec baseReg valReg off baseAddr vSrc oldV pc — all four share this shape.
             let (spec, w, pfx) = match insn.opc {
-                ST_B_REG  => ("stxb_spec",  Width::Byte,     "oldMemB"),
-                ST_H_REG  => ("stxh_spec",  Width::Halfword, "oldMemH"),
-                ST_W_REG  => ("stxw_spec",  Width::Word,     "oldMemW"),
-                ST_DW_REG => ("stxdw_spec", Width::Dword,    "oldMemD"),
+                ST_B_REG => ("stxb_spec", Width::Byte, "oldMemB"),
+                ST_H_REG => ("stxh_spec", Width::Halfword, "oldMemH"),
+                ST_W_REG => ("stxw_spec", Width::Word, "oldMemW"),
+                ST_DW_REG => ("stxdw_spec", Width::Dword, "oldMemD"),
                 _ => unreachable!(),
             };
             let base_addr = reg_val_lean(dst);
@@ -230,64 +296,107 @@ pub(super) fn spec_call_for(
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := {} {} {} {} ({}) ({}) {} {}{}",
-                hyp_name, spec, reg(dst), reg(src), offl,
-                base_addr, v_src, old_v, pc, alias,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                offl,
+                base_addr,
+                v_src,
+                old_v,
+                pc,
+                alias,
             )
         }
         ADD64_IMM => {
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := add64_imm_spec {} {} ({}) {} (by decide)",
-                hyp_name, reg(dst), imm, v_old, pc,
+                hyp_name,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         AND64_IMM => {
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := and64_imm_spec {} {} ({}) {} (by decide)",
-                hyp_name, reg(dst), imm, v_old, pc,
+                hyp_name,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         LSH64_IMM => {
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := lsh64_imm_spec {} {} ({}) {} (by decide)",
-                hyp_name, reg(dst), imm, v_old, pc,
+                hyp_name,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         RSH64_IMM => {
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := rsh64_imm_spec {} {} ({}) {} (by decide)",
-                hyp_name, reg(dst), imm, v_old, pc,
+                hyp_name,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         // Bitwise/mul imm-form ALU: `<op>_imm_spec dst imm vOld pc hne`.
         OR64_IMM | XOR64_IMM | MUL64_IMM => {
             let v_old = reg_val_lean(dst);
             let spec = match insn.opc {
-                OR64_IMM => "or64_imm_spec", XOR64_IMM => "xor64_imm_spec",
-                MUL64_IMM => "mul64_imm_spec", _ => unreachable!(),
+                OR64_IMM => "or64_imm_spec",
+                XOR64_IMM => "xor64_imm_spec",
+                MUL64_IMM => "mul64_imm_spec",
+                _ => unreachable!(),
             };
             format!(
                 "have {} := {} {} {} ({}) {} (by decide)",
-                hyp_name, spec, reg(dst), imm, v_old, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         // Div/mod imm-form: extra `hnz : toU64 imm ≠ 0` discharged by `(by decide)` (fails on literal div-by-zero).
         DIV64_IMM | MOD64_IMM => {
             let v_old = reg_val_lean(dst);
-            let spec = if insn.opc == DIV64_IMM { "div64_imm_spec" } else { "mod64_imm_spec" };
+            let spec = if insn.opc == DIV64_IMM {
+                "div64_imm_spec"
+            } else {
+                "mod64_imm_spec"
+            };
             format!(
                 "have {} := {} {} {} ({}) {} (by decide) (by decide)",
-                hyp_name, spec, reg(dst), imm, v_old, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         NEG64 => {
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := neg64_spec {} ({}) {} (by decide)",
-                hyp_name, reg(dst), v_old, pc,
+                hyp_name,
+                reg(dst),
+                v_old,
+                pc,
             )
         }
         // div/mod reg-form: symbolic divisor → spec's `hnz` surfaced as theorem hyp `hnz_<pc>` (registered by step).
@@ -295,80 +404,141 @@ pub(super) fn spec_call_for(
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
             let spec = match insn.opc {
-                DIV64_REG => "div64_reg_spec", MOD64_REG => "mod64_reg_spec",
-                DIV32_REG => "div32_reg_spec", MOD32_REG => "mod32_reg_spec",
+                DIV64_REG => "div64_reg_spec",
+                MOD64_REG => "mod64_reg_spec",
+                DIV32_REG => "div32_reg_spec",
+                MOD32_REG => "mod32_reg_spec",
                 _ => unreachable!(),
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} (by decide) hnz_{}",
-                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_old,
+                v_src,
+                pc,
+                pc,
             )
         }
         // 32-bit imm ALU: `<op>32_imm_spec dst imm vOld pc hne`.
-        ADD32_IMM | SUB32_IMM | MUL32_IMM | OR32_IMM | AND32_IMM | XOR32_IMM
-        | LSH32_IMM | RSH32_IMM | MOV32_IMM => {
+        ADD32_IMM | SUB32_IMM | MUL32_IMM | OR32_IMM | AND32_IMM | XOR32_IMM | LSH32_IMM
+        | RSH32_IMM | MOV32_IMM => {
             let v_old = reg_val_lean(dst);
             let spec = match insn.opc {
-                ADD32_IMM => "add32_imm_spec", SUB32_IMM => "sub32_imm_spec",
-                MUL32_IMM => "mul32_imm_spec", OR32_IMM => "or32_imm_spec",
-                AND32_IMM => "and32_imm_spec", XOR32_IMM => "xor32_imm_spec",
-                LSH32_IMM => "lsh32_imm_spec", RSH32_IMM => "rsh32_imm_spec",
-                MOV32_IMM => "mov32_imm_spec", _ => unreachable!(),
+                ADD32_IMM => "add32_imm_spec",
+                SUB32_IMM => "sub32_imm_spec",
+                MUL32_IMM => "mul32_imm_spec",
+                OR32_IMM => "or32_imm_spec",
+                AND32_IMM => "and32_imm_spec",
+                XOR32_IMM => "xor32_imm_spec",
+                LSH32_IMM => "lsh32_imm_spec",
+                RSH32_IMM => "rsh32_imm_spec",
+                MOV32_IMM => "mov32_imm_spec",
+                _ => unreachable!(),
             };
             format!(
                 "have {} := {} {} {} ({}) {} (by decide)",
-                hyp_name, spec, reg(dst), imm, v_old, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         // 32-bit div/mod imm: extra `toU64 imm % U32_MODULUS ≠ 0` (literal → decide).
         DIV32_IMM | MOD32_IMM => {
             let v_old = reg_val_lean(dst);
-            let spec = if insn.opc == DIV32_IMM { "div32_imm_spec" } else { "mod32_imm_spec" };
+            let spec = if insn.opc == DIV32_IMM {
+                "div32_imm_spec"
+            } else {
+                "mod32_imm_spec"
+            };
             format!(
                 "have {} := {} {} {} ({}) {} (by decide) (by decide)",
-                hyp_name, spec, reg(dst), imm, v_old, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         NEG32 => {
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := neg32_spec {} ({}) {} (by decide)",
-                hyp_name, reg(dst), v_old, pc,
+                hyp_name,
+                reg(dst),
+                v_old,
+                pc,
             )
         }
         // 32-bit reg ALU: `<op>32_reg_spec dst src vOld v pc hne`.
-        ADD32_REG | SUB32_REG | MUL32_REG | OR32_REG | AND32_REG | XOR32_REG
-        | LSH32_REG | RSH32_REG | MOV32_REG => {
+        ADD32_REG | SUB32_REG | MUL32_REG | OR32_REG | AND32_REG | XOR32_REG | LSH32_REG
+        | RSH32_REG | MOV32_REG => {
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
             let spec = match insn.opc {
-                ADD32_REG => "add32_reg_spec", SUB32_REG => "sub32_reg_spec",
-                MUL32_REG => "mul32_reg_spec", OR32_REG => "or32_reg_spec",
-                AND32_REG => "and32_reg_spec", XOR32_REG => "xor32_reg_spec",
-                LSH32_REG => "lsh32_reg_spec", RSH32_REG => "rsh32_reg_spec",
-                MOV32_REG => "mov32_reg_spec", _ => unreachable!(),
+                ADD32_REG => "add32_reg_spec",
+                SUB32_REG => "sub32_reg_spec",
+                MUL32_REG => "mul32_reg_spec",
+                OR32_REG => "or32_reg_spec",
+                AND32_REG => "and32_reg_spec",
+                XOR32_REG => "xor32_reg_spec",
+                LSH32_REG => "lsh32_reg_spec",
+                RSH32_REG => "rsh32_reg_spec",
+                MOV32_REG => "mov32_reg_spec",
+                _ => unreachable!(),
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} (by decide)",
-                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_old,
+                v_src,
+                pc,
             )
         }
         // arsh (arithmetic shift right), imm + reg, 32 + 64-bit.
         ARSH64_IMM | ARSH32_IMM => {
             let v_old = reg_val_lean(dst);
-            let spec = if insn.opc == ARSH64_IMM { "arsh64_imm_spec" } else { "arsh32_imm_spec" };
+            let spec = if insn.opc == ARSH64_IMM {
+                "arsh64_imm_spec"
+            } else {
+                "arsh32_imm_spec"
+            };
             format!(
                 "have {} := {} {} {} ({}) {} (by decide)",
-                hyp_name, spec, reg(dst), imm, v_old, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         ARSH64_REG | ARSH32_REG => {
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
-            let spec = if insn.opc == ARSH64_REG { "arsh64_reg_spec" } else { "arsh32_reg_spec" };
+            let spec = if insn.opc == ARSH64_REG {
+                "arsh64_reg_spec"
+            } else {
+                "arsh32_reg_spec"
+            };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} (by decide)",
-                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_old,
+                v_src,
+                pc,
             )
         }
         ST_B_IMM => {
@@ -381,7 +551,14 @@ pub(super) fn spec_call_for(
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := stb_spec {} {} {} ({}) ({}) {}{}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
+                hyp_name,
+                reg(dst),
+                offl,
+                imm,
+                base_addr,
+                old_v,
+                pc,
+                alias,
             )
         }
         ST_H_IMM => {
@@ -394,7 +571,14 @@ pub(super) fn spec_call_for(
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := sth_spec {} {} {} ({}) ({}) {}{}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
+                hyp_name,
+                reg(dst),
+                offl,
+                imm,
+                base_addr,
+                old_v,
+                pc,
+                alias,
             )
         }
         ST_W_IMM => {
@@ -424,28 +608,29 @@ pub(super) fn spec_call_for(
                                     && c.addr_off == off
                                     && ((k == 0 && c.delta == 0) || c.delta == k);
                                 if render_ok {
-                                    addrs.push_str(&format!(" ({})",
-                                        SymState::slot_expected_render(&bexpr, off, k)));
+                                    addrs.push_str(&format!(
+                                        " ({})",
+                                        SymState::slot_expected_render(&bexpr, off, k)
+                                    ));
                                     haddrs.push_str(" rfl");
                                 } else {
-                                    addrs.push_str(&format!(" ({})",
-                                        SymState::cell_render(c)));
-                                    haddrs.push_str(&format!(
-                                        " h_alias_{}_{}", pc, n_alias));
+                                    addrs.push_str(&format!(" ({})", SymState::cell_render(c)));
+                                    haddrs.push_str(&format!(" h_alias_{}_{}", pc, n_alias));
                                     n_alias += 1;
                                 }
                                 bargs.push_str(&format!(" {}", c.value.atom_lean()));
                                 match &c.value {
-                                    Expr::InitMem(n) =>
-                                        bounds.push_str(&format!(" h{}_lt", n)),
+                                    Expr::InitMem(n) => bounds.push_str(&format!(" h{}_lt", n)),
                                     _ => bounds.push_str(" (by omega)"),
                                 }
                             }
                             None => {
                                 let n = format!("oldMemB_{}", fresh);
                                 fresh += 1;
-                                addrs.push_str(&format!(" ({})",
-                                    SymState::slot_expected_render(&bexpr, off, k)));
+                                addrs.push_str(&format!(
+                                    " ({})",
+                                    SymState::slot_expected_render(&bexpr, off, k)
+                                ));
                                 haddrs.push_str(" rfl");
                                 bargs.push_str(&format!(" {}", n));
                                 bounds.push_str(&format!(" h{}_lt", n));
@@ -459,8 +644,20 @@ pub(super) fn spec_call_for(
                         have_line: format!(
                             "have {} := stw_bytes_spec {} {} {} ({}){} {} {} {} {}{} {}{} \
 (by decide) (by decide) (by decide) (by decide){}",
-                            hyp_name, reg(dst), offl, imm, base_addr, bargs,
-                            cb[0], cb[1], cb[2], cb[3], addrs, pc, bounds, haddrs,
+                            hyp_name,
+                            reg(dst),
+                            offl,
+                            imm,
+                            base_addr,
+                            bargs,
+                            cb[0],
+                            cb[1],
+                            cb[2],
+                            cb[3],
+                            addrs,
+                            pc,
+                            bounds,
+                            haddrs,
                         ),
                     });
                 }
@@ -472,7 +669,14 @@ pub(super) fn spec_call_for(
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := stw_spec {} {} {} ({}) ({}) {}{}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
+                hyp_name,
+                reg(dst),
+                offl,
+                imm,
+                base_addr,
+                old_v,
+                pc,
+                alias,
             )
         }
         ST_DW_IMM => {
@@ -485,7 +689,14 @@ pub(super) fn spec_call_for(
             let alias = alias_suffix(&lookup);
             format!(
                 "have {} := stdw_spec {} {} {} ({}) ({}) {}{}",
-                hyp_name, reg(dst), offl, imm, base_addr, old_v, pc, alias,
+                hyp_name,
+                reg(dst),
+                offl,
+                imm,
+                base_addr,
+                old_v,
+                pc,
+                alias,
             )
         }
         ADD64_REG => {
@@ -493,7 +704,12 @@ pub(super) fn spec_call_for(
             let v_src = reg_val_lean(src);
             format!(
                 "have {} := add64_reg_spec {} {} ({}) ({}) {} (by decide)",
-                hyp_name, reg(dst), reg(src), v_old, v_src, pc,
+                hyp_name,
+                reg(dst),
+                reg(src),
+                v_old,
+                v_src,
+                pc,
             )
         }
         SUB64_REG => {
@@ -501,7 +717,12 @@ pub(super) fn spec_call_for(
             let v_src = reg_val_lean(src);
             format!(
                 "have {} := sub64_reg_spec {} {} ({}) ({}) {} (by decide)",
-                hyp_name, reg(dst), reg(src), v_old, v_src, pc,
+                hyp_name,
+                reg(dst),
+                reg(src),
+                v_old,
+                v_src,
+                pc,
             )
         }
         // Wrapping/bitwise reg-form ALU: `<op>_reg_spec dst src vOld v pc hne` (hne : dst ≠ .r10).
@@ -509,14 +730,23 @@ pub(super) fn spec_call_for(
             let v_old = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
             let spec = match insn.opc {
-                MUL64_REG => "mul64_reg_spec", OR64_REG  => "or64_reg_spec",
-                AND64_REG => "and64_reg_spec", XOR64_REG => "xor64_reg_spec",
-                LSH64_REG => "lsh64_reg_spec", RSH64_REG => "rsh64_reg_spec",
+                MUL64_REG => "mul64_reg_spec",
+                OR64_REG => "or64_reg_spec",
+                AND64_REG => "and64_reg_spec",
+                XOR64_REG => "xor64_reg_spec",
+                LSH64_REG => "lsh64_reg_spec",
+                RSH64_REG => "rsh64_reg_spec",
                 _ => unreachable!(),
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} (by decide)",
-                hyp_name, spec, reg(dst), reg(src), v_old, v_src, pc,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_old,
+                v_src,
+                pc,
             )
         }
         MOV64_REG => {
@@ -524,14 +754,23 @@ pub(super) fn spec_call_for(
             let v_src = reg_val_lean(src);
             format!(
                 "have {} := mov64_reg_spec {} {} ({}) ({}) {} (by decide)",
-                hyp_name, reg(dst), reg(src), v_old, v_src, pc,
+                hyp_name,
+                reg(dst),
+                reg(src),
+                v_old,
+                v_src,
+                pc,
             )
         }
         MOV64_IMM => {
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := mov64_imm_spec {} {} ({}) {} (by decide)",
-                hyp_name, reg(dst), imm, v_old, pc,
+                hyp_name,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         LD_DW_IMM => {
@@ -539,15 +778,21 @@ pub(super) fn spec_call_for(
             let v_old = reg_val_lean(dst);
             format!(
                 "have {} := lddw_spec {} {} ({}) {} (by decide)",
-                hyp_name, reg(dst), imm, v_old, pc,
+                hyp_name,
+                reg(dst),
+                imm,
+                v_old,
+                pc,
             )
         }
         CALL_IMM => {
             // call_local_spec target cs r6V r7V r8V r9V r10V pc.
             // `cs` = pre-call stack (push happens in step(), not here); empty at top-level.
             let target = call_target.unwrap_or(0);
-            let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
-            let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
+            let r6 = reg_val_lean(6);
+            let r7 = reg_val_lean(7);
+            let r8 = reg_val_lean(8);
+            let r9 = reg_val_lean(9);
             let r10 = reg_val_lean(10);
             let cs = render_callstack(&state.call_stack);
             format!(
@@ -558,18 +803,26 @@ pub(super) fn spec_call_for(
         EXIT => {
             // exit_pops_spec frame cs r6Old r7Old r8Old r9Old r10Old pc.
             // r6Old..r10Old are the CURRENT (exit-time) register values in the exit_pops PRE.
-            let r6 = reg_val_lean(6); let r7 = reg_val_lean(7);
-            let r8 = reg_val_lean(8); let r9 = reg_val_lean(9);
+            let r6 = reg_val_lean(6);
+            let r7 = reg_val_lean(7);
+            let r8 = reg_val_lean(8);
+            let r9 = reg_val_lean(9);
             let r10 = reg_val_lean(10);
             // `frame`: retPc = `<callpc> + 1`, savedR6..savedR10 = CALL-TIME snapshot (NOT current — callee may clobber).
             // `cs` = stack below frame (empty at top-level).
             let n = state.call_stack.len();
-            let (call_pc, saved) = state.call_stack.last()
+            let (call_pc, saved) = state
+                .call_stack
+                .last()
                 .map(|(p, s)| (*p, s.clone()))
                 .unwrap_or((0, std::array::from_fn(|_| Expr::InitReg("?".into()))));
             let (sv6, sv7, sv8, sv9, sv10) = (
-                saved[0].atom_lean(), saved[1].atom_lean(), saved[2].atom_lean(),
-                saved[3].atom_lean(), saved[4].atom_lean());
+                saved[0].atom_lean(),
+                saved[1].atom_lean(),
+                saved[2].atom_lean(),
+                saved[3].atom_lean(),
+                saved[4].atom_lean(),
+            );
             let cs = render_callstack(&state.call_stack[..n.saturating_sub(1)]);
             // `dsimp` forces iota reduction on `frame.savedR6..savedR10` fields (sl_block_iter doesn't run it).
             format!(
@@ -591,7 +844,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JNE64_IMM | JNE32_IMM => {
@@ -605,7 +865,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JGT64_IMM | JGT32_IMM => {
@@ -619,7 +886,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JSGT64_IMM | JSGT32_IMM => {
@@ -633,7 +907,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JSLE64_IMM | JSLE32_IMM => {
@@ -647,7 +928,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JLT64_IMM | JLT32_IMM => {
@@ -661,7 +949,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JLE64_IMM | JLE32_IMM => {
@@ -675,7 +970,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JSLT64_IMM | JSLT32_IMM => {
@@ -689,7 +991,14 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) {} {} {}",
-                hyp_name, spec, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JEQ64_REG | JEQ32_REG => {
@@ -704,7 +1013,15 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} {} {}",
-                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_dst,
+                v_src,
+                pc,
+                target,
+                h,
             )
         }
         JNE64_REG | JNE32_REG => {
@@ -719,7 +1036,15 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} {} {}",
-                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_dst,
+                v_src,
+                pc,
+                target,
+                h,
             )
         }
         JLT64_REG | JLT32_REG => {
@@ -734,7 +1059,15 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} {} {}",
-                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_dst,
+                v_src,
+                pc,
+                target,
+                h,
             )
         }
         JSLE64_REG | JSLE32_REG => {
@@ -749,12 +1082,20 @@ pub(super) fn spec_call_for(
             };
             format!(
                 "have {} := {} {} {} ({}) ({}) {} {} {}",
-                hyp_name, spec, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+                hyp_name,
+                spec,
+                reg(dst),
+                reg(src),
+                v_dst,
+                v_src,
+                pc,
+                target,
+                h,
             )
         }
-        JGT64_REG | JGT32_REG | JLE64_REG | JLE32_REG | JSGE64_REG | JSGE32_REG
-        | JGE64_REG | JGE32_REG | JSGT64_REG | JSGT32_REG | JSLT64_REG | JSLT32_REG
-        | JSET64_REG | JSET32_REG => {
+        JGT64_REG | JGT32_REG | JLE64_REG | JLE32_REG | JSGE64_REG | JSGE32_REG | JGE64_REG
+        | JGE32_REG | JSGT64_REG | JSGT32_REG | JSLT64_REG | JSLT32_REG | JSET64_REG
+        | JSET32_REG => {
             let v_dst = reg_val_lean(dst);
             let v_src = reg_val_lean(src);
             let target = jt;
@@ -769,10 +1110,23 @@ pub(super) fn spec_call_for(
                 JSET64_REG | JSET32_REG => "jset_reg",
                 _ => unreachable!(),
             };
-            let suffix = if branch_taken == Some(true) { "taken_spec" } else { "not_taken_spec" };
+            let suffix = if branch_taken == Some(true) {
+                "taken_spec"
+            } else {
+                "not_taken_spec"
+            };
             format!(
                 "have {} := {}_{} {} {} ({}) ({}) {} {} {}",
-                hyp_name, stem, suffix, reg(dst), reg(src), v_dst, v_src, pc, target, h,
+                hyp_name,
+                stem,
+                suffix,
+                reg(dst),
+                reg(src),
+                v_dst,
+                v_src,
+                pc,
+                target,
+                h,
             )
         }
         JGE64_IMM | JGE32_IMM | JSGE64_IMM | JSGE32_IMM | JSET64_IMM | JSET32_IMM => {
@@ -785,10 +1139,22 @@ pub(super) fn spec_call_for(
                 JSET64_IMM | JSET32_IMM => "jset_imm",
                 _ => unreachable!(),
             };
-            let suffix = if branch_taken == Some(true) { "taken_spec" } else { "not_taken_spec" };
+            let suffix = if branch_taken == Some(true) {
+                "taken_spec"
+            } else {
+                "not_taken_spec"
+            };
             format!(
                 "have {} := {}_{} {} {} ({}) {} {} {}",
-                hyp_name, stem, suffix, reg(dst), imm, v_dst, pc, target, h,
+                hyp_name,
+                stem,
+                suffix,
+                reg(dst),
+                imm,
+                v_dst,
+                pc,
+                target,
+                h,
             )
         }
         JA => {
@@ -797,5 +1163,8 @@ pub(super) fn spec_call_for(
         }
         _ => return None,
     };
-    Some(SpecCall { hyp_name, have_line })
+    Some(SpecCall {
+        hyp_name,
+        have_line,
+    })
 }

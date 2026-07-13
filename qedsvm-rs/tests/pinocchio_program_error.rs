@@ -33,10 +33,8 @@ fn invalid_account_data_decodes_to_typed_program_error() {
     let pid = program_id(); // feed account has wrong discriminator → Resolve bails with InvalidAccountData
     let seed_key = Pubkey::new_unique();
     let price_feed = Pubkey::new_unique();
-    let (state_key, bump) = Pubkey::find_program_address(
-        &[b"pyth-resolver", seed_key.as_ref()],
-        &pid,
-    );
+    let (state_key, bump) =
+        Pubkey::find_program_address(&[b"pyth-resolver", seed_key.as_ref()], &pid);
 
     let mut state_data = vec![0u8; 136]; // minimal valid state layout — enough to reach feed-validate step
     state_data[0] = bump;
@@ -76,7 +74,10 @@ fn invalid_account_data_decodes_to_typed_program_error() {
     svm.add_program(&pid, PYTH_RESOLVER_DEVNET_SO);
 
     let result = svm
-        .process_instruction(&ix, &[(state_key, state_account), (price_feed, feed_account)])
+        .process_instruction(
+            &ix,
+            &[(state_key, state_account), (price_feed, feed_account)],
+        )
         .expect("runs");
 
     assert_eq!(

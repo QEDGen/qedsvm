@@ -181,7 +181,9 @@ impl std::fmt::Display for SvmError {
 impl std::error::Error for SvmError {}
 
 impl From<SerializeError> for SvmError {
-    fn from(e: SerializeError) -> Self { Self::Serialize(e) }
+    fn from(e: SerializeError) -> Self {
+        Self::Serialize(e)
+    }
 }
 
 /// Mollusk-shaped reference SVM backed by the qedsvm Lean interpreter.
@@ -196,7 +198,9 @@ pub struct Svm {
 }
 
 impl Default for Svm {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Svm {
@@ -217,17 +221,22 @@ impl Svm {
     /// Scan a transaction's instruction list for `ComputeBudgetInstruction::SetComputeUnitLimit`
     /// and apply it to `cu_budget`. Mirrors agave's `ComputeBudgetProcessor` pre-flight scan.
     /// Wire format: discriminant `2` + u32 LE. Last `SetComputeUnitLimit` wins.
-    pub fn with_compute_budget_from_instructions(
-        mut self,
-        instructions: &[Instruction],
-    ) -> Self {
+    pub fn with_compute_budget_from_instructions(mut self, instructions: &[Instruction]) -> Self {
         let cb_id = solana_sdk_ids::compute_budget::ID;
         for ix in instructions {
-            if ix.program_id != cb_id { continue; }
-            if ix.data.is_empty() { continue; }
+            if ix.program_id != cb_id {
+                continue;
+            }
+            if ix.data.is_empty() {
+                continue;
+            }
             // Discriminant 2 = SetComputeUnitLimit(u32).
-            if ix.data[0] != 2 { continue; }
-            if ix.data.len() < 5 { continue; }
+            if ix.data[0] != 2 {
+                continue;
+            }
+            if ix.data.len() < 5 {
+                continue;
+            }
             let units = u32::from_le_bytes([ix.data[1], ix.data[2], ix.data[3], ix.data[4]]);
             self.cu_budget = u64::from(units);
         }
@@ -270,7 +279,9 @@ impl Svm {
             });
         }
 
-        let elf = self.programs.get(&instruction.program_id)
+        let elf = self
+            .programs
+            .get(&instruction.program_id)
             .ok_or(SvmError::UnknownProgram(instruction.program_id))?;
 
         // Sysvar read-only enforcement: agave's loader rejects writable sysvar accounts.
@@ -297,7 +308,8 @@ impl Svm {
 
         // CPI registry: all OTHER registered programs (main program excluded — Lean doesn't need it twice).
         // Always pass program_id so the Lean runner can derive PDAs for `invoke_signed`.
-        let registry_entries: Vec<(&[u8; 32], &[u8])> = self.programs
+        let registry_entries: Vec<(&[u8; 32], &[u8])> = self
+            .programs
             .iter()
             .filter(|(pid, _)| **pid != instruction.program_id)
             .map(|(pid, elf)| (pid.as_array(), elf.as_slice()))
@@ -337,10 +349,19 @@ impl Svm {
         // Any violation downgrades to `Failure { ERR_INVALID_POSTSTATE }`.
         let (program_result, poststate_violation) =
             if matches!(program_result, ProgramResult::Success) {
-                match validate_post_state(instruction, &canonical_accounts, &resulting_accounts,
-                                           self.enforce_rent_state) {
+                match validate_post_state(
+                    instruction,
+                    &canonical_accounts,
+                    &resulting_accounts,
+                    self.enforce_rent_state,
+                ) {
                     Ok(()) => (program_result, None),
-                    Err(e) => (ProgramResult::Failure { exit_code: ERR_INVALID_POSTSTATE }, Some(e)),
+                    Err(e) => (
+                        ProgramResult::Failure {
+                            exit_code: ERR_INVALID_POSTSTATE,
+                        },
+                        Some(e),
+                    ),
                 }
             } else {
                 (program_result, None)
@@ -355,7 +376,6 @@ impl Svm {
             poststate_violation,
         })
     }
-
 }
 
 /// Sentinel for "Success but post-state invariant violated" (M13). Collapses agave's
@@ -372,12 +392,12 @@ fn accounts_for_instruction(
     accounts: &[(Pubkey, AccountSharedData)],
 ) -> Result<Vec<(Pubkey, AccountSharedData)>, SerializeError> {
     let dup_of = crate::serialize::dup_map(&instruction.accounts);
-    let mut out: Vec<(Pubkey, AccountSharedData)> =
-        Vec::with_capacity(instruction.accounts.len());
+    let mut out: Vec<(Pubkey, AccountSharedData)> = Vec::with_capacity(instruction.accounts.len());
     for (i, meta) in instruction.accounts.iter().enumerate() {
         let acct = match dup_of[i] {
             Some(j) => out[j].1.clone(), // duplicate: reuse the first-occurrence entry
-            None => accounts.iter()
+            None => accounts
+                .iter()
                 .find(|(k, _)| *k == meta.pubkey)
                 .map(|(_, a)| a.clone())
                 .ok_or(SerializeError::MissingAccount(meta.pubkey))?,
@@ -404,7 +424,9 @@ fn is_sysvar_id(pk: &Pubkey) -> bool {
 }
 
 fn ix_accounts_writable_sysvar(instruction: &Instruction) -> Option<Pubkey> {
-    instruction.accounts.iter()
+    instruction
+        .accounts
+        .iter()
         .find(|m| m.is_writable && is_sysvar_id(&m.pubkey))
         .map(|m| m.pubkey)
 }
@@ -424,7 +446,11 @@ pub enum PostStateError {
     /// Lamport sum across listed accounts changed (mint or burn).
     LamportConservationViolated { pre_sum: u128, post_sum: u128 },
     /// Account data grew past `pre_len + MAX_PERMITTED_DATA_INCREASE`.
-    DataLengthOverflow { pubkey: Pubkey, pre: usize, post: usize },
+    DataLengthOverflow {
+        pubkey: Pubkey,
+        pre: usize,
+        post: usize,
+    },
     /// Disallowed rent-state transition (mirrors `InsufficientFundsForRent`).
     RentStateTransitionInvalid {
         pubkey: Pubkey,
@@ -452,9 +478,9 @@ fn rent_minimum_balance(data_len: usize) -> u64 {
 /// Rent state of a Solana account (mirrors `solana-svm::rent_calculator::RentState`).
 #[derive(Debug, PartialEq, Eq)]
 enum RentState {
-    Uninitialized,  // lamports == 0
-    RentPaying { lamports: u64, data_size: usize },  // 0 < lamports < minimum_balance (legacy only)
-    RentExempt,     // lamports >= minimum_balance
+    Uninitialized,                                  // lamports == 0
+    RentPaying { lamports: u64, data_size: usize }, // 0 < lamports < minimum_balance (legacy only)
+    RentExempt,                                     // lamports >= minimum_balance
 }
 
 fn get_account_rent_state(lamports: u64, data_size: usize) -> RentState {
@@ -463,7 +489,10 @@ fn get_account_rent_state(lamports: u64, data_size: usize) -> RentState {
     } else if lamports >= rent_minimum_balance(data_size) {
         RentState::RentExempt
     } else {
-        RentState::RentPaying { lamports, data_size }
+        RentState::RentPaying {
+            lamports,
+            data_size,
+        }
     }
 }
 
@@ -472,14 +501,16 @@ fn get_account_rent_state(lamports: u64, data_size: usize) -> RentState {
 fn rent_transition_allowed(pre: &RentState, post: &RentState) -> bool {
     match post {
         RentState::Uninitialized | RentState::RentExempt => true,
-        RentState::RentPaying { lamports: post_lamports, data_size: post_data_size } => {
-            match pre {
-                RentState::Uninitialized | RentState::RentExempt => false,
-                RentState::RentPaying { lamports: pre_lamports, data_size: pre_data_size } => {
-                    post_data_size == pre_data_size && post_lamports <= pre_lamports
-                }
-            }
-        }
+        RentState::RentPaying {
+            lamports: post_lamports,
+            data_size: post_data_size,
+        } => match pre {
+            RentState::Uninitialized | RentState::RentExempt => false,
+            RentState::RentPaying {
+                lamports: pre_lamports,
+                data_size: pre_data_size,
+            } => post_data_size == pre_data_size && post_lamports <= pre_lamports,
+        },
     }
 }
 
@@ -495,7 +526,7 @@ fn validate_post_state(
 
     // Lamport conservation across the per-call account list. Programs can redistribute but not mint/burn.
     // System's create_account/transfer are redistributions, so this holds even there.
-    let pre_sum: u128  = pre.iter().map(|(_, a)| u128::from(a.lamports())).sum();
+    let pre_sum: u128 = pre.iter().map(|(_, a)| u128::from(a.lamports())).sum();
     let post_sum: u128 = post.iter().map(|(_, a)| u128::from(a.lamports())).sum();
     if pre_sum != post_sum {
         return Err(PostStateError::LamportConservationViolated { pre_sum, post_sum });
@@ -508,7 +539,9 @@ fn validate_post_state(
 
         // `executable`/`rent_epoch` inherited from pre-state by construction — nothing to compare.
         // Read-only enforcement: `is_writable=false` → lamports/data/owner must be unchanged.
-        let meta_writable = instruction.accounts.iter()
+        let meta_writable = instruction
+            .accounts
+            .iter()
             .find(|m| m.pubkey == pk)
             .map(|m| m.is_writable)
             .unwrap_or(true); // not in ix.accounts → unconstrained
@@ -516,23 +549,25 @@ fn validate_post_state(
             && (pre_acct.lamports() != post_acct.lamports()
                 || pre_acct.data() != post_acct.data()
                 || pre_acct.owner() != post_acct.owner())
-            {
-                return Err(PostStateError::ReadOnlyAccountModified(pk));
-            }
+        {
+            return Err(PostStateError::ReadOnlyAccountModified(pk));
+        }
 
         // Data-growth bound.
-        let pre_len  = pre_acct.data().len();
+        let pre_len = pre_acct.data().len();
         let post_len = post_acct.data().len();
         if post_len > pre_len + MAX_PERMITTED_DATA_INCREASE {
             return Err(PostStateError::DataLengthOverflow {
-                pubkey: pk, pre: pre_len, post: post_len,
+                pubkey: pk,
+                pre: pre_len,
+                post: post_len,
             });
         }
 
         // Rent-state transition enforcement (off by default — see `with_rent_state_enforcement`).
         // Incinerator pubkey is exempt.
         if enforce_rent_state && pk != solana_sdk_ids::incinerator::ID {
-            let pre_state  = get_account_rent_state(pre_acct.lamports(),  pre_len);
+            let pre_state = get_account_rent_state(pre_acct.lamports(), pre_len);
             let post_state = get_account_rent_state(post_acct.lamports(), post_len);
             if !rent_transition_allowed(&pre_state, &post_state) {
                 return Err(PostStateError::RentStateTransitionInvalid {
@@ -557,71 +592,102 @@ mod rent_state_tests {
     #[test]
     fn minimum_balance_matches_agave_default_rent() {
         // Default Rent: (128 + n) * 6960.
-        assert_eq!(rent_minimum_balance(0),   128 * 6960);          //   891_360
-        assert_eq!(rent_minimum_balance(1),   129 * 6960);          //   898_320
-        assert_eq!(rent_minimum_balance(165), (128 + 165) * 6960);  // 2_039_280 — SPL Token Mint
-        assert_eq!(rent_minimum_balance(200), (128 + 200) * 6960);  // 2_282_880 — Stake account
+        assert_eq!(rent_minimum_balance(0), 128 * 6960); //   891_360
+        assert_eq!(rent_minimum_balance(1), 129 * 6960); //   898_320
+        assert_eq!(rent_minimum_balance(165), (128 + 165) * 6960); // 2_039_280 — SPL Token Mint
+        assert_eq!(rent_minimum_balance(200), (128 + 200) * 6960); // 2_282_880 — Stake account
     }
 
     #[test]
     fn rent_state_classification() {
         // Uninitialized when lamports = 0 regardless of data size.
-        assert_eq!(get_account_rent_state(0, 0),   RentState::Uninitialized);
+        assert_eq!(get_account_rent_state(0, 0), RentState::Uninitialized);
         assert_eq!(get_account_rent_state(0, 200), RentState::Uninitialized);
 
         // RentExempt when lamports ≥ minimum_balance.
         let exempt = rent_minimum_balance(200);
-        assert_eq!(get_account_rent_state(exempt,     200), RentState::RentExempt);
-        assert_eq!(get_account_rent_state(exempt + 1, 200), RentState::RentExempt);
+        assert_eq!(get_account_rent_state(exempt, 200), RentState::RentExempt);
+        assert_eq!(
+            get_account_rent_state(exempt + 1, 200),
+            RentState::RentExempt
+        );
 
         // RentPaying when 0 < lamports < minimum_balance.
         let half = exempt / 2;
         assert_eq!(
             get_account_rent_state(half, 200),
-            RentState::RentPaying { lamports: half, data_size: 200 },
+            RentState::RentPaying {
+                lamports: half,
+                data_size: 200
+            },
         );
     }
 
     #[test]
     fn transition_allowed_uninit_to_exempt_ok() {
-        let pre  = RentState::Uninitialized;
+        let pre = RentState::Uninitialized;
         let post = RentState::RentExempt;
         assert!(rent_transition_allowed(&pre, &post));
     }
 
     #[test]
     fn transition_allowed_uninit_to_paying_rejected() {
-        let pre  = RentState::Uninitialized;
-        let post = RentState::RentPaying { lamports: 100, data_size: 200 };
+        let pre = RentState::Uninitialized;
+        let post = RentState::RentPaying {
+            lamports: 100,
+            data_size: 200,
+        };
         assert!(!rent_transition_allowed(&pre, &post));
     }
 
     #[test]
     fn transition_allowed_paying_to_paying_same_size_no_credit_ok() {
-        let pre  = RentState::RentPaying { lamports: 1000, data_size: 200 };
-        let post = RentState::RentPaying { lamports: 500,  data_size: 200 };
+        let pre = RentState::RentPaying {
+            lamports: 1000,
+            data_size: 200,
+        };
+        let post = RentState::RentPaying {
+            lamports: 500,
+            data_size: 200,
+        };
         assert!(rent_transition_allowed(&pre, &post));
     }
 
     #[test]
     fn transition_allowed_paying_to_paying_credited_rejected() {
         // Crediting a rent-paying account is forbidden (would "donate" lamports below exemption threshold).
-        let pre  = RentState::RentPaying { lamports: 500,  data_size: 200 };
-        let post = RentState::RentPaying { lamports: 1000, data_size: 200 };
+        let pre = RentState::RentPaying {
+            lamports: 500,
+            data_size: 200,
+        };
+        let post = RentState::RentPaying {
+            lamports: 1000,
+            data_size: 200,
+        };
         assert!(!rent_transition_allowed(&pre, &post));
     }
 
     #[test]
     fn transition_allowed_paying_to_paying_resized_rejected() {
         // Resizing while rent-paying is forbidden.
-        let pre  = RentState::RentPaying { lamports: 1000, data_size: 200 };
-        let post = RentState::RentPaying { lamports: 1000, data_size: 100 };
+        let pre = RentState::RentPaying {
+            lamports: 1000,
+            data_size: 200,
+        };
+        let post = RentState::RentPaying {
+            lamports: 1000,
+            data_size: 100,
+        };
         assert!(!rent_transition_allowed(&pre, &post));
     }
 
     /// Construct a writable `AccountMeta` for `pk`.
     fn writable_meta(pk: Pubkey) -> solana_instruction::AccountMeta {
-        solana_instruction::AccountMeta { pubkey: pk, is_signer: false, is_writable: true }
+        solana_instruction::AccountMeta {
+            pubkey: pk,
+            is_signer: false,
+            is_writable: true,
+        }
     }
 
     /// Build a `(pk, AccountSharedData)` pair with given lamports + data size.
@@ -654,7 +720,7 @@ mod rent_state_tests {
             accounts: vec![writable_meta(a), writable_meta(b)],
             data: vec![],
         };
-        let pre  = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
+        let pre = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 1_000_000, 0), acct(b, 10_000, 200)];
         assert!(validate_post_state(&ix, &pre, &post, false).is_ok());
     }
@@ -668,7 +734,7 @@ mod rent_state_tests {
             accounts: vec![writable_meta(a), writable_meta(b)],
             data: vec![],
         };
-        let pre  = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
+        let pre = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 1_000_000, 0), acct(b, 10_000, 200)];
         match validate_post_state(&ix, &pre, &post, true) {
             Err(PostStateError::RentStateTransitionInvalid { pubkey, .. }) => {
@@ -688,7 +754,7 @@ mod rent_state_tests {
             data: vec![],
         };
         // `a` stays above min(0)=891_360 post-debit; `b` reaches min(200)=2_282_880 → RentExempt.
-        let pre  = vec![acct(a, 5_000_000, 0), acct(b, 0, 200)];
+        let pre = vec![acct(a, 5_000_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 2_717_120, 0), acct(b, 2_282_880, 200)];
         assert!(validate_post_state(&ix, &pre, &post, true).is_ok());
     }
@@ -703,7 +769,7 @@ mod rent_state_tests {
             accounts: vec![writable_meta(a), writable_meta(inc)],
             data: vec![],
         };
-        let pre  = vec![acct(a, 1_010_000, 0), acct(inc, 0, 200)];
+        let pre = vec![acct(a, 1_010_000, 0), acct(inc, 0, 200)];
         let post = vec![acct(a, 1_000_000, 0), acct(inc, 10_000, 200)];
         // Same Uninitialized → RentPaying shape as the rejection
         // test, but on incinerator. Must pass.
@@ -713,7 +779,7 @@ mod rent_state_tests {
     #[test]
     fn transition_allowed_to_uninit_always_ok() {
         // Closing the account (drain to 0) is always allowed.
-        let pre  = RentState::RentExempt;
+        let pre = RentState::RentExempt;
         let post = RentState::Uninitialized;
         assert!(rent_transition_allowed(&pre, &post));
     }
@@ -821,7 +887,10 @@ mod rent_state_tests {
     fn fake_sysvar_prefix_pubkey_is_not_flagged() {
         // Old prefix-based detector flagged [0x06, 0xa7, 0xd5, 0x17] prefix; explicit-list must not.
         let mut bytes = [0u8; 32];
-        bytes[0] = 0x06; bytes[1] = 0xa7; bytes[2] = 0xd5; bytes[3] = 0x17;
+        bytes[0] = 0x06;
+        bytes[1] = 0xa7;
+        bytes[2] = 0xd5;
+        bytes[3] = 0x17;
         let fake = Pubkey::new_from_array(bytes);
         let ix = Instruction {
             program_id: test_pk(99),

@@ -1,8 +1,7 @@
 //! API smoke tests for `Svm::process_instruction` (helloElf fixture); exercises full serialize→Lean→deserialize path.
 
 use qedsvm::{
-    deserialize_account_writes, serialize_parameters,
-    ProgramResult, SerializeError, Svm, SvmError,
+    deserialize_account_writes, serialize_parameters, ProgramResult, SerializeError, Svm, SvmError,
 };
 use solana_account::AccountSharedData;
 use solana_instruction::{AccountMeta, Instruction};
@@ -19,10 +18,17 @@ fn process_instruction_with_no_accounts_returns_helloelfs_exit_code() {
     let mut svm = Svm::default();
     svm.add_program(&program_id, HELLO_ELF);
 
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
 
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    );
     assert!(result.logs.is_empty());
     assert!(result.return_data.is_empty());
     assert!(result.resulting_accounts.is_empty());
@@ -43,10 +49,14 @@ fn process_instruction_with_accounts_round_trips_unchanged_buffer() {
         accounts: vec![AccountMeta::new(key, false)],
         data: vec![0x01, 0x02],
     };
-    let result = svm.process_instruction(&ix, &[(key, pre.clone())])
+    let result = svm
+        .process_instruction(&ix, &[(key, pre.clone())])
         .expect("runs");
 
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    );
     assert_eq!(result.resulting_accounts.len(), 1);
     let (out_key, out_acct) = &result.resulting_accounts[0];
     assert_eq!(out_key, &key);
@@ -59,7 +69,11 @@ fn process_instruction_with_accounts_round_trips_unchanged_buffer() {
 #[test]
 fn unknown_program_returns_svm_error() {
     let svm = Svm::default();
-    let ix = Instruction { program_id: pid(99), accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id: pid(99),
+        accounts: vec![],
+        data: vec![],
+    };
     match svm.process_instruction(&ix, &[]) {
         Err(SvmError::UnknownProgram(pk)) => assert_eq!(pk, pid(99)),
         other => panic!("expected UnknownProgram, got {other:?}"),
@@ -72,11 +86,21 @@ fn compute_units_consumed_matches_program_length() {
     let program_id = pid(7);
     let mut svm = Svm::default();
     svm.add_program(&program_id, HELLO_ELF);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
-    assert_eq!(result.compute_units_consumed, 2,
-        "hello ELF is 2 instructions; got CU={}", result.compute_units_consumed);
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(
+        result.compute_units_consumed, 2,
+        "hello ELF is 2 instructions; got CU={}",
+        result.compute_units_consumed
+    );
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    );
 }
 
 /// Second program registered → registry path (`run_buffer_with_registry`); same result as single-program case.
@@ -87,9 +111,16 @@ fn process_instruction_with_multiple_programs_routes_through_registry() {
     let mut svm = Svm::default();
     svm.add_program(&main_id, HELLO_ELF);
     svm.add_program(&other_id, HELLO_ELF); // second program ⇒ registry path
-    let ix = Instruction { program_id: main_id, accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id: main_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    );
     assert_eq!(result.compute_units_consumed, 2);
 }
 
@@ -124,7 +155,10 @@ fn process_instruction_accepts_shuffled_caller_accounts() {
     assert_eq!(a1.lamports(), 222);
     assert_eq!(a0.data(), &[0xAA]);
     assert_eq!(a1.data(), &[0xBB]);
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 }); // validate_post_state not triggered by shuffle
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    ); // validate_post_state not triggered by shuffle
 }
 
 #[test]
@@ -150,7 +184,10 @@ fn process_instruction_ignores_extra_caller_accounts() {
 
     assert_eq!(result.resulting_accounts.len(), 1);
     assert_eq!(result.resulting_accounts[0].0, used);
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 }); // lamport conservation passed
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    ); // lamport conservation passed
 }
 
 #[test]
@@ -164,7 +201,8 @@ fn missing_account_returns_serialize_error() {
         accounts: vec![AccountMeta::new(missing, false)],
         data: vec![],
     };
-    match svm.process_instruction(&ix, &[]) { // missing pubkey → MissingAccount
+    match svm.process_instruction(&ix, &[]) {
+        // missing pubkey → MissingAccount
         Err(SvmError::Serialize(SerializeError::MissingAccount(pk))) => {
             assert_eq!(pk, missing);
         }
@@ -179,9 +217,14 @@ fn too_many_accounts_returns_serialize_error() {
     svm.add_program(&program_id, HELLO_ELF);
     let metas: Vec<AccountMeta> = // 256 > 255 cap (NON_DUP_MARKER = 0xFF)
         (0..256).map(|i| AccountMeta::new(pid(1000 + i), false)).collect();
-    let accounts: Vec<(Pubkey, AccountSharedData)> =
-        (0..256).map(|i| (pid(1000 + i), shared(0, vec![], pid(0)))).collect();
-    let ix = Instruction { program_id, accounts: metas, data: vec![] };
+    let accounts: Vec<(Pubkey, AccountSharedData)> = (0..256)
+        .map(|i| (pid(1000 + i), shared(0, vec![], pid(0))))
+        .collect();
+    let ix = Instruction {
+        program_id,
+        accounts: metas,
+        data: vec![],
+    };
     match svm.process_instruction(&ix, &accounts) {
         Err(SvmError::Serialize(SerializeError::TooManyAccounts(n))) => {
             assert_eq!(n, 256);
@@ -196,7 +239,11 @@ fn cu_budget_exhaustion_reports_full_budget_consumed() {
     let program_id = pid(8);
     let mut svm = Svm::default().with_cu_budget(1);
     svm.add_program(&program_id, HELLO_ELF);
-    let ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let result = svm.process_instruction(&ix, &[]).expect("runs");
     assert_eq!(result.program_result, ProgramResult::OutOfBudget);
     assert_eq!(result.compute_units_consumed, 1);
@@ -213,14 +260,21 @@ fn compute_budget_from_instructions_picks_up_set_unit_limit() {
         accounts: vec![],
         data: vec![2, 0x50, 0xC3, 0x00, 0x00],
     };
-    let prog_ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let prog_ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let txn_ixs = [set_limit, prog_ix.clone()];
 
     let mut svm = Svm::default().with_compute_budget_from_instructions(&txn_ixs);
     svm.add_program(&program_id, HELLO_ELF);
 
     let result = svm.process_instruction(&prog_ix, &[]).expect("runs");
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    );
     assert!(result.compute_units_consumed < 50_000); // well under 50k; confirms budget changed from 200k default
 }
 
@@ -228,11 +282,19 @@ fn compute_budget_from_instructions_picks_up_set_unit_limit() {
 fn compute_budget_from_instructions_no_set_limit_keeps_default() {
     // No ComputeBudget ix in the list → budget stays at default 200k.
     let program_id = pid(10);
-    let prog_ix = Instruction { program_id, accounts: vec![], data: vec![] };
-    let mut svm = Svm::default().with_compute_budget_from_instructions(&[prog_ix.clone()]);
+    let prog_ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
+    let mut svm =
+        Svm::default().with_compute_budget_from_instructions(std::slice::from_ref(&prog_ix));
     svm.add_program(&program_id, HELLO_ELF);
     let result = svm.process_instruction(&prog_ix, &[]).expect("runs");
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    );
 }
 
 #[test]
@@ -240,18 +302,31 @@ fn compute_budget_from_instructions_last_set_limit_wins() {
     // Two SetComputeUnitLimit ixs: last (100k) overrides first (10k); mirrors agave iterate-and-overwrite.
     let program_id = pid(11);
     let cb_id = solana_sdk_ids::compute_budget::ID;
-    let set_10k  = Instruction { program_id: cb_id, accounts: vec![],
-                                 data: vec![2, 0x10, 0x27, 0x00, 0x00] }; // 10_000
-    let set_100k = Instruction { program_id: cb_id, accounts: vec![],
-                                 data: vec![2, 0xA0, 0x86, 0x01, 0x00] }; // 100_000
-    let prog_ix = Instruction { program_id, accounts: vec![], data: vec![] };
+    let set_10k = Instruction {
+        program_id: cb_id,
+        accounts: vec![],
+        data: vec![2, 0x10, 0x27, 0x00, 0x00],
+    }; // 10_000
+    let set_100k = Instruction {
+        program_id: cb_id,
+        accounts: vec![],
+        data: vec![2, 0xA0, 0x86, 0x01, 0x00],
+    }; // 100_000
+    let prog_ix = Instruction {
+        program_id,
+        accounts: vec![],
+        data: vec![],
+    };
     let txn_ixs = [set_10k, set_100k, prog_ix.clone()];
 
     let mut svm = Svm::default().with_compute_budget_from_instructions(&txn_ixs);
     svm.add_program(&program_id, HELLO_ELF);
 
     let result = svm.process_instruction(&prog_ix, &[]).expect("runs");
-    assert_eq!(result.program_result, ProgramResult::Failure { exit_code: 42 });
+    assert_eq!(
+        result.program_result,
+        ProgramResult::Failure { exit_code: 42 }
+    );
     assert!(result.compute_units_consumed > 0); // hello is 2 insns, can't distinguish 10k vs 100k; just assert the call works
 }
 
@@ -277,8 +352,7 @@ fn deserialize_tolerates_pinocchio_mut_borrow_leaked_to_byte_zero() {
         accounts: vec![AccountMeta::new_readonly(key, false)],
         data: vec![0u8],
     };
-    let mut buf = serialize_parameters(&ix, &[(key, pre.clone())], &program_id)
-        .expect("serialize");
+    let mut buf = serialize_parameters(&ix, &[(key, pre.clone())], &program_id).expect("serialize");
     assert_eq!(buf[8], 0xFF, "sanity: serializer wrote NON_DUP_MARKER");
     stomp_first_dup_byte(&mut buf, 0);
 
@@ -301,8 +375,7 @@ fn deserialize_tolerates_partial_immutable_borrow_drop() {
         accounts: vec![AccountMeta::new_readonly(key, false)],
         data: vec![],
     };
-    let mut buf = serialize_parameters(&ix, &[(key, pre.clone())], &program_id)
-        .expect("serialize");
+    let mut buf = serialize_parameters(&ix, &[(key, pre.clone())], &program_id).expect("serialize");
     stomp_first_dup_byte(&mut buf, 0xFE);
 
     let out = deserialize_account_writes(&buf, &ix, &[(key, pre.clone())])
@@ -333,18 +406,36 @@ fn deserialize_with_two_distinct_accounts_does_not_misread_stomped_byte_as_dup()
 
     use solana_program_entrypoint::{BPF_ALIGN_OF_U128, MAX_PERMITTED_DATA_INCREASE};
     let first_record_data_len = 3usize;
-    let align_pad = (BPF_ALIGN_OF_U128 - first_record_data_len % BPF_ALIGN_OF_U128) % BPF_ALIGN_OF_U128;
-    let first_record_size =
-        1 + 1 + 1 + 1 + 4 + 32 + 32 + 8 + 8 + first_record_data_len + align_pad + MAX_PERMITTED_DATA_INCREASE + 8;
+    let align_pad =
+        (BPF_ALIGN_OF_U128 - first_record_data_len % BPF_ALIGN_OF_U128) % BPF_ALIGN_OF_U128;
+    let first_record_size = 1
+        + 1
+        + 1
+        + 1
+        + 4
+        + 32
+        + 32
+        + 8
+        + 8
+        + first_record_data_len
+        + align_pad
+        + MAX_PERMITTED_DATA_INCREASE
+        + 8;
     let second_dup_offset = 8 + first_record_size;
-    assert_eq!(buf[second_dup_offset], 0xFF, "sanity: second record starts with NON_DUP_MARKER");
+    assert_eq!(
+        buf[second_dup_offset], 0xFF,
+        "sanity: second record starts with NON_DUP_MARKER"
+    );
     buf[second_dup_offset] = 0;
 
     let out = deserialize_account_writes(&buf, &ix, &pre)
         .expect("deserializer must not silently treat stomped byte as a dup");
     assert_eq!(out.len(), 2);
     assert_eq!(out[0].0, a);
-    assert_eq!(out[1].0, b, "slot 1 must be account B, not silently aliased to A");
+    assert_eq!(
+        out[1].0, b,
+        "slot 1 must be account B, not silently aliased to A"
+    );
     use solana_account::ReadableAccount;
     assert_eq!(out[1].1.lamports(), 200);
     assert_eq!(out[1].1.data(), &[0xBB, 0xBB]);

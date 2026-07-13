@@ -15,8 +15,10 @@ pub mod diff;
 
 pub use deserialize::{deserialize_account_writes, DeserializeError};
 pub use serialize::{serialize_parameters, SerializeError};
-pub use svm::{vm_fault_name, InstructionResult, PostStateError, ProgramResult, Svm,
-              SvmError, ERR_INVALID_POSTSTATE};
+pub use svm::{
+    vm_fault_name, InstructionResult, PostStateError, ProgramResult, Svm, SvmError,
+    ERR_INVALID_POSTSTATE,
+};
 pub use wire::{decode as decode_wire, DecodeError, ExitOutcome, RawResult};
 
 /// Run one Lean FFI entry point under the runtime lock, enforcing the
@@ -83,8 +85,7 @@ pub fn run_buffer_with_registry_and_pid(
         let input_obj = ffi::alloc_bytearray(g, input);
         let registry_obj = ffi::alloc_bytearray(g, registry_blob);
         let pid_obj = ffi::alloc_bytearray(g, pid_bytes);
-        ffi::qedsvm_run_with_registry_and_pid(
-            elf_obj, input_obj, registry_obj, pid_obj, cu_budget)
+        ffi::qedsvm_run_with_registry_and_pid(elf_obj, input_obj, registry_obj, pid_obj, cu_budget)
     });
     wire::decode(&bytes)
 }
