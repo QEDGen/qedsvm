@@ -39,6 +39,7 @@ pub(super) fn emit_sol_memset(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
+    ctor: &'static str,
 ) {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1);
@@ -285,14 +286,7 @@ pub(super) fn emit_sol_memset(
         }
     };
     finish_syscall(
-        state,
-        spec_calls,
-        block_pcs,
-        pc,
-        ".sol_memset",
-        &ncu_name,
-        &hcu_name,
-        have_line,
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
     );
 }
 
@@ -307,6 +301,7 @@ pub(super) fn emit_sol_memcmp(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
+    ctor: &'static str,
 ) {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1); // p1
@@ -410,14 +405,7 @@ pub(super) fn emit_sol_memcmp(
         hcu = hcu_name,
     );
     finish_syscall(
-        state,
-        spec_calls,
-        block_pcs,
-        pc,
-        ".sol_memcmp",
-        &ncu_name,
-        &hcu_name,
-        have_line,
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
     );
 }
 
@@ -438,6 +426,7 @@ pub(super) fn emit_sol_get_sysvar(
     block_pcs: &mut Vec<usize>,
     pc: usize,
     ctx: &BinaryCtx,
+    ctor: &'static str,
 ) -> Result<(), LiftError> {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1);
@@ -588,14 +577,7 @@ rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) h{o2}_lt \
         hcu = hcu_name,
     );
     finish_syscall(
-        state,
-        spec_calls,
-        block_pcs,
-        pc,
-        ".sol_get_sysvar",
-        &ncu_name,
-        &hcu_name,
-        have_line,
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
     );
     Ok(())
 }
@@ -607,6 +589,7 @@ pub(super) fn emit_sol_log(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
+    ctor: &'static str,
 ) {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1);
@@ -631,14 +614,7 @@ pub(super) fn emit_sol_log(
         hcu = hcu_name,
     );
     finish_syscall(
-        state,
-        spec_calls,
-        block_pcs,
-        pc,
-        ".sol_log_",
-        &ncu_name,
-        &hcu_name,
-        have_line,
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
     );
 }
 
@@ -655,6 +631,7 @@ pub(super) fn emit_sol_memcpy(
     block_pcs: &mut Vec<usize>,
     pc: usize,
     is_move: bool,
+    ctor: &'static str,
 ) {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1); // dst
@@ -678,10 +655,10 @@ pub(super) fn emit_sol_memcpy(
         Some((r1v.clone(), r3v.clone())),
     ));
 
-    let (mnem, ctor, cap) = if is_move {
-        ("memmove", ".sol_memmove", "Memmove")
+    let (mnem, cap) = if is_move {
+        ("memmove", "Memmove")
     } else {
-        ("memcpy", ".sol_memcpy", "Memcpy")
+        ("memcpy", "Memcpy")
     };
     let (idx, ncu_name, hcu_name) = state.alloc_syscall(cap);
     let src_name = format!("{}Src_{}", mnem, idx);
@@ -752,6 +729,7 @@ pub(super) fn emit_sol_set_return_data(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
+    ctor: &'static str,
 ) {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1); // ptr
@@ -807,14 +785,7 @@ pub(super) fn emit_sol_set_return_data(
         hcu = hcu_name,
     );
     finish_syscall(
-        state,
-        spec_calls,
-        block_pcs,
-        pc,
-        ".sol_set_return_data",
-        &ncu_name,
-        &hcu_name,
-        have_line,
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
     );
 }
 
@@ -832,6 +803,7 @@ pub(super) fn emit_sol_sha256(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
+    ctor: &'static str,
 ) -> Result<(), LiftError> {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1); // vals (descriptor array)
@@ -971,14 +943,7 @@ pub(super) fn emit_sol_sha256(
         hcu = hcu_name,
     );
     finish_syscall(
-        state,
-        spec_calls,
-        block_pcs,
-        pc,
-        ".sol_sha256",
-        &ncu_name,
-        &hcu_name,
-        have_line,
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
     );
     Ok(())
 }
@@ -997,6 +962,7 @@ pub(super) fn emit_sol_create_program_address(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
+    ctor: &'static str,
 ) -> Result<(), LiftError> {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1); // vals (seed descriptor array)
@@ -1165,14 +1131,7 @@ pub(super) fn emit_sol_create_program_address(
         hcu = hcu_name,
     );
     finish_syscall(
-        state,
-        spec_calls,
-        block_pcs,
-        pc,
-        ".sol_create_program_address",
-        &ncu_name,
-        &hcu_name,
-        have_line,
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
     );
     Ok(())
 }

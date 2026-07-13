@@ -1,6 +1,6 @@
 # Symbolic Executor Refactor Plan
 
-Status: Phases 0–5 implemented; Phase 6 is next
+Status: Phases 0–6 implemented; final workspace validation remains
 
 Baseline: `fea7dff` on `refactor/rust-tooling-architecture` / PR #67
 
