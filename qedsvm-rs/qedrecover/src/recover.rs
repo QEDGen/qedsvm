@@ -4,7 +4,6 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::path::Path;
 
-use serde::Deserialize;
 use solana_sbpf::{
     ebpf,
     static_analysis::{Analysis, CfgNode},
@@ -14,67 +13,11 @@ use qed_analysis::{
     layout::{codama_number_size, parse_account_layout, AccountLayout},
     PcMap,
 };
+pub(crate) use qed_artifacts::{
+    CodamaIdl as Idl, IdlInstruction, Overlay, OverlayInstruction as OverlayIx,
+};
 
 use crate::idioms;
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct Overlay {
-    pub(crate) idl: String,
-    #[serde(rename = "instruction")]
-    pub(crate) instructions: Vec<OverlayIx>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct OverlayIx {
-    pub(crate) name: String,
-    // No claim fields are required; an unclaimed instruction is still recovered.
-    pub(crate) refines: Option<String>,
-    pub(crate) cu_budget: Option<u64>,
-    /// Optional instruction-account role -> account-data layout binding.
-    /// Example: `[instruction.account_layouts] source = "token"`.
-    #[serde(default)]
-    pub(crate) account_layouts: std::collections::BTreeMap<String, String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct Idl {
-    pub(crate) program: IdlProgram,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct IdlProgram {
-    pub(crate) name: String,
-    #[serde(rename = "publicKey")]
-    pub(crate) public_key: String,
-    pub(crate) instructions: Vec<IdlInstruction>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct IdlInstruction {
-    pub(crate) name: String,
-    pub(crate) accounts: Vec<IdlAccount>,
-    pub(crate) arguments: Vec<IdlArgument>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct IdlAccount {
-    pub(crate) name: String,
-    #[serde(rename = "isWritable", default)]
-    pub(crate) is_writable: bool,
-    #[serde(rename = "isSigner")]
-    pub(crate) is_signer: serde_json::Value, // can be bool or "either"
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct IdlArgument {
-    pub(crate) name: String,
-    // Opaque: many Codama type-node kinds; only `numberTypeNode` is special-cased at use time.
-    #[serde(rename = "type")]
-    pub(crate) ty: serde_json::Value,
-    // Opaque: many Codama default-value node kinds; only `numberValueNode` is consumed.
-    #[serde(rename = "defaultValue", default)]
-    pub(crate) default_value: Option<serde_json::Value>,
-}
 
 /// Classify a constant error-exit block. Three tail shapes: (1) `mov64/lddw r0, imm; exit`
 /// in-block; (2) `mov64/lddw r0, imm; ja tgt` where tgt is a bare-exit block; (3) fall-through

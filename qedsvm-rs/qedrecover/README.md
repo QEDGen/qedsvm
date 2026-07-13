@@ -56,7 +56,7 @@ program.so + IDL + overlay [+ trace]
 ```
 
 See [`PIPELINE.md`](../../docs/PIPELINE.md) for the complete workflow and
-[`qedlift`](../src/bin/qedlift/README.md) for the proof-emission stage.
+[`qedlift`](../qedlift/README.md) for the proof-emission stage.
 
 ## Arguments
 

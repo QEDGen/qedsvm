@@ -13,7 +13,7 @@ already feeds Kani/proptest. The design rationale and ownership model are in
 This is a **producer/consumer contract**, modeled on `qedmeta.toml` (which qedrecover produces
 and qedlift consumes): versioned, fail-closed, and neither tool depends on the other's
 internals. The contract is the JSON shape below; qedlift's `RefinementDescriptor`
-(`qedsvm-rs/src/bin/qedlift/input.rs`) is the reference consumer.
+(`qedsvm-rs/qedlift/src/input.rs`) is the reference consumer.
 
 ## Principle: the seam is name-level
 

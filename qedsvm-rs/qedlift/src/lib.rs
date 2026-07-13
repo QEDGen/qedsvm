@@ -7,48 +7,35 @@ use std::path::Path;
 
 use solana_sbpf::{ebpf, static_analysis::Analysis};
 
-#[path = "qedlift/branch.rs"]
 mod branch;
-#[path = "qedlift/core.rs"]
 mod core;
-#[path = "qedlift/driver.rs"]
+mod diagnostic;
 mod driver;
-#[path = "qedlift/emit.rs"]
 mod emit;
-#[path = "qedlift/exec.rs"]
 mod exec;
-#[path = "qedlift/input.rs"]
 mod input;
-#[path = "qedlift/isa.rs"]
 mod isa;
-#[path = "qedlift/lift.rs"]
 mod lift;
-#[path = "qedlift/refinement/mod.rs"]
 mod refinement;
-#[path = "qedlift/render.rs"]
 mod render;
-#[path = "qedlift/spec_call.rs"]
 mod spec_call;
-#[path = "qedlift/state.rs"]
 mod state;
-#[path = "qedlift/syscalls.rs"]
 mod syscalls;
-#[path = "qedlift/transition.rs"]
 mod transition;
-#[path = "qedlift/witness.rs"]
 mod witness;
 
 use branch::{BranchHyp, BranchKind};
 use core::{
     arsh_render, canon_addr, eval_expr, lean_off, reg_initial_name, reg_lit, Atom, Expr, Width,
 };
+use diagnostic::{DiagnosticKind, LiftError};
 use emit::{
     atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
     post_atoms, region_req,
 };
 use input::{
     load_binary, load_descriptor, load_idl, load_idl_value, load_qedmeta, load_trace, parse_args,
-    pascal_case, sidecar_account_layouts, Args, BinaryCtx, RefinementDescriptor,
+    pascal_case, sidecar_account_layouts, Args, BinaryCtx, Command, RefinementDescriptor,
 };
 use isa::{
     function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full, render_callstack,
@@ -67,7 +54,7 @@ use transition::{
 use witness::build_branch_witness;
 
 // Re-exports of the split-out lifter stages: visible at the crate root so the
-// sibling modules (and `layout_tests`' `use super::*`) resolve them here.
+// sibling modules (and the test suite's `use super::*`) resolve them here.
 #[cfg(test)]
 use driver::run_transition;
 use driver::{
@@ -84,10 +71,10 @@ use qed_analysis::symbolicate::SymbolIndex;
 use spec_call::{spec_call_for, SpecCall};
 
 #[cfg(test)]
-#[path = "qedlift/tests.rs"]
-mod layout_tests;
+mod tests;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Run the qedlift command using process arguments.
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args().map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     // Load once: amortises parse+CFG build across batch arms (~28 arms × ~10s → a few ms each).
@@ -107,48 +94,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => None,
     };
 
-    if args.profile {
-        return run_profile_mode(&args, &ctx, trace.as_deref());
-    }
-    if args.coverage {
-        return run_coverage_mode(&args, &ctx, &analysis);
-    }
-    if args.transition {
-        return run_transition_mode(
+    match &args.command {
+        Command::Profile => run_profile_mode(&args, &ctx, trace.as_deref()),
+        Command::Coverage => run_coverage_mode(&args, &ctx, &analysis),
+        Command::Transition => run_transition_mode(
             &args,
             &ctx,
             &analysis,
             descriptor.as_ref(),
             idl_value.as_ref(),
-        );
-    }
-    if let Some(meta_path) = args.qedmeta.as_ref() {
-        return run_qedmeta_mode(
+        ),
+        Command::QedMeta { path } => run_qedmeta_mode(
             &args,
             &ctx,
             &analysis,
-            meta_path,
+            path.as_path(),
             trace.as_deref(),
             idl_value.as_ref(),
-        );
-    }
-    // Batch mode: --idl + --output-dir. Without --output-dir falls through to single-arm.
-    if let (Some(idl_path), Some(output_dir)) = (args.idl.as_ref(), args.output_dir.as_ref()) {
-        return run_batch_mode(
+        ),
+        Command::Batch { idl, output_dir } => run_batch_mode(
             &args,
             &ctx,
             &analysis,
-            idl_path,
-            output_dir,
+            idl.as_path(),
+            output_dir.as_path(),
             idl_value.as_ref(),
-        );
+        ),
+        Command::Single => run_single_mode(
+            &args,
+            &ctx,
+            &analysis,
+            trace.as_deref(),
+            descriptor.as_ref(),
+            idl_value.as_ref(),
+        ),
     }
-    run_single_mode(
-        &args,
-        &ctx,
-        &analysis,
-        trace.as_deref(),
-        descriptor.as_ref(),
-        idl_value.as_ref(),
-    )
 }

@@ -40,7 +40,7 @@ proof pipeline:
 - [`qedrecover`](qedrecover/README.md) maps IDL/overlay claims to locations and
   account layouts in a compiled `.so`, then emits a hash-pinned sidecar. It is
   analysis only and does not link Lean.
-- [`qedlift`](src/bin/qedlift/README.md) symbolically executes a selected bytecode
+- [`qedlift`](qedlift/README.md) symbolically executes a selected bytecode
   path and emits the Lean theorem, decode pins, CU bound, and supported abstract
   refinements.
 

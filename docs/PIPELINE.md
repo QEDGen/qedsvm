@@ -1,7 +1,7 @@
 # From `.so` + IDL to a Proof
 
 Status: current toolchain reference
-Related: `qedsvm-rs/qedrecover/`, `qedsvm-rs/src/bin/qedlift.rs`, `examples/lean/Generated/`, [COVERAGE.md](COVERAGE.md), [API.md](API.md)
+Related: `qedsvm-rs/qedrecover/`, `qedsvm-rs/qedlift/`, `examples/lean/Generated/`, [COVERAGE.md](COVERAGE.md), [API.md](API.md)
 
 This document describes the current qedsvm pipeline for turning a compiled Solana program into a machine-checked Lean Hoare triple. The pipeline is scoped: it proves a selected instruction path over modeled bytecode and modeled syscalls. See [COVERAGE.md](COVERAGE.md) for the exact boundary.
 
@@ -99,7 +99,7 @@ cargo run --manifest-path qedsvm-rs/qedrecover/Cargo.toml -- \
 Lift through `qedmeta`:
 
 ```bash
-cargo run --manifest-path qedsvm-rs/Cargo.toml --features qedrecover --bin qedlift -- \
+cargo run --manifest-path qedsvm-rs/Cargo.toml -p qedlift -- \
   --so qedsvm-rs/tests/fixtures/p_token.so \
   --qedmeta qedsvm-rs/tests/fixtures/p_token.transfer.recovered.qedmeta.toml \
   --trace qedsvm-rs/tests/fixtures/p_token_transfer.pcs \

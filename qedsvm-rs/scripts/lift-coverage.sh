@@ -5,7 +5,7 @@
 #
 # Green-pinned arms (p_token's traced paths) read ~100%; the signal is the
 # untraced real programs, where genuine gaps surface. Buckets are defined in
-# `classify_lift_failure` (src/bin/qedlift/driver.rs).
+# `classify_lift_failure` (qedlift/src/driver.rs).
 #
 # Usage:  scripts/lift-coverage.sh          # curated corpus below
 #         QEDLIFT=path/to/qedlift scripts/lift-coverage.sh

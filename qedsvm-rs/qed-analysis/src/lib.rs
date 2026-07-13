@@ -5,6 +5,7 @@
 
 use solana_sbpf::ebpf;
 
+pub mod image;
 pub mod layout;
 pub mod profile;
 pub mod symbolicate;

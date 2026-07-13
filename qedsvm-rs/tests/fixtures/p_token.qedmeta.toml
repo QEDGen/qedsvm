@@ -97,7 +97,7 @@ blocks = [
   # Elided in this fixture: the correctly-rooted transfer slice is
   # 1940 blocks (pinocchio inlines the whole program into one
   # function). Regenerate with:
-  #   cargo run --features qedrecover --bin qedrecover -- \
+  #   cargo run -p qedrecover -- \
   #     --so tests/fixtures/p_token.so \
   #     --overlay tests/fixtures/p_token.qedoverlay.toml \
   #     --trace tests/fixtures/p_token_transfer.pcs
