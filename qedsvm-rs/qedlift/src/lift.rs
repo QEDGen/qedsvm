@@ -40,12 +40,18 @@ pub(super) struct LiftRequest<'a> {
 }
 
 impl LiftRequest<'_> {
-    fn validate(&self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), LiftError> {
         if self.module_override.as_deref() == Some("") {
-            return Err("qedlift: module override must not be empty");
+            return Err(LiftError::new(
+                DiagnosticKind::UnsupportedConstruct,
+                "qedlift: module override must not be empty",
+            ));
         }
         if self.shared_text == Some("") {
-            return Err("qedlift: shared-text module base must not be empty");
+            return Err(LiftError::new(
+                DiagnosticKind::UnsupportedConstruct,
+                "qedlift: shared-text module base must not be empty",
+            ));
         }
         Ok(())
     }
@@ -68,7 +74,7 @@ pub(super) fn lift_one(
     arm_name: Option<&str>,
     idl: Option<&serde_json::Value>,
     arm_entry: Option<usize>,
-) -> Result<LiftOutput, Box<dyn std::error::Error>> {
+) -> Result<LiftOutput, LiftError> {
     lift_one_with_layouts(
         so_path,
         ctx,
@@ -90,7 +96,7 @@ pub(super) fn lift_one_with_layouts(
     ctx: &BinaryCtx,
     analysis: &Analysis<'_>,
     request: LiftRequest<'_>,
-) -> Result<LiftOutput, Box<dyn std::error::Error>> {
+) -> Result<LiftOutput, LiftError> {
     request.validate()?;
     // Cargo runs a package's unit tests from that package directory. After
     // qedlift became its own workspace crate, fixtures are reached through
@@ -129,11 +135,11 @@ pub(super) fn lift_one_with_layouts(
         shared_text,
     );
     if shared_text.is_some() && emit_decode_bridge {
-        return Err(
+        return Err(LiftError::new(
+            DiagnosticKind::UnsupportedConstruct,
             "qedlift: --shared-text requires the large-text decode-pins \
-                    path (this binary embeds the full inline decode bridge)"
-                .into(),
-        );
+             path (this binary embeds the full inline decode bridge)",
+        ));
     }
 
     let entry_pc: usize = ctx.executable.get_entrypoint_instruction_offset();
@@ -209,11 +215,7 @@ pub(super) fn lift_one_with_layouts(
     ) {
         Ok(w) => out.push_str(&w),
         Err(e) => {
-            return Err(format!(
-                "qedlift: satisfiability witness construction failed — {}",
-                e
-            )
-            .into())
+            return Err(e.with_context("qedlift: satisfiability witness construction failed — "))
         }
     }
 
@@ -423,7 +425,7 @@ fn build_code_req(
     analysis: &Analysis<'_>,
     block_pcs: &[usize],
     state: &SymState,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String, LiftError> {
     let insns = &ctx.insns;
 
     let cr_lean: String = if block_pcs.is_empty() {
@@ -465,7 +467,7 @@ fn emit_decode_pins(
     state: &SymState,
     module_name: &str,
     shared_text: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), LiftError> {
     let insns = &ctx.insns;
     let text_bytes = ctx.text_bytes.as_slice();
 
@@ -1185,7 +1187,7 @@ fn emit_fault_corollary(
     tc: &TripleCtx,
     state: &SymState,
     terminal: FaultTerminal,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), LiftError> {
     let abs_subst = &tc.abs_subst;
     let post = &tc.post;
     let lifted_name = &tc.lifted_name;
@@ -1243,9 +1245,11 @@ fn emit_fault_corollary(
             // post atoms, and the region register must be the FIRST post
             // atom (frame_right adds `rest` on the right).
             if !cs_atom.is_empty() {
-                return Err("qedlift: OOB fault terminal with a callStack atom \
-                            (call_local prefix) is not yet supported"
-                    .into());
+                return Err(LiftError::new(
+                    DiagnosticKind::UnsupportedConstruct,
+                    "qedlift: OOB fault terminal with a callStack atom \
+                     (call_local prefix) is not yet supported",
+                ));
             }
             let region_value = post
                 .iter()
@@ -1254,19 +1258,24 @@ fn emit_fault_corollary(
                     _ => None,
                 })
                 .ok_or_else(|| {
-                    format!(
-                        "qedlift: OOB fault terminal reads r{} but it is absent from \
+                    LiftError::new(
+                        DiagnosticKind::UnsupportedConstruct,
+                        format!(
+                            "qedlift: OOB fault terminal reads r{} but it is absent from \
                  the lifted post",
-                        oob.region_reg
+                            oob.region_reg
+                        ),
                     )
                 })?;
             if !matches!(post.first(), Some(Atom::Reg(r, _)) if *r == oob.region_reg) {
-                return Err(format!(
-                    "qedlift: OOB fault terminal needs r{} as the first post \
+                return Err(LiftError::new(
+                    DiagnosticKind::UnsupportedConstruct,
+                    format!(
+                        "qedlift: OOB fault terminal needs r{} as the first post \
                      atom (frame_right arrangement)",
-                    oob.region_reg
-                )
-                .into());
+                        oob.region_reg
+                    ),
+                ));
             }
             // Register-sized region (e.g. sol_set_return_data's
             // `[r1, r1+r2)`): the spec's pre is a two-atom sepConj, so the
@@ -1277,12 +1286,14 @@ fn emit_fault_corollary(
                 None => None,
                 Some(lr) => {
                     if !matches!(post.get(1), Some(Atom::Reg(r, _)) if *r == lr) {
-                        return Err(format!(
-                            "qedlift: register-sized OOB region needs r{} as \
+                        return Err(LiftError::new(
+                            DiagnosticKind::UnsupportedConstruct,
+                            format!(
+                                "qedlift: register-sized OOB region needs r{} as \
                              the second post atom",
-                            lr
-                        )
-                        .into());
+                                lr
+                            ),
+                        ));
                     }
                     post.iter().find_map(|a| match a {
                         Atom::Reg(r, v) if *r == lr => Some(v.clone()),

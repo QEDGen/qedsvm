@@ -1,4 +1,5 @@
 use super::core::{canon_addr, const_of_expr, eval_expr, Atom, BytesVal, Expr, MemCell, Width};
+use super::diagnostic::{DiagnosticKind, LiftError};
 use super::input::BinaryCtx;
 use super::{SpecCall, SymState};
 
@@ -435,39 +436,40 @@ pub(super) fn emit_sol_get_sysvar(
     block_pcs: &mut Vec<usize>,
     pc: usize,
     ctx: &BinaryCtx,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), LiftError> {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1);
     let r2v = state.read_reg(2);
     let r3v = state.read_reg(3);
     let r4v = state.read_reg(4);
+    let symbolic = |message| LiftError::new(DiagnosticKind::SymbolicOperand, message);
+    let unsupported = |message| LiftError::new(DiagnosticKind::UnsupportedConstruct, message);
     let id_addr = const_of_expr(&r1v)
-        .ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic sysvar-id address"))?
+        .ok_or_else(|| symbolic(format!("get_sysvar at pc {pc}: symbolic sysvar-id address")))?
         as u64;
-    let off =
-        const_of_expr(&r3v).ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic offset"))?;
-    let len =
-        const_of_expr(&r4v).ok_or_else(|| format!("get_sysvar at pc {pc}: symbolic length"))?;
+    let off = const_of_expr(&r3v)
+        .ok_or_else(|| symbolic(format!("get_sysvar at pc {pc}: symbolic offset")))?;
+    let len = const_of_expr(&r4v)
+        .ok_or_else(|| symbolic(format!("get_sysvar at pc {pc}: symbolic length")))?;
     let region = ctx.executable.get_ro_region();
     let rel = id_addr
         .checked_sub(region.vm_addr)
         .filter(|r| r + 32 <= region.len)
         .ok_or_else(|| {
-            format!(
+            unsupported(format!(
                 "get_sysvar at pc {pc}: id address {id_addr:#x} outside the \
              RO region"
-            )
+            ))
         })?;
     let id_bytes: &[u8] =
         unsafe { std::slice::from_raw_parts((region.host_addr + rel) as *const u8, 32) };
     if id_bytes != RENT_ID_BYTES || off != 0 || len != 17 {
-        return Err(format!(
+        return Err(unsupported(format!(
             "get_sysvar at pc {pc}: only the RENT id with offset 0 / \
              length 17 is modelled (cells17 shape); got id {:02x?}…, \
              offset {off}, length {len}",
             &id_bytes[..8]
-        )
-        .into());
+        )));
     }
 
     let (_idx, ncu_name, hcu_name) = state.alloc_syscall("GetSysvar");
@@ -825,19 +827,21 @@ pub(super) fn emit_sol_sha256(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), LiftError> {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1); // vals (descriptor array)
     let r2v = state.read_reg(2); // n_vals
     let r3v = state.read_reg(3); // out (32-byte digest)
 
-    let n = const_of_expr(&r2v).ok_or_else(|| format!("sha256 at pc {pc}: symbolic n_vals"))?;
+    let symbolic = |message| LiftError::new(DiagnosticKind::SymbolicOperand, message);
+    let unsupported = |message| LiftError::new(DiagnosticKind::UnsupportedConstruct, message);
+    let n = const_of_expr(&r2v)
+        .ok_or_else(|| symbolic(format!("sha256 at pc {pc}: symbolic n_vals")))?;
     if n != 1 {
-        return Err(format!(
+        return Err(unsupported(format!(
             "sha256 at pc {pc}: only the single-slice (n_vals = 1) shape is \
              modelled so far, got {n}"
-        )
-        .into());
+        )));
     }
 
     // The two descriptor cells, written by the program before the call. Read
@@ -847,23 +851,29 @@ pub(super) fn emit_sol_sha256(
     let (i_ptr, _) = state
         .lookup_cell_aliased(&r1v, 0, Width::Dword)
         .ok_or_else(|| {
-            format!(
+            unsupported(format!(
                 "sha256 at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
                  — the slice descriptor must be written before the call"
-            )
+            ))
         })?;
     let (i_len, _) = state
         .lookup_cell_aliased(&r1v, 8, Width::Dword)
-        .ok_or_else(|| format!("sha256 at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]"))?;
+        .ok_or_else(|| {
+            unsupported(format!(
+                "sha256 at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]"
+            ))
+        })?;
     let a1 = SymState::cell_render(&state.mem[i_ptr]);
     let a2 = SymState::cell_render(&state.mem[i_len]);
     let ptr_expr = state.mem[i_ptr].value.clone();
     let len_expr = state.mem[i_len].value.clone();
     if eval_expr(&ptr_expr, &env).is_none() {
-        return Err(format!("sha256 at pc {pc}: symbolic descriptor.ptr").into());
+        return Err(symbolic(format!(
+            "sha256 at pc {pc}: symbolic descriptor.ptr"
+        )));
     }
     let len_val = eval_expr(&len_expr, &env)
-        .ok_or_else(|| format!("sha256 at pc {pc}: symbolic descriptor.len"))?;
+        .ok_or_else(|| symbolic(format!("sha256 at pc {pc}: symbolic descriptor.len")))?;
 
     let (idx, ncu_name, hcu_name) = state.alloc_syscall("Sha256");
     let in_name = format!("sha256In_{}", idx);
@@ -982,46 +992,51 @@ pub(super) fn emit_sol_create_program_address(
     spec_calls: &mut Vec<SpecCall>,
     block_pcs: &mut Vec<usize>,
     pc: usize,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), LiftError> {
     let r0v = state.read_reg(0);
     let r1v = state.read_reg(1); // vals (seed descriptor array)
     let r2v = state.read_reg(2); // n_seeds
     let r3v = state.read_reg(3); // program_id
     let r4v = state.read_reg(4); // out (32-byte PDA)
 
-    let n =
-        const_of_expr(&r2v).ok_or_else(|| format!("create_pda at pc {pc}: symbolic n_seeds"))?;
+    let symbolic = |message| LiftError::new(DiagnosticKind::SymbolicOperand, message);
+    let unsupported = |message| LiftError::new(DiagnosticKind::UnsupportedConstruct, message);
+    let n = const_of_expr(&r2v)
+        .ok_or_else(|| symbolic(format!("create_pda at pc {pc}: symbolic n_seeds")))?;
     if n != 1 {
-        return Err(format!(
+        return Err(unsupported(format!(
             "create_pda at pc {pc}: only the single-seed (n_seeds = 1) shape is \
              modelled so far, got {n}"
-        )
-        .into());
+        )));
     }
 
     let env = std::collections::BTreeMap::new();
     let (i_ptr, _) = state
         .lookup_cell_aliased(&r1v, 0, Width::Dword)
         .ok_or_else(|| {
-            format!(
+            unsupported(format!(
                 "create_pda at pc {pc}: descriptor.ptr `↦U64` cell absent at [r1+0] \
                  — the seed descriptor must be written before the call"
-            )
+            ))
         })?;
     let (i_len, _) = state
         .lookup_cell_aliased(&r1v, 8, Width::Dword)
         .ok_or_else(|| {
-            format!("create_pda at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]")
+            unsupported(format!(
+                "create_pda at pc {pc}: descriptor.len `↦U64` cell absent at [r1+8]"
+            ))
         })?;
     let a1 = SymState::cell_render(&state.mem[i_ptr]);
     let a2 = SymState::cell_render(&state.mem[i_len]);
     let ptr_expr = state.mem[i_ptr].value.clone();
     let len_expr = state.mem[i_len].value.clone();
     if eval_expr(&ptr_expr, &env).is_none() {
-        return Err(format!("create_pda at pc {pc}: symbolic descriptor.ptr").into());
+        return Err(symbolic(format!(
+            "create_pda at pc {pc}: symbolic descriptor.ptr"
+        )));
     }
     let len_val = eval_expr(&len_expr, &env)
-        .ok_or_else(|| format!("create_pda at pc {pc}: symbolic descriptor.len"))?;
+        .ok_or_else(|| symbolic(format!("create_pda at pc {pc}: symbolic descriptor.len")))?;
 
     let (idx, ncu_name, hcu_name) = state.alloc_syscall("Pda");
     let seed_name = format!("pdaSeed_{}", idx);

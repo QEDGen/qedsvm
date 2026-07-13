@@ -2,6 +2,7 @@ use super::core::{
     canon_root_expr, eval_expr, lean_off, reg_initial_name, reg_lit, solve_expr, Atom, BytesVal,
     Expr, Width,
 };
+use super::diagnostic::{DiagnosticKind, LiftError};
 use super::state::SymState;
 
 /// Concatenate atoms into a Lean `**`-separated SL expression (`emp` for empty list).
@@ -167,8 +168,10 @@ pub(super) fn build_sat_witness(
     abs_subst: &std::collections::BTreeMap<String, String>,
     folded_rhs: &[String],
     vars: &[String],
-) -> Result<String, String> {
+) -> Result<String, LiftError> {
     use std::collections::BTreeMap;
+
+    let witness = |message| LiftError::new(DiagnosticKind::WitnessFailed, message);
 
     // Abstraction param → the pre-atom addr_base whose rendering it captured.
     let mut param_expr: BTreeMap<String, Expr> = BTreeMap::new();
@@ -230,11 +233,11 @@ pub(super) fn build_sat_witness(
             }
             let target = alloc_base();
             if !solve_expr(root, target, &mut env) {
-                return Err(format!(
+                return Err(witness(format!(
                     "cannot steer derived address root `{}` to a witness \
                      base (unsupported expression shape)",
                     key
-                ));
+                )));
             }
         }
     }
@@ -246,16 +249,16 @@ pub(super) fn build_sat_witness(
     let mut param_vals: BTreeMap<String, u64> = BTreeMap::new();
     for (param, _, _) in abstractions {
         let e = param_expr.get(param).ok_or_else(|| {
-            format!(
+            witness(format!(
                 "no defining expression recorded for abstraction `{}`",
                 param
-            )
+            ))
         })?;
         let v = eval_expr(e, &env).ok_or_else(|| {
-            format!(
+            witness(format!(
                 "cannot evaluate abstraction `{}` under the witness assignment",
                 param
-            )
+            ))
         })?;
         param_vals.insert(param.clone(), v);
     }
@@ -280,8 +283,9 @@ pub(super) fn build_sat_witness(
     for atom in pre {
         match atom {
             Atom::Reg(r, v) => {
-                let vv = eval_expr(v, &env)
-                    .ok_or_else(|| format!("cannot evaluate register r{} initial value", r))?;
+                let vv = eval_expr(v, &env).ok_or_else(|| {
+                    witness(format!("cannot evaluate register r{} initial value", r))
+                })?;
                 sat_atoms.push(format!(".reg .{} {}", reg_lit(*r), vv));
                 feet.push(Foot {
                     mem: None,
@@ -298,11 +302,15 @@ pub(super) fn build_sat_witness(
                 delta,
             } => {
                 let base = eval_expr(addr_base, &env).ok_or_else(|| {
-                    format!("cannot evaluate address base `{}`", addr_base.to_lean())
+                    witness(format!(
+                        "cannot evaluate address base `{}`",
+                        addr_base.to_lean()
+                    ))
                 })?;
                 let a = eff(base, *addr_off, *delta);
-                let vv = eval_expr(value, &env)
-                    .ok_or_else(|| format!("cannot evaluate cell value `{}`", value.to_lean()))?;
+                let vv = eval_expr(value, &env).ok_or_else(|| {
+                    witness(format!("cannot evaluate cell value `{}`", value.to_lean()))
+                })?;
                 let (ctor, sz) = match width {
                     Width::Byte => (".byte", 1u64),
                     Width::Halfword => (".u16", 2),
@@ -318,12 +326,15 @@ pub(super) fn build_sat_witness(
                 });
             }
             Atom::Bytes { addr, value } => {
-                let a = eval_expr(addr, &env)
-                    .ok_or_else(|| format!("cannot evaluate blob address `{}`", addr.to_lean()))?;
+                let a = eval_expr(addr, &env).ok_or_else(|| {
+                    witness(format!("cannot evaluate blob address `{}`", addr.to_lean()))
+                })?;
                 let name = match value {
                     BytesVal::Sym(n) => n,
                     BytesVal::Replicate { .. } => {
-                        return Err("unexpected Replicate blob in a precondition".into())
+                        return Err(witness(
+                            "unexpected Replicate blob in a precondition".to_string(),
+                        ))
                     }
                 };
                 let size_s = state
@@ -331,9 +342,12 @@ pub(super) fn build_sat_witness(
                     .iter()
                     .find(|(n, _)| n == name)
                     .map(|(_, s)| s.clone())
-                    .ok_or_else(|| format!("no size recorded for blob `{}`", name))?;
+                    .ok_or_else(|| witness(format!("no size recorded for blob `{}`", name)))?;
                 let sz: u64 = const_blob_size(&size_s).ok_or_else(|| {
-                    format!("blob `{}` has a non-constant size `{}`", name, size_s)
+                    witness(format!(
+                        "blob `{}` has a non-constant size `{}`",
+                        name, size_s
+                    ))
                 })?;
                 let repl = format!("(replicateByte 0 {})", sz);
                 sat_atoms.push(format!(".bytes {} {}", a, repl));
@@ -347,7 +361,10 @@ pub(super) fn build_sat_witness(
             }
             Atom::Bytes32 { addr, name } => {
                 let a = eval_expr(addr, &env).ok_or_else(|| {
-                    format!("cannot evaluate Bytes32 address `{}`", addr.to_lean())
+                    witness(format!(
+                        "cannot evaluate Bytes32 address `{}`",
+                        addr.to_lean()
+                    ))
                 })?;
                 // A fresh symbolic 32-byte blob (e.g. sha256's old output) is
                 // grounded to a concrete witness + substituted; a named constant
@@ -373,7 +390,9 @@ pub(super) fn build_sat_witness(
                 let name = match value {
                     BytesVal::Sym(n) => n,
                     BytesVal::Replicate { .. } => {
-                        return Err("unexpected Replicate blob in a returnData precondition".into())
+                        return Err(witness(
+                            "unexpected Replicate blob in a returnData precondition".to_string(),
+                        ))
                     }
                 };
                 sat_atoms.push(".retData ByteArray.empty".to_string());
@@ -409,11 +428,11 @@ pub(super) fn build_sat_witness(
             };
             let reg_clash = matches!((x.reg, y.reg), (Some(a), Some(b)) if a == b);
             if mem_clash || reg_clash || (x.cs && y.cs) {
-                return Err(format!(
+                return Err(witness(format!(
                     "precondition atoms overlap under the witness assignment \
                      ({} vs {}) — the theorem would be vacuous",
                     x.desc, y.desc
-                ));
+                )));
             }
         }
     }

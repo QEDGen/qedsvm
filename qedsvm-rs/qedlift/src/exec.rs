@@ -648,7 +648,7 @@ type EffectFn = fn(
     &mut Vec<usize>,
     usize,
     &BinaryCtx,
-) -> Result<(), Box<dyn std::error::Error>>;
+) -> Result<(), LiftError>;
 
 /// One row of the modeled-syscall table: everything qedlift knows about a
 /// syscall hash. The four consumers (`imm_is_modeled_syscall`,
@@ -1107,8 +1107,7 @@ pub(super) fn walk_and_exec(
                                 pc_iter,
                                 imm,
                                 ctx,
-                            )
-                            .map_err(LiftError::other)?;
+                            )?;
                             ti += 1;
                             continue;
                         }
@@ -1299,25 +1298,27 @@ fn dispatch_traced_syscall(
     pc_iter: usize,
     imm: u32,
     ctx: &BinaryCtx,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(), LiftError> {
     if let Some(effect) = syscall_model(imm).and_then(|m| m.effect) {
         return effect(state, spec_calls, block_pcs, pc_iter, ctx);
     }
     // NOTE: sol_invoke_signed_rust never reaches here — it is an
     // AbortKind::Invoke walk TERMINAL (the proof-facing CPI is the
     // fail-closed `Cpi.exec` stub, so no running spec can cross it).
-    Err(format!(
-        "call_imm at pc {} is a syscall (trace returns to {} \
+    Err(LiftError::new(
+        DiagnosticKind::SyscallUnmodeled,
+        format!(
+            "call_imm at pc {} is a syscall (trace returns to {} \
          without a frame push) with imm hash 0x{:08x}, but only \
          sol_memset_ / sol_memcpy_ / sol_memmove_ / sol_memcmp_ / \
          sol_get_sysvar / sol_log_ / sol_set_return_data are \
          modelled so far (sol_invoke_signed terminates the walk). \
          This arm needs a syscall-effect spec for that hash.",
-        pc_iter,
-        pc_iter + 1,
-        imm
-    )
-    .into())
+            pc_iter,
+            pc_iter + 1,
+            imm
+        ),
+    ))
 }
 
 /// True if `opc` is a conditional jump the walker models (imm + reg forms).
