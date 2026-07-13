@@ -338,7 +338,7 @@ pub(super) fn build_sat_witness(
                     }
                 };
                 let size_s = state
-                    .memset_blobs
+                    .memset_blobs()
                     .iter()
                     .find(|(n, _)| n == name)
                     .map(|(_, s)| s.clone())
@@ -369,7 +369,7 @@ pub(super) fn build_sat_witness(
                 // A fresh symbolic 32-byte blob (e.g. sha256's old output) is
                 // grounded to a concrete witness + substituted; a named constant
                 // (a sysvar id) is used verbatim.
-                if state.bytearray_vars.iter().any(|v| v == name) {
+                if state.bytearray_vars().iter().any(|v| v == name) {
                     let repl = "(replicateByte 0 32)".to_string();
                     sat_atoms.push(format!(".bytes32 {} {}", a, repl));
                     blob_subst.push((name.clone(), repl));
@@ -406,7 +406,7 @@ pub(super) fn build_sat_witness(
             }
         }
     }
-    if state.saw_call {
+    if state.saw_call() {
         sat_atoms.push(".callStack []".to_string());
         feet.push(Foot {
             mem: None,
@@ -479,7 +479,7 @@ pub(super) fn build_sat_witness(
     if !abstractions.is_empty() {
         w.push('\n');
     }
-    let cs = if state.saw_call {
+    let cs = if state.saw_call() {
         " ** callStackIs []"
     } else {
         ""
@@ -562,7 +562,7 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
         match atom {
             Atom::Reg(r, _) => {
                 let v = state
-                    .regs
+                    .regs()
                     .get(r)
                     .cloned()
                     .unwrap_or_else(|| Expr::InitReg(reg_initial_name(*r)));
@@ -577,7 +577,7 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
             } => {
                 let key = (addr_base.to_lean(), *addr_off, *delta, *width as u8);
                 let v = state
-                    .mem
+                    .mem_cells()
                     .iter()
                     .find(|c| c.key() == key)
                     .map(|c| c.value.clone())
@@ -593,7 +593,7 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
             Atom::Bytes { addr, value } => {
                 // Look up post blob contents by rendered address (set by memory syscall emitters).
                 let post_val = state
-                    .byte_blob_post
+                    .byte_blob_post()
                     .get(&addr.to_lean())
                     .cloned()
                     .unwrap_or_else(|| value.clone());
@@ -606,7 +606,7 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
                 // Default read-only (sysvar id) — unchanged. A digest-writing
                 // syscall (sol_sha256) flips the post via `bytes32_post`.
                 let post_name = state
-                    .bytes32_post
+                    .bytes32_post()
                     .get(&addr.to_lean())
                     .cloned()
                     .unwrap_or_else(|| name.clone());
@@ -618,8 +618,8 @@ pub(super) fn post_atoms(initial_pre: &[Atom], state: &SymState) -> Vec<Atom> {
             Atom::ReturnData { value } => {
                 // returnData flips to the syscall-set value (`returndata_post`).
                 let post_val = state
-                    .returndata_post
-                    .clone()
+                    .returndata_post()
+                    .cloned()
                     .unwrap_or_else(|| value.clone());
                 out.push(Atom::ReturnData { value: post_val });
             }
@@ -639,16 +639,16 @@ pub(super) fn region_req(
     // (default = one clause per group = the flat left-fold). A multi-clause
     // syscall rr stays grouped so the goal matches `sl_block_iter`'s
     // per-instruction (`cuTripleWithinMem_seq`) composition.
-    let mut group_ids: Vec<usize> = Vec::with_capacity(state.rr_walk.len());
+    let mut group_ids: Vec<usize> = Vec::with_capacity(state.region_requirements().len());
     let mut gid = 0usize;
-    for i in 0..state.rr_walk.len() {
-        if i != 0 && !state.rr_continuations.contains(&i) {
+    for i in 0..state.region_requirements().len() {
+        if i != 0 && !state.region_continuations().contains(&i) {
             gid += 1;
         }
         group_ids.push(gid);
     }
     // Walk-order: load -> containsRange, store -> containsWritable; left-fold order matches slBlockIter.
-    for (addr_base, addr_off, width, writable, raw) in &state.rr_walk {
+    for (addr_base, addr_off, width, writable, raw) in state.region_requirements() {
         // H6 variable-length: `contains{Writable,Range} addr count` with raw (subst-folded, no
         // `effectiveAddr`) address — matches the rr from `call_sol_{memset,log}_*_spec` after sl_rw_abs.
         if let Some((addr, count)) = raw {

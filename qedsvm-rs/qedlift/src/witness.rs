@@ -294,16 +294,16 @@ fn branch_priority(bh: &BranchHyp) -> u8 {
 /// when the steerer cannot satisfy every branch — never emits an unverified witness.
 pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<String> {
     use std::collections::BTreeMap;
-    if state.branch_hyps.is_empty() {
+    if state.branches().is_empty() {
         return None;
     }
 
     let mut env: BTreeMap<String, u64> = BTreeMap::new();
-    let mut order: Vec<usize> = (0..state.branch_hyps.len()).collect();
-    order.sort_by_key(|&i| branch_priority(&state.branch_hyps[i]));
+    let mut order: Vec<usize> = (0..state.branches().len()).collect();
+    order.sort_by_key(|&i| branch_priority(&state.branches()[i]));
 
     for &i in &order {
-        let bh = &state.branch_hyps[i];
+        let bh = &state.branches()[i];
         // Already satisfied by the partial assignment (e.g. pinned by an earlier branch).
         if eval_branch(bh, &env) == Some(true) {
             continue;
@@ -367,7 +367,7 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
     {
         use std::collections::{BTreeMap, BTreeSet};
         let mut allvars: Vec<String> = Vec::new();
-        for bh in &state.branch_hyps {
+        for bh in state.branches() {
             expr_vars(&bh.dst_value, &mut allvars);
             if let Some(s) = &bh.src_value {
                 expr_vars(s, &mut allvars);
@@ -379,7 +379,7 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
         for v in &allvars {
             parent.insert(v.clone(), v.clone());
         }
-        for bh in &state.branch_hyps {
+        for bh in state.branches() {
             let is_eq = matches!(
                 (&bh.kind, bh.taken),
                 (BranchKind::JeqReg, true) | (BranchKind::JneReg, false)
@@ -407,7 +407,7 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
             classes.entry(r).or_default().push(v.clone());
         }
         let mut pool: Vec<u64> = (0u64..=256).collect();
-        for bh in &state.branch_hyps {
+        for bh in state.branches() {
             let im = bh.imm as u64;
             pool.push(im);
             pool.push(im.wrapping_add(1));
@@ -416,7 +416,7 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
         for members in classes.values() {
             let mset: BTreeSet<&String> = members.iter().collect();
             let internal: Vec<usize> = state
-                .branch_hyps
+                .branches()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, bh)| {
@@ -438,7 +438,7 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
             let holds = |e: &BTreeMap<String, u64>| {
                 internal
                     .iter()
-                    .all(|&i| eval_branch(&state.branch_hyps[i], e) == Some(true))
+                    .all(|&i| eval_branch(&state.branches()[i], e) == Some(true))
             };
             if holds(&env) {
                 continue;
@@ -456,7 +456,7 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
         }
     }
 
-    for (i, bh) in state.branch_hyps.iter().enumerate() {
+    for (i, bh) in state.branches().iter().enumerate() {
         if eval_branch(bh, &env) != Some(true) {
             if std::env::var("QEDLIFT_DEBUG_BRANCH").is_ok() {
                 eprintln!(
@@ -477,10 +477,10 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
         out
     };
     let mut conjuncts: Vec<String> = Vec::new();
-    for bh in &state.branch_hyps {
+    for bh in state.branches() {
         conjuncts.push(format!("({})", sub(&bh.lean_hyp())));
     }
-    for (v, k) in &state.u64_load_vars {
+    for (v, k) in state.load_vars() {
         let lit = env.get(v).copied().unwrap_or(0);
         conjuncts.push(format!("({} < 2 ^ {})", lit, k));
     }
@@ -529,14 +529,14 @@ mod tests {
     fn contradictory_branch_hyps_yield_no_witness() {
         let mut state = SymState::default();
         let v = Expr::InitReg("vR1Old".to_string());
-        state.branch_hyps.push(BranchHyp {
+        state.record_branch(BranchHyp {
             kind: BranchKind::JeqImm,
             dst_value: v.clone(),
             src_value: None,
             imm: 1,
             taken: true,
         });
-        state.branch_hyps.push(BranchHyp {
+        state.record_branch(BranchHyp {
             kind: BranchKind::JeqImm,
             dst_value: v,
             src_value: None,
@@ -556,7 +556,7 @@ mod tests {
     fn consistent_branch_hyps_yield_a_witness() {
         let mut state = SymState::default();
         let v = Expr::InitReg("vR1Old".to_string());
-        state.branch_hyps.push(BranchHyp {
+        state.record_branch(BranchHyp {
             kind: BranchKind::JeqImm,
             dst_value: v,
             src_value: None,

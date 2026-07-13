@@ -265,9 +265,7 @@ mod tests {
         let mut state = SymState::default();
         assert_eq!(exit_disposition(&state), ExitDisposition::TopLevel);
 
-        state
-            .call_stack
-            .push((12, std::array::from_fn(|_| Expr::Const(0))));
+        state.push_call_frame(12, std::array::from_fn(|_| Expr::Const(0)));
         assert_eq!(exit_disposition(&state), ExitDisposition::NestedReturn);
     }
 

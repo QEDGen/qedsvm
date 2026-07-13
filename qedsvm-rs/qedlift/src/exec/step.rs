@@ -30,10 +30,10 @@ pub(super) fn step(
             let raw = state.read_mem(src, off, Width::Halfword);
             if !matches!(raw, Expr::InitMem(_)) {
                 let pcn = pc.unwrap_or(0);
-                state.side_hyps.push((
+                state.record_side_hypothesis(
                     format!("hReloadLt_{}", pcn),
                     format!("{} < 2 ^ 16", raw.to_lean()),
-                ));
+                );
             }
             state.write_reg(dst, raw);
         }
@@ -41,10 +41,10 @@ pub(super) fn step(
             let raw = state.read_mem(src, off, Width::Word);
             if !matches!(raw, Expr::InitMem(_)) {
                 let pcn = pc.unwrap_or(0);
-                state.side_hyps.push((
+                state.record_side_hypothesis(
                     format!("hReloadLt_{}", pcn),
                     format!("{} < 2 ^ 32", raw.to_lean()),
-                ));
+                );
             }
             state.write_reg(dst, raw);
         }
@@ -53,10 +53,10 @@ pub(super) fn step(
             // Reloaded compound (not fresh `oldMemD_N`): register `hReloadLt_<pc>` as the spec's `hv`.
             if !matches!(raw, Expr::InitMem(_) | Expr::ByteCombo(_)) {
                 let pcn = pc.unwrap_or(0);
-                state.side_hyps.push((
+                state.record_side_hypothesis(
                     format!("hReloadLt_{}", pcn),
                     format!("{} < 2 ^ 64", raw.to_lean()),
-                ));
+                );
             }
             state.write_reg(dst, raw);
         }
@@ -318,7 +318,7 @@ pub(super) fn step(
                 DIV64_REG | MOD64_REG => format!("{} ≠ 0", b),
                 _ /* 32-bit */        => format!("{} % U32_MODULUS ≠ 0", b),
             };
-            state.side_hyps.push((format!("hnz_{}", pcn), prop));
+            state.record_side_hypothesis(format!("hnz_{}", pcn), prop);
             let r = match insn.opc {
                 DIV64_REG => format!("({} / {}) % U64_MODULUS", a, b),
                 MOD64_REG => format!("{} % {}", a, b),
@@ -334,7 +334,7 @@ pub(super) fn step(
         // Conditional jumps: record path hyp (taken or fall-through); no reg/mem change. Default = fall-through (common guard shape).
         JEQ64_IMM | JEQ32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JeqImm,
                 dst_value: r,
                 src_value: None,
@@ -344,7 +344,7 @@ pub(super) fn step(
         }
         JNE64_IMM | JNE32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JneImm,
                 dst_value: r,
                 src_value: None,
@@ -354,7 +354,7 @@ pub(super) fn step(
         }
         JGT64_IMM | JGT32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JgtImm,
                 dst_value: r,
                 src_value: None,
@@ -364,7 +364,7 @@ pub(super) fn step(
         }
         JSGT64_IMM | JSGT32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JsgtImm,
                 dst_value: r,
                 src_value: None,
@@ -374,7 +374,7 @@ pub(super) fn step(
         }
         JSLE64_IMM | JSLE32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JsleImm,
                 dst_value: r,
                 src_value: None,
@@ -384,7 +384,7 @@ pub(super) fn step(
         }
         JLT64_IMM | JLT32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JltImm,
                 dst_value: r,
                 src_value: None,
@@ -394,7 +394,7 @@ pub(super) fn step(
         }
         JLE64_IMM | JLE32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JleImm,
                 dst_value: r,
                 src_value: None,
@@ -404,7 +404,7 @@ pub(super) fn step(
         }
         JSLT64_IMM | JSLT32_IMM => {
             let r = state.read_reg(dst);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JsltImm,
                 dst_value: r,
                 src_value: None,
@@ -420,7 +420,7 @@ pub(super) fn step(
                 JSET64_IMM | JSET32_IMM => BranchKind::JsetImm,
                 _ => unreachable!(),
             };
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind,
                 dst_value: r,
                 src_value: None,
@@ -431,7 +431,7 @@ pub(super) fn step(
         JEQ64_REG | JEQ32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JeqReg,
                 dst_value: rd,
                 src_value: Some(rs),
@@ -442,7 +442,7 @@ pub(super) fn step(
         JNE64_REG | JNE32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JneReg,
                 dst_value: rd,
                 src_value: Some(rs),
@@ -453,7 +453,7 @@ pub(super) fn step(
         JLT64_REG | JLT32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JltReg,
                 dst_value: rd,
                 src_value: Some(rs),
@@ -464,7 +464,7 @@ pub(super) fn step(
         JSLE64_REG | JSLE32_REG => {
             let rd = state.read_reg(dst);
             let rs = state.read_reg(src);
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind: BranchKind::JsleReg,
                 dst_value: rd,
                 src_value: Some(rs),
@@ -487,7 +487,7 @@ pub(super) fn step(
                 JSET64_REG | JSET32_REG => BranchKind::JsetReg,
                 _ => unreachable!(),
             };
-            state.branch_hyps.push(BranchHyp {
+            state.record_branch(BranchHyp {
                 kind,
                 dst_value: rd,
                 src_value: Some(rs),
@@ -498,7 +498,6 @@ pub(super) fn step(
         JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
         // call_local: bumps r10 by 0x1000 and pushes frame; PC redirect handled by walker.
         CALL_IMM => {
-            state.saw_call = true;
             // Snapshot call-time r6..r10 — the frame call_local pushes and exit_pops must restore.
             let r6 = state.read_reg(6);
             let r7 = state.read_reg(7);
@@ -512,7 +511,7 @@ pub(super) fn step(
             );
             // Frame retPc renders as `<callpc> + 1` (Lean keeps unreduced); resume PC is callpc + 1.
             let call_pc = pc.unwrap_or(0);
-            state.call_stack.push((call_pc, [r6, r7, r8, r9, r10_old]));
+            state.push_call_frame(call_pc, [r6, r7, r8, r9, r10_old]);
         }
         opc => {
             return Err(LiftError::new(
