@@ -80,6 +80,45 @@ pub(crate) struct WalkOptions<'a> {
     pub(crate) program_entry: usize,
 }
 
+struct PreparedStep {
+    spec_call: Option<SpecCall>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_step(
+    state: &SymState,
+    instruction: &ebpf::Insn,
+    pc: usize,
+    call_target: Option<usize>,
+    branch_hypothesis: Option<&str>,
+    branch_taken: Option<bool>,
+    jump_target: i64,
+) -> PreparedStep {
+    PreparedStep {
+        spec_call: spec_call_for(
+            state,
+            instruction,
+            pc,
+            call_target,
+            branch_hypothesis,
+            branch_taken,
+            Some(jump_target),
+        ),
+    }
+}
+
+fn apply_step(
+    state: &mut SymState,
+    instruction: &ebpf::Insn,
+    pc: usize,
+    branch_taken: Option<bool>,
+    prepared: PreparedStep,
+) -> Result<Option<SpecCall>, LiftError> {
+    step(state, instruction, Some(pc), branch_taken)?;
+    state.finish_prepared_step()?;
+    Ok(prepared.spec_call)
+}
+
 /// CFG walk + symbolic execution + the hot-region/blob-split retry loop +
 /// syscall dispatch. Straight-line→pc+1, ja→target, cond-jump→fall-through,
 /// call_local→push+jump, exit/empty-stack→done, exit/non-empty→pop+resume.
@@ -120,11 +159,7 @@ pub(crate) fn walk_and_exec(
         // `*_fault_correct` corollary (`cuTripleFaultsWithinMem`) instead of only a
         // success triple. `None` = ordinary `exit` terminator (the success case).
         let mut fault_terminal: Option<FaultTerminal> = None;
-        let mut state = SymState {
-            hot_regions: hot_regions.clone(),
-            blob_splits: blob_splits.clone(),
-            ..SymState::default()
-        };
+        let mut state = SymState::with_retry_plans(hot_regions.clone(), blob_splits.clone());
         {
             let mut trace_cursor = trace.map(TraceCursor::new).transpose()?;
             let mut pc_iter: usize = match trace_cursor.as_ref() {
@@ -277,18 +312,18 @@ pub(crate) fn walk_and_exec(
                 )?;
                 let branch_taken = branch_decision.as_option();
 
-                if let Some(sc) = spec_call_for(
+                let prepared = prepare_step(
                     &state,
                     ins,
                     pc_iter,
                     call_target,
                     branch_hyp_for_call,
                     branch_taken,
-                    Some(jtgt),
-                ) {
+                    jtgt,
+                );
+                if let Some(sc) = apply_step(&mut state, ins, pc_iter, branch_taken, prepared)? {
                     spec_calls.push(sc);
                 }
-                step(&mut state, ins, Some(pc_iter), branch_taken)?;
                 // Phase A aliasing: surface address equation for same-cell different-rendering (consumed by rw [h_alias_<pc>]).
                 if let Some((lhs, rhs)) = state.pending_alias.take() {
                     state

@@ -1,5 +1,40 @@
 use super::branch::BranchHyp;
 use super::core::{canon_addr, reg_initial_name, w_short, Atom, BytesVal, Expr, MemCell, Width};
+use super::diagnostic::{DiagnosticKind, LiftError};
+
+#[derive(Default)]
+struct FreshNames {
+    next: std::cell::Cell<u32>,
+    reserved: std::cell::RefCell<std::collections::VecDeque<u32>>,
+}
+
+impl FreshNames {
+    fn reserve(&self) -> u32 {
+        let index = self.next.get();
+        self.next.set(index + 1);
+        self.reserved.borrow_mut().push_back(index);
+        index
+    }
+
+    fn allocate(&self) -> u32 {
+        self.reserved.borrow_mut().pop_front().unwrap_or_else(|| {
+            let index = self.next.get();
+            self.next.set(index + 1);
+            index
+        })
+    }
+
+    fn finish_prepared_step(&self) -> Result<(), LiftError> {
+        if self.reserved.borrow().is_empty() {
+            Ok(())
+        } else {
+            Err(LiftError::new(
+                DiagnosticKind::Other,
+                "qedlift: prepared symbolic names were not consumed by instruction execution",
+            ))
+        }
+    }
+}
 
 // Symbolic executor: walks decoded eBPF insns, synthesizes pre/post for `cuTripleWithinMem n 0 0 n cr PRE POST RR`, discharged by `sl_block_auto`.
 
@@ -15,8 +50,8 @@ pub(super) struct SymState {
     pub(super) pre: Vec<Atom>,
     /// Memory cells the slice touched; `base` is the SYMBOLIC register value at access time (so `[r1+0]` after `add64 r1,8` is a distinct cell). Linear search; small N.
     pub(super) mem: Vec<MemCell>,
-    /// Fresh-variable counter for memory initials.
-    pub(super) fresh: u32,
+    /// Single allocator for memory, syscall, and prepared-step identifiers.
+    names: FreshNames,
     /// `(var, k)` pairs for memory loads with a `< 2^k` side condition (k=16/32/64 for ldxh/ldxw/ldxdw). Emitted as `h<var>_lt` hypotheses in the theorem signature.
     pub(super) u64_load_vars: Vec<(String, u32)>,
     /// Conditional jumps on the happy-path walk; each adds a path hypothesis to the theorem signature.
@@ -70,13 +105,35 @@ pub(super) struct SymState {
 }
 
 impl SymState {
+    pub(super) fn with_retry_plans(
+        hot_regions: std::collections::BTreeMap<String, Vec<(i64, i64)>>,
+        blob_splits: std::collections::BTreeMap<(String, i64), i64>,
+    ) -> Self {
+        Self {
+            hot_regions,
+            blob_splits,
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn reserve_fresh_name(&self) -> u32 {
+        self.names.reserve()
+    }
+
+    pub(super) fn alloc_fresh_name(&self) -> u32 {
+        self.names.allocate()
+    }
+
+    pub(super) fn finish_prepared_step(&self) -> Result<(), LiftError> {
+        self.names.finish_prepared_step()
+    }
+
     /// Allocate the per-syscall fresh index plus the `nCu<Tag><idx>` /
     /// `hCu<Tag><idx>` CU-hypothesis names. MUST be called at the same point
     /// in the fresh-name sequence as the emitter's other `*_{idx}` names are
     /// derived — reordering fresh allocations changes emitted binder names.
     pub(super) fn alloc_syscall(&mut self, tag: &str) -> (u32, String, String) {
-        let idx = self.fresh;
-        self.fresh += 1;
+        let idx = self.alloc_fresh_name();
         (
             idx,
             format!("nCu{}{}", tag, idx),
@@ -213,8 +270,7 @@ impl SymState {
             }
             return i;
         }
-        let idx = self.fresh;
-        self.fresh += 1;
+        let idx = self.alloc_fresh_name();
         let name = format!("oldMemB_{}", idx);
         self.u64_load_vars.push((name.clone(), 8));
         let v = Expr::InitMem(name);
@@ -344,8 +400,7 @@ impl SymState {
             return v;
         }
         // Name fresh cells by width+index; the address expression itself may be ill-suited as a Lean identifier.
-        let idx = self.fresh;
-        self.fresh += 1;
+        let idx = self.alloc_fresh_name();
         let name = format!("oldMem{}_{}", w_short(width), idx);
         match width {
             Width::Dword => self.u64_load_vars.push((name.clone(), 64)),
@@ -442,5 +497,33 @@ impl SymState {
                 self.rr_walk.push((base_expr, off, width, true, None));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fresh_names_reserve_once_and_consume_in_order() {
+        let names = FreshNames::default();
+        assert_eq!(names.reserve(), 0);
+        assert_eq!(names.reserve(), 1);
+        assert_eq!(names.allocate(), 0);
+        assert_eq!(names.allocate(), 1);
+        names
+            .finish_prepared_step()
+            .expect("all reservations consumed");
+        assert_eq!(names.allocate(), 2);
+    }
+
+    #[test]
+    fn unused_fresh_name_reservation_fails_closed() {
+        let names = FreshNames::default();
+        names.reserve();
+        let error = names
+            .finish_prepared_step()
+            .expect_err("unused reservation must fail");
+        assert_eq!(error.kind(), DiagnosticKind::Other);
     }
 }
