@@ -60,6 +60,12 @@ pub(super) type LiftRequest<'a> = LiftOptions<'a>;
 
 impl LiftOptions<'_> {
     fn validate(&self) -> Result<(), LiftError> {
+        if self.trace.is_some_and(<[usize]>::is_empty) {
+            return Err(LiftError::new(
+                DiagnosticKind::TraceInput,
+                "qedlift: trace must contain at least one logical PC",
+            ));
+        }
         if self.module_override.as_deref() == Some("") {
             return Err(LiftError::new(
                 DiagnosticKind::UnsupportedConstruct,
