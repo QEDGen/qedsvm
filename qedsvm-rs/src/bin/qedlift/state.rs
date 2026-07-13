@@ -3,6 +3,10 @@ use super::core::{canon_addr, reg_initial_name, w_short, Atom, BytesVal, Expr, M
 
 // Symbolic executor: walks decoded eBPF insns, synthesizes pre/post for `cuTripleWithinMem n 0 0 n cr PRE POST RR`, discharged by `sl_block_auto`.
 
+/// One region-requirement clause collected during the symbolic walk:
+/// `(base, offset, width, writable, variable-length override)`.
+pub(super) type RegionRequirement = (Expr, i64, Width, bool, Option<(Expr, Expr)>);
+
 #[derive(Default)]
 pub(super) struct SymState {
     /// Symbolic register values; absent entries are treated as `InitReg(reg_initial_name(r))`.
@@ -22,7 +26,7 @@ pub(super) struct SymState {
     /// Set on first `call_local`; emission then adds `r6..r10` and `callStackIs []` to the pre-condition.
     pub(super) saw_call: bool,
     /// rr clauses in walk order (load → `containsRange`, store → `containsWritable`), matching `slBlockIter`'s left-fold. `memset_override = Some((dst, count))` is a variable-length `containsWritable` clause (H6: `MemOps.execSet.guardWrite`); fixed fields ignored, address rendered raw without `effectiveAddr`.
-    pub(super) rr_walk: Vec<(Expr, i64, Width, bool, Option<(Expr, Expr)>)>,
+    pub(super) rr_walk: Vec<RegionRequirement>,
     /// Post-state of `↦Bytes` blobs written by `sol_memset_`, keyed by rendered address. Read by `post_atoms` to transform pre `Sym` → post `Replicate`.
     pub(super) byte_blob_post: std::collections::BTreeMap<String, BytesVal>,
     /// PC → Lean `Syscall` constructor for identified host syscalls; CodeReq renders as `.call <ctor>` instead of `.call_local`.
@@ -106,9 +110,9 @@ impl SymState {
     }
     pub(super) fn write_reg(&mut self, r: u8, v: Expr) {
         // Record pre-atom before first write so the initial value is captured.
-        if !self.regs.contains_key(&r) {
+        if let std::collections::btree_map::Entry::Vacant(e) = self.regs.entry(r) {
             let init = Expr::InitReg(reg_initial_name(r));
-            self.regs.insert(r, init.clone());
+            e.insert(init.clone());
             self.pre.push(Atom::Reg(r, init));
         }
         self.regs.insert(r, v);
@@ -117,13 +121,13 @@ impl SymState {
     pub(super) fn hot_covers(&self, root: &str, lo: i64, hi: i64) -> bool {
         self.hot_regions
             .get(root)
-            .map_or(false, |v| v.iter().any(|(l, h)| *l <= lo && hi <= *h))
+            .is_some_and(|v| v.iter().any(|(l, h)| *l <= lo && hi <= *h))
     }
     /// Does `[lo, hi)` on `root` intersect any hot region?
     pub(super) fn hot_intersects(&self, root: &str, lo: i64, hi: i64) -> bool {
         self.hot_regions
             .get(root)
-            .map_or(false, |v| v.iter().any(|(l, h)| lo < *h && *l < hi))
+            .is_some_and(|v| v.iter().any(|(l, h)| lo < *h && *l < hi))
     }
     /// The `effectiveAddr …` rendering of a cell (hot byte cells carry
     /// a `+ delta` suffix, matching `ldxdw_bytes_spec`'s atom shape).
@@ -238,7 +242,7 @@ impl SymState {
     }
     /// Hot `st .word imm`: realize 4 byte cells (pre = spec's `b0..b3`) and overwrite with LE bytes of `imm` (`stw_bytes_spec`'s `c0..c3`).
     pub(super) fn write_hot_word_imm(&mut self, base_expr: Expr, off: i64, imm: i64) {
-        let w = (imm as i64) as u32; // toU64 imm % 2^32
+        let w = imm as u32; // toU64 imm % 2^32
         let bytes = w.to_le_bytes();
         for k in 0..4i64 {
             let i = self.hot_slot(&base_expr, off, k);

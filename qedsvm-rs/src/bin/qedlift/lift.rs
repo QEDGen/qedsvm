@@ -54,7 +54,10 @@ impl LiftRequest<'_> {
 /// Lift without a qedrecover layout sidecar (tests): refinement codegen
 /// resolves account layouts from the IDL only. The CLI modes call
 /// `lift_one_with_layouts` directly (sidecar layouts / descriptor / shared text).
+/// The positional signature deliberately mirrors the historical test fixtures;
+/// production callers use the named `LiftRequest` fields above.
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 pub(super) fn lift_one(
     so_path: &Path,
     ctx: &BinaryCtx,
@@ -347,17 +350,17 @@ fn emit_prelude(
     let emit_decode_bridge = text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES && !has_modeled_syscall;
 
     let decode_claim = render::decode_claim(emit_decode_bridge);
-    let mut out = render::module_intro(so_path, decode_claim, &so_stem, &module_name, shared_text);
+    let mut out = render::module_intro(so_path, decode_claim, so_stem, module_name, shared_text);
 
     if emit_decode_bridge {
         out.push_str(&render::text_bytearray_defs(
-            &module_name,
+            module_name,
             text_bytes,
             text_offset,
         ));
     } else {
         out.push_str(&render::decode_bridge_omitted_note(
-            &module_name,
+            module_name,
             text_bytes.len(),
             shared_text,
         ));
@@ -369,7 +372,7 @@ fn emit_prelude(
     let mut decode_skip_reason: Option<String> = None;
     if emit_decode_bridge {
         for (i, insn) in insns.iter().enumerate() {
-            let tgt = resolve_call_target_logical(ctx, &analysis, insn);
+            let tgt = resolve_call_target_logical(ctx, analysis, insn);
             let jtgt = Some(resolve_jump_target(ctx, i, insn.off as i64));
             match insn_to_lean_full(insn, i, tgt, jtgt) {
                 Ok(s) => rendered_insns.push(s),
@@ -382,12 +385,12 @@ fn emit_prelude(
     }
     if !emit_decode_bridge {
     } else if let Some(reason) = decode_skip_reason {
-        out.push_str(&render::decode_renderer_skip_note(&module_name, &reason));
+        out.push_str(&render::decode_renderer_skip_note(module_name, &reason));
     } else {
         // H2: registry resolves call murmur3 imm → .call_local; empty registry fail-closes to .unknown.
         let reg = function_registry(ctx);
         out.push_str(&render::decoded_insns_section(
-            &module_name,
+            module_name,
             &rendered_insns,
             &function_registry_lean(&reg),
         ));
@@ -416,7 +419,7 @@ fn build_code_req(
             let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
                 format!(".call {}", ctor)
             } else {
-                let tgt = resolve_call_target_logical(ctx, &analysis, &insns[pc]);
+                let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc]);
                 let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
                 insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
             };
@@ -454,7 +457,7 @@ fn emit_decode_pins(
         let lean_insn = if let Some(ctor) = state.syscall_pcs.get(&pc) {
             format!(".call {}", ctor)
         } else {
-            let tgt = resolve_call_target_logical(ctx, &analysis, &insns[pc]);
+            let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc]);
             let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
             insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
         };
@@ -478,7 +481,7 @@ fn emit_decode_pins(
             // H2: registry resolves call imms to .call_local targets in the pins below.
             let reg = function_registry(ctx);
             out.push_str(&render::large_text_decode_section(
-                &module_name,
+                module_name,
                 text_bytes,
                 &function_registry_lean(&reg),
                 &pin_offs,
@@ -534,7 +537,7 @@ fn assemble_triple(
     exit_pc: usize,
 ) -> TripleCtx {
     let mut pre = state.pre.clone();
-    let mut post = post_atoms(&pre, &state);
+    let mut post = post_atoms(&pre, state);
     // An OOB fault terminal composes its fault spec against the FRONT of the
     // prefix post (`frame_right` appends the rest on the right), so rotate the
     // spec's region register(s) to the front of both pre and post. Stable —
@@ -566,7 +569,7 @@ fn assemble_triple(
         .iter()
         .map(|(p, _, e)| (e.clone(), p.clone()))
         .collect();
-    let rr = region_req(&pre, &state, &abs_subst);
+    let rr = region_req(&pre, state, &abs_subst);
     // call_local requires `callStackIs []` in pre+post (call_local_spec takes it, exit_pops_spec returns it).
     // Net change = none, but sl_block_iter must thread it through the chain.
     let cs_atom = if state.saw_call {
@@ -655,7 +658,7 @@ fn assemble_triple(
     let any_taken = state.branch_hyps.iter().any(|b| b.taken);
     let use_block_iter = state.saw_call || any_taken || !state.syscall_pcs.is_empty();
 
-    let value_gens = build_value_gens(&state, &pre, &post, &abs_subst, use_block_iter);
+    let value_gens = build_value_gens(state, &pre, &post, &abs_subst, use_block_iter);
     let tactic = build_proof_body(
         spec_calls,
         &abstractions,
@@ -817,7 +820,7 @@ fn build_value_gens(
             };
             if is_complex(v) {
                 // Fold sub-expr abstractions first so generalize target matches the sl_rw_abs-folded proof term.
-                let r = fold_abstractions(v.to_lean(), &abs_subst);
+                let r = fold_abstractions(v.to_lean(), abs_subst);
                 // Skip address abstractions: generalizing an address rewrites it everywhere, breaking post/rr matching.
                 let is_addr_abs = abs_subst.contains_key(&r) || abs_subst.values().any(|p| *p == r);
                 // Skip values a syscall spec pins concretely (e.g. sha256's `len`).
@@ -1098,15 +1101,15 @@ fn emit_balance_corollary(
     for (k, sh) in shifts.iter().enumerate() {
         match sh {
             Shift::Sub(a, b) => {
-                let al = fold_abstractions(a.to_lean(), &abs_subst);
-                let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                let al = fold_abstractions(a.to_lean(), abs_subst);
+                let bl = fold_abstractions(b.to_lean(), abs_subst);
                 extra_hyps.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
                 extra_hyps.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
                 rw_terms.push(format!("← wrapSub_of_le h_funds{} h_src_lt{}", k, k));
             }
             Shift::Add(a, b) => {
-                let al = fold_abstractions(a.to_lean(), &abs_subst);
-                let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                let al = fold_abstractions(a.to_lean(), abs_subst);
+                let bl = fold_abstractions(b.to_lean(), abs_subst);
                 extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
                 rw_terms.push(format!("← wrapAdd_of_lt h_noovf{}", k));
             }
@@ -1115,7 +1118,7 @@ fn emit_balance_corollary(
                 // `+1` keeps the specialized `wrapAdd_one_of_lt` so every existing
                 // +1 lift stays byte-identical; any other positive literal uses the
                 // general `wrapAdd_const_of_lt`.
-                let al = fold_abstractions(a.to_lean(), &abs_subst);
+                let al = fold_abstractions(a.to_lean(), abs_subst);
                 extra_hyps.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
                 if *c == 1 {
                     rw_terms.push(format!("← wrapAdd_one_of_lt h_noovf{}", k));
@@ -1269,8 +1272,8 @@ fn emit_fault_corollary(
                     })
                 }
             };
-            let r1v = fold_abstractions(region_value.to_lean(), &abs_subst);
-            let lenv = len_value.map(|v| fold_abstractions(v.to_lean(), &abs_subst));
+            let r1v = fold_abstractions(region_value.to_lean(), abs_subst);
+            let lenv = len_value.map(|v| fold_abstractions(v.to_lean(), abs_subst));
             let spec_args = match &lenv {
                 None => format!("({r1v})"),
                 Some(l) => format!("({r1v}) ({l}) (by decide) (by decide)"),
@@ -1294,7 +1297,7 @@ fn emit_fault_corollary(
                     pc = exit_pc
                 )
             } else {
-                let rest_lean = atoms_to_lean(&rest_atoms, &abs_subst);
+                let rest_lean = atoms_to_lean(&rest_atoms, abs_subst);
                 format!(
                     "(cuTripleFaultsWithinMem_frame_right ({rest})\n      \
                      (by repeat' apply pcFree_sepConj\n          \
@@ -1358,7 +1361,7 @@ fn emit_fault_corollary(
         n_cu: &n_cu,
         entry: start_pc,
         cr: &cr_fault,
-        pre: &lifted_pre,
+        pre: lifted_pre,
         rr: &fault_rr,
         vm_error,
         proof: &fault_proof,
@@ -1469,8 +1472,8 @@ fn emit_transition_corollary(
             for (k, sh) in shifts.iter().enumerate() {
                 match sh {
                     Shift::Sub(a, b) => {
-                        let al = fold_abstractions(a.to_lean(), &abs_subst);
-                        let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                        let al = fold_abstractions(a.to_lean(), abs_subst);
+                        let bl = fold_abstractions(b.to_lean(), abs_subst);
                         extra.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
                         extra.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
                         bitems.push(BItem::Hyp {
@@ -1485,8 +1488,8 @@ fn emit_transition_corollary(
                         names.push(format!("h_src_lt{}", k));
                     }
                     Shift::Add(a, b) => {
-                        let al = fold_abstractions(a.to_lean(), &abs_subst);
-                        let bl = fold_abstractions(b.to_lean(), &abs_subst);
+                        let al = fold_abstractions(a.to_lean(), abs_subst);
+                        let bl = fold_abstractions(b.to_lean(), abs_subst);
                         extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
                         bitems.push(BItem::Hyp {
                             name: format!("h_noovf{}", k),
@@ -1495,7 +1498,7 @@ fn emit_transition_corollary(
                         names.push(format!("h_noovf{}", k));
                     }
                     Shift::AddConst(a, c) => {
-                        let al = fold_abstractions(a.to_lean(), &abs_subst);
+                        let al = fold_abstractions(a.to_lean(), abs_subst);
                         extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
                         bitems.push(BItem::Hyp {
                             name: format!("h_noovf{}", k),
@@ -1545,9 +1548,9 @@ fn emit_transition_corollary(
                 desc,
                 tctx,
                 target,
-                &m_bound,
-                &cr_lean,
-                &rr,
+                m_bound,
+                cr_lean,
+                rr,
                 FaultTail {
                     ctor,
                     spec,
@@ -1556,7 +1559,7 @@ fn emit_transition_corollary(
                 },
             )
         } else {
-            emit_transition_path(desc, tctx, target, &m_bound, &cr_lean, &rr)
+            emit_transition_path(desc, tctx, target, m_bound, cr_lean, rr)
         };
         if let Some((text, info)) = emitted {
             out.push_str(&text);

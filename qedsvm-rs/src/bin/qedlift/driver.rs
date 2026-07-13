@@ -127,7 +127,7 @@ pub(super) fn run_profile_mode(
         *self_steps.entry(s.function.as_str()).or_insert(0) += 1;
     }
     let mut summary: Vec<(&str, u64)> = self_steps.into_iter().collect();
-    summary.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    summary.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
     eprintln!(
         "profile: {} steps across {} function(s){} (weight = instruction steps, not CU)",

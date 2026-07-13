@@ -106,7 +106,7 @@ fn refine_registry(arm: &str) -> Option<RefineSpec> {
 /// True for arms with a constant `+1` delta (counter/vault). Gates the delta-cleaning so arms
 /// like `two_op`'s `+1` are not mistakenly cleaned.
 pub(super) fn is_const_delta_arm(arm: Option<&str>) -> bool {
-    arm.and_then(refine_registry).map_or(false, |s| {
+    arm.and_then(refine_registry).is_some_and(|s| {
         s.accounts
             .iter()
             .all(|(_, c)| matches!(c, CodecKind::Counter | CodecKind::Vault))

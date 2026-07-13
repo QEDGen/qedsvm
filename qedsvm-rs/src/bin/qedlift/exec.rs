@@ -978,9 +978,11 @@ pub(super) fn walk_and_exec(
         // `*_fault_correct` corollary (`cuTripleFaultsWithinMem`) instead of only a
         // success triple. `None` = ordinary `exit` terminator (the success case).
         let mut fault_terminal: Option<FaultTerminal> = None;
-        let mut state = SymState::default();
-        state.hot_regions = hot_regions.clone();
-        state.blob_splits = blob_splits.clone();
+        let mut state = SymState {
+            hot_regions: hot_regions.clone(),
+            blob_splits: blob_splits.clone(),
+            ..SymState::default()
+        };
         {
             let mut ti: usize = 0; // trace cursor; pc_iter mirrors trace[ti] in trace mode
             let mut pc_iter: usize = match trace {
@@ -1108,7 +1110,7 @@ pub(super) fn walk_and_exec(
                 }
 
                 block_pcs.push(pc_iter);
-                let call_target = resolve_call_target_logical(ctx, &analysis, ins);
+                let call_target = resolve_call_target_logical(ctx, analysis, ins);
                 // Branch hyp name indexed by number of branches seen so far.
                 let branch_idx = state.branch_hyps.len();
                 let branch_hyp = format!("h_branch{}", branch_idx);
@@ -1192,7 +1194,7 @@ pub(super) fn walk_and_exec(
                         // the coverage bucket) names the real gap.
                         let imm = ins.imm as u32;
                         pc_iter =
-                            resolve_call_target_logical(ctx, &analysis, ins).ok_or_else(|| {
+                            resolve_call_target_logical(ctx, analysis, ins).ok_or_else(|| {
                                 match known_syscall_name(imm) {
                                     Some(name) => {
                                         let name = String::from_utf8_lossy(name);
