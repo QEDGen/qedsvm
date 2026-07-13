@@ -116,6 +116,7 @@ type EffectFn = fn(
     &mut Vec<usize>,
     usize,
     &BinaryCtx,
+    &'static str,
 ) -> Result<(), LiftError>;
 
 /// One row of the modeled-syscall table: everything qedlift knows about a
@@ -130,6 +131,8 @@ struct SyscallModel {
     modeled: bool,
     /// Running-effect emitter for a traced syscall returning to pc+1.
     effect: Option<EffectFn>,
+    /// Lean constructor registered for running-effect rendering.
+    ctor: Option<&'static str>,
     /// Typed unconditional fault terminal (abort/panic/CPI stub).
     abort: Option<AbortKind>,
     /// Conditional out-of-bounds fault descriptor (H6 `.accessViolation`).
@@ -142,9 +145,17 @@ impl SyscallModel {
         name: b"",
         modeled: false,
         effect: None,
+        ctor: None,
         abort: None,
         oob: None,
     };
+
+    const fn known(name: &'static [u8]) -> SyscallModel {
+        SyscallModel {
+            name,
+            ..SyscallModel::DEFAULT
+        }
+    }
 }
 
 /// The single source of truth for the modeled-syscall set.
@@ -152,8 +163,9 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_memset_",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| {
-            emit_sol_memset(s, sc, bp, pc);
+        ctor: Some(".sol_memset"),
+        effect: Some(|s, sc, bp, pc, _, ctor| {
+            emit_sol_memset(s, sc, bp, pc, ctor);
             Ok(())
         }),
         ..SyscallModel::DEFAULT
@@ -162,14 +174,16 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_get_sysvar",
         modeled: true,
+        ctor: Some(".sol_get_sysvar"),
         effect: Some(emit_sol_get_sysvar),
         ..SyscallModel::DEFAULT
     },
     SyscallModel {
         name: b"sol_log_",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| {
-            emit_sol_log(s, sc, bp, pc);
+        ctor: Some(".sol_log_"),
+        effect: Some(|s, sc, bp, pc, _, ctor| {
+            emit_sol_log(s, sc, bp, pc, ctor);
             Ok(())
         }),
         ..SyscallModel::DEFAULT
@@ -177,8 +191,9 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_memcpy_",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| {
-            emit_sol_memcpy(s, sc, bp, pc, false);
+        ctor: Some(".sol_memcpy"),
+        effect: Some(|s, sc, bp, pc, _, ctor| {
+            emit_sol_memcpy(s, sc, bp, pc, false, ctor);
             Ok(())
         }),
         ..SyscallModel::DEFAULT
@@ -186,8 +201,9 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_memmove_",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| {
-            emit_sol_memcpy(s, sc, bp, pc, true);
+        ctor: Some(".sol_memmove"),
+        effect: Some(|s, sc, bp, pc, _, ctor| {
+            emit_sol_memcpy(s, sc, bp, pc, true, ctor);
             Ok(())
         }),
         ..SyscallModel::DEFAULT
@@ -195,8 +211,9 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_memcmp_",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| {
-            emit_sol_memcmp(s, sc, bp, pc);
+        ctor: Some(".sol_memcmp"),
+        effect: Some(|s, sc, bp, pc, _, ctor| {
+            emit_sol_memcmp(s, sc, bp, pc, ctor);
             Ok(())
         }),
         ..SyscallModel::DEFAULT
@@ -204,8 +221,9 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_set_return_data",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| {
-            emit_sol_set_return_data(s, sc, bp, pc);
+        ctor: Some(".sol_set_return_data"),
+        effect: Some(|s, sc, bp, pc, _, ctor| {
+            emit_sol_set_return_data(s, sc, bp, pc, ctor);
             Ok(())
         }),
         oob: Some(OobSyscall {
@@ -223,7 +241,8 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_sha256",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| emit_sol_sha256(s, sc, bp, pc)),
+        ctor: Some(".sol_sha256"),
+        effect: Some(|s, sc, bp, pc, _, ctor| emit_sol_sha256(s, sc, bp, pc, ctor)),
         oob: Some(OobSyscall {
             ctor: ".sol_sha256",
             faults_spec: "call_sol_sha256_faults_oob_spec",
@@ -239,7 +258,8 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_create_program_address",
         modeled: true,
-        effect: Some(|s, sc, bp, pc, _| emit_sol_create_program_address(s, sc, bp, pc)),
+        ctor: Some(".sol_create_program_address"),
+        effect: Some(|s, sc, bp, pc, _, ctor| emit_sol_create_program_address(s, sc, bp, pc, ctor)),
         oob: Some(OobSyscall {
             ctor: ".sol_create_program_address",
             faults_spec: "call_sol_create_program_address_faults_oob_spec",
@@ -253,22 +273,26 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel {
         name: b"sol_invoke_signed_rust",
         modeled: true,
+        ctor: Some(".sol_invoke_signed"),
         abort: Some(AbortKind::Invoke),
         ..SyscallModel::DEFAULT
     },
     SyscallModel {
         name: b"sol_invoke_signed_c",
         modeled: true,
+        ctor: Some(".sol_invoke_signed_c"),
         abort: Some(AbortKind::InvokeC),
         ..SyscallModel::DEFAULT
     },
     SyscallModel {
         name: b"abort",
+        ctor: Some(".abort"),
         abort: Some(AbortKind::Abort),
         ..SyscallModel::DEFAULT
     },
     SyscallModel {
         name: b"sol_panic_",
+        ctor: Some(".sol_panic_"),
         abort: Some(AbortKind::SolPanic),
         ..SyscallModel::DEFAULT
     },
@@ -308,6 +332,32 @@ static SYSCALLS: &[SyscallModel] = &[
         }),
         ..SyscallModel::DEFAULT
     },
+    SyscallModel::known(b"sol_alloc_free_"),
+    SyscallModel::known(b"sol_alt_bn128_compression"),
+    SyscallModel::known(b"sol_alt_bn128_group_op"),
+    SyscallModel::known(b"sol_big_mod_exp"),
+    SyscallModel::known(b"sol_blake3"),
+    SyscallModel::known(b"sol_curve_group_op"),
+    SyscallModel::known(b"sol_curve_multiscalar_mul"),
+    SyscallModel::known(b"sol_curve_validate_point"),
+    SyscallModel::known(b"sol_curve_pairing_map"),
+    SyscallModel::known(b"sol_curve_decompress"),
+    SyscallModel::known(b"sol_get_epoch_rewards_sysvar"),
+    SyscallModel::known(b"sol_get_epoch_schedule_sysvar"),
+    SyscallModel::known(b"sol_get_epoch_stake"),
+    SyscallModel::known(b"sol_get_fees_sysvar"),
+    SyscallModel::known(b"sol_get_last_restart_slot"),
+    SyscallModel::known(b"sol_get_processed_sibling_instruction"),
+    SyscallModel::known(b"sol_get_return_data"),
+    SyscallModel::known(b"sol_get_stack_height"),
+    SyscallModel::known(b"sol_keccak256"),
+    SyscallModel::known(b"sol_log_64_"),
+    SyscallModel::known(b"sol_log_compute_units_"),
+    SyscallModel::known(b"sol_log_data"),
+    SyscallModel::known(b"sol_log_pubkey"),
+    SyscallModel::known(b"sol_poseidon"),
+    SyscallModel::known(b"sol_remaining_compute_units"),
+    SyscallModel::known(b"sol_try_find_program_address"),
 ];
 
 /// Look up a relocated `call_imm` immediate (murmur3 syscall hash) in the
@@ -318,64 +368,15 @@ fn syscall_model(imm: u32) -> Option<&'static SyscallModel> {
         .find(|m| imm == ebpf::hash_symbol_name(m.name))
 }
 
-/// Every syscall name the runtime knows (modeled or not), for turning a bare
-/// CALL_IMM hash into a readable diagnostic. Mirrors `SVM/SBPF/SyscallHash.lean`.
-/// A CALL_IMM whose imm hashes to one of these is a syscall, NOT an internal
-/// `call_local`, so it must not be reported as an unresolved function.
-static SYSCALL_NAMES: &[&[u8]] = &[
-    b"abort",
-    b"sol_alloc_free_",
-    b"sol_alt_bn128_compression",
-    b"sol_alt_bn128_group_op",
-    b"sol_big_mod_exp",
-    b"sol_blake3",
-    b"sol_create_program_address",
-    b"sol_curve_group_op",
-    b"sol_curve_multiscalar_mul",
-    b"sol_curve_validate_point",
-    b"sol_curve_pairing_map",
-    b"sol_curve_decompress",
-    b"sol_get_clock_sysvar",
-    b"sol_get_epoch_rewards_sysvar",
-    b"sol_get_epoch_schedule_sysvar",
-    b"sol_get_epoch_stake",
-    b"sol_get_fees_sysvar",
-    b"sol_get_last_restart_slot",
-    b"sol_get_processed_sibling_instruction",
-    b"sol_get_rent_sysvar",
-    b"sol_get_return_data",
-    b"sol_get_stack_height",
-    b"sol_get_sysvar",
-    b"sol_invoke_signed_c",
-    b"sol_invoke_signed_rust",
-    b"sol_keccak256",
-    b"sol_log_",
-    b"sol_log_64_",
-    b"sol_log_compute_units_",
-    b"sol_log_data",
-    b"sol_log_pubkey",
-    b"sol_memcmp_",
-    b"sol_memcpy_",
-    b"sol_memmove_",
-    b"sol_memset_",
-    b"sol_panic_",
-    b"sol_poseidon",
-    b"sol_remaining_compute_units",
-    b"sol_secp256k1_recover",
-    b"sol_set_return_data",
-    b"sol_sha256",
-    b"sol_try_find_program_address",
-];
-
 /// If `imm` is a syscall hash, return its name. Used to diagnose a CALL_IMM the
 /// walker could not otherwise resolve: a modeled syscall reached in a no-trace
 /// static walk, or an unmodeled syscall, reads very differently from a genuine
 /// unresolved internal call.
 pub(super) fn known_syscall_name(imm: u32) -> Option<&'static [u8]> {
-    SYSCALL_NAMES
+    SYSCALLS
         .iter()
-        .copied()
-        .find(|n| ebpf::hash_symbol_name(n) == imm)
+        .find(|model| ebpf::hash_symbol_name(model.name) == imm)
+        .map(|model| model.name)
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -416,8 +417,10 @@ pub(super) fn dispatch_traced_syscall(
     imm: u32,
     ctx: &BinaryCtx,
 ) -> Result<(), LiftError> {
-    if let Some(effect) = syscall_model(imm).and_then(|m| m.effect) {
-        return effect(state, spec_calls, block_pcs, pc_iter, ctx);
+    if let Some(model) = syscall_model(imm) {
+        if let (Some(effect), Some(ctor)) = (model.effect, model.ctor) {
+            return effect(state, spec_calls, block_pcs, pc_iter, ctx, ctor);
+        }
     }
     // NOTE: sol_invoke_signed_rust never reaches here — it is an
     // AbortKind::Invoke walk TERMINAL (the proof-facing CPI is the
@@ -436,4 +439,45 @@ pub(super) fn dispatch_traced_syscall(
             imm
         ),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_rows_are_unique_and_consistent() {
+        let mut names = std::collections::BTreeSet::new();
+        let mut hashes = std::collections::BTreeSet::new();
+
+        for model in SYSCALLS {
+            assert!(names.insert(model.name), "duplicate syscall name");
+            assert!(
+                hashes.insert(ebpf::hash_symbol_name(model.name)),
+                "duplicate syscall hash for {}",
+                String::from_utf8_lossy(model.name)
+            );
+            if model.modeled {
+                assert!(
+                    model.effect.is_some() || model.abort.is_some(),
+                    "modeled syscall lacks an effect or terminal: {}",
+                    String::from_utf8_lossy(model.name)
+                );
+            }
+            if model.effect.is_some() {
+                assert!(model.modeled, "running effect must be modeled");
+                assert!(
+                    model.ctor.is_some(),
+                    "running effect lacks Lean constructor"
+                );
+            }
+            if let Some(abort) = model.abort {
+                assert_eq!(model.ctor, Some(abort.ctor()));
+            }
+            if let Some(oob) = model.oob {
+                assert!(!oob.ctor.is_empty());
+                assert!(!oob.faults_spec.is_empty());
+            }
+        }
+    }
 }
