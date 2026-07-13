@@ -824,9 +824,10 @@ Callee (registered at pubkey `0x42, 0, …, 0` → LE Nat 0x42):
 The executable runner now supports real `AccountInfo` decode and write-back
 for CPIs that pass accounts; Rust differential fixtures cover one- and
 two-account mutation, realloc, readonly protection, and nested CPI. This
-Lean-only demo deliberately remains the zero-account case. The proof-facing
-`Cpi.exec` semantics still fail closed: it must not claim a successful,
-no-effect CPI until a compositional CPI proof model exists.
+Lean-only demo deliberately remains the zero-account case. Proofs compose CPI
+callee relations through `Cpi.Transitions` / `Cpi.applyResult`; the ordinary
+parameter-free `Cpi.exec` remains fail closed when no callee semantics is
+supplied, so it still cannot fabricate a successful no-effect invocation.
 -/
 
 def cpiCalleeBytes : ByteArray := ⟨#[

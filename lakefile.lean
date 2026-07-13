@@ -52,7 +52,7 @@ extern_lib leanbridge pkg := do
 
 @[default_target]
 lean_lib SVM where
-  roots := #[`SVM]
+  roots := #[`SVM, `SVM.Syscalls.CpiTests]
   precompileModules := true
 
 -- #40 gap 4: the per-call-site CPI envelope pair — the walk terminates at
