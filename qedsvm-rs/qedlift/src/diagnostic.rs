@@ -49,8 +49,8 @@ impl LiftError {
         }
     }
 
-    pub(super) fn other(error: impl fmt::Display) -> Self {
-        Self::new(DiagnosticKind::Other, error.to_string())
+    pub(super) fn with_context(self, context: impl fmt::Display) -> Self {
+        Self::new(self.kind, format!("{context}{}", self.message))
     }
 
     pub(super) const fn kind(&self) -> DiagnosticKind {
@@ -65,3 +65,23 @@ impl fmt::Display for LiftError {
 }
 
 impl std::error::Error for LiftError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_preserves_diagnostic_kind() {
+        let error = LiftError::new(DiagnosticKind::WitnessFailed, "inner").with_context("outer: ");
+
+        assert_eq!(error.kind(), DiagnosticKind::WitnessFailed);
+        assert_eq!(error.to_string(), "outer: inner");
+    }
+
+    #[test]
+    fn labels_are_stable() {
+        assert_eq!(DiagnosticKind::OpcodeUnmodeled.label(), "opcode-unmodeled");
+        assert_eq!(DiagnosticKind::SymbolicOperand.label(), "symbolic-operand");
+        assert_eq!(DiagnosticKind::WitnessFailed.label(), "witness-failed");
+    }
+}

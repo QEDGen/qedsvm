@@ -1,6 +1,7 @@
 use solana_sbpf::{ebpf, static_analysis::Analysis};
 
 use super::core::{lean_off, Expr};
+use super::diagnostic::{DiagnosticKind, LiftError};
 use super::input::BinaryCtx;
 
 /// Convert an sBPF `Insn` to Lean constructor syntax. `call_target` provides the resolved callee PC (raw imm is a Murmur3 hash); `jump_target` is the caller-resolved logical target for conditional jumps.
@@ -9,7 +10,7 @@ pub(super) fn insn_to_lean_full(
     pc: usize,
     call_target: Option<usize>,
     jump_target: Option<i64>,
-) -> Result<String, String> {
+) -> Result<String, LiftError> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
     // Caller-resolved logical target; falls back to raw slot-relative sum.
@@ -214,12 +215,17 @@ pub(super) fn insn_to_lean_full(
                 }
             }
         }
-        opc => return Err(format!("opcode 0x{:02x} not yet lifted to Lean", opc)),
+        opc => {
+            return Err(LiftError::new(
+                DiagnosticKind::OpcodeUnmodeled,
+                format!("opcode 0x{:02x} not yet lifted to Lean", opc),
+            ))
+        }
     })
 }
 
 /// Wrapper for callers without a resolved call target; renders call_local with a placeholder.
-pub(super) fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, String> {
+pub(super) fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, LiftError> {
     insn_to_lean_full(insn, pc, None, None)
 }
 
@@ -317,4 +323,25 @@ pub(super) fn function_registry_lean(reg: &[(u32, usize)]) -> String {
     }
     s.push(']');
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_opcode_has_typed_diagnostic() {
+        let insn = ebpf::Insn {
+            ptr: 0,
+            opc: 0xff,
+            dst: 0,
+            src: 0,
+            off: 0,
+            imm: 0,
+        };
+
+        let error = insn_to_lean(&insn, 7).expect_err("opcode must be rejected");
+        assert_eq!(error.kind(), DiagnosticKind::OpcodeUnmodeled);
+        assert_eq!(error.to_string(), "opcode 0xff not yet lifted to Lean");
+    }
 }

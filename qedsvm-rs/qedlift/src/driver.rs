@@ -158,51 +158,6 @@ pub(super) fn run_profile_mode(
     Ok(())
 }
 
-/// Bucket a fail-closed lift reason into a coverage category. The frontier
-/// families the report ranks: an unmodeled opcode (walker/ISA), a non-constant
-/// (symbolic) syscall operand, an unsupported construct, a CU-budget miss, a
-/// vacuity/witness failure, or a missing/bad trace input (not a real gap).
-fn classify_lift_failure(reason: &str) -> DiagnosticKind {
-    if reason.contains("unmodeled syscall") {
-        // A syscall with no SYSCALLS-table row: the real "add a syscall" gap.
-        DiagnosticKind::SyscallUnmodeled
-    } else if reason.contains("modeled syscall") && reason.contains("static walk") {
-        // A modeled syscall the no-trace static walk won't dispatch: needs a
-        // trace, not new capability.
-        DiagnosticKind::SyscallUntraced
-    } else if reason.contains("unresolved internal call") {
-        DiagnosticKind::CallUnresolved
-    } else if reason.contains("not yet modelled") || reason.contains("not yet lifted") {
-        DiagnosticKind::OpcodeUnmodeled
-    } else if reason.contains("exceeded") && reason.contains("steps")
-        || reason.contains("back-branch")
-    {
-        // Static walk hit the step cap: a back-branch (loop) it can't follow
-        // without a trace. Often "needs a trace", not an intrinsic gap.
-        DiagnosticKind::WalkerSteps
-    } else if reason.contains("vacuous lift")
-        || reason.contains("overlapping atom")
-        || reason.contains("alias these at byte")
-    {
-        DiagnosticKind::ByteAliasing
-    } else if reason.contains("symbolic") {
-        DiagnosticKind::SymbolicOperand
-    } else if reason.contains("unsupported IDL")
-        || reason.contains("hotUnsupported")
-        || reason.contains("Replicate blob")
-    {
-        DiagnosticKind::UnsupportedConstruct
-    } else if reason.contains("cu_budget") {
-        DiagnosticKind::CuBudgetExceeded
-    } else if reason.contains("satisfiability witness") {
-        DiagnosticKind::WitnessFailed
-    } else if reason.contains("trace") || reason.contains("no PCs") {
-        DiagnosticKind::TraceInput
-    } else {
-        DiagnosticKind::Other
-    }
-}
-
 /// One lift attempt, panic-safe: a survey must not die on a lift that panics
 /// (internal `.expect`/`unwrap`) rather than returning `Err`, so catch it and
 /// report it as a `panic:` reason. Returns `Ok(())` on a lifted triple.
@@ -225,16 +180,10 @@ fn attempt_lift(
     }));
     match r {
         Ok(Ok(_)) => Ok(()),
-        Ok(Err(e)) => {
-            let kind = e
-                .downcast_ref::<LiftError>()
-                .map(LiftError::kind)
-                .unwrap_or_else(|| classify_lift_failure(&e.to_string()));
-            Err(AttemptFailure {
-                kind,
-                message: e.to_string(),
-            })
-        }
+        Ok(Err(e)) => Err(AttemptFailure {
+            kind: e.kind(),
+            message: e.to_string(),
+        }),
         Err(panic) => Err(AttemptFailure {
             kind: DiagnosticKind::Other,
             message: format!(
@@ -493,7 +442,11 @@ pub(super) fn run_qedmeta_mode(
         );
     }
     if budget_fail {
-        return Err("one or more lifted triples exceeded the claimed cu_budget".into());
+        return Err(LiftError::new(
+            DiagnosticKind::CuBudgetExceeded,
+            "one or more lifted triples exceeded the claimed cu_budget",
+        )
+        .into());
     }
     Ok(())
 }
