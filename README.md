@@ -2,116 +2,191 @@
 
 **Verify what runs on Solana, not what you wrote.**
 
-A Lean 4 model of the Solana Virtual Machine. It operates on the compiled `.so`, the same artifact mainnet runs, and does two separate jobs:
+qedsvm executes compiled Solana programs and generates machine-checked Lean proofs
+about selected bytecode paths. It works on the deployed sBPF `.so`, rather than
+the Rust source that produced it, so the program proof is tied to the bytes a
+validator executes.
 
-- **Execute** a program on a model diff-tested against mollusk/agave. The `qedsvm-rs` crate is this executor, published mainly so the model can be reused by conformance tests, fuzzing, and downstream diff-test harnesses.
-- **Verify** a selected bytecode path against a separation-logic spec with a proven compute-unit bound, in Lean. `qedlift` emits machine-checked `cuTripleWithinMem` theorems from compiled bytecode; supported shapes also get abstract refinement corollaries.
+| Mode | Input | Output | What it establishes |
+| --- | --- | --- | --- |
+| **Execute** | `.so`, instruction, and accounts | Account changes, return data, faults, and compute units | Behavior for one input, on a Lean model differentially tested against Mollusk/Agave |
+| **Verify** | `.so`, selected path, and specification | A checked Lean theorem with a compute-unit bound | The stated property for every input satisfying that path's precondition |
 
-> **Execution is not verification.** The Rust crate tells you what a program does on one input; it does not prove what it does on all of them. If you only use `qedsvm-rs`, you have a conformant executor, not a verified program. Verification lives entirely in the Lean layer.
+The same Lean 4 SVM model is both the reference interpreter and the basis for the
+proofs:
 
-Small trust base: Lean 4 ISA semantics in `SVM/SBPF/{Execute,Decode,Memory}.lean`, explicit crypto trust statements, and the generated proof obligations that `lake build` checks. The Rust executor is not a verifier.
-
-## Install
-
-```lean
-require qedsvm from git
-  "https://github.com/QEDGen/qedsvm.git" @ "v0.5.0"
+```text
+Rust or assembly
+      │ cargo-build-sbf
+      ▼
+  program.so
+      ├── qedsvm executor ───────────── compare with Mollusk/Agave
+      └── qedrecover + qedlift ──────── Lean theorem ── lake build
+                 ▲
+          IDL, spec, and optional trace
 ```
 
-Prerequisites: Lean (via `elan`) and `cargo` / `rustc`. Lake builds `qedsvm-rs/lean-bridge/` automatically. The public module boundary (both proof engines + the discharge route) is documented in [docs/API.md](docs/API.md).
+> **Scope:** qedsvm does not automatically prove an arbitrary whole program.
+> Verification is path-scoped and covers modeled instructions and syscalls.
+> Supported program shapes also receive account-level refinement theorems.
+> Execution is not verification: running `qedsvm-rs` proves nothing about other
+> inputs.
 
-## Demo
+## Try it
 
-One command per job makes both halves visible in seconds.
+Prerequisites: Lean via [`elan`](https://github.com/leanprover/elan) and a Rust
+toolchain (`cargo` and `rustc`). The first build compiles the Lean/Rust bridge and
+may take several minutes; subsequent runs reuse the build cache.
 
 ```bash
-# EXECUTE (conformance): run incrementer + p-token Transfer through qedsvm and
-# mollusk side by side. Prints CU, return data, account-data digest, byte+CU verdict.
-# This checks the model matches agave; it does not verify a program.
+# EXECUTE: run incrementer and p-token Transfer through qedsvm and Mollusk.
+# The output compares exit status, CU usage, return data, and account bytes.
 cargo run --release --features diff-mollusk \
   --manifest-path qedsvm-rs/Cargo.toml --example conformance_demo
 
-# VERIFY: type-check the end-to-end witness theorem for a 4-instruction sBPF program.
+# VERIFY: check an end-to-end theorem for compiled sBPF bytes.
 lake build ProofDemo
 ```
 
-[`examples/lean/ProofDemo.lean`](examples/lean/ProofDemo.lean) is the entry point; the theorem itself lives in [`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncrement.lean), which chains raw bytes to a discharged separation-logic spec with no `sorry`. No rustc, no external sBPF semantics.
+The execution demo is a conformance check for the model, not a program proof.
+The proof demo starts at [`examples/lean/ProofDemo.lean`](examples/lean/ProofDemo.lean);
+[`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncrement.lean) ties raw
+bytes to a discharged separation-logic theorem without `sorry`. Rust is used by
+the build, but the Rust-to-sBPF compiler is not trusted to preserve a source-level
+property: the theorem starts at the compiler's output bytes.
+
+## Install as a Lean dependency
+
+qedsvm is pre-1.0, so pin an exact release:
+
+```lean
+require qedsvm from git
+  "https://github.com/QEDGen/qedsvm.git" @ "v0.11.0"
+```
+
+Lake builds `qedsvm-rs/lean-bridge/` automatically. The supported package surface
+is documented in [`docs/API.md`](docs/API.md).
+
+## How verification works
+
+1. **[`qedrecover`](qedsvm-rs/qedrecover/README.md) scopes the claim.** It binds an IDL and qedsvm overlay to
+   instruction arms and locations in the compiled binary, producing a
+   hash-pinned `qedmeta.toml` sidecar.
+2. **[`qedlift`](qedsvm-rs/src/bin/qedlift/README.md) walks one selected path.** It pins the walked instructions back to
+   the `.so` bytes, symbolically executes them, and emits a Lean Hoare triple.
+3. **Supported shapes get an abstract refinement.** Registered token, counter,
+   vault, heap, and transition shapes connect concrete memory effects to
+   account-level claims.
+4. **`lake build` is the gate.** The generated module only counts when Lean checks
+   its bytecode pins, pre/postconditions, and compute-unit obligations without
+   `sorry`.
+
+Branchy paths normally use a concrete `.pcs` trace captured from the differential
+harness. See [`docs/PIPELINE.md`](docs/PIPELINE.md) for the complete `.so` + IDL +
+trace workflow and [`docs/COVERAGE.md`](docs/COVERAGE.md) for the precise supported
+boundary.
 
 ## Use
 
-### From Lean
+### Lift a compiled program to Lean
 
-```lean
--- Run a compiled program
-example : Runner.runElfForExit anchorBinary { cuBudget := 200_000 } = some 0 := by
-  native_decide
-
--- Prove a sequence
-example : cuTripleWithin 2 0 2 someCode P Q := by sl_block_iter
-```
-
-Worked examples: [`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncrement.lean) (raw bytes → witness theorem) · [`examples/lean/PToken/BalanceSpec.lean`](examples/lean/PToken/BalanceSpec.lean) (Solana-data-model refinement target).
-
-### Lift a compiled program to a proof (`qedlift`)
-
-`qedlift` and its sibling `qedrecover` are the lifting front-end. `qedrecover` binds IDL/overlay claims to locations in the binary and emits `qedmeta.toml`; it is an analysis-only standalone crate at `qedsvm-rs/qedrecover/`. `qedlift` consumes binary bytes plus targeting metadata and emits Lean proof modules.
-
-Point it at a `.so` and it emits a Lean module that pins the walked `.text` bytes through `SVM.SBPF.Decode`, states a `cuTripleWithinMem` Hoare triple synthesized by symbolic execution, and discharges the proof. Small binaries use a full `decodeProgram` theorem; large binaries use per-PC decode pins. The proof closes with no `sorry`.
+This minimal fixture does not need an IDL or trace:
 
 ```bash
-cargo run --features qedrecover --bin qedlift -- \
+cargo run --manifest-path qedsvm-rs/Cargo.toml \
+  --features qedrecover --bin qedlift -- \
   --so qedsvm-rs/tests/fixtures/byte_increment.so \
   --output examples/lean/Generated/ByteIncrementLifted.lean
 ```
 
-With `--trace`, qedlift follows a concrete path through branchy bytecode. The checked-in lifts under [`examples/lean/Generated/`](examples/lean/Generated/) cover ByteIncrement, Counter, Logger, layout-general Vault examples, heap-bump allocation, and traced p-token arms. Abstract refinements are registered for Transfer, TransferChecked, MintTo, Burn, Counter increment, Vault field update, and heap allocation; other generated traced lifts are raw Hoare triples unless a refinement predicate is registered. Batch mode (`--idl`) targets IDL-described instructions.
+The emitted module pins the walked `.text` bytes through `SVM.SBPF.Decode`, states
+a `cuTripleWithinMem` theorem synthesized by symbolic execution, and discharges
+it. Small binaries use a full `decodeProgram` theorem; large binaries use
+kernel-checked per-PC decode pins.
 
-For the full `.so` + IDL to proof workflow (qedrecover scoping, trace capture, qedlift, and `lake build`), see [`docs/PIPELINE.md`](docs/PIPELINE.md).
+Checked-in output under
+[`examples/lean/Generated/`](examples/lean/Generated/) includes ByteIncrement,
+Counter, Logger, layout-general Vault examples, heap allocation, and traced
+p-token arms. Registered refinements cover Transfer, TransferChecked, MintTo,
+Burn, Counter increment, Vault field updates, heap allocation, and transition
+paths. Other supported paths receive raw Hoare triples.
 
-### From Rust (`qedsvm-rs`)
+### Use the Lean APIs
 
-`qedsvm-rs` is the conformant executor, not a verifier. It runs compiled programs on the agave-faithful model and exists mainly so we can diff-test that model against mollusk, and so fuzzing and diff-test harnesses (for example [Janus](https://github.com/saicharanpogul/janus/tree/main/tests-qedsvm)) have a fast SVM to cross-check against. It proves nothing about your program.
+The core APIs have this shape; the concrete definitions and predicates come from
+the program being checked:
+
+```lean
+-- Execute a compiled ELF on one input.
+example : Runner.runElfForExit programElf { cuBudget := 200_000 } = some 0 := by
+  native_decide
+
+-- Compose instruction specifications into a bounded Hoare triple.
+example : cuTripleWithin 2 0 2 code precondition postcondition := by
+  sl_block_iter
+```
+
+Runnable examples:
+[`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncrement.lean) goes from
+raw bytes to a witness theorem, while
+[`examples/lean/PToken/BalanceSpec.lean`](examples/lean/PToken/BalanceSpec.lean)
+shows the account-level refinement target.
+
+### Use the Rust executor
+
+`qedsvm-rs` exposes the executor for conformance tests, fuzzers, and downstream
+cross-checking harnesses. It is part of this repository rather than a crates.io
+package.
 
 ```rust
-use qedsvm::{ProgramResult, SVM};
+use qedsvm::SVM;
 
 let mut svm = SVM::default();
 svm.add_program(&program_id, elf_bytes);
 let result = svm.process_instruction(&instruction, &accounts)?;
 ```
 
-Crate-level docs (differential testing, consuming qedsvm downstream, the `solana-account` version split) live in [`qedsvm-rs/README.md`](qedsvm-rs/README.md).
+It executes one input; it does not verify a program. Integration details,
+including the downstream link helper and the `solana-account` version split,
+live in [`qedsvm-rs/README.md`](qedsvm-rs/README.md).
 
-## Coverage
+## Coverage and trust
 
-qedsvm has two coverage surfaces:
-
-| Surface | What it means |
+| Surface | Current claim |
 | --- | --- |
-| Executor conformance | The Lean VM and Rust harness run compiled programs and diff-test observable behavior against mollusk/agave. |
-| Proof coverage | `qedlift` emits Lean Hoare triples for selected paths over modeled instructions and modeled lift syscalls. Supported codec shapes get abstract refinements. |
+| Executor conformance | A finite fixture corpus checks observable behavior against Mollusk/Agave. This is strong empirical evidence, not a universal equivalence proof. |
+| Raw proof coverage | `qedlift` emits Lean Hoare triples for selected paths over modeled instructions and lift-supported syscalls. |
+| Abstract proof coverage | Supported codec and transition shapes connect bytecode effects to account-level state claims. |
 
-The proof pipeline is path-scoped. It is broad at the raw Hoare-triple layer and narrower at the abstract-refinement layer. See [`docs/COVERAGE.md`](docs/COVERAGE.md) for the precise boundary and [`docs/PIPELINE.md`](docs/PIPELINE.md) for the `.so` → proof toolchain.
+The trusted base includes the Lean kernel, qedsvm's sBPF semantics, explicit
+crypto/native trust statements where used, and the generated obligations that
+Lean checks. Differential testing grounds the model against a production runtime
+but does not replace the proof. CI checks the flagship proofs, disallows `sorry`
+and unexpected axioms, runs the executor differential suite, and byte-diffs all
+generated `qedlift` fixtures.
 
-## Layout
+qedsvm is not a validator, consensus implementation, source-code verifier, or
+automatic whole-CFG verifier.
 
+## Repository layout
+
+```text
+SVM/                      Lean interpreter, specification layer, and Solana predicates
+examples/lean/            Checked Hoare-proof examples
+examples/lean/Generated/  qedlift output: .so to sorry-free Lean triples
+qedsvm-rs/                Rust workspace
+├── (root)                Executor API and qedlift binary
+├── qedrecover/           .so + IDL + overlay to qedmeta sidecar
+├── qed-analysis/         Shared sBPF and account-layout analysis
+└── lean-bridge/          Agave-pinned native crypto bridge called by Lean
+docs/                     API, proof pipeline, and coverage references
 ```
-SVM/                  Lean library: interpreter, spec layer, Solana SL predicates
-examples/lean/        Hoare-proof examples (ByteIncrement, PToken/, CompilerRt*, …)
-examples/lean/Generated/  qedlift output: .so → sorry-free Lean triples
-examples/rust/        → qedsvm-rs/examples (symlink)
-qedsvm-rs/            Cargo workspace
-├── (root)            Mollusk-shaped Rust API + qedlift bin (--features qedrecover)
-├── qedrecover/       Scoping tool: .so + IDL → qedmeta sidecar (analysis-only crate)
-├── qed-analysis/     Shared sBPF analysis substrate (PC map, IDL account layout)
-└── lean-bridge/      Agave-pinned crypto staticlib called by Lean
-docs/                 Reference docs (API, PIPELINE, COVERAGE)
-```
+
+## Contributing
+
+Issues and PRs are welcome. The bar is a small trust base and honest
+specifications. Additions that broaden the surface need a clear soundness story.
 
 ## License
 
 MIT. See [`LICENSE`](LICENSE).
-
-## Contributing
-
-Issues and PRs welcome. The bar is **small trust base and honest specs**. Additions that broaden the surface without a clear soundness story will get pushback.

@@ -4,7 +4,7 @@ This is the package boundary downstream consumers should pin against:
 
 ```lean
 require qedsvm from git
-  "https://github.com/QEDGen/qedsvm.git" @ "v0.5.0"
+  "https://github.com/QEDGen/qedsvm.git" @ "v0.11.0"
 ```
 
 The public Lean surface is `lean_lib SVM`. The `Examples` library is a proof and generated-artifact suite; it is useful for reference and regression coverage, but it is not API.
