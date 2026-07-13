@@ -2,6 +2,66 @@ use solana_sbpf::ebpf;
 
 use crate::diagnostic::{DiagnosticKind, LiftError};
 
+/// Cursor over a concrete logical-PC trace. All trace indexing and advancement
+/// lives here so the walker cannot accidentally mix a PC with the wrong index.
+pub(super) struct TraceCursor<'a> {
+    pcs: &'a [usize],
+    index: usize,
+}
+
+impl<'a> TraceCursor<'a> {
+    pub(super) fn new(pcs: &'a [usize]) -> Result<Self, LiftError> {
+        if pcs.is_empty() {
+            return Err(LiftError::new(
+                DiagnosticKind::TraceInput,
+                "qedlift: trace must contain at least one logical PC",
+            ));
+        }
+        Ok(Self { pcs, index: 0 })
+    }
+
+    pub(super) fn current(&self) -> Option<usize> {
+        self.pcs.get(self.index).copied()
+    }
+
+    pub(super) fn next(&self) -> Option<usize> {
+        self.pcs.get(self.index + 1).copied()
+    }
+
+    pub(super) fn advance(&mut self) {
+        self.index += 1;
+    }
+
+    pub(super) fn contains(&self, pc: usize) -> bool {
+        self.pcs.contains(&pc)
+    }
+
+    pub(super) fn walk_cap(&self) -> usize {
+        self.pcs.len() + 8
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BranchDecision {
+    NotConditional,
+    Taken,
+    FallThrough,
+}
+
+impl BranchDecision {
+    pub(super) const fn as_option(self) -> Option<bool> {
+        match self {
+            Self::NotConditional => None,
+            Self::Taken => Some(true),
+            Self::FallThrough => Some(false),
+        }
+    }
+
+    pub(super) const fn is_taken(self) -> bool {
+        matches!(self, Self::Taken)
+    }
+}
+
 pub(super) fn is_cond_jump_opc(opc: u8) -> bool {
     matches!(
         opc,
@@ -55,19 +115,17 @@ pub(super) fn is_cond_jump_opc(opc: u8) -> bool {
 /// Whether the conditional jump at `pc_iter` is taken.
 /// Trace: taken iff next PC ≠ pc+1; target mismatch vs decoded offset = fail-closed.
 /// Static: discriminator-driven where possible, else fall-through.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_branch_taken(
-    trace: Option<&[usize]>,
-    ti: usize,
+    trace: Option<&TraceCursor<'_>>,
     pc_iter: usize,
     ins: &ebpf::Insn,
     jtgt: i64,
     is_cond_jump: bool,
     target_disc: Option<i64>,
-) -> Result<Option<bool>, LiftError> {
-    let branch_taken: Option<bool> = if let Some(t) = trace {
+) -> Result<BranchDecision, LiftError> {
+    let branch_taken = if let Some(cursor) = trace {
         if is_cond_jump {
-            let next = t.get(ti + 1).copied();
+            let next = cursor.next();
             let taken = next != Some(pc_iter + 1);
             if taken {
                 if let Some(n) = next {
@@ -83,18 +141,28 @@ pub(super) fn resolve_branch_taken(
                     }
                 }
             }
-            Some(taken)
+            if taken {
+                BranchDecision::Taken
+            } else {
+                BranchDecision::FallThrough
+            }
         } else {
-            None
+            BranchDecision::NotConditional
         }
     } else {
         match (ins.opc, target_disc) {
-            (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) => Some(ins.imm == td),
-            (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) => Some(ins.imm != td),
+            (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) if ins.imm == td => {
+                BranchDecision::Taken
+            }
+            (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) if ins.imm != td => {
+                BranchDecision::Taken
+            }
             // JGT: take branch when td > imm (disc > N → upper_half pattern).
-            (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) => Some(td > ins.imm),
-            _ if is_cond_jump => Some(false), // default: not-taken
-            _ => None,
+            (ebpf::JGT64_IMM, Some(td)) | (ebpf::JGT32_IMM, Some(td)) if td > ins.imm => {
+                BranchDecision::Taken
+            }
+            _ if is_cond_jump => BranchDecision::FallThrough,
+            _ => BranchDecision::NotConditional,
         }
     };
     Ok(branch_taken)
@@ -122,18 +190,30 @@ mod tests {
     }
 
     #[test]
+    fn trace_cursor_types_empty_and_exhausted_traces() {
+        let error = TraceCursor::new(&[]).err().expect("empty trace must fail");
+        assert_eq!(error.kind(), DiagnosticKind::TraceInput);
+
+        let mut cursor = TraceCursor::new(&[4]).expect("one-PC trace");
+        assert_eq!(cursor.current(), Some(4));
+        assert_eq!(cursor.next(), None);
+        cursor.advance();
+        assert_eq!(cursor.current(), None);
+    }
+
+    #[test]
     fn static_discriminator_decides_jeq_jne_and_jgt() {
         for (opc, imm, discriminator, expected) in [
-            (ebpf::JEQ64_IMM, 7, 7, Some(true)),
-            (ebpf::JEQ64_IMM, 7, 8, Some(false)),
-            (ebpf::JNE64_IMM, 7, 8, Some(true)),
-            (ebpf::JNE64_IMM, 7, 7, Some(false)),
-            (ebpf::JGT64_IMM, 7, 8, Some(true)),
-            (ebpf::JGT64_IMM, 7, 7, Some(false)),
+            (ebpf::JEQ64_IMM, 7, 7, BranchDecision::Taken),
+            (ebpf::JEQ64_IMM, 7, 8, BranchDecision::FallThrough),
+            (ebpf::JNE64_IMM, 7, 8, BranchDecision::Taken),
+            (ebpf::JNE64_IMM, 7, 7, BranchDecision::FallThrough),
+            (ebpf::JGT64_IMM, 7, 8, BranchDecision::Taken),
+            (ebpf::JGT64_IMM, 7, 7, BranchDecision::FallThrough),
         ] {
             let instruction = insn(opc, 2, imm);
             let decision =
-                resolve_branch_taken(None, 0, 4, &instruction, 7, true, Some(discriminator))
+                resolve_branch_taken(None, 4, &instruction, 7, true, Some(discriminator))
                     .expect("static branch decision");
             assert_eq!(decision, expected);
         }
@@ -142,19 +222,23 @@ mod tests {
     #[test]
     fn trace_decides_taken_and_fallthrough_branches() {
         let instruction = insn(ebpf::JEQ64_IMM, 2, 7);
-        let fallthrough = resolve_branch_taken(Some(&[4, 5]), 0, 4, &instruction, 7, true, None)
-            .expect("fall-through decision");
-        let taken = resolve_branch_taken(Some(&[4, 7]), 0, 4, &instruction, 7, true, None)
+        let fallthrough_trace = TraceCursor::new(&[4, 5]).expect("trace cursor");
+        let taken_trace = TraceCursor::new(&[4, 7]).expect("trace cursor");
+        let fallthrough =
+            resolve_branch_taken(Some(&fallthrough_trace), 4, &instruction, 7, true, None)
+                .expect("fall-through decision");
+        let taken = resolve_branch_taken(Some(&taken_trace), 4, &instruction, 7, true, None)
             .expect("taken decision");
 
-        assert_eq!(fallthrough, Some(false));
-        assert_eq!(taken, Some(true));
+        assert_eq!(fallthrough, BranchDecision::FallThrough);
+        assert_eq!(taken, BranchDecision::Taken);
     }
 
     #[test]
     fn trace_target_mismatch_is_a_typed_input_error() {
         let instruction = insn(ebpf::JEQ64_IMM, 2, 7);
-        let error = resolve_branch_taken(Some(&[4, 9]), 0, 4, &instruction, 7, true, None)
+        let trace = TraceCursor::new(&[4, 9]).expect("trace cursor");
+        let error = resolve_branch_taken(Some(&trace), 4, &instruction, 7, true, None)
             .expect_err("mismatched target must fail closed");
 
         assert_eq!(error.kind(), DiagnosticKind::TraceInput);

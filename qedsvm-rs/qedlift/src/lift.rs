@@ -12,7 +12,9 @@ use crate::emit::{
     atoms_to_lean, atoms_to_lean_heap, build_sat_witness, fold_abstractions, heap_cell_addr,
     post_atoms, region_req,
 };
-use crate::exec::{imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, WalkResult};
+use crate::exec::{
+    imm_is_modeled_syscall, walk_and_exec, AbortKind, FaultTerminal, WalkOptions, WalkResult,
+};
 use crate::input::BinaryCtx;
 use crate::isa::{
     function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full,
@@ -201,7 +203,16 @@ pub(super) fn lift_one_with_layouts(
         block_pcs,
         exit_pc,
         fault_terminal,
-    } = walk_and_exec(ctx, analysis, trace, target_disc, arm_entry, entry_pc)?;
+    } = walk_and_exec(
+        ctx,
+        analysis,
+        WalkOptions {
+            trace,
+            target_discriminator: target_disc,
+            arm_entry,
+            program_entry: entry_pc,
+        },
+    )?;
 
     let out_patched = out.replace(
         "@@HEARTBEATS@@",
