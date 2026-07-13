@@ -87,7 +87,7 @@ fn atom_to_lean_with_subst(
             let rendered = addr_base.to_lean();
             let addr_str = subst
                 .get(&rendered)
-                .map(|p| p.clone())
+                .cloned()
                 .unwrap_or_else(|| addr_base.atom_lean());
             if *delta != 0 {
                 // Hot byte cell: `effectiveAddr base off + delta ↦ₘ v` — plain Nat add, the form `ldxdw_bytes_spec` uses.
@@ -655,7 +655,7 @@ pub(super) fn region_req(
         };
         let addr_str = subst
             .get(&addr_base.to_lean())
-            .map(|p| p.clone())
+            .cloned()
             .unwrap_or_else(|| addr_base.atom_lean());
         let addr = format!("effectiveAddr {} {}", addr_str, lean_off(*addr_off));
         let kind = if *writable {

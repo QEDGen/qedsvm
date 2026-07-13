@@ -164,9 +164,11 @@ jobs:
           set -o pipefail
           lake build 2>&1 | tee build-core.log
 
-      - name: Strict core Rust Clippy
+      - name: Strict full-workspace Rust Clippy
+        # Keep the fast Lean-free lint in the rust job, then gate every target
+        # and feature here after the cached Lean runtime is available.
         working-directory: qedsvm-rs
-        run: cargo clippy --lib --bins -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
       - name: Default workspace tests
         working-directory: qedsvm-rs

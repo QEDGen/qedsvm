@@ -330,7 +330,7 @@ pub(super) fn canon_addr(base: &Expr, off: i64) -> (String, i64) {
 }
 
 /// Like `canon_addr` but returns the root sub-`Expr` instead of its rendering — the satisfiability-witness builder needs the tree to solve/evaluate.
-pub(super) fn canon_root_expr<'a>(e: &'a Expr, acc: i64) -> (Option<&'a Expr>, i64) {
+pub(super) fn canon_root_expr(e: &Expr, acc: i64) -> (Option<&Expr>, i64) {
     match e {
         Expr::InitReg(_) | Expr::InitMem(_) => (Some(e), acc),
         Expr::Const(k) => (None, acc.wrapping_add(*k)),
@@ -439,11 +439,11 @@ pub(super) fn solve_expr(
             if let Some(va) = eval_expr(a, env) {
                 target
                     .checked_sub(va)
-                    .map_or(false, |t| solve_expr(b, t, env))
+                    .is_some_and(|t| solve_expr(b, t, env))
             } else if let Some(vb) = eval_expr(b, env) {
                 target
                     .checked_sub(vb)
-                    .map_or(false, |t| solve_expr(a, t, env))
+                    .is_some_and(|t| solve_expr(a, t, env))
             } else {
                 false
             }
