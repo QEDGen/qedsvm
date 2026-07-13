@@ -538,7 +538,7 @@ def clampCpiPrivileges (parsed : List ParsedAcct) (derivedPdas : List ByteArray)
     `executeFnCpiWithFuel`. Factored out to keep the per-instruction match
     arms compact (helps proofs that case-split on the instruction). -/
 def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
-    (sc : Syscall) (fuel' : Nat)
+    (sc : Syscall) (_fuel' : Nat)
     (runCallee : ByteArray → Option (State × Mem × Nat)) : State :=
   -- r1 → Instruction descriptor in caller memory. Two ABIs:
   -- - `sol_invoke_signed` (Rust): r1 → `&Instruction`; Rust reorders the
@@ -622,10 +622,13 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
   else
   match Native.dispatch pid ixData nativeAccts s.mem with
   | some nr =>
-    { s with regs       := s.regs.set .r0 nr.r0
-             mem        := nr.mem
-             pc         := s.pc + 1
-             cuConsumed := s.cuConsumed + Cpi.cu + nr.cu }
+    Cpi.applyResult s
+      { code := nr.r0
+        mem := nr.mem
+        log := s.log
+        returnData := s.returnData
+        returnDataProgId := s.returnDataProgId
+        cuConsumed := nr.cu }
   | none =>
   match registry pid with
   | none =>
@@ -638,19 +641,21 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
       { s with regs := s.regs.set .r0 1
                pc := s.pc + 1
                cuConsumed := s.cuConsumed + Cpi.cu }
-    | some (subFinal, newMem, subFuelRemaining) =>
+    | some (subFinal, newMem, _subFuelRemaining) =>
       -- H5: `subFinal.cuConsumed` is the callee's TOTAL spend (its own
       -- per-step baselines + syscall surcharges), so the caller absorbs
       -- exactly `Cpi.cu + subFinal.cuConsumed`. The old step-count proxy
       -- `+ (fuel' - subFuelRemaining)` would double-count those baselines.
-      { s with regs       := s.regs.set .r0 (subFinal.exitCode.getD 1)
-               mem        := newMem
-               pc         := s.pc + 1
-               log        := subFinal.log
-               returnData := subFinal.returnData
-               returnDataProgId := subFinal.returnDataProgId
-               cuConsumed := s.cuConsumed + Cpi.cu
-                                          + subFinal.cuConsumed }
+      -- `applyResult` is also the proof-facing transaction boundary: a
+      -- nonzero callee result rolls `newMem` back to `s.mem`, including every
+      -- successful nested CPI mutation performed inside this callee.
+      Cpi.applyResult s
+        { code := subFinal.exitCode.getD 1
+          mem := newMem
+          log := subFinal.log
+          returnData := subFinal.returnData
+          returnDataProgId := subFinal.returnDataProgId
+          cuConsumed := subFinal.cuConsumed }
 
 /-- Pre-invocation half of a CPI sub-VM launch (M1/H2/M2): parse the
     callee ELF (or fall back to raw text), fail closed on unresolvable

@@ -127,6 +127,18 @@ theorem StateBounded.with_cpi_commit {s : State} (h : StateBounded s)
     returnData_le := hrd
     mem_lt := hm }
 
+/-- The shared proof/runner CPI transaction boundary preserves boundedness.
+    Success commits the byte-bounded proposed memory; failure selects the
+    already-bounded caller memory. Both paths propagate bounded return data. -/
+theorem StateBounded.with_cpi_result {s : State} (h : StateBounded s)
+    (r : Cpi.CalleeResult) (hr0 : r.code < U64_MODULUS)
+    (hmem : ∀ a, r.mem a < 256) (hrd : r.returnData.size ≤ 1024) :
+    StateBounded (Cpi.applyResult s r) := by
+  unfold Cpi.applyResult
+  split
+  · exact h.with_cpi_commit hr0 hmem hrd _ _ _ _
+  · exact h.with_cpi_commit hr0 h.mem_lt hrd _ _ _ _
+
 /-- The CPI commit step preserves `StateBounded`. Each `cpiCallNextState`
     outcome is a `with_cpi_*`-shaped record update; the foreign-data arms
     (native handler 3, sub-VM 4c) get their bounds from `hnative` / `hcallee`.
@@ -161,14 +173,14 @@ theorem cpiCallNextState_bounded
        first
          -- arms 1 / 2 / 4a / 4b — `{ s with r0 := 1, pc, cu }`
          | exact h.with_cpi_r0 (r0v := 1) (by decide) _ _
-         -- arm 3 — native handler success (`hnative`)
+         -- arm 3 — native handler result (`hnative`)
          | (obtain ⟨hr0, hmem⟩ :=
               hnative _ _ _ _ ‹Native.dispatch _ _ _ s.mem = some _›
-            exact h.with_cpi_r0_mem hr0 hmem _ _)
+            exact h.with_cpi_result _ hr0 hmem h.returnData_le)
          -- arm 4c — recursive sub-VM commit (`hcallee`)
          | (obtain ⟨hexit, hrd, hmem⟩ :=
               hcallee _ _ _ _ ‹runCallee _ = some _›
-            exact h.with_cpi_commit hexit hmem hrd _ _ _ _))
+            exact h.with_cpi_result _ hexit hmem hrd))
 
 /-- The CPI commit never touches `exitCode` (every `cpiCallNextState` arm
     preserves it, for ANY `sc`), so the wrapper's exit-code co-invariant

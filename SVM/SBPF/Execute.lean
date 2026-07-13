@@ -487,8 +487,8 @@ def Insn.isCallLocal : Insn → Bool
     rfl
   · rfl
 
-/-- `execSyscall` never modifies `callStack` (CPI-stub `Cpi.exec` sets `r0 := 0`;
-    other syscalls touch only `regs`/`mem`/`log`/`returnData`). -/
+/-- `execSyscall` never modifies `callStack` (the parameter-free CPI fallback
+    fails closed; other syscalls touch only `regs`/`mem`/`log`/`returnData`). -/
 @[simp] theorem execSyscall_preserves_callStack (sc : Syscall) (s : State) :
     (execSyscall sc s).callStack = s.callStack := by
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
