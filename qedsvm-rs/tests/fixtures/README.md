@@ -1,5 +1,13 @@
 # Test fixtures
 
+## `sbpfv3_minimal.so`
+
+Hand-assembled strict-header V3 ELF64 with one executable `PT_LOAD` segment,
+no section headers, and `mov64 r0, 42; exit`. Its entry address is
+`0x100000000`; the 16-byte text begins at file offset 120. The same bytes
+are embedded in `SVM.SBPF.ElfTests` to exercise Lean's program-header loader.
+The Solana sBPF v0.14.4 strict loader accepts this binary.
+
 ## `sbpfv3_syscall_static.so`
 
 V3 (`e_flags = 3`) static-syscall fixture copied from

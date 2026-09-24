@@ -45,6 +45,73 @@ def readVersion (bytes : ByteArray) : Option Version :=
     | 3 => some .v3
     | _ => none
 
+/-- A loaded V3 image. V3 addresses use the fixed read-only and bytecode
+    regions; section headers have no role in loading. -/
+structure V3Program where
+  textBytes : ByteArray
+  rodata : ByteArray
+  textAddr : Nat
+  entrySlot : Nat
+
+private structure V3Segment where
+  flags : Nat
+  offset : Nat
+  addr : Nat
+  size : Nat
+
+private def readV3Segment (bytes : ByteArray) (off expectedOff expectedFlags expectedAddr : Nat) :
+    Option V3Segment := do
+  if off + 56 > bytes.size then none else
+  let seg := V3Segment.mk
+    (readU32LE bytes (off + 4))
+    (readU64LE bytes (off + 8))
+    (readU64LE bytes (off + 16))
+    (readU64LE bytes (off + 32))
+  if readU32LE bytes off ≠ 1 || seg.flags ≠ expectedFlags ||
+     seg.offset ≠ expectedOff || seg.offset ≥ bytes.size ||
+     seg.offset % 8 ≠ 0 || seg.addr ≠ expectedAddr ||
+     readU64LE bytes (off + 24) ≠ expectedAddr ||
+     readU64LE bytes (off + 40) ≠ seg.size ||
+     seg.offset + seg.size > bytes.size || seg.size % 8 ≠ 0 ||
+     seg.size ≥ 0x100000000 then none
+  else some seg
+
+/-- Parse a V3 ELF using its loadable program headers, following the strict
+    solana-sbpf parser's first one or two segment layout. Extra program and
+    section headers are metadata and do not contribute executable bytes. -/
+def loadV3 (bytes : ByteArray) : Option V3Program := do
+  if bytes.size < 120 || readVersion bytes ≠ some .v3 ||
+     readU8 bytes 0 ≠ 0x7f || readU8 bytes 1 ≠ 0x45 ||
+     readU8 bytes 2 ≠ 0x4c || readU8 bytes 3 ≠ 0x46 ||
+     readU8 bytes 4 ≠ 2 || readU8 bytes 5 ≠ 1 ||
+     readU8 bytes 6 ≠ 1 ||
+     (List.range 9).any (fun i => readU8 bytes (7+i) ≠ 0) ||
+     readU16LE bytes 18 ≠ 247 || readU32LE bytes 20 ≠ 1 ||
+     readU64LE bytes 32 ≠ 64 || readU16LE bytes 52 ≠ 64 ||
+     readU16LE bytes 54 ≠ 56 || readU16LE bytes 56 = 0 ||
+     64 + 56 * readU16LE bytes 56 > bytes.size then none else
+  let count := readU16LE bytes 56
+  let tableEnd := 64 + 56 * count
+  let firstFlags := readU32LE bytes 68
+  let (rodata, textSeg) ←
+    if firstFlags = 4 then do
+      if count < 2 then none else
+      let ro ← readV3Segment bytes 64 tableEnd 4 0
+      let text ← readV3Segment bytes 120 (tableEnd + ro.size) 1 0x100000000
+      some (bytes.extract ro.offset (ro.offset + ro.size), text)
+    else do
+      let text ← readV3Segment bytes 64 tableEnd 1 0x100000000
+      some (ByteArray.empty, text)
+  let entry := readU64LE bytes 24
+  if entry < textSeg.addr || entry % 8 ≠ 0 ||
+     entry + 8 > textSeg.addr + textSeg.size then none else
+  some {
+    textBytes := bytes.extract textSeg.offset (textSeg.offset + textSeg.size)
+    rodata := rodata
+    textAddr := textSeg.addr
+    entrySlot := (entry - textSeg.addr) / 8
+  }
+
 /-- A parsed ELF64 file header (only the fields we use). -/
 structure Header where
   /-- Entry point virtual address (e_entry). -/

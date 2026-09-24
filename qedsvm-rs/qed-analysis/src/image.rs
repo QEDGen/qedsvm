@@ -68,5 +68,10 @@ mod tests {
         let v3 = ProgramImage::load(Path::new("../tests/fixtures/sbpfv3_syscall_static.so"))
             .expect("load V3 fixture");
         assert_eq!(v3.version, SBPFVersion::V3);
+
+        let sectionless = ProgramImage::load(Path::new("../tests/fixtures/sbpfv3_minimal.so"))
+            .expect("load sectionless V3 fixture");
+        assert_eq!(sectionless.version, SBPFVersion::V3);
+        assert_eq!(sectionless.text_bytes.len(), 16);
     }
 }
