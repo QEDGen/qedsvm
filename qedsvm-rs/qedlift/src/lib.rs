@@ -42,6 +42,7 @@ use lift::{lift_one_with_layouts, LiftRequest};
 pub use lift::{LiftOptions, LiftResult};
 pub use qed_analysis::{image::ProgramImage, layout::AccountLayout};
 pub use qed_artifacts::RefinementDescriptor;
+pub use refinement::{RefinementOutcome, RefinementReason};
 
 #[cfg(test)]
 mod tests;

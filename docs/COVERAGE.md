@@ -112,7 +112,7 @@ Raw triples prove a selected bytecode path. Abstract refinements additionally co
 | SPL `InitializeMint2` | Raw traced triple | Triple only |
 | New operation semantics | New predicate/spec required | Manual |
 
-Predicate selection can be **spec-driven**, not only registry-driven: a versioned, name-level `RefinementDescriptor` (`--descriptor`, see [REFINEMENT_DESCRIPTOR.md](REFINEMENT_DESCRIPTOR.md)) builds the layout-general `AsmRefinesFieldUpdate`, resolving field offsets from the IDL and bypassing the hardcoded 6-entry registry. Same proof, driven by a spec obligation rather than a Rust edit. The descriptor path covers a single-field `u64` credited by a positive constant (`add_const: k`) or a runtime parameter (`add_param: name`, the latter matched as `field += <runtime read>`); subtraction, multi-field writes, and split-blob layouts are not yet emitted on this path.
+Predicate selection can be **spec-driven**, not only registry-driven: a versioned, name-level `RefinementDescriptor` (`--descriptor`, see [REFINEMENT_DESCRIPTOR.md](REFINEMENT_DESCRIPTOR.md)) builds the layout-general `AsmRefinesFieldUpdate`, resolving field offsets from the IDL and bypassing the hardcoded 6-entry registry. The descriptor path covers a single-field `u64` credited by a positive constant (`add_const: k`) or a runtime parameter (`add_param: name`). Parameter refinements require schema v3, a named little-endian u64 IDL argument, and an explicit aligned non-duplicate input layout; the operand read and destination write must match the resulting input-relative addresses. Legacy parameter descriptors are reported as unsupported. Subtraction, multi-field writes, and split-blob layouts are not yet emitted on this path.
 
 Input-region positions come from the loader-serialization offset algebra
 (`SVM/Solana/InputLayout.lean`, #40 gap 3): `acctDataOff`/`acctFieldAddr`/
@@ -144,7 +144,7 @@ runner's LITERAL pid expression; `cpiEnvelopeC`/`cpiEnvelopeC_reads`/
 | Untouched blob fields | Mechanical | Framed as opaque `ByteArray` gaps. |
 | Read-only owned bytes inside a blob | Mechanical for covered generated shapes | Split into byte/gap segments when the codegen recognizes the owned bytes. |
 | Written bytes inside an otherwise opaque blob | Manual | Requires state semantics for how the blob changes. |
-| Non-constant deltas | Manual | Existing counter/vault refinements assume constant addition. |
+| Runtime parameter addition | Mechanical for v3 descriptors | Requires a bound u64 instruction argument and declared fixed input layout. Other non-constant deltas remain manual. |
 
 ## IDL Requirements
 
@@ -172,5 +172,5 @@ Codama JSON IDLs carry discriminator and account-layout metadata. TOML IDLs are 
 | --- | --- | --- |
 | Fully mechanical abstract refinement | SPL Transfer / TransferChecked / MintTo / Burn, counter increment, vault constant field update, heap bump allocation | `.so`, sidecar metadata, trace when branchy, Codama IDL when layout is needed |
 | Raw Hoare triple only | Selected paths over modeled instructions and modeled lift syscalls, including generated CloseAccount and InitializeMint2 traced lifts | `.so`, targeting metadata, concrete trace for branchy paths |
-| Manual extension | New state semantics, loops with invariants, non-constant account deltas, unrecognized blob mutations | New Lean specs/refinement predicates/codegen |
+| Manual extension | New state semantics, loops with invariants, non-constant account deltas beyond bound parameter addition, unrecognized blob mutations | New Lean specs/refinement predicates/codegen |
 | Unsupported by proof layer | Unmodeled opcodes or syscalls such as hashing, curve ops, PDA derivation, return-data reads, real CPI callee effects | New instruction/syscall specs and lift support |

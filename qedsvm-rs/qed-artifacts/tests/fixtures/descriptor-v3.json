@@ -1,0 +1,8 @@
+{
+  "schema_version": 3,
+  "account": "vault",
+  "handler": "deposit",
+  "mutated": "total",
+  "op": { "add_param": "amount" },
+  "input_layout": { "account_data_lengths": [41], "account_index": 0 }
+}

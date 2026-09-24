@@ -29,6 +29,10 @@ fn compatibility_matrix_is_explicit() {
     );
     assert_eq!(
         descriptor_schema_compatibility(2),
+        SchemaCompatibility::Legacy
+    );
+    assert_eq!(
+        descriptor_schema_compatibility(3),
         SchemaCompatibility::Current
     );
 }
@@ -63,6 +67,10 @@ fn descriptor_legacy_and_current_operations_are_compatible() {
         current.op,
         DescriptorOp::AddParam { ref add_param } if add_param == "amount"
     ));
+    let bound = load_descriptor(&fixture("descriptor-v3.json")).expect("load v3 descriptor");
+    let input = bound.input_layout.expect("v3 serialization layout");
+    assert_eq!(input.account_data_lengths, [41]);
+    assert_eq!(input.account_index, 0);
 }
 
 #[test]
@@ -81,7 +89,7 @@ fn future_schemas_fail_closed() {
         Err(ArtifactError::UnsupportedSchema {
             artifact: "descriptor",
             found: 999,
-            max: 2,
+            max: 3,
             ..
         })
     ));

@@ -24,3 +24,9 @@ Compatibility is explicit through `SchemaCompatibility`:
 Canonical v1, v2, and future-schema fixtures live in `tests/fixtures`. The
 `qed-artifacts`, `qedrecover`, and `qedlift` test suites all consume those same
 files so producer and consumer compatibility cannot drift independently.
+
+Descriptor schema v3 adds `input_layout` (ordered non-duplicate account data
+lengths and tracked account index). Together with the handler's Codama IDL this
+lets qedlift bind a parameter to its serialized instruction-data address.
+Legacy parameter descriptors still parse, but cannot emit a bound refinement.
+See [the descriptor contract](../../docs/REFINEMENT_DESCRIPTOR.md).

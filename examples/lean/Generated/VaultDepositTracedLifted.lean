@@ -28,10 +28,10 @@ open SVM.SBPF
 
 /-- `.text` bytes extracted from the .so by qedlift. -/
 def VaultDepositBytes : ByteArray := ⟨#[
-  0x79, 0x12, 0x30, 0x00, 0x00, 0x00, 0x00, 0x00, 
-  0x79, 0x13, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 
+  0x79, 0x12, 0xa0, 0x28, 0x00, 0x00, 0x00, 0x00,
+  0x79, 0x13, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
   0x0f, 0x23, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
-  0x7b, 0x31, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 
+  0x7b, 0x31, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
   0xb7, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
   0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 ]⟩
@@ -41,10 +41,10 @@ def VaultDepositTextOffset : Nat := 0x100000120
 
 /-- Decoded form of the .text bytes. -/
 def VaultDepositInsns : Array Insn := #[
-  .ldx .dword .r2 .r1 48,
-  .ldx .dword .r3 .r1 32,
+  .ldx .dword .r2 .r1 10400,
+  .ldx .dword .r3 .r1 128,
   .add64 .r3 (.reg .r2),
-  .stx .dword .r1 32 .r3,
+  .stx .dword .r1 128 .r3,
   .mov64 .r0 (.imm (0)),
   .exit
 ]
@@ -70,26 +70,26 @@ theorem VaultDeposit_lifted_spec
     (holdMemD_0_lt : oldMemD_0 < 2 ^ 64)
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
     : cuTripleWithinMem 5 0 0 5
-      ((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 48)).union
-        (CodeReq.singleton 1 (.ldx .dword .r3 .r1 32))).union
+      ((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 10400)).union
+        (CodeReq.singleton 1 (.ldx .dword .r3 .r1 128))).union
         (CodeReq.singleton 2 (.add64 .r3 (.reg .r2)))).union
-        (CodeReq.singleton 3 (.stx .dword .r1 32 .r3))).union
+        (CodeReq.singleton 3 (.stx .dword .r1 128 .r3))).union
         (CodeReq.singleton 4 (.mov64 .r0 (.imm (0))))))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 48 ↦U64 oldMemD_0) **
+      (effectiveAddr baseAddr 10400 ↦U64 oldMemD_0) **
       (.r2 ↦ᵣ vR2Old) **
-      (effectiveAddr baseAddr 32 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 128 ↦U64 oldMemD_1) **
       (.r3 ↦ᵣ vR3Old) **
       (.r0 ↦ᵣ vR0Old))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 48 ↦U64 oldMemD_0) **
+      (effectiveAddr baseAddr 10400 ↦U64 oldMemD_0) **
       (.r2 ↦ᵣ oldMemD_0) **
-      (effectiveAddr baseAddr 32 ↦U64 wrapAdd oldMemD_1 oldMemD_0) **
+      (effectiveAddr baseAddr 128 ↦U64 wrapAdd oldMemD_1 oldMemD_0) **
       (.r3 ↦ᵣ wrapAdd oldMemD_1 oldMemD_0) **
       (.r0 ↦ᵣ toU64 0))
-      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 48) 8 = true) ∧
-                  rt.containsRange (effectiveAddr baseAddr 32) 8 = true) ∧
-                  rt.containsWritable (effectiveAddr baseAddr 32) 8 = true) := by
+      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 10400) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 128) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr baseAddr 128) 8 = true) := by
   sl_block_auto <;> assumption
 
 /-! ## Satisfiability witness (soundness-audit H8)
@@ -108,16 +108,16 @@ guards against. -/
 open Memory in
 example : ∃ s,
     ((.r1 ↦ᵣ 17179869184) **
-      (effectiveAddr 17179869184 48 ↦U64 0) **
+      (effectiveAddr 17179869184 10400 ↦U64 0) **
       (.r2 ↦ᵣ 0) **
-      (effectiveAddr 17179869184 32 ↦U64 0) **
+      (effectiveAddr 17179869184 128 ↦U64 0) **
       (.r3 ↦ᵣ 0) **
       (.r0 ↦ᵣ 0)) s := by
   have w := SatWitness.sat_witness
     [.reg .r1 17179869184,
-     .u64 17179869232 0,
+     .u64 17179879584 0,
      .reg .r2 0,
-     .u64 17179869216 0,
+     .u64 17179869312 0,
      .reg .r3 0,
      .reg .r0 0]
     (by native_decide)
@@ -130,26 +130,26 @@ theorem VaultDeposit_balance_correct
     (holdMemD_1_lt : oldMemD_1 < 2 ^ 64)
     (h_noovf0 : oldMemD_1 + oldMemD_0 < 2 ^ 64)
     : cuTripleWithinMem 5 0 0 5
-      ((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 48)).union
-        (CodeReq.singleton 1 (.ldx .dword .r3 .r1 32))).union
+      ((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 10400)).union
+        (CodeReq.singleton 1 (.ldx .dword .r3 .r1 128))).union
         (CodeReq.singleton 2 (.add64 .r3 (.reg .r2)))).union
-        (CodeReq.singleton 3 (.stx .dword .r1 32 .r3))).union
+        (CodeReq.singleton 3 (.stx .dword .r1 128 .r3))).union
         (CodeReq.singleton 4 (.mov64 .r0 (.imm (0))))))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 48 ↦U64 oldMemD_0) **
+      (effectiveAddr baseAddr 10400 ↦U64 oldMemD_0) **
       (.r2 ↦ᵣ vR2Old) **
-      (effectiveAddr baseAddr 32 ↦U64 oldMemD_1) **
+      (effectiveAddr baseAddr 128 ↦U64 oldMemD_1) **
       (.r3 ↦ᵣ vR3Old) **
       (.r0 ↦ᵣ vR0Old))
       ((.r1 ↦ᵣ baseAddr) **
-      (effectiveAddr baseAddr 48 ↦U64 oldMemD_0) **
+      (effectiveAddr baseAddr 10400 ↦U64 oldMemD_0) **
       (.r2 ↦ᵣ oldMemD_0) **
-      (effectiveAddr baseAddr 32 ↦U64 oldMemD_1 + oldMemD_0) **
+      (effectiveAddr baseAddr 128 ↦U64 oldMemD_1 + oldMemD_0) **
       (.r3 ↦ᵣ wrapAdd oldMemD_1 oldMemD_0) **
       (.r0 ↦ᵣ toU64 0))
-      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 48) 8 = true) ∧
-                  rt.containsRange (effectiveAddr baseAddr 32) 8 = true) ∧
-                  rt.containsWritable (effectiveAddr baseAddr 32) 8 = true) := by
+      (fun rt => ((rt.containsRange (effectiveAddr baseAddr 10400) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 128) 8 = true) ∧
+                  rt.containsWritable (effectiveAddr baseAddr 128) 8 = true) := by
   have h := VaultDeposit_lifted_spec baseAddr oldMemD_0 vR2Old oldMemD_1 vR3Old vR0Old holdMemD_0_lt holdMemD_1_lt
   rw [← wrapAdd_of_lt h_noovf0]
   exact h

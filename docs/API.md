@@ -50,6 +50,20 @@ These modules define bounded execution and exit-code proofs:
 
 `SVM.SBPF.Tactic.Discharge` provides `qedsvm_discharge`, the tactic used to discharge field-level obligations from a lifted `cuTripleWithinMem` theorem. Generated refinements use it to connect concrete memory cells to codec accessors such as account balances, mint supply, and layout-general field updates.
 
+### Rust refinement outcomes
+
+`qedlift::Lifter::lift` returns a raw module plus `LiftResult.refinement_outcome`:
+`NotRequested`, `Emitted`, `Rejected { reason, message }`, or
+`Unsupported { reason, message }`. `RefinementReason` is typed; the outcome
+implements `Serialize` with snake-case JSON status/reason values. The optional
+`refinement` artifact is present exactly when the outcome is `Emitted`.
+
+`Emitted` means generation succeeded. Consumers must run Lean on the generated
+modules before reporting a property as verified. A successful raw lift with a
+rejected/unsupported refinement is available for diagnostics, not a successful
+descriptor discharge. See [the descriptor contract](REFINEMENT_DESCRIPTOR.md)
+for schema v3 parameter binding, migration, CLI exit behavior, and layout assumptions.
+
 ## Core Semantics
 
 The following modules are part of the public model surface:

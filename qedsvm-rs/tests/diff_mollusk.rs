@@ -870,6 +870,39 @@ mod core_vm {
         );
     }
 
+    #[test]
+    fn vault_deposit_binds_real_instruction_data() {
+        let program_id = pid(701);
+        let account_id = pid(702);
+        let so = include_bytes!("fixtures/vault_deposit.so");
+        for amount in [0u64, 7, 1_000_000] {
+            let mut data = vec![0x35; 41];
+            data[32..40].copy_from_slice(&9u64.to_le_bytes());
+            let mut expected = data.clone();
+            expected[32..40].copy_from_slice(&(9 + amount).to_le_bytes());
+            let (account, mollusk_account) = dual_account(1_000_000, data, program_id, false);
+            let ix = Instruction {
+                program_id,
+                accounts: vec![AccountMeta::new(account_id, false)],
+                data: amount.to_le_bytes().to_vec(),
+            };
+            let actual = svm_with(&[(program_id, so)])
+                .process_instruction(&ix, &[(account_id, account)])
+                .expect("deposit");
+            let reference = mollusk_with(&[(program_id, so)])
+                .process_instruction(&ix, &[(account_id, mollusk_account)]);
+            assert!(matches!(actual.program_result, FsProgramResult::Success));
+            assert!(matches!(reference.program_result, MlProgramResult::Success));
+            assert_eq!(actual.resulting_accounts[0].1.data(), expected);
+            assert_resulting_accounts_match(&actual, &reference, true, true, true);
+            assert_eq!(actual.return_data, reference.return_data);
+            assert_eq!(
+                actual.compute_units_consumed,
+                reference.compute_units_consumed
+            );
+        }
+    }
+
     /// Guarded-counter SUCCESS path (#40): one account → serialized count u64 = 1
     /// = `amount` ≠ 0, so the guard passes and the program adds it to the u64 at
     /// input[8..16] (serialization metadata — ignored by post-deserialize, so the

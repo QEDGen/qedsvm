@@ -22,6 +22,7 @@ use crate::isa::{
 };
 use crate::refinement::{
     emit_descriptor_refinement, emit_refinement, is_const_delta_arm, RefinementCtx,
+    RefinementOutcome, RefinementReason,
 };
 use crate::render;
 use crate::spec_call::SpecCall;
@@ -49,6 +50,8 @@ pub struct LiftResult {
     /// Optional asm-refines-intrinsic theorem `(module_name, lean)`,
     /// emitted when the arm matches the refinement registry.
     pub refinement: Option<(String, String)>,
+    /// Explicit generation verdict. `Emitted` still requires a successful Lean build.
+    pub refinement_outcome: RefinementOutcome,
     /// Whole-transition path metadata (#40): present when the lift emitted a
     /// `*_transition_path` corollary; feeds `emit_transition_bundle`.
     pub(crate) transition: Option<TransitionPathInfo>,
@@ -89,6 +92,15 @@ pub(super) type LiftRequest<'a> = LiftOptions<'a>;
 
 impl LiftOptions<'_> {
     fn validate(&self) -> Result<(), LiftError> {
+        if self
+            .descriptor
+            .is_some_and(|d| d.schema_version > qed_artifacts::DESCRIPTOR_SCHEMA_MAX)
+        {
+            return Err(LiftError::new(
+                DiagnosticKind::UnsupportedConstruct,
+                "qedlift: unsupported descriptor schema_version",
+            ));
+        }
         if self.trace.is_some_and(<[usize]>::is_empty) {
             return Err(LiftError::new(
                 DiagnosticKind::TraceInput,
@@ -335,9 +347,28 @@ pub(super) fn lift_one_with_layouts(
         idl,
         sidecar_layouts,
     };
-    let refinement = match descriptor {
-        Some(desc) => emit_descriptor_refinement(desc, rctx),
-        None => arm_name.and_then(|arm| emit_refinement(arm, rctx)),
+    let (refinement, refinement_outcome) = match descriptor {
+        Some(desc) => match emit_descriptor_refinement(desc, rctx) {
+            Ok(artifact) => (Some(artifact), RefinementOutcome::Emitted),
+            Err(outcome) => (None, outcome),
+        },
+        None => match arm_name {
+            Some(arm) => match emit_refinement(arm, rctx) {
+                Some(artifact) => (Some(artifact), RefinementOutcome::Emitted),
+                None => (
+                    None,
+                    RefinementOutcome::unsupported(
+                        if crate::refinement::has_registered_refinement(arm) {
+                            RefinementReason::UnsupportedShape
+                        } else {
+                            RefinementReason::UnregisteredArm
+                        },
+                        format!("arm {arm:?} has no supported registry refinement for this path"),
+                    ),
+                ),
+            },
+            None => (None, RefinementOutcome::NotRequested),
+        },
     };
 
     // Batch dedup: render the shared Text/SlotMap/FnRegistry module the arm's
@@ -362,6 +393,7 @@ pub(super) fn lift_one_with_layouts(
         insn_count: insns.len(),
         cu: tc.n,
         refinement,
+        refinement_outcome,
         transition,
         shared_text: shared_text_out,
     })

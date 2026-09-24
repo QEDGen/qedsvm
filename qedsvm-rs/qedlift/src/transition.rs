@@ -706,7 +706,10 @@ theorem {corollary}
     );
 
     let param_cell = match (&desc.op, &mutation) {
-        (DescriptorOp::AddParam { add_param }, Some((_, _, _, _, Some(p)))) => {
+        (DescriptorOp::AddParam { add_param }, Some((_, _, _, _, Some(p))))
+            if crate::refinement::parameter::resolve_parameter(desc, ctx)
+                .is_ok_and(|binding| binding.matches_value(p, ctx)) =>
+        {
             // The param operand is a pre-read cell on the account base; find it.
             pre.iter().find_map(|a| match a {
                 Atom::Mem {

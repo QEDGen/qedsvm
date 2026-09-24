@@ -1,10 +1,12 @@
 use qed_analysis::layout::FieldKind;
 
-use super::super::core::{Atom, Expr, Width};
+use super::super::core::{canon_addr, Atom, Expr, Width};
 use super::super::emit::{atoms_to_lean, fold_abstractions};
 use super::super::input::{resolve_layout, DescriptorOp, RefinementDescriptor};
+use super::parameter::resolve_parameter;
 use super::shared::strip_refinement;
 use super::RefinementCtx;
+use super::{RefinementOutcome as Outcome, RefinementReason as Reason};
 
 // Same machinery as `emit_vault_refinement` (layout-general `AsmRefinesFieldUpdate`,
 // reshape via `account_agg`/`codecCoarse_eq_fine`, frame the untouched fields), but
@@ -27,7 +29,7 @@ use super::RefinementCtx;
 pub(super) fn emit_descriptor_refinement(
     desc: &RefinementDescriptor,
     ctx: RefinementCtx<'_>,
-) -> Option<(String, String)> {
+) -> Result<(String, String), Outcome> {
     // Shape substrate: when the descriptor has no inline layout, its account's
     // layout is resolved from `ctx.idl`/`ctx.sidecar_layouts` — the SAME
     // `qed-analysis` path the registry lift uses, so the seam stays name-level
@@ -44,30 +46,70 @@ pub(super) fn emit_descriptor_refinement(
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
 
     // Shape: inline layout (no-IDL fallback) or resolved from the IDL by account name.
-    let layout = match desc.explicit_layout() {
+    let mut layout = match desc.explicit_layout() {
         Some(l) => l,
         None => match resolve_layout(sidecar_layouts, idl, &desc.account) {
             Some(l) => l,
             None => {
-                eprintln!(
-                    "descriptor: no inline layout and could not resolve account {:?} from \
-                     the IDL; skipping refinement",
-                    desc.account
-                );
-                return None;
+                return Err(Outcome::unsupported(
+                    Reason::MissingLayout,
+                    format!(
+                        "could not resolve account {:?} from the IDL or inline layout",
+                        desc.account
+                    ),
+                ));
             }
         },
     };
+    let binding = if matches!(desc.op, DescriptorOp::AddParam { .. }) {
+        Some(resolve_parameter(desc, ctx)?)
+    } else {
+        if desc.input_layout.is_some() {
+            return Err(Outcome::unsupported(
+                Reason::UnsupportedShape,
+                "input_layout currently requires add_param",
+            ));
+        }
+        None
+    };
+    if let Some(binding) = &binding {
+        let input = desc
+            .input_layout
+            .as_ref()
+            .expect("resolved binding has input layout");
+        if layout.size > input.account_data_lengths[input.account_index] {
+            return Err(Outcome::rejected(
+                Reason::InvalidLayout,
+                "account layout exceeds declared data length",
+            ));
+        }
+        // The codec is based at entry r1; express its fields in serialized-input
+        // coordinates, preserving the exact addresses in the lifted triple.
+        for field in &mut layout.fields {
+            field.offset = field
+                .offset
+                .checked_add(binding.account_offset as usize)
+                .ok_or_else(|| Outcome::rejected(Reason::InvalidLayout, "field offset overflow"))?;
+        }
+    }
     // Mutated field's offset comes from the resolved layout (name-level seam).
     let mutated_off = match layout.fields.iter().find(|f| f.name == desc.mutated) {
-        Some(f) => f.offset as i64,
+        Some(f) if matches!(f.kind, FieldKind::U64) => i64::try_from(f.offset)
+            .map_err(|_| Outcome::rejected(Reason::InvalidLayout, "field offset overflow"))?,
+        Some(_) => {
+            return Err(Outcome::unsupported(
+                Reason::UnsupportedShape,
+                "mutated field must be u64",
+            ))
+        }
         None => {
-            eprintln!(
-                "descriptor: mutated field {:?} is not in the resolved layout for {:?}; \
-                 skipping refinement",
-                desc.mutated, desc.account
-            );
-            return None;
+            return Err(Outcome::rejected(
+                Reason::MissingField,
+                format!(
+                    "field {:?} is not in account {:?}",
+                    desc.mutated, desc.account
+                ),
+            ));
         }
     };
 
@@ -104,12 +146,10 @@ pub(super) fn emit_descriptor_refinement(
             // Positive constant deltas: `+1` cleans via `wrapAdd_one_of_lt`, any other
             // positive literal via `wrapAdd_const_of_lt`. Zero / negative are out of scope.
             if *add_const < 1 {
-                eprintln!(
-                    "descriptor: only a positive constant op.add_const is wired (got {}); \
-                     skipping refinement",
-                    add_const
-                );
-                return None;
+                return Err(Outcome::unsupported(
+                    Reason::UnsupportedOperation,
+                    "add_const must be positive",
+                ));
             }
             // The updated `u64` cell: `NatAdd(InitMem, Const)`.
             let mut found: Option<(Expr, i64, Expr, i64)> = None;
@@ -132,15 +172,18 @@ pub(super) fn emit_descriptor_refinement(
                     }
                 }
             }
-            let (b, off, pre_e, k) = found?;
+            let (b, off, pre_e, k) = found.ok_or_else(|| {
+                Outcome::unsupported(
+                    Reason::MutationNotFound,
+                    "no constant field increment found",
+                )
+            })?;
             // Soundness: the bytes' delta must match the descriptor's claimed constant.
             if k != *add_const {
-                eprintln!(
-                    "descriptor: op claims +{} but the lift increments the field by {}; \
-                     refusing to emit a refinement that misdescribes the bytes",
-                    add_const, k
-                );
-                return None;
+                return Err(Outcome::rejected(
+                    Reason::MutationMismatch,
+                    format!("descriptor claims +{add_const}, bytes increment by {k}"),
+                ));
             }
             base = b;
             upd_off = off;
@@ -151,9 +194,8 @@ pub(super) fn emit_descriptor_refinement(
         DescriptorOp::AddParam { add_param } => {
             // The updated cell is `field += param`: `NatAdd(InitMem_field, InitMem_param)`,
             // where one operand is the cell's own pre-value and the other is a distinct
-            // runtime read. Inline first-cut: the param is matched as that other read; the
-            // IDL instruction-args resolution that pins `add_param` to a serialized offset
-            // is a follow-on (so this labels, but does not yet verify, the param's identity).
+            // runtime read, whose address must match the IDL argument in the
+            // declared serialized input layout.
             let mut found: Option<(Expr, i64, Expr, String)> = None;
             for atom in post_clean {
                 if let Atom::Mem {
@@ -192,14 +234,28 @@ pub(super) fn emit_descriptor_refinement(
             let (b, off, pre_e, param_l) = match found {
                 Some(t) => t,
                 None => {
-                    eprintln!(
-                        "descriptor: op.add_param {:?} but the lift has no `field += <runtime \
-                         read>` cell; skipping refinement",
-                        add_param
-                    );
-                    return None;
+                    return Err(Outcome::unsupported(
+                        Reason::MutationNotFound,
+                        format!("no field increment by runtime argument {add_param:?} found"),
+                    ));
                 }
             };
+            let binding = binding.as_ref().expect("add_param resolved above");
+            if !binding.matches_value(&param_l, ctx) {
+                return Err(Outcome::rejected(
+                    Reason::ParameterMismatch,
+                    format!(
+                        "increment operand is not argument {add_param:?} at input offset {}",
+                        binding.argument_offset
+                    ),
+                ));
+            }
+            if canon_addr(&b, off) != canon_addr(&binding.input_base, mutated_off) {
+                return Err(Outcome::rejected(
+                    Reason::MutationMismatch,
+                    "updated cell is not the named field in the declared serialized account",
+                ));
+            }
             base = b;
             upd_off = off;
             upd_pre = pre_e;
@@ -210,12 +266,13 @@ pub(super) fn emit_descriptor_refinement(
 
     // Soundness: the bytes must mutate the field the descriptor names.
     if upd_off != mutated_off {
-        eprintln!(
-            "descriptor: field {:?} is at offset {} but the lift mutates offset {}; \
-             refusing to emit a refinement that misdescribes the bytes",
-            desc.mutated, mutated_off, upd_off
-        );
-        return None;
+        return Err(Outcome::rejected(
+            Reason::MutationMismatch,
+            format!(
+                "field {:?} is at offset {mutated_off}, bytes mutate {upd_off}",
+                desc.mutated
+            ),
+        ));
     }
 
     let base_l = fold(&base);
@@ -286,7 +343,10 @@ pub(super) fn emit_descriptor_refinement(
         }
     }
     if !updated_seen {
-        return None;
+        return Err(Outcome::unsupported(
+            Reason::UnsupportedShape,
+            "updated u64 field is unavailable",
+        ));
     }
 
     // setup: lift atoms that don't own the updated `u64` (it flows through the fine codec).
@@ -331,7 +391,7 @@ pub(super) fn emit_descriptor_refinement(
             upd_pre_l: &upd_pre_l,
         },
     );
-    Some((module, lean))
+    Ok((module, lean))
 }
 
 /// The field-walk products `emit_descriptor_refinement` hands its renderer.
@@ -437,6 +497,10 @@ fn render_descriptor_refinement(
         .as_ref()
         .map(|h| format!(", handler {}", h))
         .unwrap_or_default();
+    let input_clause = desc.input_layout.as_ref().map(|input| format!(
+        "\n  Input-layout assumption: aligned non-duplicate accounts with data lengths {:?},\n  tracked account index {}. Codec offsets below are relative to entry r1.\n  The add_param operand was matched to the named IDL argument's input address.",
+        input.account_data_lengths, input.account_index
+    )).unwrap_or_default();
 
     // Single-field account (empty frame, e.g. the counter): no `frame_right`,
     // the reshaped fine codec IS the lift's owned cell, so `sl_exact lift`.
@@ -457,7 +521,7 @@ fn render_descriptor_refinement(
   AsmRefinesFieldUpdate asm-refines theorem, SPEC-DRIVEN. Emitted by qedlift
   from a qedspec-shaped refinement descriptor (account {account}{handler},
   mutated field {mutated}), NOT from the hardcoded `refine_registry`. The
-  field offsets come from the IDL (the shape substrate), not the descriptor.
+  field offsets come from the IDL (the shape substrate), not the descriptor.{input_clause}
   The lift owns the updated `u64` field; the account codec is reshaped
   coarse→fine via the layout-general `account_agg` (`codecCoarse_eq_fine`)
   and the untouched fields (if any) are framed. See docs/DEVEX_QEDSPEC_GAP.md.

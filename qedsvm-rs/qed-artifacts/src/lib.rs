@@ -11,7 +11,7 @@ use qed_analysis::layout::{AccountField, AccountLayout, FieldKind};
 use serde::Deserialize;
 
 pub const QEDMETA_SCHEMA_MAX: u32 = 2;
-pub const DESCRIPTOR_SCHEMA_MAX: u32 = 2;
+pub const DESCRIPTOR_SCHEMA_MAX: u32 = 3;
 
 /// Compatibility of an artifact schema version with the current reader.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -216,6 +216,17 @@ pub struct RefinementDescriptor {
     pub op: DescriptorOp,
     #[serde(default)]
     pub layout: Vec<DescriptorField>,
+    /// Aligned Solana input serialization, with non-duplicate accounts only.
+    /// These lengths are explicit layout assumptions, not facts inferred from code.
+    #[serde(default)]
+    pub input_layout: Option<DescriptorInputLayout>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DescriptorInputLayout {
+    pub account_data_lengths: Vec<usize>,
+    pub account_index: usize,
 }
 
 #[derive(Debug, Deserialize)]

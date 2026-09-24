@@ -3,6 +3,17 @@
   "program": {
     "kind": "programNode",
     "name": "vault",
+    "instructions": [
+      {
+        "kind": "instructionNode",
+        "name": "deposit",
+        "accounts": [{ "kind": "instructionAccountNode", "name": "vault" }],
+        "arguments": [
+          { "kind": "instructionArgumentNode", "name": "amount",
+            "type": { "kind": "numberTypeNode", "format": "u64", "endian": "le" } }
+        ]
+      }
+    ],
     "accounts": [
       {
         "kind": "accountNode",

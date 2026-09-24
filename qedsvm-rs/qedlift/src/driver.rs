@@ -556,6 +556,15 @@ pub(super) fn run_single_mode(
         shared_text: args.shared_text.as_deref(),
         ..LiftOptions::default()
     })?;
+    eprintln!(
+        "refinement outcome: {}",
+        serde_json::to_string(&result.refinement_outcome)?
+    );
+    if descriptor.is_some() && result.refinement_outcome != crate::RefinementOutcome::Emitted {
+        return Err(
+            "requested descriptor refinement was not emitted; see refinement outcome".into(),
+        );
+    }
     match args.output.as_ref() {
         Some(path) => {
             let rpath = write_lift_result(&result, path)?;

@@ -1,5 +1,7 @@
 mod counter;
 mod descriptor;
+mod outcome;
+pub(super) mod parameter;
 mod shared;
 mod token;
 mod vault;
@@ -8,6 +10,7 @@ use qed_analysis::layout::AccountLayout;
 
 use super::core::{Atom, Expr};
 use super::input::RefinementDescriptor;
+pub use outcome::{RefinementOutcome, RefinementReason};
 
 // ════════════════════════════════════════════════════════════════
 // Refinement codegen — mechanically emit the per-arm `AsmRefines…` obligation theorem.
@@ -66,7 +69,7 @@ pub(super) fn cell_val_dword<'a>(atoms: &'a [Atom], base_raw: &str, off: i64) ->
 pub(super) fn emit_descriptor_refinement(
     desc: &RefinementDescriptor,
     ctx: RefinementCtx<'_>,
-) -> Option<(String, String)> {
+) -> Result<(String, String), RefinementOutcome> {
     descriptor::emit_descriptor_refinement(desc, ctx)
 }
 
@@ -101,6 +104,10 @@ fn refine_registry(arm: &str) -> Option<RefineSpec> {
         }),
         _ => None,
     }
+}
+
+pub(super) fn has_registered_refinement(arm: &str) -> bool {
+    refine_registry(arm).is_some()
 }
 
 /// True for arms with a constant `+1` delta (counter/vault). Gates the delta-cleaning so arms
