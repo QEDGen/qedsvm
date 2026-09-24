@@ -618,6 +618,29 @@ pub(super) fn emit_sol_log(
     );
 }
 
+/// `sol_log_64_` reads r1..r5 for its log and writes only r0. Its
+/// separation-logic spec therefore needs no memory atoms.
+pub(super) fn emit_sol_log_64(
+    state: &mut SymState,
+    spec_calls: &mut Vec<SpecCall>,
+    block_pcs: &mut Vec<usize>,
+    pc: usize,
+    ctor: &'static str,
+) {
+    let r0v = state.read_reg(0);
+    let (_idx, ncu_name, hcu_name) = state.alloc_syscall("Log64");
+    state.write_reg(0, Expr::Const(0));
+    let have_line = format!(
+        "have h_{pc} := call_sol_log_64_spec {r0} {pc} {ncu} {hcu}",
+        r0 = r0v.atom_lean(),
+        ncu = ncu_name,
+        hcu = hcu_name,
+    );
+    finish_syscall(
+        state, spec_calls, block_pcs, pc, ctor, &ncu_name, &hcu_name, have_line,
+    );
+}
+
 /// Emit `sol_memcpy_`/`sol_memmove_(dst = r1, src = r2, n = r3)` (H6). Both share
 /// `MemOps.execCopy`: copy `n` bytes src→dst, set `r0 := 0`. Shaped to
 /// `call_sol_{memcpy,memmove}_spec` — two `↦Bytes` atoms (`srcBytes` at r2,

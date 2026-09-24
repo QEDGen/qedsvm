@@ -106,6 +106,11 @@ inductive Syscall
   | unknown (hash : Nat)
   deriving Repr, DecidableEq
 
+/-- Comparison variants in the V3 32-bit jump class. -/
+inductive Jump32Cond
+  | eq | ne | gt | ge | lt | le | sgt | sge | slt | sle | set
+  deriving Repr, DecidableEq
+
 /-- sBPF instructions. Jump targets are absolute instruction indices. Abstracts
     away lddw's 2 binary slots — each logical instruction is one array element. -/
 inductive Insn
@@ -157,6 +162,7 @@ inductive Insn
   | jslt  (dst : Reg) (src : Src) (target : Nat)
   | jsle  (dst : Reg) (src : Src) (target : Nat)
   | jset  (dst : Reg) (src : Src) (target : Nat)
+  | jmp32 (cond : Jump32Cond) (dst : Reg) (src : Src) (target : Nat)
   -- Unconditional jump
   | ja    (target : Nat)
   -- Syscall (`call <imm32>`, imm32 = Murmur3 hash of name, opcode 0x85 src=0)

@@ -10,6 +10,22 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-24-sbpfv3-support-design.md`
 
+## Progress (2026-09-24)
+
+- Completed: version gate and fixtures; strict V3 program-header parsing;
+  Lean runner path; versioned static/relative calls and JMP32 execution;
+  generic JMP32 one-step specs; pinned V3 concrete execution theorems for
+  static calls and an account-byte update; Mollusk differential execution
+  for both binaries (including account data and compute units).
+- Completed: version-aware Rust symbolic execution and call classification,
+  V3 decode pins, a full V3 ELF-to-text pin, and a generated selected-path
+  account-byte `cuTripleWithinMem` theorem without `sorry`.
+- Remaining scope: a toolchain-built V3 fixture after upgrading local
+  platform-tools beyond 1.52. The checked-in fixture is reproducibly
+  hand-assembled and compared with Mollusk. V3 lifting deliberately rejects
+  JMP32 forms beyond `JEQ32_IMM`, `callx`, unknown syscalls, and shared-text
+  mode until their symbolic path specs are implemented.
+
 ## Global Constraints
 
 - Preserve V0 fixtures and generated proof output.

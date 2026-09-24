@@ -151,9 +151,8 @@ pub(super) fn resolve_branch_taken(
         }
     } else {
         match (ins.opc, target_disc) {
-            (ebpf::JEQ64_IMM, Some(td)) | (ebpf::JEQ32_IMM, Some(td)) if ins.imm == td => {
-                BranchDecision::Taken
-            }
+            (ebpf::JEQ64_IMM, Some(td)) if ins.imm == td => BranchDecision::Taken,
+            (ebpf::JEQ32_IMM, Some(td)) if (ins.imm as u32) == (td as u32) => BranchDecision::Taken,
             (ebpf::JNE64_IMM, Some(td)) | (ebpf::JNE32_IMM, Some(td)) if ins.imm != td => {
                 BranchDecision::Taken
             }
@@ -220,6 +219,14 @@ mod tests {
     }
 
     #[test]
+    fn static_jeq32_ignores_high_discriminator_bits() {
+        let instruction = insn(ebpf::JEQ32_IMM, 2, 1);
+        let decision = resolve_branch_taken(None, 4, &instruction, 7, true, Some(0x1_0000_0001))
+            .expect("static 32-bit branch decision");
+        assert_eq!(decision, BranchDecision::Taken);
+    }
+
+    #[test]
     fn trace_decides_taken_and_fallthrough_branches() {
         let instruction = insn(ebpf::JEQ64_IMM, 2, 7);
         let fallthrough_trace = TraceCursor::new(&[4, 5]).expect("trace cursor");
@@ -252,7 +259,7 @@ mod tests {
         );
         assert_eq!(
             classify_call_imm(ebpf::hash_symbol_name(b"sol_log_64_")),
-            CallImmClassification::UnmodeledSyscall(b"sol_log_64_")
+            CallImmClassification::ModeledSyscall(b"sol_log_64_")
         );
         assert_eq!(
             classify_call_imm(0xfeed_beef),

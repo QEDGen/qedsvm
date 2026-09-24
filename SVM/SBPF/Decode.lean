@@ -22,6 +22,12 @@ import SVM.SBPF.SyscallHash
 namespace SVM.SBPF
 namespace Decode
 
+/-- Bytecode versions supported by the proof-side decoder. -/
+inductive Version
+  | v0
+  | v3
+  deriving Repr, DecidableEq, BEq
+
 /-! ## Byte-array readers (little-endian) -/
 
 /-- Read one byte, 0 if out of bounds. -/
@@ -131,7 +137,7 @@ def fnRegLookup (fnReg : List (Nat × Nat)) (key : Nat) : Option Nat :=
     Returns `(Insn, byte size)` (8, or 16 for `lddw`), or `none` if the
     opcode is unrecognized or register fields are invalid. -/
 def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
-    (fnReg : List (Nat × Nat) := []) : Option (Insn × Nat) :=
+    (fnReg : List (Nat × Nat) := []) (version : Version := .v0) : Option (Insn × Nat) :=
   let opcode := readU8 bytes off
   let regs   := readU8 bytes (off + 1)
   let dstN   := regs &&& 0xF
@@ -166,6 +172,18 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
     (opcode &&& 0x07) == 0x01 || (opcode &&& 0x07) == 0x04
       || (opcode &&& 0x07) == 0x07 || opcode == 0x18
   if writesDstReg && dstN == 10 then none else
+  if version == .v3 && opcode &&& 0x07 == 0x06 then
+    let cond? : Option Jump32Cond := match opcode &&& 0xf7 with
+      | 0x16 => some .eq | 0x26 => some .gt | 0x36 => some .ge
+      | 0x46 => some .set | 0x56 => some .ne | 0x66 => some .sgt
+      | 0x76 => some .sge | 0xa6 => some .lt | 0xb6 => some .le
+      | 0xc6 => some .slt | 0xd6 => some .sle
+      | _ => none
+    let rhs? : Option Src :=
+      if opcode &&& 8 == 0 then some (.imm imm) else src?.map .reg
+    cond?.bind fun cond => dst?.bind fun dst => rhs?.bind fun rhs =>
+      targetPc?.map fun target => (.jmp32 cond dst rhs target, 8)
+  else
   match opcode with
   -- ALU 64-bit immediate (class = 7, source = 0)
   | 0x07 => dst?.map fun d => (.add64 d (.imm imm), 8)
@@ -258,7 +276,12 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   -- closed. `src` is NOT used to disambiguate in V0.
   | 0x85 =>
     let immU := readU32LE bytes (off + 4)
-    match SyscallHash.fromHash immU with
+    if version == .v3 then
+      if srcN = 0 then some (.call (SyscallHash.fromHash immU), 8)
+      else if srcN = 1 then
+        (resolveTarget (currentSlot + 1 + imm)).map fun t => (.call_local t, 8)
+      else none
+    else match SyscallHash.fromHash immU with
     | .unknown _ =>
       -- V0 internal call (H2, closed): a registered key resolves slot →
       -- logical PC; a registered slot past the program is malformed input
@@ -274,7 +297,8 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
       | none => some (.call (.unknown immU), 8)
     | sc => some (.call sc, 8)
   -- Indirect call `callx <reg>`: target = runtime src-register value.
-  | 0x8d => src?.map fun s => (.callx s, 8)
+  | 0x8d => if version == .v3 then dst?.map fun d => (.callx d, 8)
+            else src?.map fun s => (.callx s, 8)
   -- Exit
   | 0x95 => some (.exit, 8)
   -- Load/store (memory operations)
@@ -309,7 +333,8 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
     resolved through the V0 registry `fnReg`; pass `[]` for raw text, where
     every internal call decodes to fail-closed `.call (.unknown _)`).
     `none` if any instruction fails to decode. -/
-def decodeProgram (bytes : ByteArray) (fnReg : List (Nat × Nat) := []) :
+def decodeProgram (bytes : ByteArray) (fnReg : List (Nat × Nat) := [])
+    (version : Version := .v0) :
     Option (Array Insn) :=
   let slotMap := buildSlotMap bytes
   go 0 #[] (bytes.size + 1) slotMap
@@ -325,7 +350,7 @@ where
         -- rejects at load (`ProgramLengthNotMultiple`) — M4.
         none
       else
-        match decodeInsn bytes slotMap off fnReg with
+        match decodeInsn bytes slotMap off fnReg version with
         | none => none
         | some (insn, sz) => go (off + sz) (acc.push insn) fuel' slotMap
 

@@ -27,4 +27,22 @@ private def v3WithRodata : ByteArray := Decode.bytesOfHex
 example : (Elf.loadV3 v3WithRodata).map (·.rodata.size) = some 8 := by native_decide
 example : (Elf.loadV3 v3WithRodata).map (·.textBytes.size) = some 8 := by native_decide
 
+example : Decode.decodeInsn (Decode.bytesOfHex "8500000034120000") #[0, 1, 2] 0 [] .v3 =
+    some (.call (.unknown 0x1234), 8) := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "8510000001000000") #[0, 1, 2] 0 [] .v3 =
+    some (.call_local 2, 8) := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "8520000001000000") #[0, 1, 2] 0 [] .v3 =
+    none := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "8d21000000000000") #[0] 0 [] .v3 =
+    some (.callx .r1, 8) := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "1600010001000000") #[0, 1, 2] 0 [] .v3 =
+    some (.jmp32 .eq .r0 (.imm 1) 2, 8) := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "1600010001000000") #[0, 1, 2] 0 [] .v0 =
+    none := by native_decide
+example : jump32Holds .eq 0x100000001 1 = true := by native_decide
+example : jump32Holds .slt 0xffffffff 0 = true := by native_decide
+example : (step (.jmp32 .eq .r0 (.imm 1) 9)
+    { regs := { r0 := 0x100000001 }, mem := default, regions := [], pc := 0 }).pc = 9 := by
+  native_decide
+
 end SVM.SBPF.ElfTests

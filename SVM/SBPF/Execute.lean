@@ -159,6 +159,25 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
 
 /-! ## Single-step semantics -/
 
+/-- Compare only the low 32 bits for the V3 JMP32 instruction class. -/
+def jump32Holds (cond : Jump32Cond) (lhs rhs : Nat) : Bool :=
+  let a := lhs % U32_MODULUS
+  let b := rhs % U32_MODULUS
+  let sa : Int := if a < U32_MODULUS / 2 then a else (a : Int) - U32_MODULUS
+  let sb : Int := if b < U32_MODULUS / 2 then b else (b : Int) - U32_MODULUS
+  match cond with
+  | .eq => a == b
+  | .ne => a != b
+  | .gt => a > b
+  | .ge => a ≥ b
+  | .lt => a < b
+  | .le => a ≤ b
+  | .sgt => sa > sb
+  | .sge => sa ≥ sb
+  | .slt => sa < sb
+  | .sle => sa ≤ sb
+  | .set => a &&& b != 0
+
 /-- Execute one instruction, returning the new state. -/
 @[simp] def step (insn : Insn) (s : State) : State :=
   let rf := s.regs
@@ -294,6 +313,8 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
     { s with pc := if toSigned64 (rf.get dst) ≤ toSigned64 (resolveSrc rf src) then target else pc' }
   | .jset dst src target =>
     { s with pc := if rf.get dst &&& resolveSrc rf src ≠ 0 then target else pc' }
+  | .jmp32 cond dst src target =>
+    { s with pc := if jump32Holds cond (rf.get dst) (resolveSrc rf src) then target else pc' }
   | .ja target =>
     { s with pc := target }
 
@@ -811,6 +832,8 @@ abbrev Step := State → PUnit × State
     ((), { s with pc := if toSigned64 (rf.get dst) ≤ toSigned64 (resolveSrc rf src) then target else pc' })
   | .jset dst src target =>
     ((), { s with pc := if rf.get dst &&& resolveSrc rf src ≠ 0 then target else pc' })
+  | .jmp32 cond dst src target =>
+    ((), { s with pc := if jump32Holds cond (rf.get dst) (resolveSrc rf src) then target else pc' })
   | .ja target =>
     ((), { s with pc := target })
 

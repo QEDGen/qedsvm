@@ -5,8 +5,8 @@ use crate::input::BinaryCtx;
 use crate::spec_call::SpecCall;
 use crate::state::SymState;
 use crate::syscalls::{
-    emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log, emit_sol_memcmp,
-    emit_sol_memcpy, emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
+    emit_sol_create_program_address, emit_sol_get_sysvar, emit_sol_log, emit_sol_log_64,
+    emit_sol_memcmp, emit_sol_memcpy, emit_sol_memset, emit_sol_set_return_data, emit_sol_sha256,
 };
 
 /// True if the immediate is the hash of a syscall the lift emits an effect spec for.
@@ -189,6 +189,16 @@ static SYSCALLS: &[SyscallModel] = &[
         ..SyscallModel::DEFAULT
     },
     SyscallModel {
+        name: b"sol_log_64_",
+        modeled: true,
+        ctor: Some(".sol_log_64_"),
+        effect: Some(|s, sc, bp, pc, _, ctor| {
+            emit_sol_log_64(s, sc, bp, pc, ctor);
+            Ok(())
+        }),
+        ..SyscallModel::DEFAULT
+    },
+    SyscallModel {
         name: b"sol_memcpy_",
         modeled: true,
         ctor: Some(".sol_memcpy"),
@@ -351,7 +361,6 @@ static SYSCALLS: &[SyscallModel] = &[
     SyscallModel::known(b"sol_get_return_data"),
     SyscallModel::known(b"sol_get_stack_height"),
     SyscallModel::known(b"sol_keccak256"),
-    SyscallModel::known(b"sol_log_64_"),
     SyscallModel::known(b"sol_log_compute_units_"),
     SyscallModel::known(b"sol_log_data"),
     SyscallModel::known(b"sol_log_pubkey"),

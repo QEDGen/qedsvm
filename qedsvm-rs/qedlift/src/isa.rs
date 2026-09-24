@@ -1,4 +1,4 @@
-use solana_sbpf::{ebpf, static_analysis::Analysis};
+use solana_sbpf::{ebpf, program::SBPFVersion, static_analysis::Analysis};
 
 use super::core::{lean_off, Expr};
 use super::diagnostic::{DiagnosticKind, LiftError};
@@ -10,6 +10,7 @@ pub(super) fn insn_to_lean_full(
     pc: usize,
     call_target: Option<usize>,
     jump_target: Option<i64>,
+    version: SBPFVersion,
 ) -> Result<String, LiftError> {
     use ebpf::*;
     let (dst, src, off, imm) = (insn.dst, insn.src, insn.off as i64, insn.imm);
@@ -31,6 +32,28 @@ pub(super) fn insn_to_lean_full(
     };
     // Negative offsets need parens in Lean syntax (`.r10 -2072` parses as subtraction).
     let offl = lean_off(off);
+    let jmp32_cond = match insn.opc & 0xf7 {
+        JEQ32_IMM => Some("eq"),
+        JNE32_IMM => Some("ne"),
+        JGT32_IMM => Some("gt"),
+        JGE32_IMM => Some("ge"),
+        JLT32_IMM => Some("lt"),
+        JLE32_IMM => Some("le"),
+        JSGT32_IMM => Some("sgt"),
+        JSGE32_IMM => Some("sge"),
+        JSLT32_IMM => Some("slt"),
+        JSLE32_IMM => Some("sle"),
+        JSET32_IMM => Some("set"),
+        _ => None,
+    };
+    if let Some(cond) = jmp32_cond {
+        let rhs = if insn.opc & 8 == 0 {
+            format!(".imm ({imm})")
+        } else {
+            format!(".reg {}", reg(src))
+        };
+        return Ok(format!(".jmp32 .{cond} {} ({rhs}) {}", reg(dst), jt()));
+    }
     Ok(match insn.opc {
         LD_B_REG => format!(".ldx .byte {} {} {}", reg(dst), reg(src), offl),
         LD_H_REG => format!(".ldx .half {} {} {}", reg(dst), reg(src), offl),
@@ -60,27 +83,27 @@ pub(super) fn insn_to_lean_full(
         RSH64_REG => format!(".rsh64 {} (.reg {})", reg(dst), reg(src)),
         MOV64_REG => format!(".mov64 {} (.reg {})", reg(dst), reg(src)),
         EXIT => ".exit".to_string(),
-        JEQ64_IMM | JEQ32_IMM => {
+        JEQ64_IMM => {
             let t = jt();
             format!(".jeq {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JNE64_IMM | JNE32_IMM => {
+        JNE64_IMM => {
             let t = jt();
             format!(".jne {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JGT64_IMM | JGT32_IMM => {
+        JGT64_IMM => {
             let t = jt();
             format!(".jgt {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JGE64_IMM | JGE32_IMM => {
+        JGE64_IMM => {
             let t = jt();
             format!(".jge {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JLT64_IMM | JLT32_IMM => {
+        JLT64_IMM => {
             let t = jt();
             format!(".jlt {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JLE64_IMM | JLE32_IMM => {
+        JLE64_IMM => {
             let t = jt();
             format!(".jle {} (.imm ({})) {}", reg(dst), imm, t)
         }
@@ -120,67 +143,67 @@ pub(super) fn insn_to_lean_full(
             let t = jt();
             format!(".ja {}", t)
         }
-        JSGT64_IMM | JSGT32_IMM => {
+        JSGT64_IMM => {
             let t = jt();
             format!(".jsgt {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JSLE64_IMM | JSLE32_IMM => {
+        JSLE64_IMM => {
             let t = jt();
             format!(".jsle {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JSLT64_IMM | JSLT32_IMM => {
+        JSLT64_IMM => {
             let t = jt();
             format!(".jslt {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JEQ64_REG | JEQ32_REG => {
+        JEQ64_REG => {
             let t = jt();
             format!(".jeq {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JNE64_REG | JNE32_REG => {
+        JNE64_REG => {
             let t = jt();
             format!(".jne {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JLT64_REG | JLT32_REG => {
+        JLT64_REG => {
             let t = jt();
             format!(".jlt {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JSLE64_REG | JSLE32_REG => {
+        JSLE64_REG => {
             let t = jt();
             format!(".jsle {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JGT64_REG | JGT32_REG => {
+        JGT64_REG => {
             let t = jt();
             format!(".jgt {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JLE64_REG | JLE32_REG => {
+        JLE64_REG => {
             let t = jt();
             format!(".jle {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JSGE64_REG | JSGE32_REG => {
+        JSGE64_REG => {
             let t = jt();
             format!(".jsge {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JGE64_REG | JGE32_REG => {
+        JGE64_REG => {
             let t = jt();
             format!(".jge {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JSGT64_REG | JSGT32_REG => {
+        JSGT64_REG => {
             let t = jt();
             format!(".jsgt {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JSLT64_REG | JSLT32_REG => {
+        JSLT64_REG => {
             let t = jt();
             format!(".jslt {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JSET64_REG | JSET32_REG => {
+        JSET64_REG => {
             let t = jt();
             format!(".jset {} (.reg {}) {}", reg(dst), reg(src), t)
         }
-        JSGE64_IMM | JSGE32_IMM => {
+        JSGE64_IMM => {
             let t = jt();
             format!(".jsge {} (.imm ({})) {}", reg(dst), imm, t)
         }
-        JSET64_IMM | JSET32_IMM => {
+        JSET64_IMM => {
             let t = jt();
             format!(".jset {} (.imm ({})) {}", reg(dst), imm, t)
         }
@@ -191,6 +214,24 @@ pub(super) fn insn_to_lean_full(
         // carries (Phase 7 sub-item 3 emitter), so render them as `.call <ctor>`
         // to match `decodeProgram`; everything else is an internal `.call_local`.
         CALL_IMM => {
+            if version == SBPFVersion::V3 {
+                if insn.src == 1 {
+                    return call_target
+                        .map(|target| format!(".call_local {target}"))
+                        .ok_or_else(|| {
+                            LiftError::new(
+                                DiagnosticKind::CallUnresolved,
+                                format!("V3 relative call at pc {pc} has no in-program target"),
+                            )
+                        });
+                }
+                if insn.src != 0 {
+                    return Err(LiftError::new(
+                        DiagnosticKind::UnsupportedConstruct,
+                        format!("V3 call at pc {pc} has invalid src {}", insn.src),
+                    ));
+                }
+            }
             let himm = imm as u32;
             if himm == hash_symbol_name(b"abort") {
                 ".call .abort".to_string()
@@ -208,7 +249,15 @@ pub(super) fn insn_to_lean_full(
                 ".call .sol_create_program_address".to_string()
             } else if himm == hash_symbol_name(b"sol_sha256") {
                 ".call .sol_sha256".to_string()
+            } else if himm == hash_symbol_name(b"sol_log_64_") {
+                ".call .sol_log_64_".to_string()
             } else {
+                if version == SBPFVersion::V3 {
+                    return Err(LiftError::new(
+                        DiagnosticKind::CallUnresolved,
+                        format!("V3 static syscall at pc {pc} has unknown hash 0x{himm:08x}"),
+                    ));
+                }
                 match call_target {
                     Some(t) => format!(".call_local {}", t),
                     None => ".call_local TARGET_PC_NOT_RESOLVED".to_string(),
@@ -225,8 +274,9 @@ pub(super) fn insn_to_lean_full(
 }
 
 /// Wrapper for callers without a resolved call target; renders call_local with a placeholder.
+#[cfg(test)]
 pub(super) fn insn_to_lean(insn: &ebpf::Insn, pc: usize) -> Result<String, LiftError> {
-    insn_to_lean_full(insn, pc, None, None)
+    insn_to_lean_full(insn, pc, None, None, SBPFVersion::V0)
 }
 
 /// Resolve CALL_IMM to its callee slot PC by reversing the Murmur3-hash immediate via `analysis.functions`.
@@ -246,9 +296,19 @@ pub(super) fn resolve_call_target_logical(
     ctx: &BinaryCtx,
     analysis: &Analysis,
     insn: &ebpf::Insn,
+    logical_pc: usize,
 ) -> Option<usize> {
     if insn.opc != ebpf::CALL_IMM {
         return None;
+    }
+    if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
+        if insn.src != 1 {
+            return None;
+        }
+        let target = ctx.pc_map.resolve_jump_target(logical_pc, insn.imm);
+        return usize::try_from(target)
+            .ok()
+            .filter(|pc| *pc < ctx.insns.len());
     }
     let slot = resolve_call_target(analysis, insn).or_else(|| {
         // Fallback: the load-time function registry, built from call relocations
@@ -343,5 +403,41 @@ mod tests {
         let error = insn_to_lean(&insn, 7).expect_err("opcode must be rejected");
         assert_eq!(error.kind(), DiagnosticKind::OpcodeUnmodeled);
         assert_eq!(error.to_string(), "opcode 0xff not yet lifted to Lean");
+    }
+
+    #[test]
+    fn jmp32_keeps_the_width_and_source_mode() {
+        let mut insn = ebpf::Insn {
+            ptr: 0,
+            opc: ebpf::JEQ32_IMM,
+            dst: 1,
+            src: 2,
+            off: 1,
+            imm: 7,
+        };
+        assert_eq!(
+            insn_to_lean(&insn, 3).unwrap(),
+            ".jmp32 .eq .r1 (.imm (7)) 5"
+        );
+        insn.opc = ebpf::JSLT32_REG;
+        assert_eq!(
+            insn_to_lean(&insn, 3).unwrap(),
+            ".jmp32 .slt .r1 (.reg .r2) 5"
+        );
+    }
+
+    #[test]
+    fn v3_unknown_static_call_cannot_render_as_internal() {
+        let insn = ebpf::Insn {
+            ptr: 0,
+            opc: ebpf::CALL_IMM,
+            dst: 0,
+            src: 0,
+            off: 0,
+            imm: 0xfeed_beef,
+        };
+        let error = insn_to_lean_full(&insn, 2, Some(4), None, SBPFVersion::V3)
+            .expect_err("unknown V3 static syscall must fail closed");
+        assert_eq!(error.kind(), DiagnosticKind::CallUnresolved);
     }
 }

@@ -4,6 +4,7 @@ namespace SVM.SBPF
 
 open Memory
 
+
 /-! ## Conditional-jump helpers
 
 Conditional jumps read 1-2 registers and modify only the PC (pre = post). The
@@ -223,6 +224,30 @@ Both branches in one statement (exit PC = `if cond then target else pc + 1`).
 Signed variants read registers as two's complement via `toSigned64`. -/
 
 -- imm-source --
+
+/-- V3 JMP32 immediate branch compares only the low 32 bits. -/
+theorem jmp32_imm_spec (cond : Jump32Cond) (dst : Reg) (imm : Int)
+    (vDst : Nat) (pc target : Nat) :
+    cuTripleWithin 1 0 pc
+      (if jump32Holds cond vDst (toU64 imm) then target else pc + 1)
+      (CodeReq.singleton pc (.jmp32 cond dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) :=
+  cuTripleWithin_1reg_cjump dst vDst pc target (.jmp32 cond dst (.imm imm) target)
+    (jump32Holds cond vDst (toU64 imm) = true)
+    (fun _ hdst => by simp only [step, resolveSrc, hdst])
+
+/-- V3 JMP32 register branch compares the low 32 bits of both registers. -/
+theorem jmp32_reg_spec (cond : Jump32Cond) (dst src : Reg)
+    (vDst vSrc : Nat) (pc target : Nat) :
+    cuTripleWithin 1 0 pc
+      (if jump32Holds cond vDst vSrc then target else pc + 1)
+      (CodeReq.singleton pc (.jmp32 cond dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) :=
+  cuTripleWithin_2reg_cjump dst src vDst vSrc pc target
+    (.jmp32 cond dst (.reg src) target)
+    (jump32Holds cond vDst vSrc = true)
+    (fun _ hdst hsrc => by simp only [step, resolveSrc, hdst, hsrc])
 
 /-- `jeq dst, imm, target`: jump if `dst = toU64 imm`. -/
 theorem jeq_imm_spec (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat) :

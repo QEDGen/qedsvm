@@ -18,6 +18,10 @@ use solana_pubkey::Pubkey;
 
 const NOOP_SO: &[u8] = include_bytes!("fixtures/noop.so");
 
+/// Strict-header V3: JMP32, relative call, and static sol_log_64_ syscall.
+const SBPFV3_STATIC_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_static_path.so");
+const SBPFV3_ACCOUNT_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_account_path.so");
+
 const SOLANA_NOOP_SO: &[u8] = include_bytes!("fixtures/solana_noop.so");
 
 /// `cargo-build-sbf` of a program that calls `msg!("hi")` and exits.
@@ -792,6 +796,23 @@ mod core_vm {
     #[test]
     fn noop_program_matches_mollusk() {
         assert_no_account_success(1, NOOP_SO, "noop");
+    }
+
+    #[test]
+    fn sbpfv3_static_path_matches_mollusk() {
+        assert_no_account_success(70, SBPFV3_STATIC_PATH_SO, "sBPF V3 static path");
+    }
+
+    #[test]
+    fn sbpfv3_account_path_matches_mollusk() {
+        assert_single_account_success(
+            72,
+            73,
+            SBPFV3_ACCOUNT_PATH_SO,
+            "sBPF V3 account path",
+            vec![5],
+            Some(vec![6]),
+        );
     }
 
     /// Cross-engine equality on the real `entrypoint!` noop shape (~1923 sBPF instructions) — the actual "we conform to agave" claim.
