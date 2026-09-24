@@ -164,6 +164,15 @@ pub(super) fn lift_one_with_layouts(
     request: LiftRequest<'_>,
 ) -> Result<LiftOutput, LiftError> {
     request.validate()?;
+    if ctx.version != solana_sbpf::program::SBPFVersion::V0 {
+        return Err(LiftError::new(
+            DiagnosticKind::UnsupportedConstruct,
+            format!(
+                "qedlift: {:?} requires version-aware decoding and proof emission",
+                ctx.version
+            ),
+        ));
+    }
     // Cargo runs a package's unit tests from that package directory. After
     // qedlift became its own workspace crate, fixtures are reached through
     // `../tests`, but generated provenance should remain byte-identical to the

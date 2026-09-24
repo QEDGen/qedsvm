@@ -3,6 +3,21 @@ use std::path::Path;
 use qedlift::{LiftOptions, Lifter, ProgramImage, RefinementOutcome, RefinementReason};
 
 #[test]
+fn rejects_v3_until_the_versioned_proof_path_is_available() -> Result<(), Box<dyn std::error::Error>>
+{
+    let path = Path::new("../tests/fixtures/sbpfv3_syscall_static.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let error = match lifter.lift(LiftOptions::default()) {
+        Err(error) => error,
+        Ok(_) => panic!("V3 must not be lifted with V0 semantics"),
+    };
+    assert_eq!(error.kind(), qedlift::DiagnosticKind::UnsupportedConstruct);
+    assert!(error.to_string().contains("V3"));
+    Ok(())
+}
+
+#[test]
 fn lifts_a_program_without_cli_or_file_output() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/byte_increment.so");
     let program = ProgramImage::load(path)?;
