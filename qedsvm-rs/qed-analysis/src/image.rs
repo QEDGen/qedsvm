@@ -3,7 +3,11 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use solana_sbpf::{ebpf, elf::Executable, program::BuiltinProgram};
+use solana_sbpf::{
+    ebpf,
+    elf::Executable,
+    program::{BuiltinProgram, SBPFVersion},
+};
 
 use crate::{NoopCtx, PcMap};
 
@@ -11,6 +15,7 @@ use crate::{NoopCtx, PcMap};
 pub struct ProgramImage {
     pub elf_bytes: Vec<u8>,
     pub executable: Executable<NoopCtx>,
+    pub version: SBPFVersion,
     pub text_offset: u64,
     pub text_bytes: Vec<u8>,
     pub insns: Vec<ebpf::Insn>,
@@ -22,6 +27,7 @@ impl ProgramImage {
         let elf_bytes = std::fs::read(path)?;
         let loader = Arc::new(BuiltinProgram::new_mock());
         let executable = Executable::load(&elf_bytes, loader)?;
+        let version = executable.get_sbpf_version();
         let (text_offset, text) = executable.get_text_bytes();
         let text_bytes = text.to_vec();
         let mut insns = Vec::new();
@@ -39,10 +45,28 @@ impl ProgramImage {
         Ok(Self {
             elf_bytes,
             executable,
+            version,
             text_offset,
             text_bytes,
             insns,
             pc_map,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sbpf::program::SBPFVersion;
+
+    #[test]
+    fn exposes_the_elf_version_to_analysis_consumers() {
+        let v0 = ProgramImage::load(Path::new("../tests/fixtures/byte_increment.so"))
+            .expect("load V0 fixture");
+        assert_eq!(v0.version, SBPFVersion::V0);
+
+        let v3 = ProgramImage::load(Path::new("../tests/fixtures/sbpfv3_syscall_static.so"))
+            .expect("load V3 fixture");
+        assert_eq!(v3.version, SBPFVersion::V3);
     }
 }

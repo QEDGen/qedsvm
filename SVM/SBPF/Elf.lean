@@ -31,6 +31,20 @@ open Decode
 
 /-! ## Parsed structures -/
 
+/-- Bytecode versions implemented by the proof-side decoder. -/
+inductive Version
+  | v0
+  | v3
+  deriving Repr, DecidableEq, BEq
+
+/-- Read the ELF version without interpreting its instruction stream. -/
+def readVersion (bytes : ByteArray) : Option Version :=
+  if bytes.size < 64 then none
+  else match readU32LE bytes 48 with
+    | 0 => some .v0
+    | 3 => some .v3
+    | _ => none
+
 /-- A parsed ELF64 file header (only the fields we use). -/
 structure Header where
   /-- Entry point virtual address (e_entry). -/

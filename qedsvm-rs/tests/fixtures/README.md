@@ -1,5 +1,14 @@
 # Test fixtures
 
+## `sbpfv3_syscall_static.so`
+
+V3 (`e_flags = 3`) static-syscall fixture copied from
+`anza-xyz/sbpf` crate v0.14.4, `tests/elfs/syscall_static.so`.
+Its source is `tests/elfs/syscall_static.rs` in that crate. Used to
+exercise the version boundary and V3 call decoding before a project-owned
+V3 program is built. SHA-256:
+`f94497d626d892b2543b92d024a10e300bf0fe2b542c0b7ebc4a1a8221f76047`.
+
 ## `hello.elf` (289 bytes)
 Hand-assembled minimal ELF64 sBPF binary: `mov64 r0, 42; exit`.
 Identical to `SVM.SBPF.RunnerDemo.helloElf` (Demo 8). Used by
