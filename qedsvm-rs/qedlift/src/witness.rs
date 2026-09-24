@@ -17,6 +17,8 @@ fn eval_branch(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>) ->
     let r = match (&bh.kind, bh.taken) {
         (JeqImm, true) | (JneImm, false) => dv == immu,
         (JeqImm, false) | (JneImm, true) => dv != immu,
+        (Jeq32Imm, true) => (dv as u32) == (immu as u32),
+        (Jeq32Imm, false) => (dv as u32) != (immu as u32),
         (JgtImm, true) => dv > immu,
         (JgtImm, false) => dv <= immu,
         (JltImm, true) => dv < immu,
@@ -81,6 +83,11 @@ fn branch_candidates(
     match (&bh.kind, bh.taken) {
         (JeqImm, true) | (JneImm, false) => vec![(immu, None)],
         (JeqImm, false) | (JneImm, true) => ne_imm,
+        (Jeq32Imm, true) => vec![(immu as u32 as u64, None)],
+        (Jeq32Imm, false) => ne_imm
+            .into_iter()
+            .filter(|(v, _)| (*v as u32) != (immu as u32))
+            .collect(),
         (JgtImm, true) => vec![(immu.wrapping_add(1), None)],
         (JgtImm, false) => vec![(0, None), (immu, None)],
         (JltImm, true) => {
@@ -275,14 +282,16 @@ fn branch_priority(bh: &BranchHyp) -> u8 {
     use BranchKind::*;
     let combo = matches!(&bh.dst_value, Expr::ByteCombo(_));
     match (&bh.kind, bh.taken) {
-        (JeqImm, true) | (JneImm, false) | (JeqReg, true) | (JneReg, false) => {
+        (JeqImm, true) | (Jeq32Imm, true) | (JneImm, false) | (JeqReg, true) | (JneReg, false) => {
             if combo {
                 0
             } else {
                 1
             }
         }
-        (JeqImm, false) | (JneImm, true) | (JeqReg, false) | (JneReg, true) => 3,
+        (JeqImm, false) | (Jeq32Imm, false) | (JneImm, true) | (JeqReg, false) | (JneReg, true) => {
+            3
+        }
         _ => 2,
     }
 }

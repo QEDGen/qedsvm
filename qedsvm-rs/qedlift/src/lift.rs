@@ -17,8 +17,8 @@ use crate::exec::{
 };
 use crate::input::BinaryCtx;
 use crate::isa::{
-    function_registry, function_registry_lean, insn_to_lean, insn_to_lean_full,
-    resolve_call_target_logical, resolve_jump_target,
+    function_registry, function_registry_lean, insn_to_lean_full, resolve_call_target_logical,
+    resolve_jump_target,
 };
 use crate::refinement::{
     emit_descriptor_refinement, emit_refinement, is_const_delta_arm, RefinementCtx,
@@ -164,7 +164,9 @@ pub(super) fn lift_one_with_layouts(
     request: LiftRequest<'_>,
 ) -> Result<LiftOutput, LiftError> {
     request.validate()?;
-    if ctx.version != solana_sbpf::program::SBPFVersion::V0 {
+    if ctx.version != solana_sbpf::program::SBPFVersion::V0
+        && ctx.version != solana_sbpf::program::SBPFVersion::V3
+    {
         return Err(LiftError::new(
             DiagnosticKind::UnsupportedConstruct,
             format!(
@@ -198,7 +200,33 @@ pub(super) fn lift_one_with_layouts(
     } = request;
     let insns = &ctx.insns;
 
-    debug_dump_insns(insns);
+    if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
+        if shared_text.is_some() {
+            return Err(LiftError::new(
+                DiagnosticKind::UnsupportedConstruct,
+                "qedlift: V3 shared-text mode is not yet supported",
+            ));
+        }
+        for (pc, insn) in insns.iter().enumerate() {
+            if insn.opc & 7 == 6 && insn.opc != ebpf::JEQ32_IMM {
+                return Err(LiftError::new(
+                    DiagnosticKind::OpcodeUnmodeled,
+                    format!(
+                        "qedlift: V3 JMP32 opcode 0x{:02x} at pc {pc} has no symbolic path spec",
+                        insn.opc
+                    ),
+                ));
+            }
+            if insn.opc == ebpf::CALL_REG || (insn.opc == ebpf::CALL_IMM && insn.src > 1) {
+                return Err(LiftError::new(
+                    DiagnosticKind::UnsupportedConstruct,
+                    format!("qedlift: V3 call form at pc {pc} is not supported for lifting"),
+                ));
+            }
+        }
+    }
+
+    debug_dump_insns(ctx, analysis);
 
     let (so_stem, module_name) = derive_module_name(emitted_path, module_override);
     let (out, emit_decode_bridge) = emit_prelude(
@@ -260,6 +288,9 @@ pub(super) fn lift_one_with_layouts(
             &module_name,
             shared_text,
         )?;
+    }
+    if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
+        out.push_str(&render::v3_elf_pin(&module_name, &ctx.elf_bytes));
     }
 
     // Phase 2: Hoare-triple emission. Symbolic execution already done inline above; `state` is ready.
@@ -410,10 +441,13 @@ pub(super) fn lift_one_with_layouts(
 
 /// Debug dump of the decoded instruction stream (stderr only; not part of the
 /// emitted Lean document).
-fn debug_dump_insns(insns: &[ebpf::Insn]) {
+fn debug_dump_insns(ctx: &BinaryCtx, analysis: &Analysis<'_>) {
     eprintln!("=== decoded insns ===");
-    for (i, ins) in insns.iter().enumerate() {
-        let rendered = insn_to_lean(ins, i).unwrap_or_else(|e| format!("?? ({})", e));
+    for (i, ins) in ctx.insns.iter().enumerate() {
+        let call_target = resolve_call_target_logical(ctx, analysis, ins, i);
+        let jump_target = Some(resolve_jump_target(ctx, i, ins.off as i64));
+        let rendered = insn_to_lean_full(ins, i, call_target, jump_target, ctx.version)
+            .unwrap_or_else(|e| format!("?? ({})", e));
         eprintln!("  pc={:3}  opc=0x{:02x}  {}", i, ins.opc, rendered);
     }
     eprintln!();
@@ -471,10 +505,22 @@ fn emit_prelude(
     let has_modeled_syscall = insns
         .iter()
         .any(|ins| ins.opc == ebpf::CALL_IMM && imm_is_modeled_syscall(ins.imm as u32));
-    let emit_decode_bridge = text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES && !has_modeled_syscall;
+    let emit_decode_bridge = ctx.version == solana_sbpf::program::SBPFVersion::V0
+        && text_bytes.len() <= DECODE_BRIDGE_MAX_BYTES
+        && !has_modeled_syscall;
 
-    let decode_claim = render::decode_claim(emit_decode_bridge);
-    let mut out = render::module_intro(so_path, decode_claim, so_stem, module_name, shared_text);
+    let decode_claim = render::decode_claim(
+        emit_decode_bridge,
+        ctx.version == solana_sbpf::program::SBPFVersion::V3,
+    );
+    let mut out = render::module_intro(
+        so_path,
+        decode_claim,
+        so_stem,
+        module_name,
+        ctx.version == solana_sbpf::program::SBPFVersion::V3,
+        shared_text,
+    );
 
     if emit_decode_bridge {
         out.push_str(&render::text_bytearray_defs(
@@ -496,9 +542,9 @@ fn emit_prelude(
     let mut decode_skip_reason: Option<String> = None;
     if emit_decode_bridge {
         for (i, insn) in insns.iter().enumerate() {
-            let tgt = resolve_call_target_logical(ctx, analysis, insn);
+            let tgt = resolve_call_target_logical(ctx, analysis, insn, i);
             let jtgt = Some(resolve_jump_target(ctx, i, insn.off as i64));
-            match insn_to_lean_full(insn, i, tgt, jtgt) {
+            match insn_to_lean_full(insn, i, tgt, jtgt, ctx.version) {
                 Ok(s) => rendered_insns.push(s),
                 Err(e) => {
                     decode_skip_reason = Some(format!("pc={} opc=0x{:02x}: {}", i, insn.opc, e));
@@ -543,9 +589,9 @@ fn build_code_req(
             let lean_insn = if let Some(ctor) = state.syscall_pcs().get(&pc) {
                 format!(".call {}", ctor)
             } else {
-                let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc]);
+                let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc], pc);
                 let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
-                insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
+                insn_to_lean_full(&insns[pc], pc, tgt, jtgt, ctx.version)?
             };
             if i == 0 {
                 s.push_str(&format!("(CodeReq.singleton {} ({}))", pc, lean_insn));
@@ -581,9 +627,9 @@ fn emit_decode_pins(
         let lean_insn = if let Some(ctor) = state.syscall_pcs().get(&pc) {
             format!(".call {}", ctor)
         } else {
-            let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc]);
+            let tgt = resolve_call_target_logical(ctx, analysis, &insns[pc], pc);
             let jtgt = Some(resolve_jump_target(ctx, pc, insns[pc].off as i64));
-            insn_to_lean_full(&insns[pc], pc, tgt, jtgt)?
+            insn_to_lean_full(&insns[pc], pc, tgt, jtgt, ctx.version)?
         };
         let byte_off = ctx.pc_map.logical_to_slot(pc).expect("logical pc in range") * 8;
         let sz = if insns[pc].opc == 0x18 { 16 } else { 8 };
@@ -600,6 +646,7 @@ fn emit_decode_pins(
             base,
             &pin_offs,
             &pin_exps,
+            ctx.version == solana_sbpf::program::SBPFVersion::V3,
         )),
         None => {
             // H2: registry resolves call imms to .call_local targets in the pins below.
@@ -610,6 +657,7 @@ fn emit_decode_pins(
                 &function_registry_lean(&reg),
                 &pin_offs,
                 &pin_exps,
+                ctx.version == solana_sbpf::program::SBPFVersion::V3,
             ));
         }
     }

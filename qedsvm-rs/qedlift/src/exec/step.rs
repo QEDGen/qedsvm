@@ -332,10 +332,20 @@ pub(super) fn step(
             state.write_reg(dst, Expr::Raw(r));
         }
         // Conditional jumps: record path hyp (taken or fall-through); no reg/mem change. Default = fall-through (common guard shape).
-        JEQ64_IMM | JEQ32_IMM => {
+        JEQ64_IMM => {
             let r = state.read_reg(dst);
             state.record_branch(BranchHyp {
                 kind: BranchKind::JeqImm,
+                dst_value: r,
+                src_value: None,
+                imm,
+                taken: branch_taken.unwrap_or(false),
+            });
+        }
+        JEQ32_IMM => {
+            let r = state.read_reg(dst);
+            state.record_branch(BranchHyp {
+                kind: BranchKind::Jeq32Imm,
                 dst_value: r,
                 src_value: None,
                 imm,

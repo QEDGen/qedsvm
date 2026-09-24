@@ -4,6 +4,7 @@ use super::core::Expr;
 #[derive(Clone, Debug)]
 pub(super) enum BranchKind {
     JeqImm,
+    Jeq32Imm,
     JneImm,
     JgtImm,
     JsgtImm,
@@ -64,6 +65,10 @@ impl BranchHyp {
         match (self.kind.clone(), self.taken) {
             (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, im),
             (BranchKind::JeqImm, true) => format!("{} = toU64 {}", v, im),
+            (BranchKind::Jeq32Imm, true) => format!("jump32Holds .eq {} (toU64 {}) = true", va, im),
+            (BranchKind::Jeq32Imm, false) => {
+                format!("jump32Holds .eq {} (toU64 {}) = false", va, im)
+            }
             (BranchKind::JneImm, false) => format!("{} = toU64 {}", v, im),
             (BranchKind::JneImm, true) => format!("{} ≠ toU64 {}", v, im),
             // `jgt` unsigned >; taken/not-taken accepted by Lean helpers via if_pos/if_neg.

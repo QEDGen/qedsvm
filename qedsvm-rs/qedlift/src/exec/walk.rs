@@ -247,7 +247,9 @@ pub(crate) fn walk_and_exec(
                 // even though the runner's trace continues past it. The terminal
                 // is NOT pushed to `block_pcs` (it is the fault tail, composed by
                 // the emitter via `call_<kind>_faults_spec`, not the prefix).
-                if ins.opc == ebpf::CALL_IMM {
+                if ins.opc == ebpf::CALL_IMM
+                    && (ctx.version == solana_sbpf::program::SBPFVersion::V0 || ins.src == 0)
+                {
                     let imm = ins.imm as u32;
                     if let Some(kind) = AbortKind::from_hash(imm) {
                         fault_terminal = Some(FaultTerminal::Abort(kind));
@@ -269,7 +271,9 @@ pub(crate) fn walk_and_exec(
                 }
 
                 // Syscall (trace): call_imm returning to pc+1 (no BPF frame push) → dispatch on hash.
-                if ins.opc == ebpf::CALL_IMM {
+                if ins.opc == ebpf::CALL_IMM
+                    && (ctx.version == solana_sbpf::program::SBPFVersion::V0 || ins.src == 0)
+                {
                     if let Some(cursor) = trace_cursor.as_mut() {
                         if cursor.next() == Some(pc_iter + 1) {
                             let imm = ins.imm as u32;
@@ -288,7 +292,7 @@ pub(crate) fn walk_and_exec(
                 }
 
                 block_pcs.push(pc_iter);
-                let call_target = resolve_call_target_logical(ctx, analysis, ins);
+                let call_target = resolve_call_target_logical(ctx, analysis, ins, pc_iter);
                 // Branch hyp name indexed by number of branches seen so far.
                 let branch_idx = state.branches().len();
                 let branch_hyp = format!("h_branch{}", branch_idx);
@@ -370,38 +374,48 @@ pub(crate) fn walk_and_exec(
                         // from a genuinely unresolved function so the diagnostic (and
                         // the coverage bucket) names the real gap.
                         let imm = ins.imm as u32;
-                        pc_iter =
-                            resolve_call_target_logical(ctx, analysis, ins).ok_or_else(|| {
-                                match classify_call_imm(imm) {
-                                    CallImmClassification::ModeledSyscall(name) => {
-                                        let name = String::from_utf8_lossy(name);
-                                        LiftError::new(
-                                            DiagnosticKind::SyscallUntraced,
-                                            format!(
+                        pc_iter = resolve_call_target_logical(ctx, analysis, ins, pc_iter)
+                            .ok_or_else(|| match classify_call_imm(imm) {
+                                CallImmClassification::ModeledSyscall(name) => {
+                                    let name = String::from_utf8_lossy(name);
+                                    LiftError::new(
+                                        DiagnosticKind::SyscallUntraced,
+                                        format!(
                                         "qedlift: modeled syscall `{}` (imm 0x{:x}) reached at \
                                          pc {} in a no-trace static walk; provide a --trace to \
                                          dispatch it.",
                                         name, imm, pc_iter),
-                                        )
-                                    }
-                                    CallImmClassification::UnmodeledSyscall(name) => {
-                                        let name = String::from_utf8_lossy(name);
-                                        LiftError::new(
-                                            DiagnosticKind::SyscallUnmodeled,
-                                            format!(
+                                    )
+                                }
+                                CallImmClassification::UnmodeledSyscall(name) => {
+                                    let name = String::from_utf8_lossy(name);
+                                    LiftError::new(
+                                        DiagnosticKind::SyscallUnmodeled,
+                                        format!(
                                         "qedlift: unmodeled syscall `{}` (imm 0x{:x}) at pc {}; \
                                          add it to the SYSCALLS table to lift callers.",
                                         name, imm, pc_iter),
-                                        )
-                                    }
-                                    CallImmClassification::Unknown => LiftError::new(
-                                        DiagnosticKind::CallUnresolved,
+                                    )
+                                }
+                                CallImmClassification::Unknown
+                                    if ctx.version == solana_sbpf::program::SBPFVersion::V3
+                                        && ins.src == 0 =>
+                                {
+                                    LiftError::new(
+                                        DiagnosticKind::SyscallUnmodeled,
                                         format!(
+                                            "qedlift: V3 static syscall at pc {} has unknown hash 0x{:08x}",
+                                            pc_iter, imm
+                                        ),
+                                    )
+                                }
+                                CallImmClassification::Unknown => LiftError::new(
+                                    DiagnosticKind::CallUnresolved,
+                                    format!(
                                 "qedlift: unresolved internal call at pc {} (imm 0x{:x}): not a \
                                  known syscall and no registry entry; extend the resolver.",
                                 pc_iter, imm),
-                                    ),
-                                }
+                                ),
                             })?;
                     }
                     _ => {

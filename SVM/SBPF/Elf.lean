@@ -31,11 +31,8 @@ open Decode
 
 /-! ## Parsed structures -/
 
-/-- Bytecode versions implemented by the proof-side decoder. -/
-inductive Version
-  | v0
-  | v3
-  deriving Repr, DecidableEq, BEq
+/-- Bytecode version used by the ELF and instruction decoders. -/
+abbrev Version := Decode.Version
 
 /-- Read the ELF version without interpreting its instruction stream. -/
 def readVersion (bytes : ByteArray) : Option Version :=

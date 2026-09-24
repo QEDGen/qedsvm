@@ -42,6 +42,29 @@ def helloProgram : ByteArray := ⟨#[
 
 example : Runner.runForExit helloProgram = some 42 := by native_decide
 
+/-- Sectionless strict-header V3 ELF with the same two instructions. -/
+private def v3HelloElf : ByteArray := Decode.bytesOfHex
+  "7f454c460201010000000000000000000300f70001000000000000000100000040000000000000000000000000000000030000004000380001000000000000000100000001000000780000000000000000000000010000000000000001000000100000000000000010000000000000000800000000000000b70000002a0000009500000000000000"
+
+example : Runner.runElfForExit v3HelloElf = some 42 := by native_decide
+
+/-- V3 JMP32 branches over a bad return value, then a relative call adds 41. -/
+private def v3JumpCallElf : ByteArray :=
+  let header := ((v3HelloElf.extract 0 120).set! 96 56).set! 104 56
+  header ++ Decode.bytesOfHex
+    "b7000000010000001600010001000000b7000000630000008510000001000000950000000000000007000000290000009500000000000000"
+
+example : Runner.runElfForExit v3JumpCallElf = some 42 := by native_decide
+
+/-- The same path calls a static syscall (src=0) inside the relative callee. -/
+private def v3StaticSyscallElf : ByteArray :=
+  let header := ((v3HelloElf.extract 0 120).set! 96 64).set! 104 64
+  let text := Decode.bytesOfHex
+    "b7000000010000001600010001000000b700000063000000851000000100000095000000000000008500000000000000b7000000000000009500000000000000"
+  header ++ Elf.writeU32LE text 44 SyscallHash.sol_log_64_hash
+
+example : Runner.runElfForExit v3StaticSyscallElf = some 0 := by native_decide
+
 /-! ## Demo 2 — arithmetic: `r0 := 10 + 5; exit` -/
 
 def addProgram : ByteArray := ⟨#[

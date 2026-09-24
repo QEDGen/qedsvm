@@ -945,11 +945,40 @@ def runForExit (bytes : ByteArray) (cfg : RunConfig := {}) : Option Nat :=
 Real Solana programs ship as ELF64 binaries. These entrypoints parse the
 ELF wrapper, extract the `.text` bytecode, and feed it to `run`. -/
 
+/-- Execute a strict-header V3 ELF. The decoder receives the V3 version so
+    static calls and JMP32 cannot be interpreted with V0 semantics. -/
+def runElfV3WithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
+    Option (State × Nat) := do
+  let program ← Elf.loadV3 elfBytes
+  let insns ← Decode.decodeProgram program.textBytes [] .v3
+  let slotMap := Decode.buildSlotMap program.textBytes
+  let entryPc ← slotMap[program.entrySlot]?
+  let baseMem := loadInput emptyMem cfg.input
+  let memText := loadBytesAt baseMem program.textBytes program.textAddr
+  let mem := loadBytesAt memText program.rodata 0
+  let regions :=
+    ({ start := program.textAddr, size := program.textBytes.size, writable := false } : Memory.Region)
+      :: (if program.rodata.isEmpty then []
+          else [{ start := 0, size := program.rodata.size, writable := false }])
+      ++ runtimeRegions cfg.input.size
+  let s : State :=
+    { regs := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
+      mem := mem
+      regions := regions
+      pc := entryPc
+      cuBudget := cfg.cuBudget
+      progIdBytes := cfg.progIdBytes
+      origPrivs := parseInputPrivileges cfg.input }
+  some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
+
 /-- Decode and run an sBPF ELF64 binary. `none` if malformed or no `.text`.
     `.rodata` (if present) is mapped at its `sh_addr` so `lddw`/`ldx`
     derefs against rodata resolve — the universal Anchor/Pinocchio/
     native-Rust/Quasar pattern. -/
 def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
+  if Elf.readVersion elfBytes = some .v3 then
+    (runElfV3WithFuel elfBytes cfg).map (·.1)
+  else
   match Elf.parseHeader elfBytes with
   | none => none
   | some header =>
@@ -1017,6 +1046,9 @@ def runElfForExit (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option Nat :=
     `cargo-build-sbf` output). -/
 def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
     Option (State × Nat) :=
+  if Elf.readVersion elfBytes = some .v3 then
+    runElfV3WithFuel elfBytes cfg
+  else
   match Elf.parseHeader elfBytes with
   | none => none
   | some header =>

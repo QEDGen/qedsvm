@@ -831,7 +831,7 @@ pub(super) fn spec_call_for(
                 r6, r7, r8, r9, r10, pc,
             )
         }
-        JEQ64_IMM | JEQ32_IMM => {
+        JEQ64_IMM => {
             let v_dst = reg_val_lean(dst);
             let target = jt;
             let h = branch_hyp_name.unwrap_or("h_branch?");
@@ -850,6 +850,14 @@ pub(super) fn spec_call_for(
                 pc,
                 target,
                 h,
+            )
+        }
+        JEQ32_IMM => {
+            let v_dst = reg_val_lean(dst);
+            let h = branch_hyp_name.unwrap_or("h_branch?");
+            format!(
+                "have {hyp_name} := jmp32_imm_spec .eq {} {} ({}) {} {}\n  simp [{h}] at {hyp_name}",
+                reg(dst), imm, v_dst, pc, jt,
             )
         }
         JNE64_IMM | JNE32_IMM => {

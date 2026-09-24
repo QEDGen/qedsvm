@@ -7,6 +7,25 @@ This document describes what the `.so + IDL + trace -> Lean proof` pipeline can 
 
 This is not a general verifier for arbitrary Solana binaries.
 
+## sBPF version boundary
+
+The Lean runner loads strict-header V3 ELF program segments and executes V3
+static calls, relative internal calls, and JMP32 branches. The pinned
+`Generated.SbpfV3StaticPath` checks a complete sectionless V3 ELF's decode
+and successful execution. `Generated.SbpfV3AccountPath` checks the same
+instruction classes plus a byte update in account input. `diff_mollusk`
+compares both binaries with Mollusk, including resulting account data and
+compute units. V0 remains supported.
+
+`qedlift` emits the checked `Generated.Sbpfv3AccountPathLifted` selected-path
+`cuTripleWithinMem` theorem for the account update. Its full-ELF pin connects
+the strict V3 loader to the text used by its versioned per-PC decode pins.
+The current V3 lifting subset accepts `JEQ32_IMM`, relative internal calls,
+and modeled static syscalls; other JMP32 forms, `callx`, unknown syscalls, and
+shared-text mode fail closed. The selected-path triple does not establish a
+whole-program or abstract account-state refinement. V1, V2, and V4 remain
+outside the Lean proof path.
+
 ## Status Legend
 
 | Status | Meaning |

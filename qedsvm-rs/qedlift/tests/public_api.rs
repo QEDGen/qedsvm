@@ -3,17 +3,37 @@ use std::path::Path;
 use qedlift::{LiftOptions, Lifter, ProgramImage, RefinementOutcome, RefinementReason};
 
 #[test]
-fn rejects_v3_until_the_versioned_proof_path_is_available() -> Result<(), Box<dyn std::error::Error>>
-{
+fn lifts_v3_account_path_with_versioned_decode_pins() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_account_path.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let trace = [0, 1, 3, 5, 6, 7, 8, 9, 10, 4];
+    let result = lifter.lift(LiftOptions {
+        trace: Some(&trace),
+        ..LiftOptions::default()
+    })?;
+    assert!(result.lean.contains("_v3_elf_text"));
+    assert!(result.lean.contains("FnRegistry .v3"));
+    assert!(result.lean.contains("jmp32_imm_spec .eq"));
+    assert!(result.lean.contains("call_sol_log_64_spec"));
+    assert_eq!(
+        result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
+        include_str!("../../../examples/lean/Generated/Sbpfv3AccountPathLifted.lean")
+    );
+    Ok(())
+}
+
+#[test]
+fn unknown_v3_static_syscall_has_typed_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_syscall_static.so");
     let program = ProgramImage::load(path)?;
     let lifter = Lifter::new(path, &program)?;
     let error = match lifter.lift(LiftOptions::default()) {
         Err(error) => error,
-        Ok(_) => panic!("V3 must not be lifted with V0 semantics"),
+        Ok(_) => panic!("unknown V3 static syscall must fail closed"),
     };
-    assert_eq!(error.kind(), qedlift::DiagnosticKind::UnsupportedConstruct);
-    assert!(error.to_string().contains("V3"));
+    assert_eq!(error.kind(), qedlift::DiagnosticKind::SyscallUnmodeled);
+    assert!(error.to_string().contains("V3 static syscall"));
     Ok(())
 }
 
