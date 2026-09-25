@@ -308,7 +308,7 @@ theorem buildCalleeVM_bounded {s : State} {fuel' : Nat}
     (hfuel : fuel' < U64_MODULUS) (hrd : s.returnData.size ≤ 1024) :
     StateBounded ss ∧ ss.exitCode = none := by
   unfold Runner.buildCalleeVM at heq
-  extract_lets tryElf slots subInput baseMem jp at heq
+  extract_lets tryElf isElf slots subInput baseMem jp at heq
   have hbase : ∀ a, baseMem a < 256 := loadInput_lt _
   -- Make the heavy ELF-parse terms opaque: every later step is structural
   -- (case split / head-symbol match), so defeq must not unfold them.

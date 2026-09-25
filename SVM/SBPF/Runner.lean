@@ -677,33 +677,39 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
     let fnReg := Elf.buildFnRegistry calleeBytes h textSec.addr rawText
     some (textBytes, h, textSec, fnReg)
   do
-    -- M1 + H2: an ELF callee with unresolvable relocations (agave
-    -- `UnknownSymbol`) or a registry key collision (`SymbolHashCollision`)
-    -- fails the CPI load OUTRIGHT — must NOT fall through to the raw-text
-    -- branch, which would reinterpret ELF bytes as code.
-    if let some h := Elf.parseHeader calleeBytes then do
-      guard (Elf.relocationsResolvable calleeBytes h)
-      if let some textSec := Elf.findSection calleeBytes h Elf.textName then
-        let rawText := Elf.extractSection calleeBytes textSec
-        guard (Elf.registryCollisionFree
-          (Elf.buildFnRegistry calleeBytes h textSec.addr rawText))
-    let (textBytes, headerOpt, textSecOpt, fnReg) :
-        ByteArray × Option Elf.Header × Option Elf.SectionHeader
-        × List (Nat × Nat) :=
-      match tryElf with
-      | some (tb, h, ts, fr) => (tb, some h, some ts, fr)
-      -- Raw text (no ELF wrapper): registry = entrypoint at slot 0, mirroring
-      -- solana-sbpf's `new_from_text_bytes`.
-      | none => (calleeBytes, none, none, [(Elf.entrypointHash, 0)])
+    let isElf := calleeBytes.size ≥ 4 &&
+      Decode.readU8 calleeBytes 0 == 0x7f && Decode.readU8 calleeBytes 1 == 0x45 &&
+      Decode.readU8 calleeBytes 2 == 0x4c && Decode.readU8 calleeBytes 3 == 0x46
+    let (textBytes, headerOpt, textSecOpt, fnReg, v3ProgramOpt) ←
+      if isElf then
+        match Elf.readVersion calleeBytes with
+        | some .v3 => do
+          let program ← Elf.loadV3 calleeBytes
+          some (program.textBytes, none, none, [], some program)
+        | some .v0 => do
+          let (tb, h, ts, fr) ← tryElf
+          -- V0 relocation and registry failures are load failures.
+          guard (Elf.relocationsResolvable calleeBytes h)
+          guard (Elf.registryCollisionFree fr)
+          some (tb, some h, some ts, fr, none)
+        | none => none
+      else
+        -- Only a genuinely raw byte stream may use V0 text semantics.
+        some (calleeBytes, none, none, [(Elf.entrypointHash, 0)], none)
     let calleeInsns ← Decode.decodeProgram textBytes fnReg
+      (if v3ProgramOpt.isSome then .v3 else .v0)
     let slots : List AcctSlot := buildAcctSlots parsedAcctsIn
     let subInput : ByteArray :=
       buildCpiSubInputN slots pidBytesIn ixDataIn
     let subMem : Mem :=
       let baseMem := loadInput emptyMem subInput
-      match headerOpt with
-      | none => baseMem
-      | some h =>
+      match v3ProgramOpt with
+      | some program =>
+        let mText := loadBytesAt baseMem program.textBytes program.textAddr
+        loadBytesAt mText program.rodata 0
+      | none => match headerOpt with
+        | none => baseMem
+        | some h =>
         -- Load the callee's .text into its program region too (M2).
         let mText := match textSecOpt with
           | some textSec =>
@@ -721,19 +727,30 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
           loadBytesAt m1 relocated (Elf.relocateSecAddr sec.addr)
         | none => m1
     let entryPc :=
-      match headerOpt, textSecOpt with
-      | some h, some textSec =>
+      match v3ProgramOpt with
+      | some program =>
+        -- `loadV3` bounds the entry slot and the successful decode above
+        -- rules out a truncated final `lddw`.
+        (Decode.buildSlotMap textBytes)[program.entrySlot]?.getD 0
+      | none => match headerOpt, textSecOpt with
+        | some h, some textSec =>
         let slotMap := Decode.buildSlotMap textBytes
         let byteOff := if h.entry ≥ textSec.addr
                        then h.entry - textSec.addr else 0
         let slot := byteOff / 8
         if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
-      | _, _ => 0
+        | _, _ => 0
     let subRegions : Memory.RegionTable :=
-      match headerOpt, textSecOpt with
-      | some h, some textSec =>
-        elfRegions calleeBytes h textSec subInput.size
-      | _, _ => runtimeRegions subInput.size
+      match v3ProgramOpt with
+      | some program =>
+        ({ start := program.textAddr, size := program.textBytes.size,
+           writable := false } : Memory.Region)
+          :: (if program.rodata.isEmpty then []
+              else [{ start := 0, size := program.rodata.size, writable := false }])
+          ++ runtimeRegions subInput.size
+      | none => match headerOpt, textSecOpt with
+        | some h, some textSec => elfRegions calleeBytes h textSec subInput.size
+        | _, _ => runtimeRegions subInput.size
     let subS : State :=
       { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
         mem         := subMem

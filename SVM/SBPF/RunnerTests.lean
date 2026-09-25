@@ -894,6 +894,69 @@ def cpiCallerBytes : ByteArray :=
 def cpiRegistry : Nat → Option ByteArray :=
   fun pid => if pid = 0x42 then some cpiCalleeBytes else none
 
+/-- A registered strict-header V3 ELF executes as a CPI callee. -/
+def cpiV3Registry : Nat → Option ByteArray :=
+  fun pid => if pid = 0x42 then some v3HelloElf else none
+
+example :
+    Runner.runForExit cpiCallerBytes { programRegistry := cpiV3Registry } = some 42 := by
+  native_decide
+
+def cpiMalformedV3Registry : Nat → Option ByteArray :=
+  fun pid => if pid = 0x42 then some (v3HelloElf.extract 0 135) else none
+
+example :
+    Runner.runForExit cpiCallerBytes { programRegistry := cpiMalformedV3Registry } = some 1 := by
+  native_decide
+
+def cpiUnsupportedElfRegistry : Nat → Option ByteArray :=
+  fun pid => if pid = 0x42 then some (v3HelloElf.set! 48 2) else none
+
+example :
+    Runner.runForExit cpiCallerBytes { programRegistry := cpiUnsupportedElfRegistry } = some 1 := by
+  native_decide
+
+/-- The V3 callee changes account byte zero, then exits with failure.
+    The proposed write-back is visible before `Cpi.applyResult` rolls it back. -/
+private def v3FailingAccountElf : ByteArray :=
+  let header := ((v3HelloElf.extract 0 120).set! 96 40).set! 104 40
+  header ++ Decode.bytesOfHex
+    "bf1200000000000007020000600000007202000099000000b7000000010000009500000000000000"
+
+private def v3CpiRollbackBytes : Option (Nat × Nat) := do
+  let dataPtr := Memory.INPUT_START + 0x2000
+  let callerMem := Runner.loadBytesAt Runner.emptyMem (Decode.bytesOfHex "11") dataPtr
+  let caller : State := { regs := default, mem := callerMem, regions := [], pc := 0 }
+  let acct : Runner.ParsedAcct :=
+    { key := ⟨Array.replicate 32 0⟩
+      owner := ⟨Array.replicate 32 0⟩
+      lamports := 1
+      dataLen := 1
+      data := Decode.bytesOfHex "11"
+      isSigner := false
+      isWritable := true
+      executable := false
+      rentEpoch := 0
+      ownerPtr := Memory.INPUT_START + 0x1000
+      lamportsRefAddr := Memory.INPUT_START + 0x1008
+      dataPtr := dataPtr
+      dataLenRefAddr := Memory.INPUT_START + 0x1010 }
+  let (insns, subS, slots) ← Runner.buildCalleeVM caller 100
+    ⟨Array.replicate 32 0⟩ [acct] ByteArray.empty v3FailingAccountElf
+  let (subFinal, remaining) := Runner.executeFnCpiWithFuel (fun _ => none)
+    (Runner.fetchFromArray insns) subS 100
+  let (_, proposed, _) := Runner.commitCallee callerMem slots subFinal remaining
+  let after := Cpi.applyResult caller
+    { code := subFinal.exitCode.getD 1
+      mem := proposed
+      log := subFinal.log
+      returnData := subFinal.returnData
+      returnDataProgId := subFinal.returnDataProgId
+      cuConsumed := subFinal.cuConsumed }
+  some (proposed dataPtr, after.mem dataPtr)
+
+example : v3CpiRollbackBytes = some (0x99, 0x11) := by native_decide
+
 example :
     Runner.runForExit cpiCallerBytes { programRegistry := cpiRegistry } = some 0x77 := by
   native_decide
