@@ -290,6 +290,8 @@ def jump32Holds (cond : Jump32Cond) (lhs rhs : Nat) : Bool :=
     { s with regs := rf.set dst (resolveSrc rf src % U32_MODULUS), pc := pc' }
   | .neg32 dst =>
     { s with regs := rf.set dst (wrapNeg32 (rf.get dst)), pc := pc' }
+  | .endian _ _ _ =>
+    { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction }
 
   | .jeq dst src target =>
     { s with pc := if rf.get dst = resolveSrc rf src then target else pc' }
@@ -808,6 +810,9 @@ abbrev Step := State → PUnit × State
     ((), { s with regs := rf.set dst (resolveSrc rf src % U32_MODULUS), pc := pc' })
   | .neg32 dst =>
     ((), { s with regs := rf.set dst (wrapNeg32 (rf.get dst)), pc := pc' })
+  | .endian _ _ _ =>
+    ((), { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION,
+                   vmError := some .unsupportedInstruction })
 
   -- Conditional jumps
   | .jeq dst src target =>
