@@ -326,9 +326,9 @@ impl SymState {
 
     pub(super) fn take_retry_plan(&mut self) -> RetryPlan {
         if !self.new_blob_splits.is_empty() {
-            RetryPlan::BlobSplits(self.new_blob_splits.drain(..).collect())
+            RetryPlan::BlobSplits(std::mem::take(&mut self.new_blob_splits))
         } else if !self.new_hot.is_empty() {
-            RetryPlan::HotRegions(self.new_hot.drain(..).collect())
+            RetryPlan::HotRegions(std::mem::take(&mut self.new_hot))
         } else {
             RetryPlan::Ready
         }
