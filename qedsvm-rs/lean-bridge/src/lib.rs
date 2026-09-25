@@ -392,7 +392,9 @@ pub extern "C" fn lean_bls12_381_pairing_map(
     };
 
     let g1_vec: Vec<PodG1Point> = g1_bytes
-        .chunks_exact(96)
+        .as_chunks::<96>()
+        .0
+        .iter()
         .map(|c| {
             let mut a = [0u8; 96];
             a.copy_from_slice(c);
@@ -400,7 +402,9 @@ pub extern "C" fn lean_bls12_381_pairing_map(
         })
         .collect();
     let g2_vec: Vec<PodG2Point> = g2_bytes
-        .chunks_exact(192)
+        .as_chunks::<192>()
+        .0
+        .iter()
         .map(|c| {
             let mut a = [0u8; 192];
             a.copy_from_slice(c);
@@ -572,7 +576,12 @@ pub extern "C" fn lean_poseidon(
     if bytes.len() != expected {
         return none_obj();
     }
-    let chunks: Vec<&[u8]> = bytes.chunks_exact(32).collect();
+    let chunks: Vec<&[u8]> = bytes
+        .as_chunks::<32>()
+        .0
+        .iter()
+        .map(|chunk| chunk.as_slice())
+        .collect();
     let Ok(mut hasher) = Poseidon::<Fr>::new_circom(n as usize) else {
         return none_obj();
     };
