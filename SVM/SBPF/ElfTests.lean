@@ -19,6 +19,10 @@ example : (Elf.loadV3 (v3Minimal.set! 56 0)).isNone = true := by native_decide
 example : (Elf.loadV3 (v3Minimal.set! 24 16)).isNone = true := by native_decide
 example : (Elf.loadV3 (v3Minimal.set! 96 32)).isNone = true := by native_decide
 example : (Elf.loadV3 (v3Minimal.set! 68 4)).isNone = true := by native_decide
+example : (Elf.loadV3 (v3Minimal.set! 48 1)).isNone = true := by native_decide
+example : (Elf.loadV3 (v3Minimal.set! 72 121)).isNone = true := by native_decide
+example : (Elf.loadV3 (v3Minimal.extract 0 135)).isNone = true := by native_decide
+example : (Elf.loadV3 (v3Minimal.set! 24 1)).isNone = true := by native_decide
 example : (Elf.loadV3 (v3Minimal.set! 40 255)).map (·.entrySlot) = some 0 := by native_decide
 
 private def v3WithRodata : ByteArray := Decode.bytesOfHex
