@@ -150,6 +150,8 @@ inductive Insn
   | arsh32 (dst : Reg) (src : Src)
   | mov32  (dst : Reg) (src : Src)
   | neg32  (dst : Reg)
+  -- Endian conversion (width is one of 16, 32, 64 bits).
+  | endian (dst : Reg) (width : Nat) (bigEndian : Bool)
   -- Conditional jumps (target = absolute instruction index)
   | jeq   (dst : Reg) (src : Src) (target : Nat)
   | jne   (dst : Reg) (src : Src) (target : Nat)

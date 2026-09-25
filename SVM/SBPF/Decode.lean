@@ -171,7 +171,14 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   let writesDstReg : Bool :=
     (opcode &&& 0x07) == 0x01 || (opcode &&& 0x07) == 0x04
       || (opcode &&& 0x07) == 0x07 || opcode == 0x18
+  let storeOpcode : Bool :=
+    ([0x72, 0x6a, 0x62, 0x7a, 0x73, 0x6b, 0x63, 0x7b] : List Nat).contains opcode
+  let zeroDivisorOpcode : Bool :=
+    ([0x34, 0x37, 0x94, 0x97] : List Nat).contains opcode
   if writesDstReg && dstN == 10 then none else
+  if version == .v3 &&
+      (srcN > 10 || (dstN > 9 && !storeOpcode) ||
+       (zeroDivisorOpcode && imm == 0)) then none else
   if version == .v3 && opcode &&& 0x07 == 0x06 then
     let cond? : Option Jump32Cond := match opcode &&& 0xf7 with
       | 0x16 => some .eq | 0x26 => some .gt | 0x36 => some .ge
@@ -242,6 +249,10 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0xac => match dst?, src? with | some d, some s => some (.xor32  d (.reg s), 8) | _, _ => none
   | 0xbc => match dst?, src? with | some d, some s => some (.mov32  d (.reg s), 8) | _, _ => none
   | 0xcc => match dst?, src? with | some d, some s => some (.arsh32 d (.reg s), 8) | _, _ => none
+  | 0xd4 => if version == .v3 && (imm == 16 || imm == 32 || imm == 64) then
+      dst?.map fun d => (.endian d imm.toNat false, 8) else none
+  | 0xdc => if version == .v3 && (imm == 16 || imm == 32 || imm == 64) then
+      dst?.map fun d => (.endian d imm.toNat true, 8) else none
   -- Jumps (class = 5, immediate source). An out-of-code target makes the
   -- whole decode fail (`targetPc? = none`); see resolveTarget above.
   | 0x05 => targetPc?.map fun t => (.ja t, 8)
@@ -318,7 +329,7 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0x18 =>
     -- lddw needs 16 bytes; a truncated one at end-of-text is malformed
     -- (agave rejects the incomplete instruction).
-    if off + 16 > bytes.size then none
+    if off + 16 > bytes.size || readU8 bytes (off + 8) != 0 then none
     else
       let immLoNat := readU32LE bytes (off + 4)
       let immHiNat := readU32LE bytes (off + 12)
@@ -336,6 +347,7 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
 def decodeProgram (bytes : ByteArray) (fnReg : List (Nat × Nat) := [])
     (version : Version := .v0) :
     Option (Array Insn) :=
+  if version == .v3 && bytes.isEmpty then none else
   let slotMap := buildSlotMap bytes
   go 0 #[] (bytes.size + 1) slotMap
 where
