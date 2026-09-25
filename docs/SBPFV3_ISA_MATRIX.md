@@ -32,7 +32,7 @@ Stage 2 the lift column.
 | `NEG32`, `MOD32` imm/reg | `84`, `94/9c` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `XOR32`, `MOV32` imm/reg | `a4/ac`, `b4/bc` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `ARSH32` imm/reg | `c4/cc` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `LE`, `BE` | `d4/dc` | `V3DecodeTests` | `RunnerTests` | pending | pending |
+| `LE`, `BE` | `d4/dc` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_endian_widths_match_mollusk` | pending |
 | `ADD64`, `SUB64` imm/reg | `07/0f`, `17/1f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `MUL64`, `DIV64` imm/reg | `27/2f`, `37/3f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `OR64`, `AND64` imm/reg | `47/4f`, `57/5f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
@@ -40,15 +40,15 @@ Stage 2 the lift column.
 | `NEG64`, `MOD64` imm/reg | `87`, `97/9f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `XOR64`, `MOV64` imm/reg | `a7/af`, `b7/bf` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `ARSH64` imm/reg | `c7/cf` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `JEQ32`, `JGT32`, `JGE32` imm/reg | `16/1e`, `26/2e`, `36/3e` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `JSET32`, `JNE32`, `JSGT32`, `JSGE32` imm/reg | `46/4e`, `56/5e`, `66/6e`, `76/7e` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `JLT32`, `JLE32`, `JSLT32`, `JSLE32` imm/reg | `a6/ae`, `b6/be`, `c6/ce`, `d6/de` | `V3DecodeTests` | `RunnerTests` | pending | pending |
+| `JEQ32`, `JGT32`, `JGE32` imm/reg | `16/1e`, `26/2e`, `36/3e` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk` | pending |
+| `JSET32`, `JNE32`, `JSGT32`, `JSGE32` imm/reg | `46/4e`, `56/5e`, `66/6e`, `76/7e` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk` | pending |
+| `JLT32`, `JLE32`, `JSLT32`, `JSLE32` imm/reg | `a6/ae`, `b6/be`, `c6/ce`, `d6/de` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk` | pending |
 | `JA` | `05` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `JEQ64`, `JGT64`, `JGE64` imm/reg | `15/1d`, `25/2d`, `35/3d` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `JSET64`, `JNE64`, `JSGT64`, `JSGE64` imm/reg | `45/4d`, `55/5d`, `65/6d`, `75/7d` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `JLT64`, `JLE64`, `JSLT64`, `JSLE64` imm/reg | `a5/ad`, `b5/bd`, `c5/cd`, `d5/dd` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 | `CALL_IMM` static syscall/relative function | `85` | `ElfTests` | `RunnerTests` | pending | pending |
-| `CALL_REG` (`callx`, destination nibble) | `8d` | `V3DecodeTests` | `RunnerTests` | pending | pending |
+| `CALL_REG` (`callx`, destination nibble) | `8d` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_callx_frame_and_return_match_mollusk` | pending |
 | `EXIT` | `95` | `V3DecodeTests` | `RunnerTests` | pending | pending |
 
 Verifier rejection rules for V3:
