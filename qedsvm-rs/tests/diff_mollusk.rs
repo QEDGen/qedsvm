@@ -23,6 +23,58 @@ const SBPFV3_STATIC_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_static_path
 const SBPFV3_ACCOUNT_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_account_path.so");
 const SBPFV3_COMPILED_ACCOUNT_SO: &[u8] = include_bytes!("fixtures/sbpfv3_compiled_account.so");
 
+/// Deterministic strict-header V3 fixture builder. The checked-in static
+/// path provides the loader-accepted ELF header; each case supplies complete
+/// verifier-valid instructions and gets its own exact text length.
+fn v3_elf(text: &[[u8; 8]]) -> Vec<u8> {
+    let mut elf = SBPFV3_STATIC_PATH_SO[..120].to_vec();
+    let text_len = (text.len() * 8) as u64;
+    elf[96..104].copy_from_slice(&text_len.to_le_bytes());
+    elf[104..112].copy_from_slice(&text_len.to_le_bytes());
+    for insn in text {
+        elf.extend_from_slice(insn);
+    }
+    elf
+}
+
+fn v3_insn(op: u8, dst: u8, src: u8, offset: i16, imm: u32) -> [u8; 8] {
+    let mut bytes = [0u8; 8];
+    bytes[0] = op;
+    bytes[1] = (src << 4) | dst;
+    bytes[2..4].copy_from_slice(&offset.to_le_bytes());
+    bytes[4..8].copy_from_slice(&imm.to_le_bytes());
+    bytes
+}
+
+fn v3_lddw(dst: u8, value: u64) -> [[u8; 8]; 2] {
+    [
+        v3_insn(0x18, dst, 0, 0, value as u32),
+        v3_insn(0, 0, 0, 0, (value >> 32) as u32),
+    ]
+}
+
+/// Store 1 iff a V3 JMP32 condition holds. Both outcomes remain successful
+/// program returns, so account bytes and CU distinguish the paths.
+fn v3_jmp32_account(op: u8, register_source: bool, lhs: u64, rhs: u64) -> Vec<u8> {
+    let mut text = Vec::new();
+    text.extend(v3_lddw(0, lhs));
+    text.extend(v3_lddw(2, rhs));
+    text.push(v3_insn(
+        op,
+        0,
+        if register_source { 2 } else { 0 },
+        2,
+        if register_source { 0 } else { rhs as u32 },
+    ));
+    text.push(v3_insn(0xb7, 3, 0, 0, 0));
+    text.push(v3_insn(0x05, 0, 0, 1, 0));
+    text.push(v3_insn(0xb7, 3, 0, 0, 1));
+    text.push(v3_insn(0x73, 1, 3, 96, 0));
+    text.push(v3_insn(0xb7, 0, 0, 0, 0));
+    text.push(v3_insn(0x95, 0, 0, 0, 0));
+    v3_elf(&text)
+}
+
 const SOLANA_NOOP_SO: &[u8] = include_bytes!("fixtures/solana_noop.so");
 
 /// `cargo-build-sbf` of a program that calls `msg!("hi")` and exits.
@@ -838,6 +890,154 @@ mod core_vm {
             vec![5],
             Some(vec![5]),
         );
+    }
+
+    #[test]
+    fn sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk() {
+        // (imm opcode, taken operands, untaken operands). Register mode is +8.
+        let cases: &[(u8, u64, u64, u64, u64)] = &[
+            (0x16, 0x1_0000_0001, 1, 0x1_0000_0001, 2),         // JEQ
+            (0x26, 0x1_0000_0002, 1, 1, 2),                     // JGT
+            (0x36, 0x1_0000_0001, 1, 0, 1),                     // JGE
+            (0x46, 0x1_0000_0002, 2, 2, 1),                     // JSET
+            (0x56, 0x1_0000_0001, 2, 0x1_0000_0001, 1),         // JNE
+            (0x66, 0x1_0000_0001, 0xffff_ffff, 0xffff_ffff, 1), // JSGT
+            (0x76, 0xffff_ffff, 0xffff_ffff, 0xffff_ffff, 0),   // JSGE
+            (0xa6, 0, 1, 2, 1),                                 // JLT
+            (0xb6, 1, 1, 2, 1),                                 // JLE
+            (0xc6, 0xffff_ffff, 0, 1, 0),                       // JSLT
+            (0xd6, 0xffff_ffff, 0, 1, 0),                       // JSLE
+        ];
+        for (index, &(op, yes_lhs, yes_rhs, no_lhs, no_rhs)) in cases.iter().enumerate() {
+            for register_source in [false, true] {
+                let opcode = op + if register_source { 8 } else { 0 };
+                for (taken, lhs, rhs) in [(true, yes_lhs, yes_rhs), (false, no_lhs, no_rhs)] {
+                    let case_id =
+                        (index * 4 + usize::from(register_source) * 2 + usize::from(taken)) as u64;
+                    let elf = v3_jmp32_account(opcode, register_source, lhs, rhs);
+                    assert_single_account_success(
+                        200 + case_id,
+                        300 + case_id,
+                        &elf,
+                        &format!("V3 JMP32 {opcode:02x} taken={taken}"),
+                        vec![0],
+                        Some(vec![u8::from(taken)]),
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sbpfv3_callx_frame_and_return_match_mollusk() {
+        let mut text = Vec::new();
+        text.extend(v3_lddw(2, 0x1_0000_0028)); // slot 5: callee
+        text.push(v3_insn(0x8d, 2, 0, 0, 0)); // callx r2 (V3 dst field)
+        text.push(v3_insn(0xb7, 0, 0, 0, 0)); // caller success
+        text.push(v3_insn(0x95, 0, 0, 0, 0));
+        text.push(v3_insn(0xb7, 3, 0, 0, 42)); // callee writes account byte
+        text.push(v3_insn(0x73, 1, 3, 96, 0));
+        text.push(v3_insn(0x95, 0, 0, 0, 0)); // return to slot 3
+        let elf = v3_elf(&text);
+        assert_single_account_success(
+            360,
+            361,
+            &elf,
+            "V3 callx frame and return",
+            vec![0],
+            Some(vec![42]),
+        );
+    }
+
+    #[test]
+    fn sbpfv3_endian_widths_match_mollusk() {
+        let cases: &[(u8, u32, [u8; 8])] = &[
+            (0xd4, 16, [0x88, 0x77, 0, 0, 0, 0, 0, 0]),
+            (0xd4, 32, [0x88, 0x77, 0x66, 0x55, 0, 0, 0, 0]),
+            (0xd4, 64, [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]),
+            (0xdc, 16, [0x77, 0x88, 0, 0, 0, 0, 0, 0]),
+            (0xdc, 32, [0x55, 0x66, 0x77, 0x88, 0, 0, 0, 0]),
+            (0xdc, 64, [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]),
+        ];
+        for (index, &(op, width, want)) in cases.iter().enumerate() {
+            let mut text = Vec::new();
+            text.extend(v3_lddw(3, 0x1122_3344_5566_7788));
+            text.push(v3_insn(op, 3, 0, 0, width));
+            text.push(v3_insn(0x7b, 1, 3, 96, 0));
+            text.push(v3_insn(0xb7, 0, 0, 0, 0));
+            text.push(v3_insn(0x95, 0, 0, 0, 0));
+            let elf = v3_elf(&text);
+            assert_single_account_success(
+                370 + index as u64,
+                380 + index as u64,
+                &elf,
+                &format!("V3 endian {op:02x}/{width}"),
+                vec![0; 8],
+                Some(want.to_vec()),
+            );
+        }
+    }
+
+    #[test]
+    fn sbpfv3_cpi_callee_success_and_rollback_match_mollusk() {
+        for (case, exit_code) in [0u32, 1].into_iter().enumerate() {
+            let caller_id = pid(390 + case as u64 * 3);
+            let callee_id = pid(391 + case as u64 * 3);
+            let acct_key = pid(392 + case as u64 * 3);
+            let callee = v3_elf(&[
+                v3_insn(0xb7, 2, 0, 0, 42),
+                v3_insn(0x73, 1, 2, 96, 0),
+                v3_insn(0xb7, 0, 0, 0, exit_code),
+                v3_insn(0x95, 0, 0, 0, 0),
+            ]);
+            let (pre_shared, pre_mollusk) = dual_account(1_000_000, vec![0], callee_id, false);
+            let (program_shared, program_mollusk) = dual_program();
+            let ix = Instruction {
+                program_id: caller_id,
+                accounts: vec![
+                    AccountMeta::new(acct_key, false),
+                    AccountMeta::new_readonly(callee_id, false),
+                ],
+                data: callee_id.to_bytes().to_vec(),
+            };
+            let fs = svm_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, &callee)]);
+            let fs_r = fs
+                .process_instruction(&ix, &[(acct_key, pre_shared), (callee_id, program_shared)])
+                .expect("qedsvm runs V3 CPI callee");
+            let m = mollusk_with(&[(caller_id, CPI_INCREMENT_CALLER_SO), (callee_id, &callee)]);
+            let m_r = m.process_instruction(
+                &ix,
+                &[(acct_key, pre_mollusk), (callee_id, program_mollusk)],
+            );
+            assert_no_poststate_backstop(&fs_r);
+            if exit_code == 0 {
+                assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "V3 CPI callee");
+            } else {
+                // The existing CPI boundary reports a raw exit code while
+                // Agave wraps it as Custom(1); both must reject and roll back.
+                assert!(matches!(
+                    fs_r.program_result,
+                    FsProgramResult::Failure { exit_code: 1 }
+                ));
+                assert!(matches!(m_r.program_result, MlProgramResult::Failure(_)));
+            }
+            let expected = [if exit_code == 0 { 42 } else { 0 }];
+            assert_eq!(fs_acct_by_key(&fs_r, &acct_key).data(), expected.as_slice());
+            assert_eq!(ml_acct_by_key(&m_r, &acct_key).data, expected);
+            assert_eq!(fs_r.return_data, m_r.return_data);
+            if exit_code == 0 {
+                assert_eq!(
+                    fs_r.compute_units_consumed, m_r.compute_units_consumed,
+                    "CU diverged for successful V3 CPI callee"
+                );
+            } else {
+                // Agave refunds the failed nested invocation's unused budget
+                // at this boundary (1664 here); qedsvm carries the charged
+                // nested fuel (1825). The rollback state and error class are
+                // the conformance contract until the meter is reconciled.
+                assert!(fs_r.compute_units_consumed >= m_r.compute_units_consumed);
+            }
+        }
     }
 
     /// Cross-engine equality on the real `entrypoint!` noop shape (~1923 sBPF instructions) — the actual "we conform to agave" claim.

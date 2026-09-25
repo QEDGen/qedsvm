@@ -176,10 +176,9 @@ jobs:
         working-directory: qedsvm-rs
         run: cargo test -p qedsvm -p qedsvm-bridge -p qedsvm-buildscript
 
-      - name: Lean runner integration tests
-        # RunnerTests is intentionally not imported by the production SVM
-        # aggregator; build its exact native_decide assertions explicitly.
-        run: lake build SVM.SBPF.RunnerTests
+      - name: Lean V3 loader, decoder, runner, and boundedness tests
+        # These modules are outside the production SVM aggregator.
+        run: lake build SVM.SBPF.V3DecodeTests SVM.SBPF.ElfTests SVM.SBPF.RunnerTests SVM.SBPF.BoundedCpi
 
       - name: Differential conformance vs mollusk/agave
         # Empirical soundness backstop: runs the compiled Lean interpreter

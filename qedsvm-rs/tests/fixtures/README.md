@@ -30,6 +30,13 @@ update, and its differential test compares the account data and 110 CU.
 These two small fixtures are hand-assembled to keep their sectionless ELF
 layout and selected-path instruction sequence fixed.
 
+The differential test also builds strict-header V3 images in memory for the
+complete JMP32 condition/source matrix, `callx` frame/return, endian widths,
+and a CPI callee success/rollback pair. Successful paths compare account bytes,
+return data, and compute units; the rollback path compares error class and
+post-state bytes. Its failed-CPI meter currently records qedsvm's charged
+nested fuel separately from Mollusk's refunded meter.
+
 ## `sbpfv3_compiled_account.so`
 
 Built from `sbpfv3_compiled_account_src` with `cargo-build-sbf 4.3.0 --arch
