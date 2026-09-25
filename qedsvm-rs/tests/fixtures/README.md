@@ -23,9 +23,25 @@ update, and its differential test compares the account data and 110 CU.
 - `sbpfv3_static_path.so`: `65683b76a373d24c167544d149820944919e177e60a2f5d2f2f35b0337bd5891`
 - `sbpfv3_account_path.so`: `6731c90b809e1befa31aa19da83fb8b10a7b269934673d995125f10938a90c6d`
 
-These fixtures are hand-assembled because the local `cargo-build-sbf 3.1.11`
-installation uses platform-tools 1.52; compiling V3 source requires a newer
-toolchain.
+These two small fixtures are hand-assembled to keep their sectionless ELF
+layout and selected-path instruction sequence fixed.
+
+## `sbpfv3_compiled_account.so`
+
+Built from `sbpfv3_compiled_account_src` with `cargo-build-sbf 4.3.0 --arch
+v3` and platform-tools 1.57. Rebuild from the source directory with
+`cargo-build-sbf --arch v3`, then copy
+`target/deploy/qedsvm_sbpfv3_compiled_account.so` here. SHA-256:
+`576074e54158e103ee42ac68ef86cd190091177b2304ff8df94f3da880b3f34c`.
+
+The source uses Rust for the guarded account-byte update, relative internal
+call, and static `sol_log_64_` syscall. Two inline eight-byte instructions encode
+`jeq32` and its no-op fall-through because LLVM's BPF inline assembler does
+not accept the mnemonic. `sbpfv3_compiled_account.pcs` was captured with
+`QEDSVM_TRACE_OUT` from the updating differential test. `qedlift` emits
+`Generated.Sbpfv3CompiledAccountLifted` from that trace. Both updating and
+guard-skipping paths match Mollusk on account bytes and compute units (117
+and 6 respectively).
 
 ## `sbpfv3_syscall_static.so`
 

@@ -20,11 +20,14 @@
 - Completed: version-aware Rust symbolic execution and call classification,
   V3 decode pins, a full V3 ELF-to-text pin, and a generated selected-path
   account-byte `cuTripleWithinMem` theorem without `sorry`.
-- Remaining scope: a toolchain-built V3 fixture after upgrading local
-  platform-tools beyond 1.52. The checked-in fixture is reproducibly
-  hand-assembled and compared with Mollusk. V3 lifting deliberately rejects
-  JMP32 forms beyond `JEQ32_IMM`, `callx`, unknown syscalls, and shared-text
-  mode until their symbolic path specs are implemented.
+- Completed: a source-backed V3 ELF built with `cargo-build-sbf 4.3.0`
+  and platform-tools 1.57, including JMP32, relative call, static syscall,
+  and guarded account update. Its captured selected path yields a generated
+  Lean triple, and both guard outcomes match Mollusk. A symbolic JMP32
+  proof-composition issue found by this fixture was fixed in `qedlift`.
+- Remaining scope: V3 lifting deliberately rejects JMP32 forms beyond
+  `JEQ32_IMM`, `callx`, unknown syscalls, and shared-text mode until their
+  symbolic path specs are implemented.
 
 ## Global Constraints
 

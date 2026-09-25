@@ -24,6 +24,26 @@ fn lifts_v3_account_path_with_versioned_decode_pins() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn lifts_toolchain_built_v3_account_path() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_compiled_account.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let trace = [11, 12, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 17];
+    let result = lifter.lift(LiftOptions {
+        trace: Some(&trace),
+        ..LiftOptions::default()
+    })?;
+    assert!(result.lean.contains("_v3_elf_text"));
+    assert!(result.lean.contains("jmp32_imm_spec .eq"));
+    assert!(result.lean.contains("simp only [h_branch0, if_true]"));
+    assert_eq!(
+        result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CompiledAccountLifted.lean")
+    );
+    Ok(())
+}
+
+#[test]
 fn unknown_v3_static_syscall_has_typed_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_syscall_static.so");
     let program = ProgramImage::load(path)?;

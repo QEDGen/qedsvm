@@ -21,6 +21,7 @@ const NOOP_SO: &[u8] = include_bytes!("fixtures/noop.so");
 /// Strict-header V3: JMP32, relative call, and static sol_log_64_ syscall.
 const SBPFV3_STATIC_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_static_path.so");
 const SBPFV3_ACCOUNT_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_account_path.so");
+const SBPFV3_COMPILED_ACCOUNT_SO: &[u8] = include_bytes!("fixtures/sbpfv3_compiled_account.so");
 
 const SOLANA_NOOP_SO: &[u8] = include_bytes!("fixtures/solana_noop.so");
 
@@ -812,6 +813,30 @@ mod core_vm {
             "sBPF V3 account path",
             vec![5],
             Some(vec![6]),
+        );
+    }
+
+    #[test]
+    fn sbpfv3_compiled_account_matches_mollusk() {
+        assert_single_account_success(
+            74,
+            75,
+            SBPFV3_COMPILED_ACCOUNT_SO,
+            "sBPF V3 compiled account path",
+            vec![1],
+            Some(vec![2]),
+        );
+    }
+
+    #[test]
+    fn sbpfv3_compiled_account_guard_skips_update() {
+        assert_single_account_success(
+            76,
+            77,
+            SBPFV3_COMPILED_ACCOUNT_SO,
+            "sBPF V3 compiled guard path",
+            vec![5],
+            Some(vec![5]),
         );
     }
 

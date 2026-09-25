@@ -856,7 +856,7 @@ pub(super) fn spec_call_for(
             let v_dst = reg_val_lean(dst);
             let h = branch_hyp_name.unwrap_or("h_branch?");
             format!(
-                "have {hyp_name} := jmp32_imm_spec .eq {} {} ({}) {} {}\n  simp [{h}] at {hyp_name}",
+                "have {hyp_name} := jmp32_imm_spec .eq {} {} ({}) {} {}\n  simp only [{h}, if_true] at {hyp_name}",
                 reg(dst), imm, v_dst, pc, jt,
             )
         }

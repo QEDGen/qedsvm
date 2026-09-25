@@ -115,7 +115,7 @@ theorem Sbpfv3AccountPathLifted_lifted_spec
                   rt.containsWritable (effectiveAddr baseAddr 96) 1 = true) := by
   have h_0 := mov64_imm_spec .r0 1 (vR0Old) 0 (by decide)
   have h_1 := jmp32_imm_spec .eq .r0 1 (toU64 1) 1 3
-  simp [h_branch0] at h_1
+  simp only [h_branch0, if_true] at h_1
   have h_3 := call_local_spec 5 [] (vR6Old) (vR7Old) (vR8Old) (vR9Old) (vR10Old) 3
   have h_5 := ldxb_spec .r2 .r1 96 (vR2Old) (baseAddr) oldMemB_0 5 (by decide)
   have h_6 := add64_imm_spec .r2 1 (oldMemB_0 % 256) 6 (by decide)
