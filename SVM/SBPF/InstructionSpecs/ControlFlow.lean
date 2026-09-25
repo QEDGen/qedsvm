@@ -87,40 +87,4 @@ theorem ja_spec (target pc : Nat) :
       | (rw [PartialState.union_callStack_of_left_none (by first | rfl | simp)] at hva
          exact hcompat.callStack cs (by rw [← hu]; exact hva))
 
-/-! ## Indirect call: `callx`
-
-Per `Execute.lean`, `.callx reg` is a tail-call/panic-style jump: PC moves
-to `regs[reg]`, no callStack push, no register writes. The exit PC is
-value-dependent (`vReg`), so the caller must know `reg`'s entry value to
-compose this into a chain.
-
-Built by specializing `cuTripleWithin_1reg_cjump` with `cond := True`,
-`target := vReg` (so `if True then vReg else pc + 1` reduces to `vReg`). -/
-
-/-- `callx reg`: indirect call. The model fails closed (real sBPF V0
-    frame-push + vaddr→PC translation + depth check are not modeled), so
-    a step on `.callx` aborts with `ERR_UNSUPPORTED_INSTRUCTION`. A lift
-    that reaches a `callx` therefore proves an ABORT at that point. See
-    docs/SOUNDNESS_AUDIT_* (C2). -/
-theorem callx_aborts_spec (reg : Reg) (pc : Nat) :
-    cuTripleAbortsWithin 1 0 pc
-      (CodeReq.singleton pc (.callx reg))
-      emp ERR_UNSUPPORTED_INSTRUCTION := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
-  obtain ⟨hp, hcompat, h1, hR, hd, hu, hP1, hRsat⟩ := hPR
-  rw [hP1, PartialState.union_empty_left] at hu
-  rw [hP1] at hd
-  clear hP1 h1
-  have hfetch : fetch s.pc = some (.callx reg) := by
-    rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hexec : executeFn fetch s 1 = chargeCu (step (.callx reg) s) := by
-    rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
-  · rw [hexec]
-    show (step (.callx reg) s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION
-    rfl
-  · rw [hexec]; simp [step]
-
-
 end SVM.SBPF

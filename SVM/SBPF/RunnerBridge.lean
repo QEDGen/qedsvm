@@ -129,6 +129,7 @@ theorem step_callStack_empty_preserved (insn : Insn) (s : State)
     (step insn s).callStack = [] := by
   cases insn with
   | call_local _ => simp [Insn.isCallLocal] at h_ncl
+  | callx _ => simp [Insn.isCallLocal] at h_ncl
   | exit =>
     -- callStack=[] takes the halt arm
     simp only [step, h_cs]

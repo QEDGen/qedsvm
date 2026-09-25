@@ -270,14 +270,17 @@ theorem commitCallee_exitCode_lt (callerMem : Mem) (slots : List Runner.AcctSlot
     `cuBudget := fuel'`, default heap pointer, inherited return-data. -/
 theorem StateBounded.cpi_sub (s : State) (m : Mem) (rt : Memory.RegionTable)
     (pcv : Nat) (pid : ByteArray) (privs : List (ByteArray × Bool × Bool))
-    (fuel' : Nat) (hm : ∀ a, m a < 256) (hfuel : fuel' < U64_MODULUS)
+    (fuel' programTextAddr : Nat) (programSlotMap : Array Nat)
+    (hm : ∀ a, m a < 256) (hfuel : fuel' < U64_MODULUS)
     (hrd : s.returnData.size ≤ 1024) :
     StateBounded { regs := { r1 := INPUT_START, r10 := STACK_START + 0x1000 },
                    mem := m, regions := rt, pc := pcv, log := s.log,
                    returnData := s.returnData,
                    returnDataProgId := s.returnDataProgId,
                    cuBudget := fuel', progIdBytes := pid, origPrivs := privs,
-                   invokeDepth := s.invokeDepth + 1 } :=
+                   invokeDepth := s.invokeDepth + 1,
+                   programTextAddr := programTextAddr,
+                   programSlotMap := programSlotMap } :=
   { regs_lt := by intro r; cases r <;> simp [RegFile.get, U64_MODULUS] <;> decide
     stack_r10 := rfl
     stack_depth := by show List.length [] ≤ MAX_CALL_DEPTH; decide
@@ -333,7 +336,7 @@ theorem buildCalleeVM_bounded {s : State} {fuel' : Nat}
   all_goals simp only [Option.some.injEq, Prod.mk.injEq] at heq
   all_goals obtain ⟨-, hss, -⟩ := heq
   all_goals subst hss
-  all_goals refine ⟨StateBounded.cpi_sub _ _ _ _ _ _ _ ?_ hfuel hrd, rfl⟩
+  all_goals refine ⟨StateBounded.cpi_sub _ _ _ _ _ _ _ _ _ ?_ hfuel hrd, rfl⟩
   -- Each remaining goal is `∀ a, (loadBytesAt-chain over baseMem) a < 256`:
   -- peel one loader per step down to the input image.
   all_goals
@@ -527,6 +530,14 @@ theorem step_exitBounded (insn : Insn) {s : State} (hb : StateBounded s)
     · intro v hv
       simp only [Option.some.injEq] at hv
       exact hv ▸ hb.regs_lt .r0
+  case callx reg =>
+    intro v hv
+    simp only [step, execCallx] at hv
+    repeat' split at hv
+    all_goals
+      first
+        | exact he v hv
+        | (simp only [Option.some.injEq] at hv; exact hv ▸ (by decide))
   all_goals
     simp only [step] <;> (repeat' split) <;>
       first
