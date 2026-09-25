@@ -17,8 +17,11 @@ instruction classes plus a byte update in account input. `diff_mollusk`
 compares both binaries with Mollusk, including resulting account data and
 compute units. V0 remains supported.
 
-`qedlift` emits the checked `Generated.Sbpfv3AccountPathLifted` selected-path
-`cuTripleWithinMem` theorem for the account update. Its full-ELF pin connects
+`qedlift` emits checked selected-path `cuTripleWithinMem` theorems for both
+the sectionless account fixture (`Generated.Sbpfv3AccountPathLifted`) and a
+toolchain-built V3 ELF (`Generated.Sbpfv3CompiledAccountLifted`). The latter
+uses a captured execution trace and proves an update to the account byte
+under its path hypotheses. Their full-ELF pins connect
 the strict V3 loader to the text used by its versioned per-PC decode pins.
 The current V3 lifting subset accepts `JEQ32_IMM`, relative internal calls,
 and modeled static syscalls; other JMP32 forms, `callx`, unknown syscalls, and
