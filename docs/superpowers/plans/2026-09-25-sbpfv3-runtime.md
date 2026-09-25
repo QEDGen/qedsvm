@@ -108,10 +108,12 @@
 - [ ] **Step 1: Build source-backed V3 fixtures** with `cargo-build-sbf --arch v3` using platform-tools 1.57. Add hand-assembled strict-header fixtures only for verifier-valid forms LLVM does not emit. Record each source, exact build command, and SHA-256; reject a rebuilt binary whose hash changed unexpectedly.
 - [ ] **Step 2: Add red differential cases** for both sides of each JMP32 condition, callx and relative call/return, endian/width boundaries, and a V3 CPI callee's success and rollback. Follow the existing `sbpfv3_compiled_account_matches_mollusk` assertion shape in `diff_mollusk.rs`.
 - [ ] **Step 3: Fix only observed semantic discrepancies** in the decoder, runner, or fixture. Update the matrix row with the test name and its measured compute units after it agrees with Mollusk.
-- [ ] **Step 4: Run the Stage 1 gates:**
+- [ ] **Step 4: Add an explicit CI build of `SVM.SBPF.V3DecodeTests`, `SVM.SBPF.ElfTests`, `SVM.SBPF.RunnerTests`, and `SVM.SBPF.BoundedCpi`.** These test modules are outside the production Lean aggregator, so `lake build` alone is not their gate.
+- [ ] **Step 5: Run the Stage 1 gates:**
 
   ```text
   lake build
+  lake build SVM.SBPF.V3DecodeTests SVM.SBPF.ElfTests SVM.SBPF.RunnerTests SVM.SBPF.BoundedCpi
   lake build Examples
   cargo test --workspace --quiet
   cargo test --features diff-mollusk --quiet
@@ -120,7 +122,7 @@
   ```
 
   Run cargo commands from `qedsvm-rs/`. Confirm all matrix rows are complete, V0 regressions pass, and no theorem uses `sorry`.
-- [ ] **Step 5: Commit** with `git commit -m "test(sbpfv3): gate full V3 execution against Mollusk"`.
+- [ ] **Step 6: Commit** with `git commit -m "test(sbpfv3): gate full V3 execution against Mollusk"`.
 
 ## Stage 1 handoff
 
