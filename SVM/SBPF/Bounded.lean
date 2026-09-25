@@ -652,6 +652,44 @@ theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
         rcases List.mem_cons.mp hf with rfl | hf'
         · exact ⟨h.regs_lt .r6, h.regs_lt .r7, h.regs_lt .r8, h.regs_lt .r9⟩
         · exact h.frames_lt f hf'
+  case callx reg =>
+    simp only [step, execCallx]
+    split
+    · exact h.with_abort _ _
+    split
+    · exact h.with_abort _ _
+    split
+    · exact h.with_abort _ _
+    · next target htarget =>
+      have hdepth : s.callStack.length < MAX_CALL_DEPTH := by omega
+      have hr10 := h.r10_eq
+      have hd := h.stack_depth
+      refine
+        { regs_lt := ?_
+          stack_r10 := ⟨rfl, h.stack_r10⟩
+          stack_depth := ?_
+          frames_lt := ?_
+          cuBudget_lt := h.cuBudget_lt
+          heapNext_le := h.heapNext_le
+          returnData_le := h.returnData_le
+          mem_lt := h.mem_lt }
+      · intro r
+        cases r <;>
+          first
+            | exact h.regs_lt .r0 | exact h.regs_lt .r1 | exact h.regs_lt .r2
+            | exact h.regs_lt .r3 | exact h.regs_lt .r4 | exact h.regs_lt .r5
+            | exact h.regs_lt .r6 | exact h.regs_lt .r7 | exact h.regs_lt .r8
+            | exact h.regs_lt .r9
+            | (show s.regs.r10 + 0x1000 < U64_MODULUS
+               simp only [STACK_START, MAX_CALL_DEPTH, U64_MODULUS] at hr10 hd ⊢
+               omega)
+      · show (_ :: s.callStack).length ≤ MAX_CALL_DEPTH
+        simp only [List.length_cons, MAX_CALL_DEPTH] at hdepth ⊢
+        omega
+      · intro f hf
+        rcases List.mem_cons.mp hf with rfl | hf'
+        · exact ⟨h.regs_lt .r6, h.regs_lt .r7, h.regs_lt .r8, h.regs_lt .r9⟩
+        · exact h.frames_lt f hf'
   case exit =>
     simp only [step]
     split
@@ -707,6 +745,7 @@ theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
         | exact h.with_set_reg (wrapSub32_lt _ _) _
         | exact h.with_set_reg (wrapMul32_lt _ _) _
         | exact h.with_set_reg (wrapNeg32_lt _) _
+        | exact h.with_set_reg (endianValue_lt _ _ _) _
         | exact h.with_set_reg (resolveSrc_lt h.regs_lt _) _
         | exact h.with_set_reg (Nat.mod_lt _ (by decide)) _
         | exact h.with_set_reg

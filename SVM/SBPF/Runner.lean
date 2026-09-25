@@ -763,7 +763,9 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
         cuBudget    := fuel'
         progIdBytes := pidBytesIn
         origPrivs   := parseInputPrivileges subInput
-        invokeDepth := s.invokeDepth + 1 }
+        invokeDepth := s.invokeDepth + 1
+        programTextAddr := v3ProgramOpt.map (·.textAddr) |>.getD 0
+        programSlotMap := if v3ProgramOpt.isSome then Decode.buildSlotMap textBytes else #[] }
     some (calleeInsns, subS, slots)
 
 /-- Post-invocation half of a CPI sub-VM launch: M6 read-only re-verify (a
@@ -985,7 +987,9 @@ def runElfV3WithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
       pc := entryPc
       cuBudget := cfg.cuBudget
       progIdBytes := cfg.progIdBytes
-      origPrivs := parseInputPrivileges cfg.input }
+      origPrivs := parseInputPrivileges cfg.input
+      programTextAddr := program.textAddr
+      programSlotMap := slotMap }
   some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 /-- Decode and run an sBPF ELF64 binary. `none` if malformed or no `.text`.

@@ -65,6 +65,271 @@ private def v3StaticSyscallElf : ByteArray :=
 
 example : Runner.runElfForExit v3StaticSyscallElf = some 0 := by native_decide
 
+/-- Sectionless V3 image for exact runtime opcode tests. Text is always the
+    only PT_LOAD segment, and its byte count is written to file/memory size. -/
+private def v3ElfWithText (text : ByteArray) : ByteArray :=
+  let size := UInt8.ofNat text.size
+  let header := ((v3HelloElf.extract 0 120).set! 96 size).set! 104 size
+  header ++ text
+
+private def v3CallxElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
+  "180100002000000000000000010000008d010000000000009500000000000000b70000002a0000009500000000000000")
+
+example : Runner.runElfForExit v3CallxElf = some 42 := by native_decide
+
+private def v3InvalidCallxElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
+  "b7010000000000008d010000000000009500000000000000")
+
+example : (Runner.runElf v3InvalidCallxElf).map (·.vmError) =
+    some (some .invalidPc) := by native_decide
+
+private def v3SavedRegsCallxElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
+  "b706000006000000b707000007000000b708000008000000b709000009000000180100004000000000000000010000008d010000000000009500000000000000b70600003c000000b707000046000000b708000050000000b70900005a0000009500000000000000")
+
+example : (Runner.runElf v3SavedRegsCallxElf).map
+    (fun s => (s.regs.r6, s.regs.r7, s.regs.r8, s.regs.r9,
+      s.regs.r10, s.callStack.length)) =
+    some (6, 7, 8, 9, Memory.STACK_START + 0x1000, 0) := by native_decide
+
+private def v3RecursiveCallxElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
+  "180100001000000000000000010000008d010000000000009500000000000000")
+
+example : (Runner.runElf v3RecursiveCallxElf { cuBudget := 200 }).map (·.vmError) =
+    some (some .callDepthExceeded) := by native_decide
+
+private def v3EndianElf (opcode width : UInt8) : ByteArray :=
+  v3ElfWithText <| Decode.bytesOfHex
+    "18000000887766550000000044332211d4000000100000009500000000000000"
+    |>.set! 16 opcode |>.set! 20 width
+
+example : Runner.runElfForExit (v3EndianElf 0xd4 16) = some 0x7788 := by native_decide
+example : Runner.runElfForExit (v3EndianElf 0xd4 32) = some 0x55667788 := by native_decide
+example : Runner.runElfForExit (v3EndianElf 0xd4 64) = some 0x1122334455667788 := by native_decide
+example : Runner.runElfForExit (v3EndianElf 0xdc 16) = some 0x8877 := by native_decide
+example : Runner.runElfForExit (v3EndianElf 0xdc 32) = some 0x88776655 := by native_decide
+example : Runner.runElfForExit (v3EndianElf 0xdc 64) = some 0x8877665544332211 := by native_decide
+
+/-- Each condition checks a strict V3 ELF whose two operands are loaded by
+    `lddw`; the branch selects a literal zero or one before exit. -/
+private def v3Jmp32Exit (opcode : UInt8) (registerSource : Bool)
+    (lhs rhs : Nat) : Option Nat :=
+  let text := Decode.bytesOfHex
+    "18000000000000000000000000000000180100000000000000000000000000001610020000000000b7000000000000000500010000000000b7000000010000009500000000000000"
+  let text := Elf.writeU32LE (Elf.writeU32LE text 4 lhs) 12 (lhs / 0x100000000)
+  let text := Elf.writeU32LE (Elf.writeU32LE text 20 rhs) 28 (rhs / 0x100000000)
+  let text := (text.set! 32 opcode).set! 33 (if registerSource then 0x10 else 0)
+  let text := if registerSource then text else Elf.writeU32LE text 36 rhs
+  Runner.runElfForExit (v3ElfWithText text)
+
+/-- Two literal operands feed one V3 ALU opcode, then the ELF exits with r0. -/
+private def v3AluExit (opcode : UInt8) (registerSource : Bool)
+    (lhs rhs : Nat) : Option Nat :=
+  let text := Decode.bytesOfHex
+    "180000000000000000000000000000001801000000000000000000000000000007100000000000009500000000000000"
+  let text := Elf.writeU32LE (Elf.writeU32LE text 4 lhs) 12 (lhs / 0x100000000)
+  let text := Elf.writeU32LE (Elf.writeU32LE text 20 rhs) 28 (rhs / 0x100000000)
+  let text := (text.set! 32 opcode).set! 33 (if registerSource then 0x10 else 0)
+  let text := if registerSource then text else Elf.writeU32LE text 36 rhs
+  Runner.runElfForExit (v3ElfWithText text)
+
+/-- A V3 memory opcode writes input byte zero, then loads it at the same width. -/
+private def v3MemoryExit (storeOp loadOp : UInt8) (registerStore : Bool) : Option Nat :=
+  let text := Decode.bytesOfHex
+    "b702000034120000720100003412000071010000000000009500000000000000"
+  let text := (text.set! 8 storeOp).set! 9 (if registerStore then 0x21 else 0x01)
+  let text := (text.set! 16 loadOp).set! 17 0x10
+  Runner.runElfForExit (v3ElfWithText text)
+    { input := ⟨Array.replicate 8 0⟩ }
+
+-- Boundary arithmetic in strict V3 ELFs; results are literal expected values.
+example : v3AluExit 0x7 false 0xffffffffffffffff 0x1 = some 0x0 := by native_decide
+example : v3AluExit 0x4 false 0xffffffff 0x1 = some 0x0 := by native_decide
+example : v3AluExit 0x17 false 0x0 0x1 = some 0xffffffffffffffff := by native_decide
+example : v3AluExit 0x14 false 0x0 0x1 = some 0xffffffffffffffff := by native_decide
+example : v3AluExit 0x2f true 0x100000000 0x2 = some 0x200000000 := by native_decide
+example : v3AluExit 0x2c true 0xffffffff 0x2 = some 0xfffffffffffffffe := by native_decide
+example : v3AluExit 0x3f true 0xffffffffffffffff 0x2 = some 0x7fffffffffffffff := by native_decide
+example : v3AluExit 0x3c true 0x100000000 0x2 = some 0x0 := by native_decide
+example : v3AluExit 0x9f true 0xffffffffffffffff 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0x9c true 0xffffffffffffffff 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0x4f true 0x100000000 0x1 = some 0x100000001 := by native_decide
+example : v3AluExit 0x4c true 0x100000000 0x1 = some 0x1 := by native_decide
+example : v3AluExit 0x5f true 0xffffffffffffffff 0x100000000 = some 0x100000000 := by native_decide
+example : v3AluExit 0x5c true 0xffffffffffffffff 0x100000000 = some 0x0 := by native_decide
+example : v3AluExit 0xaf true 0x100000000 0x1 = some 0x100000001 := by native_decide
+example : v3AluExit 0xac true 0x100000000 0x1 = some 0x1 := by native_decide
+example : v3AluExit 0x67 false 0x1 0x20 = some 0x100000000 := by native_decide
+example : v3AluExit 0x64 false 0x1 0x1f = some 0x80000000 := by native_decide
+example : v3AluExit 0x77 false 0x100000000 0x20 = some 0x1 := by native_decide
+example : v3AluExit 0x74 false 0xffffffff 0x1f = some 0x1 := by native_decide
+example : v3AluExit 0xc7 false 0xffffffffffffffff 0x1 = some 0xffffffffffffffff := by native_decide
+example : v3AluExit 0xc4 false 0xffffffff 0x1 = some 0xffffffff := by native_decide
+example : v3AluExit 0xb7 false 0x0 0xffffffff = some 0xffffffffffffffff := by native_decide
+example : v3AluExit 0xb4 false 0x0 0xffffffff = some 0xffffffff := by native_decide
+example : v3AluExit 0xbf true 0x0 0xffffffffffffffff = some 0xffffffffffffffff := by native_decide
+example : v3AluExit 0xbc true 0x0 0xffffffffffffffff = some 0xffffffff := by native_decide
+example : v3AluExit 0x87 false 0x1 0x0 = some 0xffffffffffffffff := by native_decide
+example : v3AluExit 0x84 false 0x1 0x0 = some 0xffffffff := by native_decide
+example : v3MemoryExit 0x72 0x71 false = some 0x34 := by native_decide
+example : v3MemoryExit 0x6a 0x69 false = some 0x1234 := by native_decide
+example : v3MemoryExit 0x62 0x61 false = some 0x1234 := by native_decide
+example : v3MemoryExit 0x7a 0x79 false = some 0x1234 := by native_decide
+example : v3MemoryExit 0x73 0x71 true = some 0x34 := by native_decide
+example : v3MemoryExit 0x6b 0x69 true = some 0x1234 := by native_decide
+example : v3MemoryExit 0x63 0x61 true = some 0x1234 := by native_decide
+example : v3MemoryExit 0x7b 0x79 true = some 0x1234 := by native_decide
+
+example : (Runner.runElf (v3ElfWithText (Decode.bytesOfHex
+    "71100000000000009500000000000000"))).map (·.vmError) =
+    some (some .accessViolation) := by native_decide
+example : (Runner.runElf (v3ElfWithText (Decode.bytesOfHex
+    "b700000001000000b7010000000000003f100000000000009500000000000000"))).map
+    (·.vmError) = some (some .divideByZero) := by native_decide
+example : (Runner.runElf (v3ElfWithText (Decode.bytesOfHex
+    "b700000001000000b7010000000000003c100000000000009500000000000000"))).map
+    (·.vmError) = some (some .divideByZero) := by native_decide
+
+-- Both branch outcomes for every V3 JMP32 condition and source mode.
+example : v3Jmp32Exit 0x16 false 0x100000001 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x16 false 0x100000001 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x1e true 0x100000001 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x1e true 0x100000001 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x26 false 0x100000002 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x26 false 0x1 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x2e true 0x100000002 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x2e true 0x1 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x36 false 0x100000001 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x36 false 0x0 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x3e true 0x100000001 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x3e true 0x0 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x46 false 0x100000002 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x46 false 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x4e true 0x100000002 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x4e true 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x56 false 0x100000001 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x56 false 0x100000001 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x5e true 0x100000001 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x5e true 0x100000001 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x66 false 0x100000001 0xffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x66 false 0xffffffff 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x6e true 0x100000001 0xffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x6e true 0xffffffff 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x76 false 0xffffffff 0xffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x76 false 0xffffffff 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0x7e true 0xffffffff 0xffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x7e true 0xffffffff 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xa6 false 0x0 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xa6 false 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xae true 0x0 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xae true 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xb6 false 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xb6 false 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xbe true 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xbe true 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xc6 false 0xffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xc6 false 0x1 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xce true 0xffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xce true 0x1 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xd6 false 0xffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xd6 false 0x1 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xde true 0xffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xde true 0x1 0x0 = some 0 := by native_decide
+
+-- Every V3 ALU source form executes in a strict ELF, in addition to the width boundaries above.
+example : v3AluExit 0x4 false 0x6 0x2 = some 0x8 := by native_decide
+example : v3AluExit 0xc true 0x6 0x2 = some 0x8 := by native_decide
+example : v3AluExit 0x14 false 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0x1c true 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0x24 false 0x6 0x2 = some 0xc := by native_decide
+example : v3AluExit 0x2c true 0x6 0x2 = some 0xc := by native_decide
+example : v3AluExit 0x34 false 0x6 0x2 = some 0x3 := by native_decide
+example : v3AluExit 0x3c true 0x6 0x2 = some 0x3 := by native_decide
+example : v3AluExit 0x44 false 0x6 0x2 = some 0x6 := by native_decide
+example : v3AluExit 0x4c true 0x6 0x2 = some 0x6 := by native_decide
+example : v3AluExit 0x54 false 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0x5c true 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0x64 false 0x6 0x2 = some 0x18 := by native_decide
+example : v3AluExit 0x6c true 0x6 0x2 = some 0x18 := by native_decide
+example : v3AluExit 0x74 false 0x6 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0x7c true 0x6 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0x94 false 0x6 0x2 = some 0x0 := by native_decide
+example : v3AluExit 0x9c true 0x6 0x2 = some 0x0 := by native_decide
+example : v3AluExit 0xa4 false 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0xac true 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0xb4 false 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0xbc true 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0xc4 false 0x6 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0xcc true 0x6 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0x7 false 0x6 0x2 = some 0x8 := by native_decide
+example : v3AluExit 0xf true 0x6 0x2 = some 0x8 := by native_decide
+example : v3AluExit 0x17 false 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0x1f true 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0x27 false 0x6 0x2 = some 0xc := by native_decide
+example : v3AluExit 0x2f true 0x6 0x2 = some 0xc := by native_decide
+example : v3AluExit 0x37 false 0x6 0x2 = some 0x3 := by native_decide
+example : v3AluExit 0x3f true 0x6 0x2 = some 0x3 := by native_decide
+example : v3AluExit 0x47 false 0x6 0x2 = some 0x6 := by native_decide
+example : v3AluExit 0x4f true 0x6 0x2 = some 0x6 := by native_decide
+example : v3AluExit 0x57 false 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0x5f true 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0x67 false 0x6 0x2 = some 0x18 := by native_decide
+example : v3AluExit 0x6f true 0x6 0x2 = some 0x18 := by native_decide
+example : v3AluExit 0x77 false 0x6 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0x7f true 0x6 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0x97 false 0x6 0x2 = some 0x0 := by native_decide
+example : v3AluExit 0x9f true 0x6 0x2 = some 0x0 := by native_decide
+example : v3AluExit 0xa7 false 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0xaf true 0x6 0x2 = some 0x4 := by native_decide
+example : v3AluExit 0xb7 false 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0xbf true 0x6 0x2 = some 0x2 := by native_decide
+example : v3AluExit 0xc7 false 0x6 0x2 = some 0x1 := by native_decide
+example : v3AluExit 0xcf true 0x6 0x2 = some 0x1 := by native_decide
+-- V3 JMP64 retains full-width signed and unsigned comparisons.
+example : v3Jmp32Exit 0x15 false 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x15 false 0x1 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x1d true 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x1d true 0x1 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x25 false 0x2 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x25 false 0x1 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x2d true 0x2 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x2d true 0x1 0x2 = some 0 := by native_decide
+example : v3Jmp32Exit 0x35 false 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x35 false 0x0 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x3d true 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0x3d true 0x0 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x45 false 0x2 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x45 false 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x4d true 0x2 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x4d true 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x55 false 0x1 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x55 false 0x1 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x5d true 0x1 0x2 = some 1 := by native_decide
+example : v3Jmp32Exit 0x5d true 0x1 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x65 false 0x1 0xffffffffffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x65 false 0xffffffffffffffff 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x6d true 0x1 0xffffffffffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x6d true 0xffffffffffffffff 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0x75 false 0xffffffffffffffff 0xffffffffffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x75 false 0xffffffffffffffff 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0x7d true 0xffffffffffffffff 0xffffffffffffffff = some 1 := by native_decide
+example : v3Jmp32Exit 0x7d true 0xffffffffffffffff 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xa5 false 0x0 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xa5 false 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xad true 0x0 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xad true 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xb5 false 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xb5 false 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xbd true 0x1 0x1 = some 1 := by native_decide
+example : v3Jmp32Exit 0xbd true 0x2 0x1 = some 0 := by native_decide
+example : v3Jmp32Exit 0xc5 false 0xffffffffffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xc5 false 0x1 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xcd true 0xffffffffffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xcd true 0x1 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xd5 false 0xffffffffffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xd5 false 0x1 0x0 = some 0 := by native_decide
+example : v3Jmp32Exit 0xdd true 0xffffffffffffffff 0x0 = some 1 := by native_decide
+example : v3Jmp32Exit 0xdd true 0x1 0x0 = some 0 := by native_decide
+
 /-! ## Demo 2 — arithmetic: `r0 := 10 + 5; exit` -/
 
 def addProgram : ByteArray := ⟨#[

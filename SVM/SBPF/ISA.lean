@@ -136,7 +136,7 @@ inductive Insn
   | arsh64 (dst : Reg) (src : Src)
   | mov64  (dst : Reg) (src : Src)
   | neg64  (dst : Reg)
-  -- ALU 32-bit (result zero-extended to 64 bits)
+  -- ALU 32-bit (ADD/SUB/MUL sign-extend in V3; other results zero-extend)
   | add32  (dst : Reg) (src : Src)
   | sub32  (dst : Reg) (src : Src)
   | mul32  (dst : Reg) (src : Src)

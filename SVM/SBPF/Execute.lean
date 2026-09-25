@@ -178,6 +178,48 @@ def jump32Holds (cond : Jump32Cond) (lhs rhs : Nat) : Bool :=
   | .sle => sa ≤ sb
   | .set => a &&& b != 0
 
+/-- V3 endian conversion on the host's little-endian representation. -/
+def endianValue (value width : Nat) (bigEndian : Bool) : Nat :=
+  let masked := value % (2 ^ width)
+  (if bigEndian then
+    (List.range (width / 8)).foldl
+      (fun acc i => acc * 256 + ((masked >>> (8 * i)) &&& 0xff)) 0
+  else masked) % U64_MODULUS
+
+theorem endianValue_lt (value width : Nat) (bigEndian : Bool) :
+    endianValue value width bigEndian < U64_MODULUS := by
+  unfold endianValue
+  exact Nat.mod_lt _ (by decide)
+
+/-- Translate a V3 indirect call's virtual address to a logical PC. -/
+def callxTarget (s : State) (reg : Reg) : Option Nat := do
+  let addr := s.regs.get reg
+  if s.programTextAddr = 0 || addr < s.programTextAddr then none else
+  let slot := (addr - s.programTextAddr) / 8
+  let pc ← s.programSlotMap[slot]?
+  if slot > 0 && s.programSlotMap[slot - 1]? == some pc then none
+  else some pc
+
+/-- Indirect V3 call, sharing the direct-call frame shape. Raw V0 state has
+    no V3 slot map and therefore retains its fail-closed indirect-call path. -/
+def execCallx (reg : Reg) (s : State) : State :=
+  if s.programSlotMap.isEmpty then
+    { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION,
+             vmError := some .unsupportedInstruction }
+  else if s.callStack.length ≥ MAX_CALL_DEPTH then
+    { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED,
+             vmError := some .callDepthExceeded }
+  else match callxTarget s reg with
+    | none => { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }
+    | some target =>
+      let rf := s.regs
+      let frame : CallFrame := {
+        retPc := s.pc + 1, savedR6 := rf.r6, savedR7 := rf.r7,
+        savedR8 := rf.r8, savedR9 := rf.r9, savedR10 := rf.r10 }
+      { s with pc := target
+               regs := { rf with r10 := rf.r10 + 0x1000 }
+               callStack := frame :: s.callStack }
+
 /-- Execute one instruction, returning the new state. -/
 @[simp] def step (insn : Insn) (s : State) : State :=
   let rf := s.regs
@@ -290,8 +332,8 @@ def jump32Holds (cond : Jump32Cond) (lhs rhs : Nat) : Bool :=
     { s with regs := rf.set dst (resolveSrc rf src % U32_MODULUS), pc := pc' }
   | .neg32 dst =>
     { s with regs := rf.set dst (wrapNeg32 (rf.get dst)), pc := pc' }
-  | .endian _ _ _ =>
-    { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction }
+  | .endian dst width bigEndian =>
+    { s with regs := rf.set dst (endianValue (rf.get dst) width bigEndian), pc := pc' }
 
   | .jeq dst src target =>
     { s with pc := if rf.get dst = resolveSrc rf src then target else pc' }
@@ -345,12 +387,7 @@ def jump32Holds (cond : Jump32Cond) (lhs rhs : Nat) : Bool :=
                regs := { rf with r10 := rf.r10 + 0x1000 }
                callStack := frame :: s.callStack }
 
-  | .callx _reg =>
-    -- Indirect call: V0's frame push + VA→PC translation + depth check aren't
-    -- modeled (and the target-register field varies across SBPF versions). Fail
-    -- closed rather than fabricate a bare jump that could prove a false exit code.
-    -- See docs/SOUNDNESS_AUDIT_*.md (C2).
-    { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction }
+  | .callx reg => execCallx reg s
 
   | .exit =>
     match s.callStack with
@@ -489,11 +526,12 @@ restores), bypassing `RegFile.set`, so the no-op lemma is untouched. -/
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
 
-/-- Whether an instruction is `.call_local` — the only `step` arm that pushes
-    onto `callStack` (`.exit` pops, but the run starts `callStack = []` and only
-    grows via `.call_local`). Used by the conditional r10 lemmas below. -/
+/-- Whether an instruction pushes a local call frame. `.exit` pops frames;
+    direct calls and V3 indirect calls push them. Used by the conditional
+    r10 lemmas below. -/
 def Insn.isCallLocal : Insn → Bool
   | .call_local _ => true
+  | .callx _ => true
   | _             => false
 
 /-- `execTryFind` preserves `callStack` in both arms. Companion to
@@ -607,6 +645,13 @@ need a `split` or match-case to surface the record-update. -/
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
 
+@[simp] theorem execCallx_preserves_regions (reg : Reg) (s : State) :
+    (execCallx reg s).regions = s.regions := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
+
 @[simp] theorem step_preserves_regions (insn : Insn) (s : State) :
     (step insn s).regions = s.regions := by
   cases insn <;>
@@ -615,6 +660,7 @@ need a `split` or match-case to surface the record-update. -/
     | (simp only [step]; rfl)
     | (simp only [step]; split <;> rfl)
     | (simp only [step]; cases s.callStack <;> rfl)
+    | (simp only [step]; exact execCallx_preserves_regions _ _)
     | (simp only [step]; exact execSyscall_preserves_regions _ _)
 
 @[simp] theorem executeFn_preserves_regions
@@ -659,6 +705,13 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
 
+@[simp] theorem execCallx_preserves_cuBudget (reg : Reg) (s : State) :
+    (execCallx reg s).cuBudget = s.cuBudget := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
+
 @[simp] theorem step_preserves_cuBudget (insn : Insn) (s : State) :
     (step insn s).cuBudget = s.cuBudget := by
   cases insn <;>
@@ -667,6 +720,7 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
     | (simp only [step]; rfl)
     | (simp only [step]; split <;> rfl)
     | (simp only [step]; cases s.callStack <;> rfl)
+    | (simp only [step]; exact execCallx_preserves_cuBudget _ _)
     | (simp only [step]; exact execSyscall_preserves_cuBudget _ _)
 
 @[simp] theorem executeFn_preserves_cuBudget
@@ -810,9 +864,8 @@ abbrev Step := State → PUnit × State
     ((), { s with regs := rf.set dst (resolveSrc rf src % U32_MODULUS), pc := pc' })
   | .neg32 dst =>
     ((), { s with regs := rf.set dst (wrapNeg32 (rf.get dst)), pc := pc' })
-  | .endian _ _ _ =>
-    ((), { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION,
-                   vmError := some .unsupportedInstruction })
+  | .endian dst width bigEndian =>
+    ((), { s with regs := rf.set dst (endianValue (rf.get dst) width bigEndian), pc := pc' })
 
   -- Conditional jumps
   | .jeq dst src target =>
@@ -861,9 +914,8 @@ abbrev Step := State → PUnit × State
                     regs := { rf with r10 := rf.r10 + 0x1000 }
                     callStack := frame :: s.callStack })
 
-  -- Indirect call — see step's `.callx` arm (fail closed, C2).
-  | .callx _reg =>
-    ((), { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION, vmError := some .unsupportedInstruction })
+  -- Indirect V3 call shares step's checked target and frame transition.
+  | .callx reg => ((), execCallx reg s)
 
   -- Exit
   | .exit =>
