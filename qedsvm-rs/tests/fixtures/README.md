@@ -1,5 +1,9 @@
 # Test fixtures
 
+The sBPF V3 opcode and verifier inventory, along with the pinned runtime
+and toolchain versions for these fixtures, is in
+[`docs/SBPFV3_ISA_MATRIX.md`](../../../docs/SBPFV3_ISA_MATRIX.md).
+
 ## `sbpfv3_minimal.so`
 
 Hand-assembled strict-header V3 ELF64 with one executable `PT_LOAD` segment,
