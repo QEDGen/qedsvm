@@ -52,7 +52,7 @@ def OobClockSysvarFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem OobClockSysvar_decodes :
-    Decode.decodeProgram OobClockSysvarBytes OobClockSysvarFnRegistry = some OobClockSysvarInsns := by
+    Decode.decodeProgramV0 OobClockSysvarBytes OobClockSysvarFnRegistry = some OobClockSysvarInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

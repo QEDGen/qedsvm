@@ -23,6 +23,12 @@ namespace SVM.SBPF.RunnerTests
 
 open SVM.SBPF
 
+example : (Decode.decodeProgram (Decode.bytesOfHex
+    "16000000010000009500000000000000")).isSome = true := by native_decide
+
+example : (Decode.decodeProgramV0 (Decode.bytesOfHex
+    "16000000010000009500000000000000")).isNone = true := by native_decide
+
 /-- Bare-bytecode fixtures must explicitly allocate every byte their syscall
     ABI may read or write. Memory is total underneath, but the runner's mapped
     input region is intentionally bounded by `RunConfig.input.size`. -/

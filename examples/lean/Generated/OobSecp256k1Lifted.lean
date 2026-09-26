@@ -62,7 +62,7 @@ def OobSecp256k1FnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem OobSecp256k1_decodes :
-    Decode.decodeProgram OobSecp256k1Bytes OobSecp256k1FnRegistry = some OobSecp256k1Insns := by
+    Decode.decodeProgramV0 OobSecp256k1Bytes OobSecp256k1FnRegistry = some OobSecp256k1Insns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

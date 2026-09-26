@@ -61,7 +61,7 @@ def GuardedAbortPanicFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem GuardedAbortPanic_decodes :
-    Decode.decodeProgram GuardedAbortPanicBytes GuardedAbortPanicFnRegistry = some GuardedAbortPanicInsns := by
+    Decode.decodeProgramV0 GuardedAbortPanicBytes GuardedAbortPanicFnRegistry = some GuardedAbortPanicInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

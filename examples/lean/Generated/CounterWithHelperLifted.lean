@@ -62,7 +62,7 @@ def CounterWithHelperFnRegistry : List (Nat × Nat) := [(1669671676, 0), (191075
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem CounterWithHelper_decodes :
-    Decode.decodeProgram CounterWithHelperBytes CounterWithHelperFnRegistry = some CounterWithHelperInsns := by
+    Decode.decodeProgramV0 CounterWithHelperBytes CounterWithHelperFnRegistry = some CounterWithHelperInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

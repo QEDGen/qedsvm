@@ -345,7 +345,7 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
     every internal call decodes to fail-closed `.call (.unknown _)`).
     `none` if any instruction fails to decode. -/
 def decodeProgram (bytes : ByteArray) (fnReg : List (Nat × Nat) := [])
-    (version : Version := .v0) :
+    (version : Version := .v3) :
     Option (Array Insn) :=
   if version == .v3 && bytes.isEmpty then none else
   let slotMap := buildSlotMap bytes
@@ -365,6 +365,12 @@ where
         match decodeInsn bytes slotMap off fnReg version with
         | none => none
         | some (insn, sz) => go (off + sz) (acc.push insn) fuel' slotMap
+
+/-- Explicit legacy raw-text decoder. New raw-byte callers use V3 through
+    `decodeProgram`; generated pre-V3 artifacts should name this route. -/
+def decodeProgramV0 (bytes : ByteArray) (fnReg : List (Nat × Nat) := []) :
+    Option (Array Insn) :=
+  decodeProgram bytes fnReg .v0
 
 end Decode
 end SVM.SBPF

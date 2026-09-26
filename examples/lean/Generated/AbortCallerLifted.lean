@@ -50,7 +50,7 @@ def AbortCallerFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem AbortCaller_decodes :
-    Decode.decodeProgram AbortCallerBytes AbortCallerFnRegistry = some AbortCallerInsns := by
+    Decode.decodeProgramV0 AbortCallerBytes AbortCallerFnRegistry = some AbortCallerInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple
