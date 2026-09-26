@@ -1,7 +1,7 @@
 //! Per-instruction spec-call emission: the `have h_<pc> := <spec> <args>`
 //! preamble lines `sl_block_iter` proof bodies consume.
 
-use solana_sbpf::ebpf;
+use solana_sbpf::{ebpf, program::SBPFVersion};
 
 use crate::core::{canon_addr, lean_off, reg_initial_name, reg_lit, Expr, Width};
 use crate::isa::render_callstack;
@@ -25,6 +25,7 @@ pub(super) struct SpecCall {
 ///   - `Some(false)` → use `jXX_imm_not_taken_spec` (post-PC = pc+1)
 ///   - `None`        → not applicable (non-branch instruction)
 pub(super) fn spec_call_for(
+    version: SBPFVersion,
     state: &SymState,
     insn: &ebpf::Insn,
     pc: usize,
@@ -69,6 +70,41 @@ pub(super) fn spec_call_for(
             _ => String::new(),
         }
     };
+    // V3 JMP32 shares one checked Lean spec across all eleven conditions and
+    // both source modes. Handle it before the legacy width-specific arms so a
+    // V3 trace can never accidentally select a 64-bit comparison theorem.
+    if version == SBPFVersion::V3 && insn.opc & 7 == 6 {
+        let cond = match insn.opc & 0xf7 {
+            JEQ32_IMM => "eq",
+            JNE32_IMM => "ne",
+            JGT32_IMM => "gt",
+            JGE32_IMM => "ge",
+            JLT32_IMM => "lt",
+            JLE32_IMM => "le",
+            JSGT32_IMM => "sgt",
+            JSGE32_IMM => "sge",
+            JSLT32_IMM => "slt",
+            JSLE32_IMM => "sle",
+            JSET32_IMM => "set",
+            _ => return None,
+        };
+        let h = branch_hyp_name.unwrap_or("h_branch?");
+        let line = if insn.opc & 8 == 0 {
+            format!(
+                "have {hyp_name} := jmp32_imm_spec .{cond} {} {} ({}) {} {}\n  simp only [{h}, if_true] at {hyp_name}",
+                reg(dst), imm, reg_val_lean(dst), pc, jt,
+            )
+        } else {
+            format!(
+                "have {hyp_name} := jmp32_reg_spec .{cond} {} {} ({}) ({}) {} {}\n  simp only [{h}, if_true] at {hyp_name}",
+                reg(dst), reg(src), reg_val_lean(dst), reg_val_lean(src), pc, jt,
+            )
+        };
+        return Some(SpecCall {
+            hyp_name,
+            have_line: line,
+        });
+    }
     let have_line = match insn.opc {
         LD_B_REG => {
             // ldxb_spec dst src off vOldDst baseAddr v pc hne (no < 2^64 bound — bytes always fit).

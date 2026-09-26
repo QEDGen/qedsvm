@@ -54,7 +54,7 @@ def VaultBlobFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem VaultBlob_decodes :
-    Decode.decodeProgram VaultBlobBytes VaultBlobFnRegistry = some VaultBlobInsns := by
+    Decode.decodeProgramV0 VaultBlobBytes VaultBlobFnRegistry = some VaultBlobInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple
