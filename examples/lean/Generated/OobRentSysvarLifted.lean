@@ -52,7 +52,7 @@ def OobRentSysvarFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem OobRentSysvar_decodes :
-    Decode.decodeProgram OobRentSysvarBytes OobRentSysvarFnRegistry = some OobRentSysvarInsns := by
+    Decode.decodeProgramV0 OobRentSysvarBytes OobRentSysvarFnRegistry = some OobRentSysvarInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

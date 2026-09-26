@@ -61,7 +61,7 @@ def GuardedAbortSuccessFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem GuardedAbortSuccess_decodes :
-    Decode.decodeProgram GuardedAbortSuccessBytes GuardedAbortSuccessFnRegistry = some GuardedAbortSuccessInsns := by
+    Decode.decodeProgramV0 GuardedAbortSuccessBytes GuardedAbortSuccessFnRegistry = some GuardedAbortSuccessInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

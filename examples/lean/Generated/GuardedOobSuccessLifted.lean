@@ -67,7 +67,7 @@ def GuardedOobSuccessFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem GuardedOobSuccess_decodes :
-    Decode.decodeProgram GuardedOobSuccessBytes GuardedOobSuccessFnRegistry = some GuardedOobSuccessInsns := by
+    Decode.decodeProgramV0 GuardedOobSuccessBytes GuardedOobSuccessFnRegistry = some GuardedOobSuccessInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

@@ -103,7 +103,7 @@ theorem loader_pipeline_resolves_internal_call :
       let raw := Elf.extractSection counterWithHelperSo ts
       let text := Elf.applyRelocations counterWithHelperSo h ts.addr raw
       let reg := Elf.buildFnRegistry counterWithHelperSo h ts.addr raw
-      Decode.decodeProgram text reg)
+      Decode.decodeProgramV0 text reg)
       = some counterWithHelperInsns := by native_decide
 
 /-! ## Registry collision gate (H2 residual)

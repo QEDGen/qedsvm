@@ -23,19 +23,24 @@ From the repository root:
 ```bash
 cargo run --manifest-path qedsvm-rs/Cargo.toml \
   -p qedlift -- \
-  --so qedsvm-rs/tests/fixtures/byte_increment.so \
-  --output examples/lean/Generated/ByteIncrementLifted.lean
+  --so qedsvm-rs/tests/fixtures/sbpfv3_compiled_account.so \
+  --trace qedsvm-rs/tests/fixtures/sbpfv3_compiled_account.pcs \
+  --output examples/lean/Generated/Sbpfv3CompiledAccountLifted.lean
 
 lake build ProofDemo
 ```
 
-This five-instruction fixture is straight-line, so it needs no IDL or trace. The
-generated module contains:
+This source-built V3 fixture uses `cargo-build-sbf --arch v3` with platform-tools
+1.57 and a captured selected path. The generated module contains:
 
 - the `.text` bytes extracted from `byte_increment.so`;
 - a theorem connecting those bytes to the decoded instructions;
 - a `cuTripleWithinMem` theorem with synthesized separation-logic assertions;
 - a proof body discharged by qedsvm's instruction specifications and tactics.
+
+Unqualified raw-byte decoding and execution use V3. Legacy V0 generated modules
+must call the explicit `Decode.decodeProgramV0` compatibility entrypoint; V0/V1/V2
+are deprecated and receive no new coverage.
 
 ## Normal `.so` to proof workflow
 
