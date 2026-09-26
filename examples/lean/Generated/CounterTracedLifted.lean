@@ -54,7 +54,7 @@ def CounterFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem Counter_decodes :
-    Decode.decodeProgram CounterBytes CounterFnRegistry = some CounterInsns := by
+    Decode.decodeProgramV0 CounterBytes CounterFnRegistry = some CounterInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

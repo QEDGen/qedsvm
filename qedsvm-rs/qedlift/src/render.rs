@@ -175,7 +175,7 @@ pub(super) fn decoded_insns_section(
     out.push_str("/-- The bytes decode exactly to the expected instruction array. -/\n");
     out.push_str(&format!(
         "theorem {}_decodes :\n    \
-         Decode.decodeProgram {}Bytes {}FnRegistry = some {}Insns := by\n  \
+         Decode.decodeProgramV0 {}Bytes {}FnRegistry = some {}Insns := by\n  \
          native_decide\n\n",
         module_name, module_name, module_name, module_name,
     ));

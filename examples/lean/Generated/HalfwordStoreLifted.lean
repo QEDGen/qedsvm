@@ -56,7 +56,7 @@ def HalfwordStoreFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem HalfwordStore_decodes :
-    Decode.decodeProgram HalfwordStoreBytes HalfwordStoreFnRegistry = some HalfwordStoreInsns := by
+    Decode.decodeProgramV0 HalfwordStoreBytes HalfwordStoreFnRegistry = some HalfwordStoreInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

@@ -63,7 +63,7 @@ def GuardedCounterSuccessFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem GuardedCounterSuccess_decodes :
-    Decode.decodeProgram GuardedCounterSuccessBytes GuardedCounterSuccessFnRegistry = some GuardedCounterSuccessInsns := by
+    Decode.decodeProgramV0 GuardedCounterSuccessBytes GuardedCounterSuccessFnRegistry = some GuardedCounterSuccessInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

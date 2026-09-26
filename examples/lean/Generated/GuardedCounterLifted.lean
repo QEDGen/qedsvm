@@ -62,7 +62,7 @@ def GuardedCounterLiftedFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem GuardedCounterLifted_decodes :
-    Decode.decodeProgram GuardedCounterLiftedBytes GuardedCounterLiftedFnRegistry = some GuardedCounterLiftedInsns := by
+    Decode.decodeProgramV0 GuardedCounterLiftedBytes GuardedCounterLiftedFnRegistry = some GuardedCounterLiftedInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple

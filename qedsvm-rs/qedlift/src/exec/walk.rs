@@ -86,6 +86,7 @@ struct PreparedStep {
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_step(
+    version: solana_sbpf::program::SBPFVersion,
     state: &SymState,
     instruction: &ebpf::Insn,
     pc: usize,
@@ -96,6 +97,7 @@ fn prepare_step(
 ) -> PreparedStep {
     PreparedStep {
         spec_call: spec_call_for(
+            version,
             state,
             instruction,
             pc,
@@ -220,7 +222,7 @@ pub(crate) fn walk_and_exec(
                         block_pcs.push(pc_iter);
                         // Emit spec call BEFORE popping (r6..r10 still at callee-frame values).
                         if let Some(sc) =
-                            spec_call_for(&state, ins, pc_iter, None, None, None, None)
+                            spec_call_for(ctx.version, &state, ins, pc_iter, None, None, None, None)
                         {
                             spec_calls.push(sc);
                         }
@@ -317,6 +319,7 @@ pub(crate) fn walk_and_exec(
                 let branch_taken = branch_decision.as_option();
 
                 let prepared = prepare_step(
+                    ctx.version,
                     &state,
                     ins,
                     pc_iter,

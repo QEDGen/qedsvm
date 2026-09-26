@@ -208,15 +208,6 @@ pub(super) fn lift_one_with_layouts(
             ));
         }
         for (pc, insn) in insns.iter().enumerate() {
-            if insn.opc & 7 == 6 && insn.opc != ebpf::JEQ32_IMM {
-                return Err(LiftError::new(
-                    DiagnosticKind::OpcodeUnmodeled,
-                    format!(
-                        "qedlift: V3 JMP32 opcode 0x{:02x} at pc {pc} has no symbolic path spec",
-                        insn.opc
-                    ),
-                ));
-            }
             if insn.opc == ebpf::CALL_REG || (insn.opc == ebpf::CALL_IMM && insn.src > 1) {
                 return Err(LiftError::new(
                     DiagnosticKind::UnsupportedConstruct,

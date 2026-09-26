@@ -63,7 +63,7 @@ def HeapAllocFnRegistry : List (Nat × Nat) := [(1910755201, 0)]
 
 /-- The bytes decode exactly to the expected instruction array. -/
 theorem HeapAlloc_decodes :
-    Decode.decodeProgram HeapAllocBytes HeapAllocFnRegistry = some HeapAllocInsns := by
+    Decode.decodeProgramV0 HeapAllocBytes HeapAllocFnRegistry = some HeapAllocInsns := by
   native_decide
 
 /-! ## Symbolically lifted Hoare triple
