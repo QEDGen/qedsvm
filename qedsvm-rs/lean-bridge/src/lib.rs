@@ -666,7 +666,9 @@ pub extern "C" fn lean_secp256r1_verify(
 
 // PC trace hook (`@[extern "lean_qedsvm_trace_step"]`). When `QEDSVM_TRACE_OUT` is set, appends
 // one decimal PC per line to that file (truncated at first use). Unset = free cached-None check.
-// Produces the `.pcs` files `qedlift/qedrecover --trace` consume; see `scripts/capture_trace.sh`.
+// Only CPI depth 0 (the top-level program) is recorded, so a trace across an invoke is the
+// caller-only path `qedlift` consumes; `QEDSVM_TRACE_ALL_DEPTHS=1` also records nested callees.
+// Produces the `.pcs` files `qedlift/qedrecover --trace` consume.
 
 fn trace_out() -> &'static Option<std::sync::Mutex<std::fs::File>> {
     static TRACE_OUT: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
@@ -688,8 +690,11 @@ fn trace_out() -> &'static Option<std::sync::Mutex<std::fs::File>> {
 }
 
 #[no_mangle]
-pub extern "C" fn lean_qedsvm_trace_step(pc: usize, f: lean_obj_arg) -> lean_obj_res {
-    if let Some(file) = trace_out() {
+pub extern "C" fn lean_qedsvm_trace_step(pc: usize, depth: usize, f: lean_obj_arg) -> lean_obj_res {
+    static ALL_DEPTHS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let all_depths =
+        *ALL_DEPTHS.get_or_init(|| std::env::var_os("QEDSVM_TRACE_ALL_DEPTHS").is_some());
+    if let Some(file) = trace_out().as_ref().filter(|_| depth == 0 || all_depths) {
         use std::io::Write as _;
         if let Ok(mut g) = file.lock() {
             let _ = writeln!(g, "{}", pc);

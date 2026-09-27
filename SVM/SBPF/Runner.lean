@@ -32,11 +32,14 @@ open Memory
 def TRACE_STEPS : Bool := false
 
 /-- Runtime PC-trace hook (the automated `.pcs` capture path). Identity on
-    the thunk, so proof-transparent: `traceStep pc f = f ()` by definition.
-    The extern impl appends one decimal PC/line to `QEDSVM_TRACE_OUT` when
-    set, else no-op. See `scripts/capture_trace.sh`. -/
+    the thunk, so proof-transparent: `traceStep pc depth f = f ()` by
+    definition. The extern impl appends one decimal PC/line to
+    `QEDSVM_TRACE_OUT` when set, else no-op. `depth` is the CPI invocation
+    depth: only the top-level program (depth 0) is recorded, so a trace is a
+    caller-only path even across CPIs; `QEDSVM_TRACE_ALL_DEPTHS=1` records
+    nested callees too. -/
 @[never_extract, extern "lean_qedsvm_trace_step"]
-def traceStep (_pc : USize) (f : Unit → α) : α := f ()
+def traceStep (_pc : USize) (_depth : USize) (f : Unit → α) : α := f ()
 
 /-- Pad a Nat as a `width`-digit lowercase hex string. -/
 private def hex (n width : Nat) : String :=
@@ -917,7 +920,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
             cpiCallNextState registry s .sol_invoke_signed_c fuel'
               (runCallee pidBytes parsedAccts ixData)
           | _ => step insn s
-        traceStep (USize.ofNat s.pc) fun _ =>
+        traceStep (USize.ofNat s.pc) (USize.ofNat s.invokeDepth) fun _ =>
           if TRACE_STEPS then
             dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
             executeFnCpiWithFuel registry fetch (chargeCu s') fuel'
