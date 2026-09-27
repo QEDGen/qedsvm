@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use qedlift::{CpiSuffix, LiftOptions, Lifter, ProgramImage, RefinementOutcome, RefinementReason};
+use qedlift::{
+    CpiCalleeContract, CpiSuffix, LiftOptions, Lifter, ProgramImage, RefinementOutcome,
+    RefinementReason,
+};
 
 #[test]
 fn lifts_traced_v3_callx_with_pinned_target() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,6 +71,7 @@ fn composes_v3_cpi_caller_paths_across_the_invoke() -> Result<(), Box<dyn std::e
     let (prefix, modules) = lifter.lift_cpi_paths(
         LiftOptions::default(),
         "Generated.Sbpfv3CpiCallerLifted",
+        &CpiCalleeContract::MemoryPreserving,
         &[
             CpiSuffix {
                 name: "Success",
@@ -99,6 +103,72 @@ fn composes_v3_cpi_caller_paths_across_the_invoke() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn composes_v3_account_writing_cpi_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_cpi_writer.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let (prefix, modules) = lifter.lift_cpi_paths(
+        LiftOptions::default(),
+        "Generated.Sbpfv3CpiWriterLifted",
+        &CpiCalleeContract::WritesInputBytes(vec![96]),
+        &[
+            CpiSuffix {
+                name: "Success",
+                trace: &[47, 51, 52, 53, 54, 55, 56],
+            },
+            CpiSuffix {
+                name: "Rollback",
+                trace: &[47, 48, 49, 50, 55, 56],
+            },
+        ],
+    )?;
+    let fix = |s: &str| s.replace("../tests/fixtures/", "tests/fixtures/");
+    assert_eq!(
+        fix(&prefix.lean),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiWriterLifted.lean")
+    );
+    assert_eq!(
+        fix(&modules[0].lean),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiWriterLiftedSuccess.lean")
+    );
+    assert_eq!(
+        fix(&modules[1].lean),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiWriterLiftedRollback.lean")
+    );
+    // The suffix's read of the written byte is the committed value, and the
+    // contract is the explicit write footprint.
+    assert!(modules[0]
+        .lean
+        .contains("(hW : Cpi.writesOnly callee [effectiveAddr baseAddr 96])"));
+    assert!(modules[0]
+        .lean
+        .contains("Cpi.committedByte r (effectiveAddr baseAddr 96) cpiFpOld0"));
+    assert!(modules[0].lean.contains("SatWitness.sat_witness"));
+    Ok(())
+}
+
+#[test]
+fn rejects_duplicate_cpi_footprint_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_cpi_writer.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let error = lifter
+        .lift_cpi_paths(
+            LiftOptions::default(),
+            "Generated.Sbpfv3CpiWriterLifted",
+            &CpiCalleeContract::WritesInputBytes(vec![96, 96]),
+            &[CpiSuffix {
+                name: "Success",
+                trace: &[47, 51, 52, 53, 54, 55, 56],
+            }],
+        )
+        .err()
+        .expect("duplicate footprint bytes must be rejected");
+    assert_eq!(error.kind(), qedlift::DiagnosticKind::UnsupportedConstruct);
+    Ok(())
+}
+
+#[test]
 fn rejects_cpi_suffix_not_starting_after_invoke() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_cpi_caller.so");
     let program = ProgramImage::load(path)?;
@@ -107,6 +177,7 @@ fn rejects_cpi_suffix_not_starting_after_invoke() -> Result<(), Box<dyn std::err
         .lift_cpi_paths(
             LiftOptions::default(),
             "Generated.Sbpfv3CpiCallerLifted",
+            &CpiCalleeContract::MemoryPreserving,
             &[CpiSuffix {
                 name: "Wrong",
                 trace: &[36, 37, 38, 40, 41],

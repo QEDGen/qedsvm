@@ -46,6 +46,15 @@ pub(super) struct Args {
     /// large-text decode-pins path (fails closed on small inline-bridge
     /// binaries).
     pub(super) shared_text: Option<String>,
+    /// CPI path mode: `(name, trace)` per post-CPI suffix (`--cpi-suffix
+    /// NAME=PATH`), each a caller-only trace starting right after the invoke.
+    pub(super) cpi_suffixes: Vec<(String, PathBuf)>,
+    /// Input-relative byte offsets the callee may write (`--cpi-writes`);
+    /// absent means the callee preserves caller memory.
+    pub(super) cpi_writes: Option<Vec<i64>>,
+    /// Lean import path of the emitted prefix module (`--cpi-prefix-import`,
+    /// default `Generated.<module>`).
+    pub(super) cpi_prefix_import: Option<String>,
 }
 
 /// Mutually exclusive top-level operation selected by the CLI.
@@ -54,6 +63,7 @@ pub(super) enum Command {
     Coverage,
     Transition,
     QedMeta { path: PathBuf },
+    CpiPath { output_dir: PathBuf },
     Batch { idl: PathBuf, output_dir: PathBuf },
     Single,
 }
@@ -208,6 +218,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
     let mut shared_text: Option<String> = None;
     let mut profile = false;
     let mut coverage = false;
+    let mut cpi_suffixes: Vec<(String, PathBuf)> = Vec::new();
+    let mut cpi_writes: Option<Vec<i64>> = None;
+    let mut cpi_prefix_import: Option<String> = None;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -239,17 +252,40 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
             }
             "--profile" => profile = true,
             "--coverage" => coverage = true,
+            "--cpi-suffix" => {
+                let spec = it.next().ok_or("--cpi-suffix needs NAME=PATH")?;
+                let (name, path) = spec.split_once('=').ok_or("--cpi-suffix needs NAME=PATH")?;
+                cpi_suffixes.push((name.to_string(), path.into()));
+            }
+            "--cpi-writes" => {
+                let offs = it
+                    .next()
+                    .ok_or("--cpi-writes needs comma-separated offsets")?;
+                cpi_writes = Some(
+                    offs.split(',')
+                        .map(|o| o.trim().parse().map_err(|e| format!("--cpi-writes: {e}")))
+                        .collect::<Result<_, _>>()?,
+                );
+            }
+            "--cpi-prefix-import" => {
+                cpi_prefix_import = Some(it.next().ok_or("--cpi-prefix-import needs a module")?)
+            }
             other => return Err(format!("unknown arg: {}", other)),
         }
+    }
+    let cpi_path = !cpi_suffixes.is_empty();
+    if !cpi_path && (cpi_writes.is_some() || cpi_prefix_import.is_some()) {
+        return Err("--cpi-writes/--cpi-prefix-import need at least one --cpi-suffix".to_string());
     }
     let explicit_modes = usize::from(profile)
         + usize::from(coverage)
         + usize::from(transition)
-        + usize::from(qedmeta.is_some());
+        + usize::from(qedmeta.is_some())
+        + usize::from(cpi_path);
     if explicit_modes > 1 {
         return Err(
             "qedlift modes are mutually exclusive: choose one of --profile, --coverage, \
-             --transition, or --qedmeta"
+             --transition, --qedmeta, or --cpi-suffix"
                 .to_string(),
         );
     }
@@ -259,6 +295,12 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         Command::Coverage
     } else if transition {
         Command::Transition
+    } else if cpi_path {
+        Command::CpiPath {
+            output_dir: output_dir
+                .clone()
+                .ok_or("--cpi-suffix needs --output-dir")?,
+        }
     } else if let Some(path) = qedmeta.clone() {
         Command::QedMeta { path }
     } else if let (Some(idl), Some(output_dir)) = (idl.clone(), output_dir.clone()) {
@@ -279,6 +321,9 @@ fn parse_args_from(args: impl IntoIterator<Item = String>) -> Result<Args, Strin
         target_name,
         descriptor,
         shared_text,
+        cpi_suffixes,
+        cpi_writes,
+        cpi_prefix_import,
     })
 }
 
@@ -365,5 +410,38 @@ mod command_tests {
         ])
         .expect("batch arguments");
         assert!(matches!(args.command, Command::Batch { .. }));
+    }
+
+    #[test]
+    fn cpi_suffix_selects_cpi_path_mode() {
+        let args = parse(&[
+            "--so",
+            "caller.so",
+            "--cpi-suffix",
+            "Success=success.pcs",
+            "--cpi-writes",
+            "96,97",
+            "--output-dir",
+            "Generated",
+        ])
+        .expect("CPI path arguments");
+        assert!(matches!(args.command, Command::CpiPath { .. }));
+        assert_eq!(
+            args.cpi_suffixes,
+            vec![("Success".to_string(), "success.pcs".into())]
+        );
+        assert_eq!(args.cpi_writes, Some(vec![96, 97]));
+    }
+
+    #[test]
+    fn cpi_path_mode_needs_output_dir_and_a_suffix() {
+        let missing_dir = parse(&["--so", "caller.so", "--cpi-suffix", "Success=s.pcs"])
+            .err()
+            .expect("output dir required");
+        assert!(missing_dir.contains("--output-dir"));
+        let missing_suffix = parse(&["--so", "caller.so", "--cpi-writes", "96"])
+            .err()
+            .expect("suffix required");
+        assert!(missing_suffix.contains("--cpi-suffix"));
     }
 }

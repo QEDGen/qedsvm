@@ -111,6 +111,7 @@ const GUARDED_OOB_SO: &[u8] = include_bytes!("fixtures/guarded_oob.so");
 /// the envelope theorem is `CpiEnvelopeDemo.cpi_envelope_at_call_site`.
 const CPI_ENVELOPE_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_envelope_caller.so");
 const SBPFV3_CPI_CALLER_SO: &[u8] = include_bytes!("fixtures/sbpfv3_cpi_caller.so");
+const SBPFV3_CPI_WRITER_SO: &[u8] = include_bytes!("fixtures/sbpfv3_cpi_writer.so");
 
 /// Embedded-bump-allocator demo: reads/commits the heap bump slot at
 /// 0x300000000 and writes + reads an allocated block. Exercises the
@@ -1038,6 +1039,60 @@ mod core_vm {
                 // the conformance contract until the meter is reconciled.
                 assert!(fs_r.compute_units_consumed >= m_r.compute_units_consumed);
             }
+        }
+    }
+
+    /// Source-built V3 C-ABI caller handing a writable account to a V3 callee
+    /// that writes its data. Success commits the write; a failing callee rolls
+    /// it back on both engines.
+    #[test]
+    fn sbpfv3_cpi_writer_commit_and_rollback_match_mollusk() {
+        for (case, exit_code) in [0u32, 7].into_iter().enumerate() {
+            let caller_id = pid(440 + case as u64 * 3);
+            let callee_id = pid(441 + case as u64 * 3);
+            let acct_key = pid(442 + case as u64 * 3);
+            let callee = v3_elf(&[
+                v3_insn(0xb7, 2, 0, 0, 42),
+                v3_insn(0x73, 1, 2, 96, 0),
+                v3_insn(0xb7, 0, 0, 0, exit_code),
+                v3_insn(0x95, 0, 0, 0, 0),
+            ]);
+            let (pre_shared, pre_mollusk) = dual_account(1_000_000, vec![0, 0], callee_id, false);
+            let (program_shared, program_mollusk) = dual_program();
+            let ix = Instruction {
+                program_id: caller_id,
+                accounts: vec![
+                    AccountMeta::new(acct_key, false),
+                    AccountMeta::new_readonly(callee_id, false),
+                ],
+                data: vec![],
+            };
+            let fs = svm_with(&[(caller_id, SBPFV3_CPI_WRITER_SO), (callee_id, &callee)]);
+            let fs_r = fs
+                .process_instruction(&ix, &[(acct_key, pre_shared), (callee_id, program_shared)])
+                .expect("qedsvm runs V3 CPI writer");
+            let m = mollusk_with(&[(caller_id, SBPFV3_CPI_WRITER_SO), (callee_id, &callee)]);
+            let m_r = m.process_instruction(
+                &ix,
+                &[(acct_key, pre_mollusk), (callee_id, program_mollusk)],
+            );
+            assert_no_poststate_backstop(&fs_r);
+            let expected: &[u8] = if exit_code == 0 { &[42, 0] } else { &[0, 0] };
+            if exit_code == 0 {
+                assert_outcome_matches(&fs_r.program_result, &m_r.program_result, "V3 CPI writer");
+                assert_eq!(
+                    fs_r.compute_units_consumed, m_r.compute_units_consumed,
+                    "CU diverged for successful V3 CPI writer"
+                );
+            } else {
+                assert!(matches!(
+                    fs_r.program_result,
+                    FsProgramResult::Failure { .. }
+                ));
+                assert!(matches!(m_r.program_result, MlProgramResult::Failure(_)));
+            }
+            assert_eq!(fs_acct_by_key(&fs_r, &acct_key).data(), expected);
+            assert_eq!(ml_acct_by_key(&m_r, &acct_key).data, expected);
         }
     }
 

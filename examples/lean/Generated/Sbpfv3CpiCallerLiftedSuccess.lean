@@ -234,7 +234,7 @@ theorem Sbpfv3CpiCallerLiftedSuccess_cpi_path
       (.r6 ↦ᵣ vR6Old) **
       (.r5 ↦ᵣ vR5Old) **
       (.r0 ↦ᵣ cpiR0Old) **
-      returnDataIs cpiRdOld **
+      (↦ReturnData cpiRdOld) **
       (effectiveAddr (toU64 12884901984) 0 ↦U64 cpi_oldMemD_0))
       (fun r => (.r0 ↦ᵣ (toU64 0)) **
       (.r7 ↦ᵣ (toU64 12884901984)) **
@@ -308,7 +308,7 @@ theorem Sbpfv3CpiCallerLiftedSuccess_cpi_path
     (Cpi.cpiTriple_of_mem_preserving callee (cpiR0Old) cpiRdOld hMem) ?suf .sol_invoke_signed
   case pre =>
     have h := cuTripleWithinMem_frame_right ((.r0 ↦ᵣ cpiR0Old) **
-      returnDataIs cpiRdOld **
+      (↦ReturnData cpiRdOld) **
       (effectiveAddr (toU64 12884901984) 0 ↦U64 cpi_oldMemD_0)) (by sl_pcfree)
       (Examples.Lifted.Sbpfv3CpiCallerLifted.Sbpfv3CpiCallerLifted_lifted_spec baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt)
     sl_exact h
@@ -338,5 +338,74 @@ theorem Sbpfv3CpiCallerLiftedSuccess_cpi_path
       (Sbpfv3CpiCallerLiftedSuccess_lifted_spec (r.code) (toU64 12884901984) (cpi_oldMemD_0) (toU64 0) hG)
     dsimp only
     sl_exact h
+
+/-! ## Satisfiability witness (soundness-audit H8)
+
+The triple's precondition is SATISFIABLE at the concrete
+assignment below — an overlapping (vacuous) sepConj would fail
+`native_decide` here, so vacuity cannot ship. The guards pin
+each `addrK` literal to its `h_addrK` defining equation at the
+assignment; the witness goal is the theorem's precondition with
+the variables instantiated, so the reflected `SatWitness` atoms
+are tied to the real pre by the elaborator's defeq check.
+Value-level path hypotheses (`h_branch*`) are not certified
+consistent — they are outside the overlap-vacuity class this
+guards against. -/
+
+open Memory in
+example : ∃ s,
+    ((.r1 ↦ᵣ 17179869184) **
+      (.r4 ↦ᵣ 0) **
+      (.r7 ↦ᵣ 0) **
+      (effectiveAddr (toU64 12884901888) 0 ↦U64 0) **
+      (effectiveAddr (toU64 12884901896) 0 ↦U64 0) **
+      (effectiveAddr (toU64 12884901904) 0 ↦U64 0) **
+      (.r2 ↦ᵣ 0) **
+      (effectiveAddr (toU64 12884901912) 0 ↦U64 0) **
+      (effectiveAddr (toU64 12884901920) 0 ↦U64 0) **
+      (effectiveAddr (toU64 12884901928) 0 ↦U64 0) **
+      (effectiveAddr 17179869184 10352 ↦U64 0) **
+      (.r3 ↦ᵣ 0) **
+      (effectiveAddr (toU64 12884901936) 0 ↦U64 0) **
+      (effectiveAddr 17179869184 10360 ↦U64 0) **
+      (effectiveAddr (toU64 12884901944) 0 ↦U64 0) **
+      (effectiveAddr 17179869184 10368 ↦U64 0) **
+      (effectiveAddr (toU64 12884901952) 0 ↦U64 0) **
+      (effectiveAddr 17179869184 10376 ↦U64 0) **
+      (effectiveAddr (toU64 12884901960) 0 ↦U64 0) **
+      (effectiveAddr (toU64 12884901976) 0 ↦U64 0) **
+      (.r6 ↦ᵣ 0) **
+      (.r5 ↦ᵣ 0) **
+      (.r0 ↦ᵣ 0) **
+      (↦ReturnData ByteArray.empty) **
+      (effectiveAddr (toU64 12884901984) 0 ↦U64 0)) s := by
+  have w := SatWitness.sat_witness
+    [.reg .r1 17179869184,
+     .reg .r4 0,
+     .reg .r7 0,
+     .u64 12884901888 0,
+     .u64 12884901896 0,
+     .u64 12884901904 0,
+     .reg .r2 0,
+     .u64 12884901912 0,
+     .u64 12884901920 0,
+     .u64 12884901928 0,
+     .u64 17179879536 0,
+     .reg .r3 0,
+     .u64 12884901936 0,
+     .u64 17179879544 0,
+     .u64 12884901944 0,
+     .u64 17179879552 0,
+     .u64 12884901952 0,
+     .u64 17179879560 0,
+     .u64 12884901960 0,
+     .u64 12884901976 0,
+     .reg .r6 0,
+     .reg .r5 0,
+     .reg .r0 0,
+     .retData ByteArray.empty,
+     .u64 12884901984 0]
+    (by native_decide)
+  exact w
 
 end Examples.Lifted.Sbpfv3CpiCallerLiftedSuccess

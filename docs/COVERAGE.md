@@ -23,11 +23,45 @@ toolchain-built V3 ELF (`Generated.Sbpfv3CompiledAccountLifted`). The latter
 uses a captured execution trace and proves an update to the account byte
 under its path hypotheses. Their full-ELF pins connect
 the strict V3 loader to the text used by its versioned per-PC decode pins.
-The current V3 lifting subset accepts `JEQ32_IMM`, relative internal calls,
-and modeled static syscalls; other JMP32 forms, `callx`, unknown syscalls, and
-shared-text mode fail closed. The selected-path triple does not establish a
-whole-program or abstract account-state refinement. V1, V2, and V4 remain
-outside the Lean proof path.
+The V3 lifting subset covers every JMP32 condition in both source modes,
+relative internal calls, traced `callx` (the target is resolved through the
+loaded text region and pinned against the ELF by `<M>_v3_callx_resolves`;
+`Generated.Sbpfv3CallxPathLifted`), modeled static syscalls, and shared-text
+mode. Unknown syscalls fail closed. The selected-path triple does not
+establish a whole-program or abstract account-state refinement. ELFs whose
+`e_flags` are neither V0 nor V3 (V1, V2, V4, unknown) are rejected at load by
+both the Lean runner and `ProgramImage::load`.
+
+### V3 caller paths across a CPI
+
+A V3 lift that ends at an invoke also emits `<M>_cpi_bridge`
+(`SVM/SBPF/CpiBridge.lean`): for any callee contract (`Cpi.CalleeSemantics`),
+the state after the invoke has the `Cpi.Outcome` shape, committing the callee's
+proposed memory on success and rolling it back on failure, with r0, logs,
+return data and compute usage crossing the boundary.
+
+`Lifter::lift_cpi_paths` (CLI: `--cpi-suffix NAME=PATH.pcs`, optional
+`--cpi-writes OFF,...`, `--output-dir`) additionally lifts each post-CPI
+suffix and emits `<M><Name>_cpi_path` (`Cpi.cpiPathWithinMem`), one caller
+path from entry through the CPI to the suffix exit, guarded by the suffix's
+branch conditions on the callee's result. The callee contract is explicit:
+
+- memory preservation (`hMem`, `Cpi.cpiTriple_of_mem_preserving`) for
+  zero-account or read-only CPIs;
+- a write footprint of input-relative bytes (`hW : Cpi.writesOnly`,
+  `Cpi.cpiTriple_of_writes`) for account-data write-back. After the CPI each
+  footprint byte is `Cpi.committedByte r a old`: the callee's byte on success,
+  the caller's on rollback.
+
+Each composed theorem carries a satisfiability witness for its precondition.
+Examples: `Generated.Sbpfv3CpiCaller{Lifted,LiftedSuccess,LiftedRollback}`
+(zero-account) and `Generated.Sbpfv3CpiWriter{Lifted,LiftedSuccess,LiftedRollback}`
+(account write), both diff-tested against Mollusk on success and rollback.
+Limits: the proof holds for every callee satisfying the stated contract;
+proving a concrete callee meets it is separate work. Suffixes with syscalls,
+internal calls, byte blobs or address abstractions, and footprint bytes read
+at a width other than a byte, are rejected with a typed diagnostic. V0 CPI
+lifts still end at the invoke terminal.
 
 ## Status Legend
 
@@ -80,8 +114,8 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | `sol_log_` | Mechanical | Models the log call shape and CU bound used by generated lifts. |
 | `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. |
 | `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. |
-| `sol_invoke_signed_rust` | Terminal | The proof-facing CPI is the fail-closed `Cpi.exec` stub (audit C5), so an invoke ENDS the walk (`.unsupportedInstruction` typed-fault terminal); the lifted prefix's post owns the caller-side envelope cells (`cpiEnvelope`, see below). |
-| `sol_invoke_signed_c` | Terminal | Same fail-closed walk terminal as the Rust ABI (`cpiEnvelopeC` is the C-ABI envelope encoding; no fixture yet). |
+| `sol_invoke_signed_rust` | Terminal (V0), bridged/composed (V3) | The proof-facing CPI in `step` is the fail-closed `Cpi.exec` stub (audit C5), so an invoke ends the walk (`.unsupportedInstruction` typed-fault terminal); the lifted prefix's post owns the caller-side envelope cells (`cpiEnvelope`, see below). V3 lifts extend across it via `<M>_cpi_bridge` and `lift_cpi_paths` (see "V3 caller paths across a CPI"). |
+| `sol_invoke_signed_c` | Terminal (V0), bridged/composed (V3) | Same as the Rust ABI (`cpiEnvelopeC` is the C-ABI envelope encoding); `sbpfv3_cpi_writer.so` is the C-ABI V3 fixture. |
 | `sol_sha256` | Mechanical | Single-slice success path: descriptor cells recover `(ptr, len)`, the digest is written to a framed `↦Bytes32` atom, `r0 := 0` (`call_sol_sha256_spec`). |
 | Other hashing syscalls (`keccak256`, `blake3`) | Unsupported | No lifted proof obligation is emitted. |
 | Curve/precompile syscalls | Unsupported (success) | No success triple. The OOB fault direction of `sol_secp256k1_recover` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
@@ -195,4 +229,4 @@ Codama JSON IDLs carry discriminator and account-layout metadata. TOML IDLs are 
 | Fully mechanical abstract refinement | SPL Transfer / TransferChecked / MintTo / Burn, counter increment, vault constant field update, heap bump allocation | `.so`, sidecar metadata, trace when branchy, Codama IDL when layout is needed |
 | Raw Hoare triple only | Selected paths over modeled instructions and modeled lift syscalls, including generated CloseAccount and InitializeMint2 traced lifts | `.so`, targeting metadata, concrete trace for branchy paths |
 | Manual extension | New state semantics, loops with invariants, non-constant account deltas beyond bound parameter addition, unrecognized blob mutations | New Lean specs/refinement predicates/codegen |
-| Unsupported by proof layer | Unmodeled opcodes or syscalls such as hashing, curve ops, PDA derivation, return-data reads, real CPI callee effects | New instruction/syscall specs and lift support |
+| Unsupported by proof layer | Unmodeled opcodes or syscalls such as hashing, curve ops, PDA derivation, return-data reads; CPI callee effects beyond an explicit contract | New instruction/syscall specs and lift support |
