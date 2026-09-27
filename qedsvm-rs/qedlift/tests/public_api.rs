@@ -43,6 +43,35 @@ fn rejects_v3_callx_trace_with_wrong_target() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
+fn lifts_v3_cpi_caller_with_callee_contract_bridge() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_cpi_caller.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let result = lifter.lift(LiftOptions::default())?;
+    assert!(result.lean.contains("import SVM.SBPF.CpiBridge"));
+    assert!(result
+        .lean
+        .contains("theorem Sbpfv3CpiCallerLifted_cpi_bridge"));
+    assert!(result.lean.contains("Cpi.cuTripleWithinMem_cpi_bridge"));
+    assert_eq!(
+        result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiCallerLifted.lean")
+    );
+    Ok(())
+}
+
+#[test]
+fn v0_cpi_caller_emits_no_bridge() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/cpi_envelope_caller.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let result = lifter.lift(LiftOptions::default())?;
+    assert!(!result.lean.contains("_cpi_bridge"));
+    assert!(!result.lean.contains("SVM.SBPF.CpiBridge"));
+    Ok(())
+}
+
+#[test]
 fn lifts_v3_account_path_with_versioned_decode_pins() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_account_path.so");
     let program = ProgramImage::load(path)?;

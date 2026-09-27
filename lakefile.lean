@@ -67,6 +67,7 @@ lean_lib ExamplesCpi where
   srcDir := "examples/lean"
   roots := #[
     `Generated.CpiEnvelopeCallerLifted,
+    `Generated.Sbpfv3CpiCallerLifted,
     `CpiEnvelopeDemo,
   ]
 
