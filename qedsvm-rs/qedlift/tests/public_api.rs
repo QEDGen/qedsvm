@@ -3,6 +3,40 @@ use std::path::Path;
 use qedlift::{LiftOptions, Lifter, ProgramImage, RefinementOutcome, RefinementReason};
 
 #[test]
+#[ignore = "requires composable V3 text-map proof in the public lift emitter"]
+fn lifts_traced_v3_callx_with_pinned_target() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_callx_path.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let trace = [0, 1, 4, 5, 2, 3];
+    let result = lifter.lift(LiftOptions {
+        trace: Some(&trace),
+        ..LiftOptions::default()
+    })?;
+    assert!(result.lean.contains("callx_v3_spec"));
+    assert!(result.lean.contains(".callx .r2"));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires composable V3 text-map proof in the public lift emitter"]
+fn rejects_v3_callx_trace_with_wrong_target() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_callx_path.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let wrong_trace = [0, 1, 2, 3];
+    let error = lifter
+        .lift(LiftOptions {
+            trace: Some(&wrong_trace),
+            ..LiftOptions::default()
+        })
+        .err()
+        .expect("wrong indirect target must be rejected");
+    assert_eq!(error.kind(), qedlift::DiagnosticKind::TraceInput);
+    Ok(())
+}
+
+#[test]
 fn lifts_v3_account_path_with_versioned_decode_pins() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_account_path.so");
     let program = ProgramImage::load(path)?;

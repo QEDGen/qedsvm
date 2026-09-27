@@ -507,7 +507,7 @@ pub(super) fn step(
         }
         JA => { /* unconditional fall-through reset is handled by the caller's PC walk */ }
         // call_local: bumps r10 by 0x1000 and pushes frame; PC redirect handled by walker.
-        CALL_IMM => {
+        CALL_IMM | CALL_REG => {
             // Snapshot call-time r6..r10 — the frame call_local pushes and exit_pops must restore.
             let r6 = state.read_reg(6);
             let r7 = state.read_reg(7);

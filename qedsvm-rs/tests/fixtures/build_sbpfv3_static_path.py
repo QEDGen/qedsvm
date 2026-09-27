@@ -48,3 +48,22 @@ ACCOUNT_TEXT = bytearray.fromhex(
 )
 struct.pack_into("<I", ACCOUNT_TEXT, 8 * 8 + 4, 0x5C2A3178)
 write_elf("sbpfv3_account_path.so", ACCOUNT_TEXT)
+
+# The indirect target is slot 5 (logical PC 4 after the two-slot lddw).
+# Captured logical-PC path: 0, 1, 4, 5, 2, 3.
+CALLX_TEXT = bytes.fromhex(
+    "1802000028000000"  # lddw r2, low32(0x100000028)
+    "0000000001000000"  # lddw high32
+    "8d02000000000000"  # callx r2 (V3 uses dst)
+    "b700000000000000"  # caller: mov64 r0, 0
+    "9500000000000000"  # caller: exit
+    "b700000007000000"  # callee: mov64 r0, 7
+    "9500000000000000"  # callee: return
+)
+write_elf("sbpfv3_callx_path.so", CALLX_TEXT)
+write_elf("sbpfv3_callx_invalid.so", CALLX_TEXT.replace(
+    bytes.fromhex("1802000028000000"), bytes.fromhex("1802000000010000"), 1,
+))
+write_elf("sbpfv3_callx_depth.so", CALLX_TEXT.replace(
+    bytes.fromhex("1802000028000000"), bytes.fromhex("1802000010000000"), 1,
+))

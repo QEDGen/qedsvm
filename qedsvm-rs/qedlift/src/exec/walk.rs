@@ -1,8 +1,9 @@
 use solana_sbpf::{ebpf, static_analysis::Analysis};
 
+use crate::core::eval_expr;
 use crate::diagnostic::{DiagnosticKind, LiftError};
 use crate::input::BinaryCtx;
-use crate::isa::{resolve_call_target_logical, resolve_jump_target};
+use crate::isa::{resolve_call_target_logical, resolve_callx_target_logical, resolve_jump_target};
 use crate::spec_call::{spec_call_for, SpecCall};
 use crate::state::{RetryPlan, SymState};
 
@@ -233,6 +234,17 @@ pub(crate) fn walk_and_exec(
                         }
                         // Trace: next PC from trace; static: jump to callpc+1.
                         if let Some(cursor) = trace_cursor.as_mut() {
+                            if cursor.next() != Some(call_pc + 1) {
+                                return Err(LiftError::new(
+                                    DiagnosticKind::TraceInput,
+                                    format!(
+                                        "qedlift: nested exit at pc {} returns to {}, but trace continues at {:?}",
+                                        pc_iter,
+                                        call_pc + 1,
+                                        cursor.next()
+                                    ),
+                                ));
+                            }
                             cursor.advance();
                         } else {
                             pc_iter = call_pc + 1;
@@ -294,7 +306,44 @@ pub(crate) fn walk_and_exec(
                 }
 
                 block_pcs.push(pc_iter);
-                let call_target = resolve_call_target_logical(ctx, analysis, ins, pc_iter);
+                let call_target = if ctx.version == solana_sbpf::program::SBPFVersion::V3
+                    && ins.opc == ebpf::CALL_REG
+                {
+                    if state.call_stack().len() >= 64 {
+                        return Err(LiftError::new(
+                            DiagnosticKind::CallDepthExceeded,
+                            format!("qedlift: V3 callx at pc {} exceeds 64 call frames", pc_iter),
+                        ));
+                    }
+                    let address = state
+                        .regs()
+                        .get(&ins.dst)
+                        .and_then(|expr| eval_expr(expr, &Default::default()))
+                        .ok_or_else(|| {
+                            LiftError::new(
+                                DiagnosticKind::SymbolicOperand,
+                                format!(
+                                    "qedlift: V3 callx at pc {} needs a concrete program address",
+                                    pc_iter
+                                ),
+                            )
+                        })?;
+                    let target = resolve_callx_target_logical(ctx, address)?;
+                    if let Some(cursor) = trace_cursor.as_ref() {
+                        if cursor.next() != Some(target) {
+                            return Err(LiftError::new(
+                                DiagnosticKind::TraceInput,
+                                format!(
+                                    "qedlift: V3 callx at pc {} resolves address 0x{:x} to logical pc {}, but trace continues at {:?}",
+                                    pc_iter, address, target, cursor.next()
+                                ),
+                            ));
+                        }
+                    }
+                    Some(target)
+                } else {
+                    resolve_call_target_logical(ctx, analysis, ins, pc_iter)
+                };
                 // Branch hyp name indexed by number of branches seen so far.
                 let branch_idx = state.branches().len();
                 let branch_hyp = format!("h_branch{}", branch_idx);
@@ -421,6 +470,9 @@ pub(crate) fn walk_and_exec(
                                 ),
                             })?;
                     }
+                    ebpf::CALL_REG if ctx.version == solana_sbpf::program::SBPFVersion::V3 => {
+                        pc_iter = call_target.expect("V3 callx target validated above");
+                    }
                     _ => {
                         pc_iter += 1;
                     }
@@ -460,5 +512,73 @@ pub(crate) fn walk_and_exec(
             exit_pc,
             fault_terminal,
         });
+    }
+}
+
+#[cfg(test)]
+mod v3_callx_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn follows_only_the_decoded_indirect_target() {
+        let image = BinaryCtx::load(Path::new("../tests/fixtures/sbpfv3_callx_path.so"))
+            .expect("load callx fixture");
+        let analysis = Analysis::from_executable(&image.executable).expect("analyze fixture");
+        let run = |trace: &[usize]| {
+            walk_and_exec(
+                &image,
+                &analysis,
+                WalkOptions {
+                    trace: Some(trace),
+                    target_discriminator: None,
+                    arm_entry: None,
+                    program_entry: 0,
+                },
+            )
+        };
+        let result = run(&[0, 1, 4, 5, 2, 3]).expect("valid trace");
+        assert_eq!(result.block_pcs, vec![0, 1, 4, 5, 2]);
+        let error = run(&[0, 1, 2, 3]).err().expect("wrong trace must fail");
+        assert_eq!(error.kind(), DiagnosticKind::TraceInput);
+        let error = run(&[0, 1, 4, 5, 4])
+            .err()
+            .expect("wrong return site must fail");
+        assert_eq!(error.kind(), DiagnosticKind::TraceInput);
+    }
+
+    #[test]
+    fn rejects_invalid_target_and_excessive_call_depth() {
+        for (fixture, trace, expected) in [
+            (
+                "sbpfv3_callx_invalid.so",
+                vec![0, 1],
+                DiagnosticKind::CallUnresolved,
+            ),
+            (
+                "sbpfv3_callx_depth.so",
+                std::iter::once(0)
+                    .chain(std::iter::repeat_n(1, 65))
+                    .collect(),
+                DiagnosticKind::CallDepthExceeded,
+            ),
+        ] {
+            let path = format!("../tests/fixtures/{fixture}");
+            let image = BinaryCtx::load(Path::new(&path)).expect("load V3 callx fixture");
+            let analysis = Analysis::from_executable(&image.executable).expect("analyze fixture");
+            let error = walk_and_exec(
+                &image,
+                &analysis,
+                WalkOptions {
+                    trace: Some(&trace),
+                    target_discriminator: None,
+                    arm_entry: None,
+                    program_entry: 0,
+                },
+            )
+            .err()
+            .expect("invalid callx path must fail");
+            assert_eq!(error.kind(), expected, "{fixture}");
+        }
     }
 }
