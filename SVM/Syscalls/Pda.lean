@@ -116,18 +116,6 @@ def cuTryFind (s : State) : Nat :=
       (createProgramAddress (readSeeds s.mem s.regs.r1 s.regs.r2)
                             (readBytes s.mem s.regs.r3 32))
 
-@[simp] theorem execCreate_preserves_programTextAddr (s : State) :
-    (execCreate s).programTextAddr = s.programTextAddr := by
-  simp only [execCreate]
-  refine State.guardRead_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
-  simp
-
-@[simp] theorem execCreate_preserves_programSlotMap (s : State) :
-    (execCreate s).programSlotMap = s.programSlotMap := by
-  simp only [execCreate]
-  refine State.guardRead_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
-  simp
-
 /-- H6 fault direction: an out-of-region program_id `[r3,32)` (the first guarded
     slice) traps with a typed access violation. -/
 theorem execCreate_faults_oob (s : State)
@@ -202,30 +190,6 @@ def execTryFind (s : State) : State :=
   split
   · refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
     refine State.guardWrite_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
-    rfl
-  · rfl
-
-@[simp] theorem execTryFind_preserves_programTextAddr (s : State) :
-    (execTryFind s).programTextAddr = s.programTextAddr := by
-  simp only [execTryFind]
-  refine State.guardRead_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
-  refine State.guardRead_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
-  refine State.guardSlices_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
-  split
-  · refine State.guardWrite_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
-    refine State.guardWrite_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
-    rfl
-  · rfl
-
-@[simp] theorem execTryFind_preserves_programSlotMap (s : State) :
-    (execTryFind s).programSlotMap = s.programSlotMap := by
-  simp only [execTryFind]
-  refine State.guardRead_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
-  refine State.guardRead_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
-  refine State.guardSlices_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
-  split
-  · refine State.guardWrite_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
-    refine State.guardWrite_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
     rfl
   · rfl
 

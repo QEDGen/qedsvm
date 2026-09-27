@@ -234,26 +234,6 @@ theorem execEpochSchedule_faults_oob (s : State)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 
-@[simp] theorem execRent_preserves_programTextAddr (s : State) :
-    (execRent s).programTextAddr = s.programTextAddr := by
-  simp only [execRent]
-  exact State.guardWrite_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl rfl
-
-@[simp] theorem execRent_preserves_programSlotMap (s : State) :
-    (execRent s).programSlotMap = s.programSlotMap := by
-  simp only [execRent]
-  exact State.guardWrite_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl rfl
-
-@[simp] theorem execEpochSchedule_preserves_programTextAddr (s : State) :
-    (execEpochSchedule s).programTextAddr = s.programTextAddr := by
-  simp only [execEpochSchedule]
-  exact State.guardWrite_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl rfl
-
-@[simp] theorem execEpochSchedule_preserves_programSlotMap (s : State) :
-    (execEpochSchedule s).programSlotMap = s.programSlotMap := by
-  simp only [execEpochSchedule]
-  exact State.guardWrite_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl rfl
-
 /-- `sol_get_epoch_stake`: r1 = `*const Pubkey` vote account.
     Returns 0 in r0 (no stake modeled). -/
 @[simp] def execEpochStake (s : State) : State :=
