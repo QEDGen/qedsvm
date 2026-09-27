@@ -1017,7 +1017,7 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
       -- H2 residual: a registry key collision is agave's load-time
       -- `SymbolHashCollision` — fail closed, not first-match.
       if !Elf.registryCollisionFree fnReg then none else
-      match Decode.decodeProgram textBytes fnReg with
+      match Decode.decodeProgram textBytes fnReg .v0 with
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
@@ -1084,7 +1084,7 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
       -- H2 residual: registry key collision = agave `SymbolHashCollision`,
       -- fail closed not first-match.
       if !Elf.registryCollisionFree fnReg then none else
-      match Decode.decodeProgram textBytes fnReg with
+      match Decode.decodeProgram textBytes fnReg .v0 with
       | none => none
       | some insns =>
         let baseMem := loadInput emptyMem cfg.input
