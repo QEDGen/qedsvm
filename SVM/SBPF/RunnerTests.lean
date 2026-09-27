@@ -498,6 +498,12 @@ def helloElf : ByteArray := ⟨#[
 ]⟩
 
 example : Runner.runElfForExit helloElf = some 42 := by native_decide
+-- Only V0 (e_flags 0) and V3 (e_flags 3) execute; V1/V2/V4 and unknown flags
+-- are rejected at load instead of running with V0 semantics.
+example : Runner.runElfForExit (helloElf.set! 48 1) = none := by native_decide
+example : Runner.runElfForExit (helloElf.set! 48 2) = none := by native_decide
+example : Runner.runElfForExit (helloElf.set! 48 4) = none := by native_decide
+example : (Runner.runElfWithFuel (helloElf.set! 48 1)).isNone = true := by native_decide
 
 /-! ## Demo 9 — unknown `call <hash>` fails closed
 
