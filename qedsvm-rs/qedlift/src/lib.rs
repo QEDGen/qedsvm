@@ -25,6 +25,7 @@ mod transition;
 mod witness;
 
 pub use api::{CpiPathModule, CpiSuffix, Lifter};
+pub use cpi_path::CpiCalleeContract;
 pub use diagnostic::{DiagnosticKind, LiftError};
 use input::{load_binary, load_descriptor, load_idl_value, load_trace, parse_args, Command};
 #[cfg(test)]
@@ -95,6 +96,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             output_dir.as_path(),
             idl_value.as_ref(),
         ),
+        Command::CpiPath { output_dir } => {
+            let lifter = Lifter::from_analysis(&args.so, &ctx, analysis);
+            driver::run_cpi_path_mode(&args, &lifter, trace.as_deref(), output_dir)
+        }
         Command::Single => {
             let lifter = Lifter::from_analysis(&args.so, &ctx, analysis);
             run_single_mode(

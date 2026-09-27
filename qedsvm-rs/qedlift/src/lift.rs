@@ -538,7 +538,10 @@ fn debug_dump_insns(ctx: &BinaryCtx, analysis: &Analysis<'_>) {
 
 /// `(so_stem, module_name)`: the .so file stem and the Lean module name
 /// (override, or PascalCase of the stem + `Lifted`).
-fn derive_module_name(so_path: &Path, module_override: Option<String>) -> (String, String) {
+pub(crate) fn derive_module_name(
+    so_path: &Path,
+    module_override: Option<String>,
+) -> (String, String) {
     let so_stem = so_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())

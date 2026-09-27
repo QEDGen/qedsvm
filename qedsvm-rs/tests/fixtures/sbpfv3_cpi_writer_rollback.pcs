@@ -1,0 +1,8 @@
+# Caller-only suffix after the invoke at pc 46 (callee fails).
+# Captured with QEDSVM_TRACE_OUT from sbpfv3_cpi_writer_commit_and_rollback_match_mollusk.
+47
+48
+49
+50
+55
+56

@@ -4,6 +4,7 @@ use std::path::Path;
 
 use solana_sbpf::static_analysis::Analysis;
 
+use crate::cpi_path::CpiCalleeContract;
 use crate::diagnostic::{DiagnosticKind, LiftError};
 use crate::lift::{lift_one_with_layouts, LiftOptions, LiftResult};
 use qed_analysis::image::ProgramImage;
@@ -58,13 +59,15 @@ impl<'a> Lifter<'a> {
     /// Lift a caller path across one CPI. `prefix` selects the path up to the
     /// invoke (it must end at a `sol_invoke_signed` terminal); each suffix is
     /// a caller-only trace starting right after the invoke (callee PCs
-    /// removed). Returns the prefix lift plus, per suffix, a module holding
+    /// removed). `contract` states what the callee may do to caller memory.
+    /// Returns the prefix lift plus, per suffix, a module holding
     /// the suffix triple and the composed `_cpi_path` theorem. `prefix_import`
     /// is the Lean import path of the prefix module.
     pub fn lift_cpi_paths(
         &self,
         prefix: LiftOptions<'_>,
         prefix_import: &str,
+        contract: &CpiCalleeContract,
         suffixes: &[CpiSuffix<'_>],
     ) -> Result<(LiftResult, Vec<CpiPathModule>), LiftError> {
         let prefix_result = self.lift(prefix)?;
@@ -94,6 +97,7 @@ impl<'a> Lifter<'a> {
                 &lifted.path,
                 &lifted.lean,
                 suffix.name,
+                contract,
             )?;
             modules.push(CpiPathModule { module_name, lean });
         }

@@ -86,7 +86,37 @@ between the caller's) gives the caller-only paths
 `_cpi_bridge`. `Generated.Sbpfv3CpiCallerLiftedSuccess` and
 `...Rollback` hold each suffix (lifted from pc 35) and the composed
 `_cpi_path` theorem across the CPI for a memory-preserving callee contract;
-`Lifter::lift_cpi_paths` emits all three.
+`Lifter::lift_cpi_paths` (or `qedlift --cpi-suffix`, see
+`sbpfv3_cpi_writer.so`) emits all three.
+
+## `sbpfv3_cpi_writer.so`
+
+Built from `sbpfv3_cpi_writer_src` with `cargo-build-sbf 4.3.0 --arch v3` and
+platform-tools 1.57 (rebuild the same way, copy
+`target/deploy/qedsvm_sbpfv3_cpi_writer.so`). SHA-256:
+`480d2de17f821810bf567419c06e9eb51612089b3a5aaeb4717645d4496417e2`.
+
+A C-ABI caller (`sol_invoke_signed_c`) that hands a writable 2-byte account to
+the callee through a hand-built `SolAccountInfo` pointing into the serialized
+input. The callee writes `data[0]`. After the invoke at pc 46 the caller
+returns `r + 1000` on failure, or stores `data[0] + 1` at heap+200 on success
+(the account belongs to the callee, so the caller may not write its data).
+`sbpfv3_cpi_writer_commit_and_rollback_match_mollusk` checks that the write
+commits on success and rolls back on failure on both engines.
+`sbpfv3_cpi_writer_{success,rollback}.pcs` are the caller-only suffixes
+(captured with `QEDSVM_TRACE_OUT`, which records CPI depth 0 only). The
+`Generated.Sbpfv3CpiWriter*` modules come from:
+
+```
+qedlift --so tests/fixtures/sbpfv3_cpi_writer.so \
+  --cpi-suffix Success=tests/fixtures/sbpfv3_cpi_writer_success.pcs \
+  --cpi-suffix Rollback=tests/fixtures/sbpfv3_cpi_writer_rollback.pcs \
+  --cpi-writes 96 --output-dir ../examples/lean/Generated
+```
+
+`Generated.Sbpfv3CpiCaller*` is produced the same way from
+`sbpfv3_cpi_caller.so` and `sbpfv3_cpi_caller_{success,rollback}.pcs`,
+without `--cpi-writes` (memory-preserving callee).
 
 ## `sbpfv3_syscall_static.so`
 

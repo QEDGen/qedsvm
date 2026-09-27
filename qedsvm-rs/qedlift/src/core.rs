@@ -38,6 +38,33 @@ pub(super) enum Expr {
 }
 
 impl Expr {
+    /// Replace `InitReg`/`InitMem` leaves named in `map` (simultaneously).
+    pub(super) fn substitute(&self, map: &std::collections::BTreeMap<String, Expr>) -> Expr {
+        let s = |e: &Expr| Box::new(e.substitute(map));
+        match self {
+            Expr::InitReg(n) | Expr::InitMem(n) => {
+                map.get(n).cloned().unwrap_or_else(|| self.clone())
+            }
+            Expr::Const(_)
+            | Expr::StHalfImm(_)
+            | Expr::StWordImm(_)
+            | Expr::StDwordImm(_)
+            | Expr::Raw(_)
+            | Expr::RawConst(..) => self.clone(),
+            Expr::ToU64(e) => Expr::ToU64(s(e)),
+            Expr::Mod(e, m) => Expr::Mod(s(e), *m),
+            Expr::WrapAdd(a, b) => Expr::WrapAdd(s(a), s(b)),
+            Expr::WrapSub(a, b) => Expr::WrapSub(s(a), s(b)),
+            Expr::WrapMul(a, b) => Expr::WrapMul(s(a), s(b)),
+            Expr::NatAdd(a, b) => Expr::NatAdd(s(a), s(b)),
+            Expr::AndU64Imm(a, i) => Expr::AndU64Imm(s(a), *i),
+            Expr::LshU64Imm(a, i) => Expr::LshU64Imm(s(a), *i),
+            Expr::RshU64Imm(a, i) => Expr::RshU64Imm(s(a), *i),
+            Expr::CleanSub(a, b) => Expr::CleanSub(s(a), s(b)),
+            Expr::ByteCombo(v) => Expr::ByteCombo(v.iter().map(|e| e.substitute(map)).collect()),
+        }
+    }
+
     pub(super) fn to_lean(&self) -> String {
         match self {
             Expr::Raw(s) => s.clone(),

@@ -590,3 +590,49 @@ pub(super) fn run_single_mode(
     }
     Ok(())
 }
+
+/// `--cpi-suffix` mode: lift the prefix to the invoke, each post-CPI suffix,
+/// and the composed `_cpi_path` theorems; write every module to `output_dir`.
+pub(super) fn run_cpi_path_mode(
+    args: &Args,
+    lifter: &Lifter<'_>,
+    trace: Option<&[usize]>,
+    output_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let traces: Vec<(String, Vec<usize>)> = args
+        .cpi_suffixes
+        .iter()
+        .map(|(name, path)| Ok((name.clone(), load_trace(path)?)))
+        .collect::<Result<_, Box<dyn std::error::Error>>>()?;
+    let suffixes: Vec<crate::CpiSuffix<'_>> = traces
+        .iter()
+        .map(|(name, pcs)| crate::CpiSuffix { name, trace: pcs })
+        .collect();
+    let contract = match &args.cpi_writes {
+        Some(offs) => crate::CpiCalleeContract::WritesInputBytes(offs.clone()),
+        None => crate::CpiCalleeContract::MemoryPreserving,
+    };
+    let options = LiftOptions {
+        module_override: args.module.clone(),
+        trace,
+        ..LiftOptions::default()
+    };
+    let (_, module) = crate::lift::derive_module_name(&args.so, args.module.clone());
+    let import = args
+        .cpi_prefix_import
+        .clone()
+        .unwrap_or_else(|| format!("Generated.{module}"));
+    let (prefix, modules) = lifter.lift_cpi_paths(options, &import, &contract, &suffixes)?;
+    std::fs::create_dir_all(output_dir)?;
+    std::fs::write(
+        output_dir.join(format!("{}.lean", prefix.module_name)),
+        &prefix.lean,
+    )?;
+    println!("=== qedlift CPI paths ===");
+    println!("  prefix : Examples.Lifted.{}", prefix.module_name);
+    for m in &modules {
+        std::fs::write(output_dir.join(format!("{}.lean", m.module_name)), &m.lean)?;
+        println!("  path   : Examples.Lifted.{}", m.module_name);
+    }
+    Ok(())
+}
