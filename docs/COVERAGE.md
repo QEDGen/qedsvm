@@ -9,28 +9,48 @@ This is not a general verifier for arbitrary Solana binaries.
 
 ## sBPF version boundary
 
-The Lean runner loads strict-header V3 ELF program segments and executes V3
-static calls, relative internal calls, and JMP32 branches. The pinned
-`Generated.SbpfV3StaticPath` checks a complete sectionless V3 ELF's decode
-and successful execution. `Generated.SbpfV3AccountPath` checks the same
-instruction classes plus a byte update in account input. `diff_mollusk`
-compares both binaries with Mollusk, including resulting account data and
-compute units. V0 remains supported.
+sBPF v3 is the default verification target. The ELF's `e_flags` select the
+version; nothing is inferred from opcodes or file names.
 
-`qedlift` emits checked selected-path `cuTripleWithinMem` theorems for both
-the sectionless account fixture (`Generated.Sbpfv3AccountPathLifted`) and a
-toolchain-built V3 ELF (`Generated.Sbpfv3CompiledAccountLifted`). The latter
-uses a captured execution trace and proves an update to the account byte
-under its path hypotheses. Their full-ELF pins connect
-the strict V3 loader to the text used by its versioned per-PC decode pins.
-The V3 lifting subset covers every JMP32 condition in both source modes,
-relative internal calls, traced `callx` (the target is resolved through the
-loaded text region and pinned against the ELF by `<M>_v3_callx_resolves`;
-`Generated.Sbpfv3CallxPathLifted`), modeled static syscalls, and shared-text
-mode. Unknown syscalls fail closed. The selected-path triple does not
-establish a whole-program or abstract account-state refinement. ELFs whose
-`e_flags` are neither V0 nor V3 (V1, V2, V4, unknown) are rejected at load by
-both the Lean runner and `ProgramImage::load`.
+| Version | Status |
+| --- | --- |
+| V3 | Default. Strict-header loading, full ISA execution, full non-call ISA lifting (below) |
+| V0 | Deprecated legacy: existing fixtures and generated proofs stay green, no new coverage is added |
+| V1, V2, V4, unknown | Rejected at load by the Lean runner and `ProgramImage::load` |
+
+**Full V3 ISA coverage.** The opcode inventory is checked against the pinned
+`solana-sbpf` 0.14.4 verifier (113 accepted V3 opcodes;
+`qedlift/tests/v3_opcode_matrix.rs`), and every form has decode, execution,
+differential and proof evidence ([SBPFV3_ISA_MATRIX.md](SBPFV3_ISA_MATRIX.md)):
+
+- `sbpfv3_isa_matrix.so` runs every non-call form on one straight-line path;
+  `sbpfv3_isa_matrix_matches_mollusk` agrees with Mollusk on account bytes and
+  compute units, and `Generated.Sbpfv3IsaMatrixLifted` proves the whole path
+  (all JMP32 and JMP64 conditions in both source modes, ALU32/64, div/mod with
+  divisor hypotheses, endian conversion, every load/store width, `lddw`, `ja`).
+- Calls: static syscalls and relative internal calls
+  (`Generated.Sbpfv3CompiledAccountLifted`), traced `callx`
+  (`Generated.Sbpfv3CallxPathLifted`, target resolved through the loaded text
+  region and pinned against the ELF by `<M>_v3_callx_resolves`), and CPI
+  invokes (next section).
+
+Every generated V3 proof pins the complete ELF and its loaded text, decodes
+each walked instruction with V3 semantics, and carries footprint and
+branch-satisfiability witnesses; shared-text mode keeps those pins in one
+module.
+
+**Not ISA gaps, but modeling boundaries:** syscalls without a Lean model fail
+closed; CPI callee effects are covered only through an explicit contract; a
+selected-path triple is not a whole-program proof or an abstract account-state
+refinement (only registered shapes get refinements); loops need per-path
+unrolling via traces.
+
+**Runtime alignment.** Pinned: `solana-sbpf` 0.14.4, Mollusk
+`0.12.1-agave-4.0`, `cargo-build-sbf` 4.3.0, platform-tools 1.57; V3 fixture
+bytes are SHA-256 pinned (`tests/fixtures/sbpfv3_fixtures.sha256`, checked in
+CI). Agave 4.4's `solana-sbpf` 0.24.0 was reviewed and shows no V3 semantic
+delta; the final conformance run against an Agave 4.4 Mollusk is pending
+until one is released (see [SBPFV3_ISA_MATRIX.md](SBPFV3_ISA_MATRIX.md)).
 
 ### V3 caller paths across a CPI
 

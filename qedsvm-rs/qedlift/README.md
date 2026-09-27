@@ -33,10 +33,15 @@ lake build ProofDemo
 This source-built V3 fixture uses `cargo-build-sbf --arch v3` with platform-tools
 1.57 and a captured selected path. The generated module contains:
 
-- the `.text` bytes extracted from `byte_increment.so`;
+- the complete V3 ELF and the `.text` it loads, pinned by `native_decide`;
 - a theorem connecting those bytes to the decoded instructions;
 - a `cuTripleWithinMem` theorem with synthesized separation-logic assertions;
 - a proof body discharged by qedsvm's instruction specifications and tactics.
+
+For a caller path across a CPI, `--cpi-suffix NAME=PATH.pcs` (repeatable, with
+`--output-dir`, optionally `--cpi-writes OFF,...`) lifts the prefix to the invoke,
+each post-CPI suffix, and a composed `_cpi_path` theorem under an explicit callee
+contract; see `docs/COVERAGE.md`.
 
 Unqualified raw-byte decoding and execution use V3. Legacy V0 generated modules
 must call the explicit `Decode.decodeProgramV0` compatibility entrypoint; V0/V1/V2
