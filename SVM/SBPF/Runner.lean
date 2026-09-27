@@ -1006,6 +1006,9 @@ def runElfV3WithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
 def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
   if Elf.readVersion elfBytes = some .v3 then
     (runElfV3WithFuel elfBytes cfg).map (·.1)
+  -- Only V0 and V3 are executable; any other `e_flags` (V1/V2/V4, unknown)
+  -- is rejected at load, never run with V0 semantics.
+  else if Elf.readVersion elfBytes ≠ some .v0 then none
   else
   match Elf.parseHeader elfBytes with
   | none => none
@@ -1076,6 +1079,9 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
     Option (State × Nat) :=
   if Elf.readVersion elfBytes = some .v3 then
     runElfV3WithFuel elfBytes cfg
+  -- Only V0 and V3 are executable; any other `e_flags` (V1/V2/V4, unknown)
+  -- is rejected at load, never run with V0 semantics.
+  else if Elf.readVersion elfBytes ≠ some .v0 then none
   else
   match Elf.parseHeader elfBytes with
   | none => none

@@ -28,6 +28,11 @@ impl ProgramImage {
         let loader = Arc::new(BuiltinProgram::new_mock());
         let executable = Executable::load(&elf_bytes, loader)?;
         let version = executable.get_sbpf_version();
+        // Only V0 and V3 have modeled semantics; V1/V2/V4 are rejected at
+        // load rather than analyzed with another version's rules.
+        if !matches!(version, SBPFVersion::V0 | SBPFVersion::V3) {
+            return Err(format!("unsupported sBPF version {version:?}").into());
+        }
         let (text_offset, text) = executable.get_text_bytes();
         let text_bytes = text.to_vec();
         let mut insns = Vec::new();
