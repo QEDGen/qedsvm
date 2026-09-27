@@ -129,6 +129,9 @@ lean_lib Examples where
     `Generated.SbpfV3AccountPath,
     `Generated.Sbpfv3AccountPathLifted,
     `Generated.Sbpfv3CompiledAccountLifted,
+    `Generated.Sbpfv3SharedText,
+    `Generated.Sbpfv3SharedUpdate,
+    `Generated.Sbpfv3SharedSkip,
     `Generated.ByteIncrementLifted,
     -- HeapAlloc: the embedded bump-allocator pattern over the program
     -- heap (reads/commits the bump slot at 0x300000000, writes + reads an

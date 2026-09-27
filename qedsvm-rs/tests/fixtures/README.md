@@ -60,6 +60,10 @@ not accept the mnemonic. `sbpfv3_compiled_account.pcs` was captured with
 guard-skipping paths match Mollusk on account bytes and compute units (117
 and 6 respectively).
 
+`sbpfv3_compiled_account_skip.pcs` records the guard-skipping path. The
+`Sbpfv3SharedText`, `Sbpfv3SharedUpdate`, and `Sbpfv3SharedSkip` Lean examples
+share one complete ELF pin while proving both paths against its V3 text.
+
 ## `sbpfv3_syscall_static.so`
 
 V3 (`e_flags = 3`) static-syscall fixture copied from

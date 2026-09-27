@@ -78,6 +78,51 @@ fn lifts_toolchain_built_v3_account_path() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn shares_complete_v3_elf_across_two_paths() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_compiled_account.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let update = [11, 12, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 16, 17];
+    let skip = [11, 12, 13, 14, 16, 17];
+    for (name, trace) in [
+        ("Sbpfv3SharedUpdate", update.as_slice()),
+        ("Sbpfv3SharedSkip", skip.as_slice()),
+    ] {
+        let result = lifter.lift(LiftOptions {
+            module_override: Some(name.to_string()),
+            trace: Some(trace),
+            shared_text: Some("Sbpfv3Shared"),
+            ..LiftOptions::default()
+        })?;
+        assert!(result.lean.contains("import Generated.Sbpfv3SharedText"));
+        assert!(result.lean.contains("Decode.decodeInsn Sbpfv3SharedText"));
+        assert!(result.lean.contains(" .v3"));
+        assert!(!result.lean.contains("def Sbpfv3SharedElf"));
+        let (module, shared) = result.shared_text.expect("shared V3 module");
+        assert_eq!(module, "Sbpfv3SharedText");
+        assert!(shared.contains("Elf.loadV3 Sbpfv3SharedElf"));
+        assert!(shared.contains("def Sbpfv3SharedElf : ByteArray"));
+        assert!(shared.contains("def Sbpfv3SharedText : ByteArray"));
+        assert!(shared.contains("def Sbpfv3SharedSlotMap"));
+        assert!(shared.contains("def Sbpfv3SharedFnRegistry : List (Nat × Nat) := []"));
+        let expected_path = if name == "Sbpfv3SharedUpdate" {
+            include_str!("../../../examples/lean/Generated/Sbpfv3SharedUpdate.lean")
+        } else {
+            include_str!("../../../examples/lean/Generated/Sbpfv3SharedSkip.lean")
+        };
+        assert_eq!(
+            result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
+            expected_path
+        );
+        assert_eq!(
+            shared.replace("../tests/fixtures/", "tests/fixtures/"),
+            include_str!("../../../examples/lean/Generated/Sbpfv3SharedText.lean")
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn unknown_v3_static_syscall_has_typed_diagnostic() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_syscall_static.so");
     let program = ProgramImage::load(path)?;

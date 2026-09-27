@@ -43,6 +43,14 @@ theorem two_mov_macro_spec_auto (vOld1 vOld2 : Nat) :
       ((.r1 ↦ᵣ toU64 7) ** (.r2 ↦ᵣ toU64 8)) := by
   sl_block_auto
 
+/-- A V3 self-copy owns one register atom; the automatic spec must not ask to
+    split that register into two disjoint copies. -/
+theorem self_mov_macro_spec_auto (v : Nat) :
+    cuTripleWithin 1 0 0 1
+      (CodeReq.singleton 0 (.mov64 .r0 (.reg .r0)))
+      (.r0 ↦ᵣ v) (.r0 ↦ᵣ v) := by
+  sl_block_auto
+
 /-! ## Computation macro: `r1 := 10 + 5`
 
 ```
@@ -634,4 +642,3 @@ example (vOld : Nat) :
       (.r1 ↦ᵣ vOld)
       (.r1 ↦ᵣ wrapMul32 (toU64 100 % U32_MODULUS) (toU64 3)) := by
   sl_block_auto
-

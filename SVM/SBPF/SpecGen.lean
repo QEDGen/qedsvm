@@ -207,8 +207,17 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
   match ctor with
   | ``SVM.SBPF.Insn.mov64  =>
     if h : args.size = 2 then
-      aluSpec pcLit (args[0]'(by omega)) (args[1]'(by omega))
-        ``SVM.SBPF.mov64_imm_spec ``SVM.SBPF.mov64_reg_spec
+      let dst := args[0]'(by omega)
+      let src := args[1]'(by omega)
+      if src.getAppFn.constName? == some ``SVM.SBPF.Src.reg &&
+          src.getAppArgs[0]! == dst then
+        let hne ← mkNeqR10 dst
+        let v ← mkNatMVar
+        let app ← mkAppM ``SVM.SBPF.mov64_self_spec #[dst, v, pcLit, hne]
+        return { app, sideGoals := [] }
+      else
+        aluSpec pcLit dst src
+          ``SVM.SBPF.mov64_imm_spec ``SVM.SBPF.mov64_reg_spec
     else throwError m!"SpecGen: mov64 expected 2 args, got {args.size}"
   | ``SVM.SBPF.Insn.add64  =>
     aluSpec pcLit args[0]! args[1]!
