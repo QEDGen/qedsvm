@@ -750,6 +750,17 @@ theorem cuTripleWithin_2reg_write
 
 /-! ## 64-bit ALU reg-source specs via the 2-reg-write helper -/
 
+/-- A self-copy reads and writes one owned register atom. -/
+theorem mov64_self_spec (dst : Reg) (v : Nat) (pc : Nat)
+    (hne : dst ≠ .r10) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.mov64 dst (.reg dst)))
+      (dst ↦ᵣ v) (dst ↦ᵣ v) := by
+  apply cuTripleWithin_1reg_write dst v v pc (.mov64 dst (.reg dst)) hne
+  intro s hval
+  simp only [step]
+  simp only [resolveSrc, hval]
+
 /-- `mov64 dst, src`: register copy (derived form of `mov64_reg_spec_manual`). -/
 theorem mov64_reg_spec (dst src : Reg) (vOld v : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :

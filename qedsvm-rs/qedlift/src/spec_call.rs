@@ -89,14 +89,19 @@ pub(super) fn spec_call_for(
             _ => return None,
         };
         let h = branch_hyp_name.unwrap_or("h_branch?");
+        let simplify = if branch_taken == Some(false) {
+            format!("simp only [{h}]")
+        } else {
+            format!("simp only [{h}, if_true]")
+        };
         let line = if insn.opc & 8 == 0 {
             format!(
-                "have {hyp_name} := jmp32_imm_spec .{cond} {} {} ({}) {} {}\n  simp only [{h}, if_true] at {hyp_name}",
+                "have {hyp_name} := jmp32_imm_spec .{cond} {} {} ({}) {} {}\n  {simplify} at {hyp_name}",
                 reg(dst), imm, reg_val_lean(dst), pc, jt,
             )
         } else {
             format!(
-                "have {hyp_name} := jmp32_reg_spec .{cond} {} {} ({}) ({}) {} {}\n  simp only [{h}, if_true] at {hyp_name}",
+                "have {hyp_name} := jmp32_reg_spec .{cond} {} {} ({}) ({}) {} {}\n  {simplify} at {hyp_name}",
                 reg(dst), reg(src), reg_val_lean(dst), reg_val_lean(src), pc, jt,
             )
         };
@@ -785,6 +790,18 @@ pub(super) fn spec_call_for(
         }
         MOV64_REG => {
             let v_old = reg_val_lean(dst);
+            if dst == src {
+                return Some(SpecCall {
+                    hyp_name: hyp_name.clone(),
+                    have_line: format!(
+                        "have {} := mov64_self_spec {} ({}) {} (by decide)",
+                        hyp_name,
+                        reg(dst),
+                        v_old,
+                        pc,
+                    ),
+                });
+            }
             let v_src = reg_val_lean(src);
             format!(
                 "have {} := mov64_reg_spec {} {} ({}) ({}) {} (by decide)",

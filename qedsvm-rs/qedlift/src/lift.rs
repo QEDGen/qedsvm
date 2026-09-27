@@ -201,12 +201,6 @@ pub(super) fn lift_one_with_layouts(
     let insns = &ctx.insns;
 
     if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
-        if shared_text.is_some() {
-            return Err(LiftError::new(
-                DiagnosticKind::UnsupportedConstruct,
-                "qedlift: V3 shared-text mode is not yet supported",
-            ));
-        }
         for (pc, insn) in insns.iter().enumerate() {
             if insn.opc == ebpf::CALL_REG || (insn.opc == ebpf::CALL_IMM && insn.src > 1) {
                 return Err(LiftError::new(
@@ -280,7 +274,7 @@ pub(super) fn lift_one_with_layouts(
             shared_text,
         )?;
     }
-    if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
+    if ctx.version == solana_sbpf::program::SBPFVersion::V3 && shared_text.is_none() {
         out.push_str(&render::v3_elf_pin(&module_name, &ctx.elf_bytes));
     }
 
@@ -405,14 +399,20 @@ pub(super) fn lift_one_with_layouts(
     // Batch dedup: render the shared Text/SlotMap/FnRegistry module the arm's
     // decode pins import (identical for every arm of the same binary).
     let shared_text_out: Option<(String, String)> = shared_text.map(|base| {
-        let reg = function_registry(ctx);
+        let registry = if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
+            "[]".to_string()
+        } else {
+            function_registry_lean(&function_registry(ctx))
+        };
         (
             format!("{}Text", base),
             render::shared_text_module(
                 base,
                 emitted_path,
                 ctx.text_bytes.as_slice(),
-                &function_registry_lean(&reg),
+                &registry,
+                ctx.version == solana_sbpf::program::SBPFVersion::V3,
+                &ctx.elf_bytes,
             ),
         )
     });
