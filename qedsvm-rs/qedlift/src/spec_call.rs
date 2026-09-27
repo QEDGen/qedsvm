@@ -90,12 +90,30 @@ pub(super) fn spec_call_for(
             _ => return None,
         };
         let h = branch_hyp_name.unwrap_or("h_branch?");
-        let simplify = if branch_taken == Some(false) {
-            format!("simp only [{h}]")
-        } else {
-            format!("simp only [{h}, if_true]")
-        };
-        let line = if insn.opc & 8 == 0 {
+        let simplify = format!("simp only [{h}, if_true]");
+        let line = if branch_taken == Some(false) {
+            // Fall-through: the path hypothesis selects `pc + 1` directly.
+            if insn.opc & 8 == 0 {
+                format!(
+                    "have {hyp_name} := jmp32_imm_not_taken_spec .{cond} {} {} ({}) {} {} {h}",
+                    reg(dst),
+                    imm,
+                    reg_val_lean(dst),
+                    pc,
+                    jt,
+                )
+            } else {
+                format!(
+                    "have {hyp_name} := jmp32_reg_not_taken_spec .{cond} {} {} ({}) ({}) {} {} {h}",
+                    reg(dst),
+                    reg(src),
+                    reg_val_lean(dst),
+                    reg_val_lean(src),
+                    pc,
+                    jt,
+                )
+            }
+        } else if insn.opc & 8 == 0 {
             format!(
                 "have {hyp_name} := jmp32_imm_spec .{cond} {} {} ({}) {} {}\n  {simplify} at {hyp_name}",
                 reg(dst), imm, reg_val_lean(dst), pc, jt,
@@ -394,6 +412,16 @@ pub(super) fn spec_call_for(
                 pc,
             )
         }
+        // V3 endian conversion: `endian_spec dst width bigEndian vOld pc hne`.
+        LE | BE => format!(
+            "have {} := endian_spec {} {} {} ({}) {} (by decide)",
+            hyp_name,
+            reg(dst),
+            imm,
+            insn.opc == BE,
+            reg_val_lean(dst),
+            pc,
+        ),
         // Bitwise/mul imm-form ALU: `<op>_imm_spec dst imm vOld pc hne`.
         OR64_IMM | XOR64_IMM | MUL64_IMM => {
             let v_old = reg_val_lean(dst);

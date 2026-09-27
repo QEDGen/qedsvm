@@ -4,7 +4,8 @@ use super::core::Expr;
 #[derive(Clone, Debug)]
 pub(super) enum BranchKind {
     JeqImm,
-    Jeq32Imm,
+    /// V3 JMP32 (either source mode): `jump32Holds .<cond> dst rhs`.
+    Jmp32(&'static str),
     JneImm,
     JgtImm,
     JsgtImm,
@@ -65,9 +66,13 @@ impl BranchHyp {
         match (self.kind.clone(), self.taken) {
             (BranchKind::JeqImm, false) => format!("{} ≠ toU64 {}", v, im),
             (BranchKind::JeqImm, true) => format!("{} = toU64 {}", v, im),
-            (BranchKind::Jeq32Imm, true) => format!("jump32Holds .eq {} (toU64 {}) = true", va, im),
-            (BranchKind::Jeq32Imm, false) => {
-                format!("jump32Holds .eq {} (toU64 {}) = false", va, im)
+            (BranchKind::Jmp32(cond), taken) => {
+                let rhs = if self.src_value.is_some() {
+                    sa.clone()
+                } else {
+                    format!("(toU64 {})", im)
+                };
+                format!("jump32Holds .{} {} {} = {}", cond, va, rhs, taken)
             }
             (BranchKind::JneImm, false) => format!("{} = toU64 {}", v, im),
             (BranchKind::JneImm, true) => format!("{} ≠ toU64 {}", v, im),
@@ -134,5 +139,41 @@ impl BranchHyp {
 
     pub(super) fn name(&self, idx: usize) -> String {
         format!("h_branch{}", idx)
+    }
+}
+
+/// The `Jump32Cond` constructor name for a V3 JMP32 opcode (class 6).
+pub(super) fn jmp32_cond(opc: u8) -> Option<&'static str> {
+    Some(match opc & 0xf7 {
+        0x16 => "eq",
+        0x26 => "gt",
+        0x36 => "ge",
+        0x46 => "set",
+        0x56 => "ne",
+        0x66 => "sgt",
+        0x76 => "sge",
+        0xa6 => "lt",
+        0xb6 => "le",
+        0xc6 => "slt",
+        0xd6 => "sle",
+        _ => return None,
+    })
+}
+
+/// `jump32Holds` over the low 32 bits, mirroring `SVM.SBPF.jump32Holds`.
+pub(super) fn jump32_holds(cond: &str, a: u64, b: u64) -> bool {
+    let (a, b) = (a as u32, b as u32);
+    match cond {
+        "eq" => a == b,
+        "ne" => a != b,
+        "gt" => a > b,
+        "ge" => a >= b,
+        "lt" => a < b,
+        "le" => a <= b,
+        "sgt" => (a as i32) > (b as i32),
+        "sge" => (a as i32) >= (b as i32),
+        "slt" => (a as i32) < (b as i32),
+        "sle" => (a as i32) <= (b as i32),
+        _ => (a & b) != 0,
     }
 }

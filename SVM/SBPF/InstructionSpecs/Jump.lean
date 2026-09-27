@@ -274,6 +274,42 @@ block. Each takes the path hypothesis and collapses the `*_imm_spec`
 conditional; the hypothesis becomes a `mkSpec` side goal, discharged via
 `<;> assumption`. -/
 
+/-- V3 JMP32 immediate: NOT taken (fall-through to `pc + 1`). -/
+theorem jmp32_imm_not_taken_spec (cond : Jump32Cond) (dst : Reg) (imm : Int)
+    (vDst : Nat) (pc target : Nat) (h : jump32Holds cond vDst (toU64 imm) = false) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jmp32 cond dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jmp32_imm_spec cond dst imm vDst pc target
+  rwa [h, if_neg Bool.false_ne_true] at base
+
+/-- V3 JMP32 immediate: TAKEN (jump to target). -/
+theorem jmp32_imm_taken_spec (cond : Jump32Cond) (dst : Reg) (imm : Int)
+    (vDst : Nat) (pc target : Nat) (h : jump32Holds cond vDst (toU64 imm) = true) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jmp32 cond dst (.imm imm) target))
+      (dst ↦ᵣ vDst) (dst ↦ᵣ vDst) := by
+  have base := jmp32_imm_spec cond dst imm vDst pc target
+  rwa [h, if_pos rfl] at base
+
+/-- V3 JMP32 register: NOT taken (fall-through to `pc + 1`). -/
+theorem jmp32_reg_not_taken_spec (cond : Jump32Cond) (dst src : Reg)
+    (vDst vSrc : Nat) (pc target : Nat) (h : jump32Holds cond vDst vSrc = false) :
+    cuTripleWithin 1 0 pc (pc + 1)
+      (CodeReq.singleton pc (.jmp32 cond dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jmp32_reg_spec cond dst src vDst vSrc pc target
+  rwa [h, if_neg Bool.false_ne_true] at base
+
+/-- V3 JMP32 register: TAKEN (jump to target). -/
+theorem jmp32_reg_taken_spec (cond : Jump32Cond) (dst src : Reg)
+    (vDst vSrc : Nat) (pc target : Nat) (h : jump32Holds cond vDst vSrc = true) :
+    cuTripleWithin 1 0 pc target
+      (CodeReq.singleton pc (.jmp32 cond dst (.reg src) target))
+      ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) ((dst ↦ᵣ vDst) ** (src ↦ᵣ vSrc)) := by
+  have base := jmp32_reg_spec cond dst src vDst vSrc pc target
+  rwa [h, if_pos rfl] at base
+
 /-- `jeq dst, imm`: NOT taken (fall-through to `pc + 1`). -/
 theorem jeq_imm_not_taken_spec
     (dst : Reg) (imm : Int) (vDst : Nat) (pc target : Nat)

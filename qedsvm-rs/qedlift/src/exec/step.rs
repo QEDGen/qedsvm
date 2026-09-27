@@ -231,6 +231,27 @@ pub(super) fn step(
                 },
             );
         }
+        // V3 endian conversion: `endianValue vOld width bigEndian` (`endian_spec`).
+        LE | BE => {
+            let av = state.read_reg(dst);
+            let big = insn.opc == BE;
+            let r = format!("endianValue {} {} {}", av.atom_lean(), imm, big);
+            let v = eval_expr(&av, &std::collections::BTreeMap::new()).map(|x| match (imm, big) {
+                (16, false) => x & 0xffff,
+                (32, false) => x & 0xffff_ffff,
+                (16, true) => u64::from((x as u16).swap_bytes()),
+                (32, true) => u64::from((x as u32).swap_bytes()),
+                (_, true) => x.swap_bytes(),
+                _ => x,
+            });
+            state.write_reg(
+                dst,
+                match v {
+                    Some(v) => Expr::RawConst(r, v),
+                    None => Expr::Raw(r),
+                },
+            );
+        }
         ADD32_IMM | SUB32_IMM | MUL32_IMM | OR32_IMM | AND32_IMM | XOR32_IMM | LSH32_IMM
         | RSH32_IMM | MOV32_IMM | DIV32_IMM | MOD32_IMM | NEG32 => {
             let a = state.read_reg(dst).atom_lean();
@@ -342,12 +363,15 @@ pub(super) fn step(
                 taken: branch_taken.unwrap_or(false),
             });
         }
-        JEQ32_IMM => {
+        // V3 JMP32 (class 6), both source modes: 32-bit path hypothesis.
+        opc if opc & 0x07 == 0x06 && crate::branch::jmp32_cond(opc).is_some() => {
+            let cond = crate::branch::jmp32_cond(opc).expect("checked above");
             let r = state.read_reg(dst);
+            let s = (opc & 0x08 != 0).then(|| state.read_reg(src));
             state.record_branch(BranchHyp {
-                kind: BranchKind::Jeq32Imm,
+                kind: BranchKind::Jmp32(cond),
                 dst_value: r,
-                src_value: None,
+                src_value: s,
                 imm,
                 taken: branch_taken.unwrap_or(false),
             });

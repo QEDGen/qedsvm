@@ -484,6 +484,16 @@ theorem neg64_spec (dst : Reg) (vOld : Nat) (pc : Nat)
   cuTripleWithin_1reg_write dst vOld (wrapNeg vOld) pc (.neg64 dst) hne
     (fun _ hdst => by simp only [step, hdst])
 
+/-- `le`/`be dst, width` (V3): endian conversion of `dst` at 16, 32 or 64 bits. -/
+theorem endian_spec (dst : Reg) (width : Nat) (bigEndian : Bool) (vOld : Nat) (pc : Nat)
+    (hne : dst ≠ .r10) :
+    cuTripleWithin 1 0 pc (pc + 1) (CodeReq.singleton pc (.endian dst width bigEndian))
+      (dst ↦ᵣ vOld)
+      (dst ↦ᵣ endianValue vOld width bigEndian) :=
+  cuTripleWithin_1reg_write dst vOld (endianValue vOld width bigEndian) pc
+    (.endian dst width bigEndian) hne
+    (fun _ hdst => by simp only [step, hdst])
+
 /-- `and64 dst, imm`: bitwise AND with immediate (truncated to 64 bits). -/
 theorem and64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
     (hne : dst ≠ .r10) :

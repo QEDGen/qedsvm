@@ -21,6 +21,7 @@ const NOOP_SO: &[u8] = include_bytes!("fixtures/noop.so");
 /// Strict-header V3: JMP32, relative call, and static sol_log_64_ syscall.
 const SBPFV3_STATIC_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_static_path.so");
 const SBPFV3_ACCOUNT_PATH_SO: &[u8] = include_bytes!("fixtures/sbpfv3_account_path.so");
+const SBPFV3_ISA_MATRIX_SO: &[u8] = include_bytes!("fixtures/sbpfv3_isa_matrix.so");
 const SBPFV3_COMPILED_ACCOUNT_SO: &[u8] = include_bytes!("fixtures/sbpfv3_compiled_account.so");
 
 /// Deterministic strict-header V3 fixture builder. The checked-in static
@@ -868,6 +869,51 @@ mod core_vm {
             vec![5],
             Some(vec![6]),
         );
+    }
+
+    /// Every non-call V3 instruction form on one straight-line path
+    /// (`build_sbpfv3_isa_matrix.py`): each ALU/memory/endian/jump effect is
+    /// stored into the account, so equal data and CU cover the whole matrix.
+    #[test]
+    fn sbpfv3_isa_matrix_matches_mollusk() {
+        let program_id = pid(460);
+        let acct_key = pid(461);
+        // Fixture offsets are input-relative; account data starts at input + 96.
+        let mut data = vec![0u8; 128];
+        data[0..8].copy_from_slice(&100u64.to_le_bytes());
+        data[8..16].copy_from_slice(&200u64.to_le_bytes());
+        data[16..20].copy_from_slice(&50u32.to_le_bytes());
+        data[20..22].copy_from_slice(&1u16.to_le_bytes());
+        data[22] = 7;
+        let (pre_shared, pre_mollusk) = dual_account(1_000_000, data.clone(), program_id, false);
+        let ix = Instruction {
+            program_id,
+            accounts: vec![AccountMeta::new(acct_key, false)],
+            data: vec![],
+        };
+        let fs = svm_with(&[(program_id, SBPFV3_ISA_MATRIX_SO)]);
+        let fs_r = fs
+            .process_instruction(&ix, &[(acct_key, pre_shared)])
+            .expect("qedsvm runs the V3 ISA matrix");
+        let m = mollusk_with(&[(program_id, SBPFV3_ISA_MATRIX_SO)]);
+        let m_r = m.process_instruction(&ix, &[(acct_key, pre_mollusk)]);
+        assert!(
+            matches!(fs_r.program_result, FsProgramResult::Success)
+                && matches!(m_r.program_result, MlProgramResult::Success),
+            "qedsvm {:?} (cu {}), mollusk {:?} (cu {})",
+            fs_r.program_result,
+            fs_r.compute_units_consumed,
+            m_r.program_result,
+            m_r.compute_units_consumed
+        );
+        assert_eq!(
+            fs_r.compute_units_consumed, m_r.compute_units_consumed,
+            "CU diverged for the V3 ISA matrix"
+        );
+        let fs_data = fs_acct_by_key(&fs_r, &acct_key).data().to_vec();
+        assert_eq!(fs_data, ml_acct_by_key(&m_r, &acct_key).data);
+        // The path wrote its results (some chains legitimately end at 0).
+        assert_ne!(fs_data, data, "the V3 ISA matrix wrote nothing");
     }
 
     #[test]
