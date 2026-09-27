@@ -26,7 +26,7 @@ use crate::refinement::{
 };
 use crate::render;
 use crate::spec_call::SpecCall;
-use crate::state::SymState;
+use crate::state::{RegionClause, SymState};
 use crate::transition::{
     emit_transition_fault, emit_transition_path, BItem, FaultTail, RefineTarget, TransitionPathInfo,
 };
@@ -202,7 +202,7 @@ pub(super) fn lift_one_with_layouts(
 
     if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
         for (pc, insn) in insns.iter().enumerate() {
-            if insn.opc == ebpf::CALL_REG || (insn.opc == ebpf::CALL_IMM && insn.src > 1) {
+            if insn.opc == ebpf::CALL_IMM && insn.src > 1 {
                 return Err(LiftError::new(
                     DiagnosticKind::UnsupportedConstruct,
                     format!("qedlift: V3 call form at pc {pc} is not supported for lifting"),
@@ -276,6 +276,22 @@ pub(super) fn lift_one_with_layouts(
     }
     if ctx.version == solana_sbpf::program::SBPFVersion::V3 && shared_text.is_none() {
         out.push_str(&render::v3_elf_pin(&module_name, &ctx.elf_bytes));
+    }
+    let callx_targets: Vec<(String, usize)> = state
+        .region_requirements()
+        .iter()
+        .filter_map(|clause| match clause {
+            RegionClause::Callx { addr, target } => Some((addr.to_lean(), *target)),
+            RegionClause::Access(_) => None,
+        })
+        .collect();
+    if !callx_targets.is_empty() {
+        let elf_def = format!("{}Elf", shared_text.unwrap_or(&module_name));
+        out.push_str(&render::v3_callx_pins(
+            &module_name,
+            &elf_def,
+            &callx_targets,
+        ));
     }
 
     // Phase 2: Hoare-triple emission. Symbolic execution already done inline above; `state` is ready.

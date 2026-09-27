@@ -651,10 +651,21 @@ structure Region where
   start    : Nat
   size     : Nat
   writable : Bool
+  /-- V3 executable text only: physical 8-byte slot -> logical PC (`lddw`
+      occupies two slots). Empty for every data region and for V0 images.
+      Lives here, not on `State`, because the region table is the loaded
+      image's immutable metadata (`executeFn_preserves_regions`), so a callx
+      precondition on it composes as an ordinary `cuTripleWithinMem` side
+      condition. -/
+  textSlots : Array Nat := #[]
   deriving Inhabited, Repr
 
 /-- List of mapped regions; order irrelevant, the check folds over the list. -/
 abbrev RegionTable := List Region
+
+/-- The V3 executable text region, if the loaded image has one. -/
+def RegionTable.textRegion? (rt : RegionTable) : Option Region :=
+  rt.find? fun r => !r.textSlots.isEmpty
 
 /-- Does `[addr, addr + len)` lie entirely within this region? -/
 def Region.contains (r : Region) (addr len : Nat) : Bool :=

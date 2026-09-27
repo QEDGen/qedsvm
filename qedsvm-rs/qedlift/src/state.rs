@@ -42,6 +42,42 @@ impl FreshNames {
 /// `(base, offset, width, writable, variable-length override)`.
 pub(super) type RegionRequirement = (Expr, i64, Width, bool, Option<(Expr, Expr)>);
 
+/// One `rr` clause in walk order.
+pub(super) enum RegionClause {
+    /// A memory-range requirement (`containsRange` / `containsWritable`).
+    Access(RegionRequirement),
+    /// A V3 `callx`: the register's program address resolves, through the
+    /// loaded text region, to `target` (`resolveCallx rt addr = some target`).
+    Callx { addr: Expr, target: usize },
+}
+
+/// Walk-ordered `rr` clauses. `push` keeps the memory-access tuple form used
+/// by instruction and syscall handlers.
+#[derive(Default)]
+pub(super) struct RegionWalk(Vec<RegionClause>);
+
+impl RegionWalk {
+    pub(super) fn push(&mut self, requirement: RegionRequirement) {
+        self.0.push(RegionClause::Access(requirement));
+    }
+
+    pub(super) fn push_callx(&mut self, addr: Expr, target: usize) {
+        self.0.push(RegionClause::Callx { addr, target });
+    }
+
+    pub(super) fn pop(&mut self) -> Option<RegionClause> {
+        self.0.pop()
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, RegionClause> {
+        self.0.iter()
+    }
+}
+
 pub(super) enum RetryPlan {
     BlobSplits(Vec<(String, i64, i64)>),
     HotRegions(Vec<(String, i64, i64)>),
@@ -67,7 +103,7 @@ pub(super) struct SymState {
     /// Set on first `call_local`; emission then adds `r6..r10` and `callStackIs []` to the pre-condition.
     saw_call: bool,
     /// rr clauses in walk order (load → `containsRange`, store → `containsWritable`), matching `slBlockIter`'s left-fold. `memset_override = Some((dst, count))` is a variable-length `containsWritable` clause (H6: `MemOps.execSet.guardWrite`); fixed fields ignored, address rendered raw without `effectiveAddr`.
-    rr_walk: Vec<RegionRequirement>,
+    rr_walk: RegionWalk,
     /// Post-state of `↦Bytes` blobs written by `sol_memset_`, keyed by rendered address. Read by `post_atoms` to transform pre `Sym` → post `Replicate`.
     byte_blob_post: std::collections::BTreeMap<String, BytesVal>,
     /// PC → Lean `Syscall` constructor for identified host syscalls; CodeReq renders as `.call <ctor>` instead of `.call_local`.
@@ -164,11 +200,11 @@ impl SymState {
         self.saw_call
     }
 
-    pub(super) fn region_requirements(&self) -> &[RegionRequirement] {
+    pub(super) fn region_requirements(&self) -> &RegionWalk {
         &self.rr_walk
     }
 
-    pub(super) fn region_requirements_mut(&mut self) -> &mut Vec<RegionRequirement> {
+    pub(super) fn region_requirements_mut(&mut self) -> &mut RegionWalk {
         &mut self.rr_walk
     }
 

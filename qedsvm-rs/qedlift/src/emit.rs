@@ -3,7 +3,7 @@ use super::core::{
     Expr, Width,
 };
 use super::diagnostic::{DiagnosticKind, LiftError};
-use super::state::SymState;
+use super::state::{RegionClause, SymState};
 
 /// Concatenate atoms into a Lean `**`-separated SL expression (`emp` for empty list).
 /// `subst` replaces rendered address-base expressions with their abstracted parameter name.
@@ -648,7 +648,18 @@ pub(super) fn region_req(
         group_ids.push(gid);
     }
     // Walk-order: load -> containsRange, store -> containsWritable; left-fold order matches slBlockIter.
-    for (addr_base, addr_off, width, writable, raw) in state.region_requirements() {
+    for clause in state.region_requirements().iter() {
+        let (addr_base, addr_off, width, writable, raw) = match clause {
+            RegionClause::Access(requirement) => requirement,
+            RegionClause::Callx { addr, target } => {
+                clauses.push(format!(
+                    "resolveCallx rt ({}) = some {}",
+                    fold_abstractions(addr.to_lean(), subst),
+                    target
+                ));
+                continue;
+            }
+        };
         // H6 variable-length: `contains{Writable,Range} addr count` with raw (subst-folded, no
         // `effectiveAddr`) address — matches the rr from `call_sol_{memset,log}_*_spec` after sl_rw_abs.
         if let Some((addr, count)) = raw {

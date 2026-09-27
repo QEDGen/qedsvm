@@ -315,9 +315,9 @@ pub(crate) fn walk_and_exec(
                             format!("qedlift: V3 callx at pc {} exceeds 64 call frames", pc_iter),
                         ));
                     }
-                    let address = state
-                        .regs()
-                        .get(&ins.dst)
+                    let address_expr = state.regs().get(&ins.dst).cloned();
+                    let address = address_expr
+                        .as_ref()
                         .and_then(|expr| eval_expr(expr, &Default::default()))
                         .ok_or_else(|| {
                             LiftError::new(
@@ -339,6 +339,9 @@ pub(crate) fn walk_and_exec(
                                 ),
                             ));
                         }
+                    }
+                    if let Some(expr) = address_expr {
+                        state.region_requirements_mut().push_callx(expr, target);
                     }
                     Some(target)
                 } else {

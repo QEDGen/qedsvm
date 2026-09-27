@@ -24,6 +24,7 @@ pub(super) struct SpecCall {
 ///   - `Some(true)`  → use `jXX_imm_taken_spec`     (post-PC = target)
 ///   - `Some(false)` → use `jXX_imm_not_taken_spec` (post-PC = pc+1)
 ///   - `None`        → not applicable (non-branch instruction)
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spec_call_for(
     version: SBPFVersion,
     state: &SymState,
@@ -833,6 +834,27 @@ pub(super) fn spec_call_for(
                 reg(dst),
                 imm,
                 v_old,
+                pc,
+            )
+        }
+        CALL_REG if version == SBPFVersion::V3 => {
+            // callx_v3_spec reg addr target cs r6V r7V r8V r9V r10V pc. The
+            // walker validated `target` against the text map and recorded the
+            // matching `resolveCallx` rr clause.
+            let target = call_target?;
+            let cs = render_callstack(state.call_stack());
+            format!(
+                "have {} := callx_v3_spec {} ({}) {} {} ({}) ({}) ({}) ({}) ({}) {}",
+                hyp_name,
+                reg(dst),
+                reg_val_lean(dst),
+                target,
+                cs,
+                reg_val_lean(6),
+                reg_val_lean(7),
+                reg_val_lean(8),
+                reg_val_lean(9),
+                reg_val_lean(10),
                 pc,
             )
         }

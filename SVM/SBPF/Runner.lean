@@ -87,6 +87,26 @@ def runtimeRegions (inputLen : Nat) : Memory.RegionTable :=
   , { start := HEAP_START,  size := DEFAULT_HEAP_SIZE, writable := true }
   , { start := INPUT_START, size := inputLen,          writable := true } ]
 
+/-- Regions of a strict-header V3 image: read-only text carrying its slot map
+    (the callx address-to-PC table), optional read-only rodata at 0, then the
+    runtime stack/heap/input regions. -/
+def v3Regions (program : Elf.V3Program) (inputLen : Nat) : Memory.RegionTable :=
+  { start := program.textAddr, size := program.textBytes.size, writable := false,
+    textSlots := Decode.buildSlotMap program.textBytes }
+    :: (if program.rodata.isEmpty then []
+        else [{ start := 0, size := program.rodata.size, writable := false }])
+    ++ runtimeRegions inputLen
+
+/-- callx resolution over a loaded V3 image depends only on its text, not on
+    the input length: only the text region carries a slot map. Lets a lifted
+    path's `resolveCallx rt addr = some target` side condition be pinned once
+    against the ELF by `native_decide` at input length 0. -/
+theorem resolveCallx_v3Regions_input_indep (program : Elf.V3Program) (inputLen : Nat)
+    (addr : Nat) :
+    resolveCallx (v3Regions program inputLen) addr = resolveCallx (v3Regions program 0) addr := by
+  cases program.rodata.isEmpty <;>
+    simp [resolveCallx, v3Regions, runtimeRegions, Memory.RegionTable.textRegion?, List.find?]
+
 /-- Read-only program region for an ELF: `MM_REGION_SIZE` to the end of
     the highest loaded section (text/rodata/data.rel.ro). Matches agave's
     single contiguous program region in `solana-sbpf`. -/
@@ -742,12 +762,7 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
         | _, _ => 0
     let subRegions : Memory.RegionTable :=
       match v3ProgramOpt with
-      | some program =>
-        ({ start := program.textAddr, size := program.textBytes.size,
-           writable := false } : Memory.Region)
-          :: (if program.rodata.isEmpty then []
-              else [{ start := 0, size := program.rodata.size, writable := false }])
-          ++ runtimeRegions subInput.size
+      | some program => v3Regions program subInput.size
       | none => match headerOpt, textSecOpt with
         | some h, some textSec => elfRegions calleeBytes h textSec subInput.size
         | _, _ => runtimeRegions subInput.size
@@ -763,9 +778,7 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
         cuBudget    := fuel'
         progIdBytes := pidBytesIn
         origPrivs   := parseInputPrivileges subInput
-        invokeDepth := s.invokeDepth + 1
-        programTextAddr := v3ProgramOpt.map (·.textAddr) |>.getD 0
-        programSlotMap := if v3ProgramOpt.isSome then Decode.buildSlotMap textBytes else #[] }
+        invokeDepth := s.invokeDepth + 1 }
     some (calleeInsns, subS, slots)
 
 /-- Post-invocation half of a CPI sub-VM launch: M6 read-only re-verify (a
@@ -975,11 +988,7 @@ def runElfV3WithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
   let baseMem := loadInput emptyMem cfg.input
   let memText := loadBytesAt baseMem program.textBytes program.textAddr
   let mem := loadBytesAt memText program.rodata 0
-  let regions :=
-    ({ start := program.textAddr, size := program.textBytes.size, writable := false } : Memory.Region)
-      :: (if program.rodata.isEmpty then []
-          else [{ start := 0, size := program.rodata.size, writable := false }])
-      ++ runtimeRegions cfg.input.size
+  let regions := v3Regions program cfg.input.size
   let s : State :=
     { regs := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
       mem := mem
@@ -987,9 +996,7 @@ def runElfV3WithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
       pc := entryPc
       cuBudget := cfg.cuBudget
       progIdBytes := cfg.progIdBytes
-      origPrivs := parseInputPrivileges cfg.input
-      programTextAddr := program.textAddr
-      programSlotMap := slotMap }
+      origPrivs := parseInputPrivileges cfg.input }
   some (executeFnCpiWithFuel cfg.programRegistry (fetchFromArray insns) s cfg.cuBudget)
 
 /-- Decode and run an sBPF ELF64 binary. `none` if malformed or no `.text`.

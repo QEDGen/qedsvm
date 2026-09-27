@@ -3,7 +3,6 @@ use std::path::Path;
 use qedlift::{LiftOptions, Lifter, ProgramImage, RefinementOutcome, RefinementReason};
 
 #[test]
-#[ignore = "requires composable V3 text-map proof in the public lift emitter"]
 fn lifts_traced_v3_callx_with_pinned_target() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_callx_path.so");
     let program = ProgramImage::load(path)?;
@@ -15,11 +14,18 @@ fn lifts_traced_v3_callx_with_pinned_target() -> Result<(), Box<dyn std::error::
     })?;
     assert!(result.lean.contains("callx_v3_spec"));
     assert!(result.lean.contains(".callx .r2"));
+    assert!(result
+        .lean
+        .contains("resolveCallx rt (toU64 4294967336) = some 4"));
+    assert!(result.lean.contains("_v3_callx_resolves"));
+    assert_eq!(
+        result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CallxPathLifted.lean")
+    );
     Ok(())
 }
 
 #[test]
-#[ignore = "requires composable V3 text-map proof in the public lift emitter"]
 fn rejects_v3_callx_trace_with_wrong_target() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_callx_path.so");
     let program = ProgramImage::load(path)?;

@@ -332,6 +332,33 @@ pub(super) fn v3_elf_pin(module_name: &str, elf_bytes: &[u8]) -> String {
     out
 }
 
+/// Pins each V3 `callx` resolution a lifted path relies on against the
+/// complete ELF: the triple's `resolveCallx rt addr = some target` side
+/// condition holds for the regions the V3 loader builds, at every input length.
+pub(super) fn v3_callx_pins(
+    module_name: &str,
+    elf_def: &str,
+    targets: &[(String, usize)],
+) -> String {
+    let resolved: Vec<String> = targets
+        .iter()
+        .map(|(addr, _)| format!("resolveCallx (Runner.v3Regions program inputLen) ({addr})"))
+        .collect();
+    let expected: Vec<String> = targets.iter().map(|(_, pc)| format!("some {pc}")).collect();
+    format!(
+        "/-- Every indirect-call target on this path, resolved through the text\n    \
+         region the V3 loader builds from the pinned ELF. -/\n\
+         theorem {module_name}_v3_callx_resolves (inputLen : Nat) :\n    \
+         ((Elf.loadV3 {elf_def}).map fun program =>\n      \
+         [{}]) =\n      \
+         some [{}] := by\n  \
+         simp only [Runner.resolveCallx_v3Regions_input_indep]\n  \
+         native_decide\n\n",
+        resolved.join(",\n       "),
+        expected.join(", "),
+    )
+}
+
 /// The shared `.text` module (batch dedup): one binary's `{base}Text` +
 /// `{base}SlotMap` + `{base}FnRegistry`, emitted ONCE as
 /// `Generated/{base}Text.lean` and imported by every per-arm lift of that
