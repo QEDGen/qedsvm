@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use qedlift::{LiftOptions, Lifter, ProgramImage, RefinementOutcome, RefinementReason};
+use qedlift::{CpiSuffix, LiftOptions, Lifter, ProgramImage, RefinementOutcome, RefinementReason};
 
 #[test]
 fn lifts_traced_v3_callx_with_pinned_target() -> Result<(), Box<dyn std::error::Error>> {
@@ -57,6 +57,64 @@ fn lifts_v3_cpi_caller_with_callee_contract_bridge() -> Result<(), Box<dyn std::
         result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
         include_str!("../../../examples/lean/Generated/Sbpfv3CpiCallerLifted.lean")
     );
+    Ok(())
+}
+
+#[test]
+fn composes_v3_cpi_caller_paths_across_the_invoke() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_cpi_caller.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let (prefix, modules) = lifter.lift_cpi_paths(
+        LiftOptions::default(),
+        "Generated.Sbpfv3CpiCallerLifted",
+        &[
+            CpiSuffix {
+                name: "Success",
+                trace: &[35, 39, 40, 41],
+            },
+            CpiSuffix {
+                name: "Rollback",
+                trace: &[35, 36, 37, 38, 40, 41],
+            },
+        ],
+    )?;
+    let fix = |s: &str| s.replace("../tests/fixtures/", "tests/fixtures/");
+    assert_eq!(
+        fix(&prefix.lean),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiCallerLifted.lean")
+    );
+    assert_eq!(modules.len(), 2);
+    assert_eq!(
+        fix(&modules[0].lean),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiCallerLiftedSuccess.lean")
+    );
+    assert_eq!(
+        fix(&modules[1].lean),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiCallerLiftedRollback.lean")
+    );
+    assert!(modules[0].lean.contains("(fun r => (r.code = toU64 0))"));
+    assert!(modules[1].lean.contains("(fun r => (r.code ≠ toU64 0))"));
+    Ok(())
+}
+
+#[test]
+fn rejects_cpi_suffix_not_starting_after_invoke() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_cpi_caller.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let error = lifter
+        .lift_cpi_paths(
+            LiftOptions::default(),
+            "Generated.Sbpfv3CpiCallerLifted",
+            &[CpiSuffix {
+                name: "Wrong",
+                trace: &[36, 37, 38, 40, 41],
+            }],
+        )
+        .err()
+        .expect("suffix must start at invokePc + 1");
+    assert_eq!(error.kind(), qedlift::DiagnosticKind::TraceInput);
     Ok(())
 }
 

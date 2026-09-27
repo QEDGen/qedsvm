@@ -11,6 +11,7 @@ import SVM.SBPF.SepLogic
 import SVM.SBPF.SatWitness
 import SVM.SBPF.CPSSpec
 import SVM.SBPF.CpiBridge
+import SVM.SBPF.CpiContract
 import SVM.SBPF.InstructionSpecs
 import SVM.SBPF.Tactic.SL
 import SVM.SBPF.SpecGen

@@ -1,8 +1,10 @@
 //! sBPF V3 CPI caller fixture (source port of `cpi_envelope_caller_src`,
 //! built with `cargo-build-sbf --arch v3`). Hand-builds the Rust-ABI
-//! `StableInstruction` on the heap and invokes the program whose id is the
-//! 32-byte instruction data, then returns the callee's result code. Used for
-//! the V3 CPI bridge proof (`Generated.Sbpfv3CpiCallerLifted`) and the
+//! `StableInstruction` on the heap, invokes the program whose id is the
+//! 32-byte instruction data, then branches on the callee's result: failure
+//! returns `r + 1000`, success stores a marker at heap+96 and returns 0.
+//! Used for the V3 CPI bridge and path proofs
+//! (`Generated.Sbpfv3CpiCallerLifted{,Success,Rollback}`) and the
 //! success/rollback Mollusk differential.
 //!
 //! Serialized input and heap layout are identical to the V0 envelope caller:
@@ -57,9 +59,13 @@ pub extern "C" fn entrypoint(input: *mut u8) -> u64 {
             input,
             0,
         );
+        // Post-CPI suffix: a failed callee is reported as `r + 1000`; a
+        // successful one leaves a marker on the heap. Both sides branch on
+        // the CPI result in r0, so the lifted suffix is guarded by it.
         if r != 0 {
-            return r;
+            return r.wrapping_add(1000);
         }
+        core::ptr::write_volatile(h.add(12), 0xAA);
     }
     0
 }

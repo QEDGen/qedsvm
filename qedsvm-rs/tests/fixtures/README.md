@@ -72,14 +72,21 @@ rejects an undefined `extern "C"` syscall, so the source calls
 `sol_invoke_signed_rust` through `solana-define-syscall` (a static V3 call).
 Rebuild with `cargo-build-sbf --arch v3` in the source directory, then copy
 `target/deploy/qedsvm_sbpfv3_cpi_caller.so` here. SHA-256:
-`17eff0ea37fba130295365cddedc44ed892d0175c51a0302769bc1a52297b487`.
+`f080ab09a9d00fdd1f0d653ea509006892e258a0254e088ea7c030d60285d643`.
 
-`sbpfv3_cpi_caller_success_and_rollback_match_mollusk` runs it against a V3
-callee that succeeds and one that fails. A captured trace shows the caller
-executing logical PCs 0..32 before the invoke at 33, which is exactly the
-prefix `qedlift` walks untraced (like the V0 envelope caller).
-`Generated.Sbpfv3CpiCallerLifted` carries the prefix triple and the
-`_cpi_bridge` corollary across the CPI for any callee contract.
+After the invoke the caller branches on the callee's result: failure returns
+`r + 1000`, success stores `0xAA` at heap+96 and returns 0.
+`sbpfv3_cpi_caller_success_and_rollback_match_mollusk` runs both sides against
+Mollusk. A captured `QEDSVM_TRACE_OUT` trace (the runner logs the callee's PCs
+between the caller's) gives the caller-only paths
+`0..33, 34, 35, 39, 40, 41` (success) and
+`0..33, 34, 35, 36, 37, 38, 40, 41` (rollback), with the invoke at 34.
+
+`Generated.Sbpfv3CpiCallerLifted` is the prefix to the invoke plus its
+`_cpi_bridge`. `Generated.Sbpfv3CpiCallerLiftedSuccess` and
+`...Rollback` hold each suffix (lifted from pc 35) and the composed
+`_cpi_path` theorem across the CPI for a memory-preserving callee contract;
+`Lifter::lift_cpi_paths` emits all three.
 
 ## `sbpfv3_syscall_static.so`
 

@@ -68,6 +68,8 @@ lean_lib ExamplesCpi where
   roots := #[
     `Generated.CpiEnvelopeCallerLifted,
     `Generated.Sbpfv3CpiCallerLifted,
+    `Generated.Sbpfv3CpiCallerLiftedSuccess,
+    `Generated.Sbpfv3CpiCallerLiftedRollback,
     `CpiEnvelopeDemo,
   ]
 
