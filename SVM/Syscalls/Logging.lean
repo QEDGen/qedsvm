@@ -194,6 +194,18 @@ theorem execLogData_mem (s : State) : (execLogData s).mem = s.mem := by
   refine State.guardRead_proj_eq_of_k (·.regions) s _ _ _ rfl ?_
   exact State.guardSlices_proj_eq_of_k (·.regions) s _ _ _ rfl rfl
 
+@[simp] theorem execLogData_preserves_programTextAddr (s : State) :
+    (execLogData s).programTextAddr = s.programTextAddr := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_programSlotMap (s : State) :
+    (execLogData s).programSlotMap = s.programSlotMap := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl rfl
+
 @[simp] theorem execLogData_preserves_cuBudget (s : State) :
     (execLogData s).cuBudget = s.cuBudget := by
   simp only [execLogData]
