@@ -648,32 +648,8 @@ need a `split` or match-case to surface the record-update. -/
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
 
-@[simp] theorem execSyscall_preserves_programTextAddr (sc : Syscall) (s : State) :
-    (execSyscall sc s).programTextAddr = s.programTextAddr := by
-  cases sc <;> simp [execSyscall, commitOptional, -Pda.execCreate] <;>
-    (repeat' split) <;> (first | rfl | simp)
-
-@[simp] theorem execSyscall_preserves_programSlotMap (sc : Syscall) (s : State) :
-    (execSyscall sc s).programSlotMap = s.programSlotMap := by
-  cases sc <;> simp [execSyscall, commitOptional, -Pda.execCreate] <;>
-    (repeat' split) <;> (first | rfl | simp)
-
 @[simp] theorem execCallx_preserves_regions (reg : Reg) (s : State) :
     (execCallx reg s).regions = s.regions := by
-  unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
-
-@[simp] theorem execCallx_preserves_programTextAddr (reg : Reg) (s : State) :
-    (execCallx reg s).programTextAddr = s.programTextAddr := by
-  unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
-
-@[simp] theorem execCallx_preserves_programSlotMap (reg : Reg) (s : State) :
-    (execCallx reg s).programSlotMap = s.programSlotMap := by
   unfold execCallx
   split <;> try rfl
   split <;> try rfl
@@ -706,66 +682,6 @@ need a `split` or match-case to surface the record-update. -/
         cases hf : fetch s.pc with
         | none => rfl
         | some insn => rw [ih (chargeCu (step insn s))]; simpa using step_preserves_regions insn s
-
-@[simp] theorem step_preserves_programTextAddr (insn : Insn) (s : State) :
-    (step insn s).programTextAddr = s.programTextAddr := by
-  cases insn <;>
-    first
-    | rfl
-    | (simp only [step]; rfl)
-    | (simp only [step]; split <;> rfl)
-    | (simp only [step]; cases s.callStack <;> rfl)
-    | (simp only [step]; exact execCallx_preserves_programTextAddr _ _)
-    | (simp only [step]; exact execSyscall_preserves_programTextAddr _ _)
-
-@[simp] theorem step_preserves_programSlotMap (insn : Insn) (s : State) :
-    (step insn s).programSlotMap = s.programSlotMap := by
-  cases insn <;>
-    first
-    | rfl
-    | (simp only [step]; rfl)
-    | (simp only [step]; split <;> rfl)
-    | (simp only [step]; cases s.callStack <;> rfl)
-    | (simp only [step]; exact execCallx_preserves_programSlotMap _ _)
-    | (simp only [step]; exact execSyscall_preserves_programSlotMap _ _)
-
-@[simp] theorem executeFn_preserves_programTextAddr
-    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
-    (executeFn fetch s fuel).programTextAddr = s.programTextAddr := by
-  induction fuel generalizing s with
-  | zero => rfl
-  | succ n ih =>
-    unfold executeFn
-    cases h : s.exitCode with
-    | some _ => rfl
-    | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
-      · rw [if_pos h_over]
-      · rw [if_neg h_over]
-        cases hf : fetch s.pc with
-        | none => rfl
-        | some insn =>
-          rw [ih (chargeCu (step insn s))]
-          simpa using step_preserves_programTextAddr insn s
-
-@[simp] theorem executeFn_preserves_programSlotMap
-    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
-    (executeFn fetch s fuel).programSlotMap = s.programSlotMap := by
-  induction fuel generalizing s with
-  | zero => rfl
-  | succ n ih =>
-    unfold executeFn
-    cases h : s.exitCode with
-    | some _ => rfl
-    | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
-      · rw [if_pos h_over]
-      · rw [if_neg h_over]
-        cases hf : fetch s.pc with
-        | none => rfl
-        | some insn =>
-          rw [ih (chargeCu (step insn s))]
-          simpa using step_preserves_programSlotMap insn s
 
 /-! ## cuBudget invariance (H5)
 
@@ -828,6 +744,21 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
         | some insn =>
           rw [ih (chargeCu (step insn s))]
           simpa using step_preserves_cuBudget insn s
+
+/-- Loaded text metadata is immutable during instruction execution. -/
+@[simp] theorem execCallx_preserves_programTextAddr (reg : Reg) (s : State) :
+    (execCallx reg s).programTextAddr = s.programTextAddr := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
+
+@[simp] theorem execCallx_preserves_programSlotMap (reg : Reg) (s : State) :
+    (execCallx reg s).programSlotMap = s.programSlotMap := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
 
 /-! ## Paired execution (for tactic automation)
 
