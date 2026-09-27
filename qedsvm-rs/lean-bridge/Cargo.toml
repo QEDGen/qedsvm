@@ -38,4 +38,3 @@ p256 = { version = "0.13", default-features = false, features = ["ecdsa"] }
 
 [build-dependencies]
 cc = "1"
-

@@ -118,6 +118,24 @@ qedlift --so tests/fixtures/sbpfv3_cpi_writer.so \
 `sbpfv3_cpi_caller.so` and `sbpfv3_cpi_caller_{success,rollback}.pcs`,
 without `--cpi-writes` (memory-preserving callee).
 
+## `sbpfv3_isa_matrix.so`
+
+Sectionless V3 ELF from `build_sbpfv3_isa_matrix.py` (run it to rebuild; the
+SHA-256 is pinned in `sbpfv3_fixtures.sha256`). One straight-line path runs
+every non-call V3 instruction form over account data: operands at input+96..,
+results stored back from input+128. Every conditional jump has offset 0, and
+the operands (100, 200, 50, 1) make every "not taken" condition hold at once.
+`sbpfv3_isa_matrix.pcs` is the fall-through trace `0..126`.
+`sbpfv3_isa_matrix_matches_mollusk` compares account bytes and compute units
+with Mollusk; `Generated.Sbpfv3IsaMatrixLifted` is its checked path proof;
+`qedlift/tests/v3_opcode_matrix.rs` checks the fixture covers every opcode the
+pinned V3 verifier accepts (plus the two call forms, which have their own
+fixtures).
+
+`sbpfv3_fixtures.sha256` pins every V3 fixture's bytes (`sha256sum -c` in CI);
+`every_v3_fixture_declares_v3_in_its_elf_header` checks each declares
+`e_flags = 3`.
+
 ## `sbpfv3_syscall_static.so`
 
 V3 (`e_flags = 3`) static-syscall fixture copied from

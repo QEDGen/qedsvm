@@ -17,7 +17,7 @@ proofs:
 
 ```text
 Rust or assembly
-      │ cargo-build-sbf
+      │ cargo-build-sbf --arch v3
       ▼
   program.so
       ├── qedsvm executor ───────────── compare with Mollusk/Agave
@@ -49,9 +49,10 @@ lake build ProofDemo
 ```
 
 The execution demo is a conformance check for the model, not a program proof.
-The proof demo starts at [`examples/lean/ProofDemo.lean`](examples/lean/ProofDemo.lean);
-[`examples/lean/ByteIncrement.lean`](examples/lean/ByteIncrement.lean) ties raw
-bytes to a discharged separation-logic theorem without `sorry`. Rust is used by
+The proof demo starts at [`examples/lean/ProofDemo.lean`](examples/lean/ProofDemo.lean):
+its default theorem, `Generated.Sbpfv3CompiledAccountLifted`, is lifted from a
+source-built sBPF v3 program and ties the complete ELF to a discharged
+separation-logic theorem without `sorry`. Rust is used by
 the build, but the Rust-to-sBPF compiler is not trusted to preserve a source-level
 property: the theorem starts at the compiler's output bytes.
 
@@ -90,14 +91,24 @@ boundary.
 
 ### Lift a compiled program to Lean
 
-This minimal fixture does not need an IDL or trace:
+New programs target sBPF v3. Build with platform-tools 1.56 or newer (the
+checked-in fixtures use `cargo-build-sbf` 4.3.0 and platform-tools 1.57), capture
+a path trace from the differential harness, and lift it:
 
 ```bash
+cargo-build-sbf --arch v3        # in the program's crate
+
 cargo run --manifest-path qedsvm-rs/Cargo.toml \
   -p qedlift -- \
-  --so qedsvm-rs/tests/fixtures/byte_increment.so \
-  --output examples/lean/Generated/ByteIncrementLifted.lean
+  --so qedsvm-rs/tests/fixtures/sbpfv3_compiled_account.so \
+  --trace qedsvm-rs/tests/fixtures/sbpfv3_compiled_account.pcs \
+  --output examples/lean/Generated/Sbpfv3CompiledAccountLifted.lean
+
+lake build Generated.Sbpfv3CompiledAccountLifted
 ```
+
+The ELF's `e_flags` select the version: V3 and legacy V0 are supported, and any
+other version (V1, V2, V4) is rejected at load. V0 is deprecated.
 
 The emitted module pins the walked `.text` bytes through `SVM.SBPF.Decode`, states
 a `cuTripleWithinMem` theorem synthesized by symbolic execution, and discharges
@@ -105,7 +116,8 @@ it. Small binaries use a full `decodeProgram` theorem; large binaries use
 kernel-checked per-PC decode pins.
 
 Checked-in output under
-[`examples/lean/Generated/`](examples/lean/Generated/) includes ByteIncrement,
+[`examples/lean/Generated/`](examples/lean/Generated/) includes the V3 ISA matrix,
+V3 `callx` and CPI caller paths, legacy V0 ByteIncrement,
 Counter, Logger, layout-general Vault examples, heap allocation, and traced
 p-token arms. Registered refinements cover Transfer, TransferChecked, MintTo,
 Burn, Counter increment, Vault field updates, heap allocation, and transition

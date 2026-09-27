@@ -11,45 +11,54 @@ the restrictions below. Each `imm/reg` row represents two opcode forms.
 | `mollusk-svm` / Agave | `0.12.1-agave-4.0` | `qedsvm-rs/Cargo.toml` |
 | `cargo-build-sbf` | 4.3.0 | `qedsvm-rs/tests/fixtures/README.md` |
 | platform-tools | 1.57 | `qedsvm-rs/tests/fixtures/README.md` |
-| compiled V3 fixture | SHA-256 `576074e54158e103ee42ac68ef86cd190091177b2304ff8df94f3da880b3f34c` | `qedsvm-rs/tests/fixtures/sbpfv3_compiled_account.so` |
+| V3 fixtures | SHA-256 manifest, checked in CI | `qedsvm-rs/tests/fixtures/sbpfv3_fixtures.sha256` |
 
 `Decode` = Lean decoding pin; `Execute` = Lean execution pin; `Diff` =
-qedsvm/Mollusk comparison; `Lift` = checked selected-path proof. A pending
-cell is a migration gap, not evidence of support. Task 3 fills the decode
-column, Task 4 the execution column, Task 5 the differential column, and
-Stage 2 the lift column.
+qedsvm/Mollusk comparison; `Lift` = checked selected-path proof.
+
+The inventory is not transcribed by hand: `qedlift/tests/v3_opcode_matrix.rs`
+enumerates all 256 opcodes against the pinned `RequisiteVerifier` for V3
+(113 accepted) and fails unless every accepted opcode is either used by
+`sbpfv3_isa_matrix.so` or is one of the two call forms with their own
+fixtures. `sbpfv3_isa_matrix.so` (`tests/fixtures/build_sbpfv3_isa_matrix.py`)
+runs every non-call form on one straight-line path over account data:
+`sbpfv3_isa_matrix_matches_mollusk` compares its account bytes and compute
+units with Mollusk, and `Generated.Sbpfv3IsaMatrixLifted` proves the whole
+path (126 instructions, 44 conditional jumps with jointly satisfiable path
+hypotheses, checked by its branch-satisfiability witness). `M` below marks
+that shared evidence.
 
 | V3 form | Opcodes | Decode | Execute | Diff | Lift |
 | --- | --- | --- | --- | --- | --- |
-| `LD_DW_IMM` | `18` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `LD_B/H/W/DW_REG` | `71/69/61/79` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `ST_B/H/W/DW_IMM` | `72/6a/62/7a` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `ST_B/H/W/DW_REG` | `73/6b/63/7b` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `ADD32`, `SUB32` imm/reg | `04/0c`, `14/1c` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `MUL32`, `DIV32` imm/reg | `24/2c`, `34/3c` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `OR32`, `AND32` imm/reg | `44/4c`, `54/5c` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `LSH32`, `RSH32` imm/reg | `64/6c`, `74/7c` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `NEG32`, `MOD32` imm/reg | `84`, `94/9c` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `XOR32`, `MOV32` imm/reg | `a4/ac`, `b4/bc` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `ARSH32` imm/reg | `c4/cc` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `LE`, `BE` | `d4/dc` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_endian_widths_match_mollusk` | pending |
-| `ADD64`, `SUB64` imm/reg | `07/0f`, `17/1f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `MUL64`, `DIV64` imm/reg | `27/2f`, `37/3f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `OR64`, `AND64` imm/reg | `47/4f`, `57/5f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `LSH64`, `RSH64` imm/reg | `67/6f`, `77/7f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `NEG64`, `MOD64` imm/reg | `87`, `97/9f` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `XOR64`, `MOV64` imm/reg | `a7/af`, `b7/bf` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `ARSH64` imm/reg | `c7/cf` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `JEQ32`, `JGT32`, `JGE32` imm/reg | `16/1e`, `26/2e`, `36/3e` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk` | pending |
-| `JSET32`, `JNE32`, `JSGT32`, `JSGE32` imm/reg | `46/4e`, `56/5e`, `66/6e`, `76/7e` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk` | pending |
-| `JLT32`, `JLE32`, `JSLT32`, `JSLE32` imm/reg | `a6/ae`, `b6/be`, `c6/ce`, `d6/de` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk` | pending |
-| `JA` | `05` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `JEQ64`, `JGT64`, `JGE64` imm/reg | `15/1d`, `25/2d`, `35/3d` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `JSET64`, `JNE64`, `JSGT64`, `JSGE64` imm/reg | `45/4d`, `55/5d`, `65/6d`, `75/7d` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `JLT64`, `JLE64`, `JSLT64`, `JSLE64` imm/reg | `a5/ad`, `b5/bd`, `c5/cd`, `d5/dd` | `V3DecodeTests` | `RunnerTests` | pending | pending |
-| `CALL_IMM` static syscall/relative function | `85` | `ElfTests` | `RunnerTests` | pending | pending |
-| `CALL_REG` (`callx`, destination nibble) | `8d` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_callx_frame_and_return_match_mollusk` | pending |
-| `EXIT` | `95` | `V3DecodeTests` | `RunnerTests` | pending | pending |
+| `LD_DW_IMM` | `18` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `LD_B/H/W/DW_REG` | `71/69/61/79` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `ST_B/H/W/DW_IMM` | `72/6a/62/7a` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `ST_B/H/W/DW_REG` | `73/6b/63/7b` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `ADD32`, `SUB32` imm/reg | `04/0c`, `14/1c` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `MUL32`, `DIV32` imm/reg | `24/2c`, `34/3c` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `OR32`, `AND32` imm/reg | `44/4c`, `54/5c` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `LSH32`, `RSH32` imm/reg | `64/6c`, `74/7c` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `NEG32`, `MOD32` imm/reg | `84`, `94/9c` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `XOR32`, `MOV32` imm/reg | `a4/ac`, `b4/bc` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `ARSH32` imm/reg | `c4/cc` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `LE`, `BE` | `d4/dc` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_endian_widths_match_mollusk`, M | M |
+| `ADD64`, `SUB64` imm/reg | `07/0f`, `17/1f` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `MUL64`, `DIV64` imm/reg | `27/2f`, `37/3f` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `OR64`, `AND64` imm/reg | `47/4f`, `57/5f` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `LSH64`, `RSH64` imm/reg | `67/6f`, `77/7f` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `NEG64`, `MOD64` imm/reg | `87`, `97/9f` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `XOR64`, `MOV64` imm/reg | `a7/af`, `b7/bf` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `ARSH64` imm/reg | `c7/cf` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `JEQ32`, `JGT32`, `JGE32` imm/reg | `16/1e`, `26/2e`, `36/3e` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk`, M | M |
+| `JSET32`, `JNE32`, `JSGT32`, `JSGE32` imm/reg | `46/4e`, `56/5e`, `66/6e`, `76/7e` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk`, M | M |
+| `JLT32`, `JLE32`, `JSLT32`, `JSLE32` imm/reg | `a6/ae`, `b6/be`, `c6/ce`, `d6/de` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_jmp32_all_conditions_both_outcomes_match_mollusk`, M | M |
+| `JA` | `05` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `JEQ64`, `JGT64`, `JGE64` imm/reg | `15/1d`, `25/2d`, `35/3d` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `JSET64`, `JNE64`, `JSGT64`, `JSGE64` imm/reg | `45/4d`, `55/5d`, `65/6d`, `75/7d` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `JLT64`, `JLE64`, `JSLT64`, `JSLE64` imm/reg | `a5/ad`, `b5/bd`, `c5/cd`, `d5/dd` | `V3DecodeTests` | `RunnerTests` | M | M |
+| `CALL_IMM` static syscall/relative function | `85` | `ElfTests` | `RunnerTests` | `sbpfv3_static_path_matches_mollusk`, `sbpfv3_cpi_*` | `Sbpfv3CompiledAccountLifted`, `Sbpfv3CpiCaller*`, `Sbpfv3CpiWriter*` |
+| `CALL_REG` (`callx`, destination nibble) | `8d` | `V3DecodeTests` | `RunnerTests` | `sbpfv3_callx_frame_and_return_match_mollusk` | `Sbpfv3CallxPathLifted` |
+| `EXIT` | `95` | `V3DecodeTests` | `RunnerTests` | M | M |
 
 Verifier rejection rules for V3:
 
@@ -73,3 +82,24 @@ decoded with V3 semantics, rather than blanket-rejected. `CALL_IMM`
 uses the static syscall/relative-function interpretation. The matrix is
 versioned against this exact implementation; a newer runtime needs a
 deliberate review of every row.
+
+## Agave 4.4 alignment
+
+Checked 2026-09-27. Agave 4.4 is pre-release (`solana-program-runtime`
+4.4.0-alpha.5) and pins `solana-sbpf =0.24.0`; no Mollusk release targets
+Agave 4.4 yet (latest: `mollusk-svm` 0.15.1, and 0.15.0-agave-4.3.0-beta.0).
+Comparing `solana-sbpf` 0.24.0 with the pinned 0.14.4 for V3:
+
+| Area | Change | V3 effect |
+| --- | --- | --- |
+| `RequisiteVerifier` (on-chain) | New signature taking the syscall registry, unused; accepted opcodes and every rejection rule identical | none |
+| `LocalVerifier` (new) | Client-side check run by `solana deploy`: rejects unknown static syscall hashes and `call` imm `-1` | none on chain; deploy-time only |
+| `SBPFVersion` feature predicates, opcode constants, `MM_*` layout | identical | none |
+| Interpreter | Refactors (call frames outside the VM, syscall callback type). `EXIT` from an internal call no longer range-checks the saved return PC, which is always a call site + 1 | error kind only, for programs that end in a call |
+| Strict ELF loader | Debug-only symbol/section labelling removed; header and program-header validation identical | none |
+| `Config` | `stack_frame_size` still 4096 by default (now overridable by `VM_STACK_FRAME_SIZE`); `allow_memory_region_zero` removed, region 0 always mapped (the previous default) | none at defaults |
+
+No V3 semantic delta was found, so the Stage 1 pins stand. The final
+Agave 4.4 conformance gate (rerunning `diff_mollusk` against an Agave 4.4
+Mollusk) is **pending** until such a release exists; the migration is not
+declared complete before it passes.

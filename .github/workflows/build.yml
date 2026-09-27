@@ -58,6 +58,17 @@ jobs:
         with:
           workspaces: qedsvm-rs
 
+      - name: Whitespace check
+        # Hand-written sources only: `examples/lean/Generated` is emitter
+        # output, guarded byte-for-byte by the qedlift pins instead.
+        run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD -- . ':!examples/lean/Generated'
+
+      - name: V3 fixture provenance (SHA-256 manifest)
+        # The V3 ISA matrix and its proofs are pinned to these exact bytes;
+        # `v3_opcode_matrix` also checks each listed ELF declares e_flags = 3.
+        working-directory: qedsvm-rs/tests/fixtures
+        run: sha256sum -c sbpfv3_fixtures.sha256
+
       - name: Rust formatting
         working-directory: qedsvm-rs
         run: cargo fmt --all -- --check
@@ -68,8 +79,10 @@ jobs:
 
       - name: Proof-tooling crate tests
         working-directory: qedsvm-rs
-        # Includes all qedlift generated-artifact byte pins. These crates do
-        # not link the Lean runtime and belong on the fast Rust path.
+        # Includes all qedlift generated-artifact byte pins and the V3 opcode
+        # inventory check against the pinned solana-sbpf verifier
+        # (`qedlift/tests/v3_opcode_matrix.rs`). These crates do not link the
+        # Lean runtime and belong on the fast Rust path.
         run: cargo test -p qedrecover -p qedlift -p qed-artifacts -p qed-analysis
 
   # Build the core SVM library ONCE and cache `.lake` for `lean` + `examples`.
