@@ -8,6 +8,7 @@ use solana_sbpf::static_analysis::Analysis;
 mod api;
 mod branch;
 mod core;
+mod cpi_path;
 mod diagnostic;
 mod driver;
 mod emit;
@@ -23,7 +24,7 @@ mod syscalls;
 mod transition;
 mod witness;
 
-pub use api::Lifter;
+pub use api::{CpiPathModule, CpiSuffix, Lifter};
 pub use diagnostic::{DiagnosticKind, LiftError};
 use input::{load_binary, load_descriptor, load_idl_value, load_trace, parse_args, Command};
 #[cfg(test)]

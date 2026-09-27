@@ -24,7 +24,7 @@ namespace Examples.Lifted.Sbpfv3CpiCallerLifted
 open SVM.SBPF
 
 -- NOTE: `Sbpfv3CpiCallerLiftedBytes` + `Sbpfv3CpiCallerLiftedInsns` + `Sbpfv3CpiCallerLifted_decodes` omitted — the .text
--- is 400 bytes, which blows `maxRecDepth` as a ByteArray literal.
+-- is 456 bytes, which blows `maxRecDepth` as a ByteArray literal.
 -- The byte→insn link is pinned instead by `Sbpfv3CpiCallerLifted_decode_pins` below:
 -- the `.text` is embedded as a hex string (`Sbpfv3CpiCallerLiftedText`) and every
 -- walked PC's decode is checked by `native_decide` against the
@@ -32,15 +32,16 @@ open SVM.SBPF
 -- (soundness-audit H8).
 
 /-- The `.text` bytes of the binary, embedded as hex (whitespace-insensitive;
-    see `Decode.bytesOfHex`). 400 bytes. -/
+    see `Decode.bytesOfHex`). 456 bytes. -/
 def Sbpfv3CpiCallerLiftedText : ByteArray := Decode.bytesOfHex "
-  bf1400000000000018010000000000000000000003000000180200006000000000000000030000007b2100000000000018010000080000000000000003000000
+  bf1400000000000018010000000000000000000003000000180700006000000000000000030000007b7100000000000018010000080000000000000003000000
   7a01000000000000180100001000000000000000030000007a010000000000001801000018000000000000000300000018020000580000000000000003000000
   7b21000000000000180100002000000000000000030000007a01000008000000180100002800000000000000030000007a010000080000001801000030000000
   000000000300000079437028000000007b310000000000001801000038000000000000000300000079437828000000007b310000000000001801000040000000
   000000000300000079438028000000007b310000000000001801000048000000000000000300000079438828000000007b310000000000001801000001020304
-  00000000050607087b120000000000001801000000000000000000000300000018020000600000000000000003000000b703000000000000b705000000000000
-  85000000929044d79500000000000000
+  00000000050607087b12000000000000b7060000000000001801000000000000000000000300000018020000600000000000000003000000b703000000000000
+  b70500000000000085000000929044d7150003000000000007000000e8030000bf0600000000000005000100000000007a070000aa000000bf60000000000000
+  9500000000000000
   "
 
 /-- Byte-slot → logical-PC map for `Sbpfv3CpiCallerLiftedText` (pass 1 of the decoder),
@@ -54,13 +55,13 @@ def Sbpfv3CpiCallerLiftedFnRegistry : List (Nat × Nat) := []
 /-- Every walked instruction is decoded from the pinned V3 text. -/
 theorem Sbpfv3CpiCallerLifted_decode_pins :
     ([0, 8, 24, 40, 48, 64, 72, 88, 96, 112, 128, 136, 152, 160, 176, 184, 
-      200, 208, 216, 232, 240, 248, 264, 272, 280, 296, 304, 312, 328, 336, 352, 368, 
-      376].map fun off =>
+      200, 208, 216, 232, 240, 248, 264, 272, 280, 296, 304, 312, 328, 336, 344, 360, 
+      376, 384].map fun off =>
       Decode.decodeInsn Sbpfv3CpiCallerLiftedText Sbpfv3CpiCallerLiftedSlotMap off Sbpfv3CpiCallerLiftedFnRegistry .v3) = [
       some (.mov64 .r4 (.reg .r1), 8),
       some (.lddw .r1 (12884901888), 16),
-      some (.lddw .r2 (12884901984), 16),
-      some (.stx .dword .r1 0 .r2, 8),
+      some (.lddw .r7 (12884901984), 16),
+      some (.stx .dword .r1 0 .r7, 8),
       some (.lddw .r1 (12884901896), 16),
       some (.st .dword .r1 0 (0), 8),
       some (.lddw .r1 (12884901904), 16),
@@ -86,6 +87,7 @@ theorem Sbpfv3CpiCallerLifted_decode_pins :
       some (.stx .dword .r1 0 .r3, 8),
       some (.lddw .r1 (578437695752307201), 16),
       some (.stx .dword .r2 0 .r1, 8),
+      some (.mov64 .r6 (.imm (0)), 8),
       some (.lddw .r1 (12884901888), 16),
       some (.lddw .r2 (12884901984), 16),
       some (.mov64 .r3 (.imm (0)), 8),
@@ -95,21 +97,22 @@ theorem Sbpfv3CpiCallerLifted_decode_pins :
 
 /-- Complete V3 ELF bytes, including `e_flags` and program headers. -/
 def Sbpfv3CpiCallerLiftedElf : ByteArray := Decode.bytesOfHex "
-  7f454c460201010000000000000000000300f7000100000000000000010000004000000000000000a00200000000000003000000400038000300400004000300
+  7f454c460201010000000000000000000300f7000100000000000000010000004000000000000000d80200000000000003000000400038000300400004000300
   0100000004000000e800000000000000000000000000000000000000000000000800000000000000080000000000000008000000000000000100000001000000
-  f0000000000000000000000001000000000000000100000090010000000000009001000000000000080000000000000000000000000000000000000000000000
+  f00000000000000000000000010000000000000001000000c801000000000000c801000000000000080000000000000000000000000000000000000000000000
   000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000bf140000000000001801000000000000
-  0000000003000000180200006000000000000000030000007b21000000000000180100000800000000000000030000007a010000000000001801000010000000
+  0000000003000000180700006000000000000000030000007b71000000000000180100000800000000000000030000007a010000000000001801000010000000
   00000000030000007a0100000000000018010000180000000000000003000000180200005800000000000000030000007b210000000000001801000020000000
   00000000030000007a01000008000000180100002800000000000000030000007a01000008000000180100003000000000000000030000007943702800000000
   7b310000000000001801000038000000000000000300000079437828000000007b31000000000000180100004000000000000000030000007943802800000000
   7b310000000000001801000048000000000000000300000079438828000000007b31000000000000180100000102030400000000050607087b12000000000000
-  1801000000000000000000000300000018020000600000000000000003000000b703000000000000b70500000000000085000000929044d79500000000000000
-  002e74657874002e7368737472746162002e726f6461746100000000000000000000000000000000000000000000000000000000000000000000000000000000
-  0000000000000000000000000000000000000000000000000000000000000000110000000100000002000000000000000000000000000000e800000000000000
-  0800000000000000000000000000000001000000000000000000000000000000010000000100000006000000000000000000000001000000f000000000000000
-  90010000000000000000000000000000080000000000000000000000000000000700000003000000000000000000000000000000000000008002000000000000
-  1900000000000000000000000000000001000000000000000000000000000000
+  b7060000000000001801000000000000000000000300000018020000600000000000000003000000b703000000000000b70500000000000085000000929044d7
+  150003000000000007000000e8030000bf0600000000000005000100000000007a070000aa000000bf600000000000009500000000000000002e74657874002e
+  7368737472746162002e726f64617461000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+  000000000000000000000000000000000000000000000000110000000100000002000000000000000000000000000000e8000000000000000800000000000000
+  000000000000000001000000000000000000000000000000010000000100000006000000000000000000000001000000f000000000000000c801000000000000
+  000000000000000008000000000000000000000000000000070000000300000000000000000000000000000000000000b8020000000000001900000000000000
+  000000000000000001000000000000000000000000000000
   "
 
 theorem Sbpfv3CpiCallerLifted_v3_elf_text :
@@ -123,16 +126,16 @@ decoded insns left-to-right. Closed by `sl_block_auto`. -/
 
 open Memory in
 theorem Sbpfv3CpiCallerLifted_lifted_spec
-    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old : Nat)
+    (baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old : Nat)
     (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
     (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
     (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
     (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
-    : cuTripleWithinMem 33 0 0 33
-      ((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
+    : cuTripleWithinMem 34 0 0 34
+      (((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
         (CodeReq.singleton 1 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 2 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 3 (.stx .dword .r1 0 .r2))).union
+        (CodeReq.singleton 2 (.lddw .r7 (12884901984)))).union
+        (CodeReq.singleton 3 (.stx .dword .r1 0 .r7))).union
         (CodeReq.singleton 4 (.lddw .r1 (12884901896)))).union
         (CodeReq.singleton 5 (.st .dword .r1 0 (0)))).union
         (CodeReq.singleton 6 (.lddw .r1 (12884901904)))).union
@@ -158,16 +161,18 @@ theorem Sbpfv3CpiCallerLifted_lifted_spec
         (CodeReq.singleton 26 (.stx .dword .r1 0 .r3))).union
         (CodeReq.singleton 27 (.lddw .r1 (578437695752307201)))).union
         (CodeReq.singleton 28 (.stx .dword .r2 0 .r1))).union
-        (CodeReq.singleton 29 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 30 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 31 (.mov64 .r3 (.imm (0))))).union
-        (CodeReq.singleton 32 (.mov64 .r5 (.imm (0))))))
+        (CodeReq.singleton 29 (.mov64 .r6 (.imm (0))))).union
+        (CodeReq.singleton 30 (.lddw .r1 (12884901888)))).union
+        (CodeReq.singleton 31 (.lddw .r2 (12884901984)))).union
+        (CodeReq.singleton 32 (.mov64 .r3 (.imm (0))))).union
+        (CodeReq.singleton 33 (.mov64 .r5 (.imm (0))))))
       ((.r1 ↦ᵣ baseAddr) **
       (.r4 ↦ᵣ vR4Old) **
-      (.r2 ↦ᵣ vR2Old) **
+      (.r7 ↦ᵣ vR7Old) **
       (effectiveAddr (toU64 12884901888) 0 ↦U64 oldMemD_0) **
       (effectiveAddr (toU64 12884901896) 0 ↦U64 oldMemD_1) **
       (effectiveAddr (toU64 12884901904) 0 ↦U64 oldMemD_2) **
+      (.r2 ↦ᵣ vR2Old) **
       (effectiveAddr (toU64 12884901912) 0 ↦U64 oldMemD_3) **
       (effectiveAddr (toU64 12884901920) 0 ↦U64 oldMemD_4) **
       (effectiveAddr (toU64 12884901928) 0 ↦U64 oldMemD_5) **
@@ -181,13 +186,15 @@ theorem Sbpfv3CpiCallerLifted_lifted_spec
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901960) 0 ↦U64 oldMemD_13) **
       (effectiveAddr (toU64 12884901976) 0 ↦U64 oldMemD_14) **
+      (.r6 ↦ᵣ vR6Old) **
       (.r5 ↦ᵣ vR5Old))
       ((.r1 ↦ᵣ toU64 12884901888) **
       (.r4 ↦ᵣ baseAddr) **
-      (.r2 ↦ᵣ toU64 12884901984) **
+      (.r7 ↦ᵣ toU64 12884901984) **
       (effectiveAddr (toU64 12884901888) 0 ↦U64 toU64 12884901984) **
       (effectiveAddr (toU64 12884901896) 0 ↦U64 toU64 0 % 2 ^ (8 * 8)) **
       (effectiveAddr (toU64 12884901904) 0 ↦U64 toU64 0 % 2 ^ (8 * 8)) **
+      (.r2 ↦ᵣ toU64 12884901984) **
       (effectiveAddr (toU64 12884901912) 0 ↦U64 toU64 12884901976) **
       (effectiveAddr (toU64 12884901920) 0 ↦U64 toU64 8 % 2 ^ (8 * 8)) **
       (effectiveAddr (toU64 12884901928) 0 ↦U64 toU64 8 % 2 ^ (8 * 8)) **
@@ -201,6 +208,7 @@ theorem Sbpfv3CpiCallerLifted_lifted_spec
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901960) 0 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901976) 0 ↦U64 toU64 578437695752307201) **
+      (.r6 ↦ᵣ toU64 0) **
       (.r5 ↦ᵣ toU64 0))
       (fun rt => ((((((((((((((rt.containsWritable (effectiveAddr (toU64 12884901888) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901896) 0) 8 = true) ∧
@@ -236,10 +244,11 @@ open Memory in
 example : ∃ s,
     ((.r1 ↦ᵣ 17179869184) **
       (.r4 ↦ᵣ 0) **
-      (.r2 ↦ᵣ 0) **
+      (.r7 ↦ᵣ 0) **
       (effectiveAddr (toU64 12884901888) 0 ↦U64 0) **
       (effectiveAddr (toU64 12884901896) 0 ↦U64 0) **
       (effectiveAddr (toU64 12884901904) 0 ↦U64 0) **
+      (.r2 ↦ᵣ 0) **
       (effectiveAddr (toU64 12884901912) 0 ↦U64 0) **
       (effectiveAddr (toU64 12884901920) 0 ↦U64 0) **
       (effectiveAddr (toU64 12884901928) 0 ↦U64 0) **
@@ -253,14 +262,16 @@ example : ∃ s,
       (effectiveAddr 17179869184 10376 ↦U64 0) **
       (effectiveAddr (toU64 12884901960) 0 ↦U64 0) **
       (effectiveAddr (toU64 12884901976) 0 ↦U64 0) **
+      (.r6 ↦ᵣ 0) **
       (.r5 ↦ᵣ 0)) s := by
   have w := SatWitness.sat_witness
     [.reg .r1 17179869184,
      .reg .r4 0,
-     .reg .r2 0,
+     .reg .r7 0,
      .u64 12884901888 0,
      .u64 12884901896 0,
      .u64 12884901904 0,
+     .reg .r2 0,
      .u64 12884901912 0,
      .u64 12884901920 0,
      .u64 12884901928 0,
@@ -274,22 +285,23 @@ example : ∃ s,
      .u64 17179879560 0,
      .u64 12884901960 0,
      .u64 12884901976 0,
+     .reg .r6 0,
      .reg .r5 0]
     (by native_decide)
   exact w
 
 open Memory in
 theorem Sbpfv3CpiCallerLifted_allocates
-    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old : Nat)
+    (baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old : Nat)
     (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
     (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
     (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
     (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
-    : cuTripleWithinMem 33 0 0 33
-      ((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
+    : cuTripleWithinMem 34 0 0 34
+      (((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
         (CodeReq.singleton 1 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 2 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 3 (.stx .dword .r1 0 .r2))).union
+        (CodeReq.singleton 2 (.lddw .r7 (12884901984)))).union
+        (CodeReq.singleton 3 (.stx .dword .r1 0 .r7))).union
         (CodeReq.singleton 4 (.lddw .r1 (12884901896)))).union
         (CodeReq.singleton 5 (.st .dword .r1 0 (0)))).union
         (CodeReq.singleton 6 (.lddw .r1 (12884901904)))).union
@@ -315,16 +327,18 @@ theorem Sbpfv3CpiCallerLifted_allocates
         (CodeReq.singleton 26 (.stx .dword .r1 0 .r3))).union
         (CodeReq.singleton 27 (.lddw .r1 (578437695752307201)))).union
         (CodeReq.singleton 28 (.stx .dword .r2 0 .r1))).union
-        (CodeReq.singleton 29 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 30 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 31 (.mov64 .r3 (.imm (0))))).union
-        (CodeReq.singleton 32 (.mov64 .r5 (.imm (0))))))
+        (CodeReq.singleton 29 (.mov64 .r6 (.imm (0))))).union
+        (CodeReq.singleton 30 (.lddw .r1 (12884901888)))).union
+        (CodeReq.singleton 31 (.lddw .r2 (12884901984)))).union
+        (CodeReq.singleton 32 (.mov64 .r3 (.imm (0))))).union
+        (CodeReq.singleton 33 (.mov64 .r5 (.imm (0))))))
       ((.r1 ↦ᵣ baseAddr) **
       (.r4 ↦ᵣ vR4Old) **
-      (.r2 ↦ᵣ vR2Old) **
+      (.r7 ↦ᵣ vR7Old) **
       (heapBumpPtr (oldMemD_0)) **
       (heapBlockU64 ((toU64 12884901896)) (oldMemD_1)) **
       (heapBlockU64 ((toU64 12884901904)) (oldMemD_2)) **
+      (.r2 ↦ᵣ vR2Old) **
       (heapBlockU64 ((toU64 12884901912)) (oldMemD_3)) **
       (heapBlockU64 ((toU64 12884901920)) (oldMemD_4)) **
       (heapBlockU64 ((toU64 12884901928)) (oldMemD_5)) **
@@ -338,13 +352,15 @@ theorem Sbpfv3CpiCallerLifted_allocates
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (heapBlockU64 ((toU64 12884901960)) (oldMemD_13)) **
       (heapBlockU64 ((toU64 12884901976)) (oldMemD_14)) **
+      (.r6 ↦ᵣ vR6Old) **
       (.r5 ↦ᵣ vR5Old))
       ((.r1 ↦ᵣ toU64 12884901888) **
       (.r4 ↦ᵣ baseAddr) **
-      (.r2 ↦ᵣ toU64 12884901984) **
+      (.r7 ↦ᵣ toU64 12884901984) **
       (heapBumpPtr (toU64 12884901984)) **
       (heapBlockU64 ((toU64 12884901896)) (toU64 0 % 2 ^ (8 * 8))) **
       (heapBlockU64 ((toU64 12884901904)) (toU64 0 % 2 ^ (8 * 8))) **
+      (.r2 ↦ᵣ toU64 12884901984) **
       (heapBlockU64 ((toU64 12884901912)) (toU64 12884901976)) **
       (heapBlockU64 ((toU64 12884901920)) (toU64 8 % 2 ^ (8 * 8))) **
       (heapBlockU64 ((toU64 12884901928)) (toU64 8 % 2 ^ (8 * 8))) **
@@ -358,6 +374,7 @@ theorem Sbpfv3CpiCallerLifted_allocates
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (heapBlockU64 ((toU64 12884901960)) (oldMemD_12)) **
       (heapBlockU64 ((toU64 12884901976)) (toU64 578437695752307201)) **
+      (.r6 ↦ᵣ toU64 0) **
       (.r5 ↦ᵣ toU64 0))
       (fun rt => ((((((((((((((rt.containsWritable (effectiveAddr (toU64 12884901888) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901896) 0) 8 = true) ∧
@@ -375,11 +392,11 @@ theorem Sbpfv3CpiCallerLifted_allocates
                   rt.containsWritable (effectiveAddr (toU64 12884901960) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901976) 0) 8 = true) := by
   simp only [heapBumpPtr, heapBlockU64]
-  exact Sbpfv3CpiCallerLifted_lifted_spec baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt
+  exact Sbpfv3CpiCallerLifted_lifted_spec baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt
 
 open Memory in
 theorem Sbpfv3CpiCallerLifted_fault_correct
-    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old : Nat)
+    (baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old : Nat)
     (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
     (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
     (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
@@ -387,11 +404,11 @@ theorem Sbpfv3CpiCallerLifted_fault_correct
     (nCuAbort : Nat)
     (hCuAbort : ∀ s : State,
         (step (.call .sol_invoke_signed) s).cuConsumed ≤ s.cuConsumed + nCuAbort)
-    : cuTripleFaultsWithinMem (33 + 1) (0 + nCuAbort) 0
-      (((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
+    : cuTripleFaultsWithinMem (34 + 1) (0 + nCuAbort) 0
+      ((((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
         (CodeReq.singleton 1 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 2 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 3 (.stx .dword .r1 0 .r2))).union
+        (CodeReq.singleton 2 (.lddw .r7 (12884901984)))).union
+        (CodeReq.singleton 3 (.stx .dword .r1 0 .r7))).union
         (CodeReq.singleton 4 (.lddw .r1 (12884901896)))).union
         (CodeReq.singleton 5 (.st .dword .r1 0 (0)))).union
         (CodeReq.singleton 6 (.lddw .r1 (12884901904)))).union
@@ -417,17 +434,19 @@ theorem Sbpfv3CpiCallerLifted_fault_correct
         (CodeReq.singleton 26 (.stx .dword .r1 0 .r3))).union
         (CodeReq.singleton 27 (.lddw .r1 (578437695752307201)))).union
         (CodeReq.singleton 28 (.stx .dword .r2 0 .r1))).union
-        (CodeReq.singleton 29 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 30 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 31 (.mov64 .r3 (.imm (0))))).union
-        (CodeReq.singleton 32 (.mov64 .r5 (.imm (0)))))).union
-        (CodeReq.singleton 33 (.call .sol_invoke_signed)))
+        (CodeReq.singleton 29 (.mov64 .r6 (.imm (0))))).union
+        (CodeReq.singleton 30 (.lddw .r1 (12884901888)))).union
+        (CodeReq.singleton 31 (.lddw .r2 (12884901984)))).union
+        (CodeReq.singleton 32 (.mov64 .r3 (.imm (0))))).union
+        (CodeReq.singleton 33 (.mov64 .r5 (.imm (0)))))).union
+        (CodeReq.singleton 34 (.call .sol_invoke_signed)))
       ((.r1 ↦ᵣ baseAddr) **
       (.r4 ↦ᵣ vR4Old) **
-      (.r2 ↦ᵣ vR2Old) **
+      (.r7 ↦ᵣ vR7Old) **
       (effectiveAddr (toU64 12884901888) 0 ↦U64 oldMemD_0) **
       (effectiveAddr (toU64 12884901896) 0 ↦U64 oldMemD_1) **
       (effectiveAddr (toU64 12884901904) 0 ↦U64 oldMemD_2) **
+      (.r2 ↦ᵣ vR2Old) **
       (effectiveAddr (toU64 12884901912) 0 ↦U64 oldMemD_3) **
       (effectiveAddr (toU64 12884901920) 0 ↦U64 oldMemD_4) **
       (effectiveAddr (toU64 12884901928) 0 ↦U64 oldMemD_5) **
@@ -441,6 +460,7 @@ theorem Sbpfv3CpiCallerLifted_fault_correct
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901960) 0 ↦U64 oldMemD_13) **
       (effectiveAddr (toU64 12884901976) 0 ↦U64 oldMemD_14) **
+      (.r6 ↦ᵣ vR6Old) **
       (.r5 ↦ᵣ vR5Old))
       (fun rt => ((((((((((((((rt.containsWritable (effectiveAddr (toU64 12884901888) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901896) 0) 8 = true) ∧
@@ -458,12 +478,13 @@ theorem Sbpfv3CpiCallerLifted_fault_correct
                   rt.containsWritable (effectiveAddr (toU64 12884901960) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901976) 0) 8 = true)
       .unsupportedInstruction := by
-  refine cuTripleWithinMem_seq_fault_pure ?_ (Sbpfv3CpiCallerLifted_lifted_spec baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt) (call_sol_invoke_signed_faults_spec ((.r1 ↦ᵣ toU64 12884901888) **
+  refine cuTripleWithinMem_seq_fault_pure ?_ (Sbpfv3CpiCallerLifted_lifted_spec baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt) (call_sol_invoke_signed_faults_spec ((.r1 ↦ᵣ toU64 12884901888) **
       (.r4 ↦ᵣ baseAddr) **
-      (.r2 ↦ᵣ toU64 12884901984) **
+      (.r7 ↦ᵣ toU64 12884901984) **
       (effectiveAddr (toU64 12884901888) 0 ↦U64 toU64 12884901984) **
       (effectiveAddr (toU64 12884901896) 0 ↦U64 toU64 0 % 2 ^ (8 * 8)) **
       (effectiveAddr (toU64 12884901904) 0 ↦U64 toU64 0 % 2 ^ (8 * 8)) **
+      (.r2 ↦ᵣ toU64 12884901984) **
       (effectiveAddr (toU64 12884901912) 0 ↦U64 toU64 12884901976) **
       (effectiveAddr (toU64 12884901920) 0 ↦U64 toU64 8 % 2 ^ (8 * 8)) **
       (effectiveAddr (toU64 12884901928) 0 ↦U64 toU64 8 % 2 ^ (8 * 8)) **
@@ -477,26 +498,27 @@ theorem Sbpfv3CpiCallerLifted_fault_correct
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901960) 0 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901976) 0 ↦U64 toU64 578437695752307201) **
-      (.r5 ↦ᵣ toU64 0)) 33 nCuAbort hCuAbort)
+      (.r6 ↦ᵣ toU64 0) **
+      (.r5 ↦ᵣ toU64 0)) 34 nCuAbort hCuAbort)
   repeat' apply CodeReq.Disjoint_union_left
   all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)
 
 open Memory in
-/-- The traced prefix extended across the CPI at pc 33: for any callee
+/-- The traced prefix extended across the CPI at pc 34: for any callee
     contract, the state after the invoke commits the callee's memory on
     success and rolls it back on failure (`Cpi.Outcome`). -/
 theorem Sbpfv3CpiCallerLifted_cpi_bridge
-    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old : Nat)
+    (baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old : Nat)
     (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
     (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
     (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
     (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
     (callee : Cpi.CalleeSemantics) :
-    Cpi.cpiBridgeWithinMem 33 0 0 33
-      ((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
+    Cpi.cpiBridgeWithinMem 34 0 0 34
+      (((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
         (CodeReq.singleton 1 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 2 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 3 (.stx .dword .r1 0 .r2))).union
+        (CodeReq.singleton 2 (.lddw .r7 (12884901984)))).union
+        (CodeReq.singleton 3 (.stx .dword .r1 0 .r7))).union
         (CodeReq.singleton 4 (.lddw .r1 (12884901896)))).union
         (CodeReq.singleton 5 (.st .dword .r1 0 (0)))).union
         (CodeReq.singleton 6 (.lddw .r1 (12884901904)))).union
@@ -522,16 +544,18 @@ theorem Sbpfv3CpiCallerLifted_cpi_bridge
         (CodeReq.singleton 26 (.stx .dword .r1 0 .r3))).union
         (CodeReq.singleton 27 (.lddw .r1 (578437695752307201)))).union
         (CodeReq.singleton 28 (.stx .dword .r2 0 .r1))).union
-        (CodeReq.singleton 29 (.lddw .r1 (12884901888)))).union
-        (CodeReq.singleton 30 (.lddw .r2 (12884901984)))).union
-        (CodeReq.singleton 31 (.mov64 .r3 (.imm (0))))).union
-        (CodeReq.singleton 32 (.mov64 .r5 (.imm (0))))))
+        (CodeReq.singleton 29 (.mov64 .r6 (.imm (0))))).union
+        (CodeReq.singleton 30 (.lddw .r1 (12884901888)))).union
+        (CodeReq.singleton 31 (.lddw .r2 (12884901984)))).union
+        (CodeReq.singleton 32 (.mov64 .r3 (.imm (0))))).union
+        (CodeReq.singleton 33 (.mov64 .r5 (.imm (0))))))
       ((.r1 ↦ᵣ baseAddr) **
       (.r4 ↦ᵣ vR4Old) **
-      (.r2 ↦ᵣ vR2Old) **
+      (.r7 ↦ᵣ vR7Old) **
       (effectiveAddr (toU64 12884901888) 0 ↦U64 oldMemD_0) **
       (effectiveAddr (toU64 12884901896) 0 ↦U64 oldMemD_1) **
       (effectiveAddr (toU64 12884901904) 0 ↦U64 oldMemD_2) **
+      (.r2 ↦ᵣ vR2Old) **
       (effectiveAddr (toU64 12884901912) 0 ↦U64 oldMemD_3) **
       (effectiveAddr (toU64 12884901920) 0 ↦U64 oldMemD_4) **
       (effectiveAddr (toU64 12884901928) 0 ↦U64 oldMemD_5) **
@@ -545,13 +569,15 @@ theorem Sbpfv3CpiCallerLifted_cpi_bridge
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901960) 0 ↦U64 oldMemD_13) **
       (effectiveAddr (toU64 12884901976) 0 ↦U64 oldMemD_14) **
+      (.r6 ↦ᵣ vR6Old) **
       (.r5 ↦ᵣ vR5Old))
       ((.r1 ↦ᵣ toU64 12884901888) **
       (.r4 ↦ᵣ baseAddr) **
-      (.r2 ↦ᵣ toU64 12884901984) **
+      (.r7 ↦ᵣ toU64 12884901984) **
       (effectiveAddr (toU64 12884901888) 0 ↦U64 toU64 12884901984) **
       (effectiveAddr (toU64 12884901896) 0 ↦U64 toU64 0 % 2 ^ (8 * 8)) **
       (effectiveAddr (toU64 12884901904) 0 ↦U64 toU64 0 % 2 ^ (8 * 8)) **
+      (.r2 ↦ᵣ toU64 12884901984) **
       (effectiveAddr (toU64 12884901912) 0 ↦U64 toU64 12884901976) **
       (effectiveAddr (toU64 12884901920) 0 ↦U64 toU64 8 % 2 ^ (8 * 8)) **
       (effectiveAddr (toU64 12884901928) 0 ↦U64 toU64 8 % 2 ^ (8 * 8)) **
@@ -565,6 +591,7 @@ theorem Sbpfv3CpiCallerLifted_cpi_bridge
       (effectiveAddr baseAddr 10376 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901960) 0 ↦U64 oldMemD_12) **
       (effectiveAddr (toU64 12884901976) 0 ↦U64 toU64 578437695752307201) **
+      (.r6 ↦ᵣ toU64 0) **
       (.r5 ↦ᵣ toU64 0))
       (fun rt => ((((((((((((((rt.containsWritable (effectiveAddr (toU64 12884901888) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901896) 0) 8 = true) ∧
@@ -581,6 +608,6 @@ theorem Sbpfv3CpiCallerLifted_cpi_bridge
                   rt.containsRange (effectiveAddr baseAddr 10376) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901960) 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901976) 0) 8 = true) .sol_invoke_signed callee :=
-  Cpi.cuTripleWithinMem_cpi_bridge (Sbpfv3CpiCallerLifted_lifted_spec baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt) (by decide) .sol_invoke_signed callee
+  Cpi.cuTripleWithinMem_cpi_bridge (Sbpfv3CpiCallerLifted_lifted_spec baseAddr vR4Old vR7Old oldMemD_0 oldMemD_1 oldMemD_2 vR2Old oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR6Old vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt) (by decide) .sol_invoke_signed callee
 
 end Examples.Lifted.Sbpfv3CpiCallerLifted

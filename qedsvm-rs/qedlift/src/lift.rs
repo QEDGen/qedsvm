@@ -59,9 +59,42 @@ pub struct LiftResult {
     /// `shared_text` was requested — the binary's Text/SlotMap/FnRegistry defs,
     /// written ONCE as `Generated/{base}Text.lean` and imported by every arm.
     pub shared_text: Option<(String, String)>,
+    /// Structured view of the lifted triple, consumed by CPI path
+    /// composition (`crate::cpi_path`) to stitch a suffix onto a prefix.
+    pub(crate) path: PathSummary,
 }
 
 pub(super) type LiftOutput = LiftResult;
+
+/// Structured facts about one lifted `_lifted_spec` triple.
+#[derive(Clone)]
+pub(crate) struct PathSummary {
+    pub(crate) module_name: String,
+    pub(crate) lifted_name: String,
+    /// `_lifted_spec` explicit arguments, in signature order.
+    pub(crate) param_names: Vec<String>,
+    /// Rendered binder block of `_lifted_spec` (vars and hypotheses).
+    pub(crate) theorem_binders: String,
+    pub(crate) vars: Vec<String>,
+    pub(crate) pre: Vec<Atom>,
+    pub(crate) post: Vec<Atom>,
+    pub(crate) abs_subst: std::collections::BTreeMap<String, String>,
+    pub(crate) rr: String,
+    pub(crate) cr_lean: String,
+    pub(crate) n: usize,
+    pub(crate) m_bound: String,
+    pub(crate) start_pc: usize,
+    pub(crate) exit_pc: usize,
+    /// `(name, proposition)` for each `h_branchK` path hypothesis.
+    pub(crate) branch_hyps: Vec<(String, String)>,
+    /// `(var, k)` for each `h<var>_lt : var < 2 ^ k` load bound.
+    pub(crate) load_bounds: Vec<(String, u32)>,
+    /// Binders beyond plain vars, branch hypotheses and load bounds
+    /// (abstractions, side hypotheses, blobs, syscall CU), or a call stack.
+    pub(crate) has_complex_binders: bool,
+    /// The walk ended at a CPI invoke (the prefix of a CPI path).
+    pub(crate) invoke_terminal: Option<AbortKind>,
+}
 
 /// Optional inputs for one lift. Keeping these named makes call sites
 /// auditable and gives us one place to reject incompatible modes.
@@ -439,6 +472,42 @@ pub(super) fn lift_one_with_layouts(
         )
     });
 
+    let path = PathSummary {
+        module_name: tc.module_name.clone(),
+        lifted_name: tc.lifted_name.clone(),
+        param_names: lifted_param_names(&tc, &state),
+        theorem_binders: tc.theorem_binders.clone(),
+        vars: tc.vars.clone(),
+        pre: tc.pre.clone(),
+        post: tc.post.clone(),
+        abs_subst: tc.abs_subst.clone(),
+        rr: tc.rr.clone(),
+        cr_lean: tc.cr_lean.clone(),
+        n: tc.n,
+        m_bound: tc.m_bound.clone(),
+        start_pc: tc.start_pc,
+        exit_pc: tc.exit_pc,
+        branch_hyps: state
+            .branches()
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (b.name(i), b.lean_hyp()))
+            .collect(),
+        load_bounds: state.load_vars().to_vec(),
+        has_complex_binders: !tc.abstractions.is_empty()
+            || !state.side_hypotheses().is_empty()
+            || !state.bytearray_vars().is_empty()
+            || !state.memset_blobs().is_empty()
+            || !state.blob_side_hypotheses().is_empty()
+            || !state.syscall_cu_vars().is_empty()
+            || !tc.cs_atom.is_empty(),
+        invoke_terminal: match fault_terminal {
+            Some(FaultTerminal::Abort(kind @ (AbortKind::Invoke | AbortKind::InvokeC))) => {
+                Some(kind)
+            }
+            _ => None,
+        },
+    };
     Ok(LiftOutput {
         lean: out,
         module_name: tc.module_name,
@@ -449,6 +518,7 @@ pub(super) fn lift_one_with_layouts(
         refinement_outcome,
         transition,
         shared_text: shared_text_out,
+        path,
     })
 }
 
