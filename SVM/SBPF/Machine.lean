@@ -731,6 +731,22 @@ theorem State.hashWrite_faults_oob_exitCode (s : State)
   refine State.guardRead_proj_eq_of_k (·.returnData) s _ _ _ rfl ?_
   exact State.guardSlices_proj_eq_of_k (·.returnData) s _ _ _ rfl rfl
 
+@[simp] theorem State.hashWrite_programTextAddr (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).programTextAddr = s.programTextAddr := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl rfl
+
+@[simp] theorem State.hashWrite_programSlotMap (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).programSlotMap = s.programSlotMap := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl rfl
+
 @[simp] theorem State.hashWrite_r10 (s : State)
     (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
     (s.hashWrite outPtr outLen inPtr inN digest).regs.r10 = s.regs.r10 := by
@@ -818,6 +834,16 @@ def commitOptional (s : State) (out outSize : Nat)
     (commitOptional s out outSize result).callStack = s.callStack := by
   cases result <;> simp [commitOptional]
 
+@[simp] theorem commitOptional_preserves_programTextAddr (s : State)
+    (out outSize : Nat) (result : Option ByteArray) :
+    (commitOptional s out outSize result).programTextAddr = s.programTextAddr := by
+  cases result <;> rfl
+
+@[simp] theorem commitOptional_preserves_programSlotMap (s : State)
+    (out outSize : Nat) (result : Option ByteArray) :
+    (commitOptional s out outSize result).programSlotMap = s.programSlotMap := by
+  cases result <;> rfl
+
 /-- Poseidon write envelope: like `hashWrite` but the body is `commitOptional`
     (poseidon returns an `Option`). Output region checked FIRST, then descriptor
     array, then each slice. `@[irreducible]` for the same `Bounded`-sweep
@@ -885,6 +911,24 @@ def commitOptional (s : State) (out outSize : Nat)
   refine State.guardRead_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
   refine State.guardSlices_proj_eq_of_k (·.heapNext) s _ _ _ rfl ?_
   cases result <;> rfl
+
+@[simp] theorem State.guardedCommit_programTextAddr (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).programTextAddr = s.programTextAddr := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.programTextAddr) s _ _ _ rfl ?_
+  exact commitOptional_preserves_programTextAddr s _ _ _
+
+@[simp] theorem State.guardedCommit_programSlotMap (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).programSlotMap = s.programSlotMap := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.programSlotMap) s _ _ _ rfl ?_
+  exact commitOptional_preserves_programSlotMap s _ _ _
 
 /-- `guardedCommit`'s `regs` is `s.regs` (faulted) or `s.regs.set .r0 v`,
     `v ∈ {0,1}`; a predicate holding on all three survives. The `Bounded`
