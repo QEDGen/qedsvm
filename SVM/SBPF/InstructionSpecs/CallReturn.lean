@@ -4,6 +4,41 @@ namespace SVM.SBPF
 
 open Memory
 
+/-- A validated V3 indirect call has the same register and frame transition as
+    a direct local call. The hypotheses pin both the loaded text map and the
+    address-to-logical-PC result; neither comes from the observed trace. -/
+theorem callx_v3_step_eq_local (reg : Reg) (target : Nat) (s : State)
+    (hText : ¬ s.programSlotMap.isEmpty)
+    (hDepth : s.callStack.length < MAX_CALL_DEPTH)
+    (hTarget : callxTarget s reg = some target) :
+    step (.callx reg) s = step (.call_local target) s := by
+  simp only [step, execCallx, if_neg hText,
+    if_neg (by omega : ¬ s.callStack.length ≥ MAX_CALL_DEPTH), hTarget]
+
+/-- A V3 callx whose destination register owns a validated program address
+    pushes exactly the direct-call frame and transfers to the logical callee.
+    The text base and slot map are explicit so a captured trace alone cannot
+    justify the target. -/
+theorem callx_v3_step_spec (reg : Reg) (addr textAddr target : Nat)
+    (slotMap : Array Nat) (s : State)
+    (hAddr : s.regs.get reg = addr)
+    (hBase : s.programTextAddr = textAddr)
+    (hMap : s.programSlotMap = slotMap)
+    (hResolve : resolveCallxTarget textAddr slotMap addr = some target)
+    (hDepth : s.callStack.length < MAX_CALL_DEPTH) :
+    step (.callx reg) s = step (.call_local target) s := by
+  apply callx_v3_step_eq_local reg target s
+  · rw [hMap]
+    intro hEmpty
+    cases slotMap with
+    | mk xs =>
+      cases xs with
+      | nil => simp [resolveCallxTarget] at hResolve
+      | cons x xs => simp at hEmpty
+  · exact hDepth
+  · rw [callxTarget, hBase, hMap, hAddr]
+    exact hResolve
+
 /-! ## `call_local target` — push a frame, bump r10, jump (lift #3)
 
 Owns r6..r10 (determinate for the saved frame) and `callStackIs cs`. Post:
@@ -502,6 +537,126 @@ theorem call_local_spec
 Dual of `call_local`: pop the top frame, restore r6..r10 to its saved values,
 PC moves to its return PC. The empty-stack case (termination) is
 `exit_aborts_spec` above. -/
+
+/-! A V3 path may pin its ELF text base and slot map as ambient immutable
+    execution data. This framed one-step form keeps the destination register
+    atom in the pre/post assertion and explicitly checks the text metadata on
+    the starting machine state. -/
+theorem callx_v3_spec
+    (reg : Reg) (addr textAddr target : Nat) (slotMap : Array Nat)
+    (cs : List CallFrame) (r6V r7V r8V r9V r10V pc : Nat)
+    (hResolve : resolveCallxTarget textAddr slotMap addr = some target)
+    (hDepth : cs.length < MAX_CALL_DEPTH) :
+    ∀ (R : Assertion), R.pcFree →
+    ∀ (fetch : Nat → Option Insn),
+      (CodeReq.singleton pc (.callx reg)).SatisfiedBy fetch →
+    ∀ (s : State),
+      (((((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
+        (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ r10V) ** callStackIs cs) **
+        (reg ↦ᵣ addr)) ** R)).holdsFor s →
+      s.pc = pc → s.exitCode = none →
+      s.cuConsumed + 1 ≤ s.cuBudget →
+      s.programTextAddr = textAddr → s.programSlotMap = slotMap →
+      ∃ k, k ≤ 1 ∧
+        (executeFn fetch s k).pc = target ∧
+        (executeFn fetch s k).exitCode = none ∧
+        (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + 1 ∧
+        (((((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
+          (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ (r10V + 0x1000)) **
+          callStackIs (⟨pc + 1, r6V, r7V, r8V, r9V, r10V⟩ :: cs)) **
+          (reg ↦ᵣ addr)) ** R)).holdsFor (executeFn fetch s k) := by
+  intro R hR fetch hcr s hPre hpc hex hbud hBase hMap
+  let fetchLocal : Nat → Option Insn :=
+    fun p => if p = pc then some (.call_local target) else fetch p
+  have hLocalReq : (CodeReq.singleton pc (.call_local target)).SatisfiedBy fetchLocal := by
+    intro p insn hp
+    by_cases heq : p = pc
+    · subst p
+      simp [CodeReq.singleton] at hp
+      subst insn
+      simp [fetchLocal]
+    · simp [CodeReq.singleton, heq] at hp
+  have hFramePc : ((reg ↦ᵣ addr) ** R).pcFree :=
+    pcFree_sepConj (pcFree_regIs reg addr) hR
+  have hLocalPre :
+      (((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
+        (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ r10V) ** callStackIs cs) **
+        ((reg ↦ᵣ addr) ** R)).holdsFor s :=
+    holdsFor_sepConj_assoc.mp hPre
+  have hAddr : s.regs.get reg = addr := by
+    obtain ⟨hp, hcompat, hA, hF, hdAF, huAF, _, hFpre⟩ := hLocalPre
+    obtain ⟨hReg, hRemainder, _, huReg, hRegEq, _⟩ := hFpre
+    have hFReg : hF.regs reg = some addr := by
+      rw [← huReg, hRegEq]
+      exact PartialState.union_regs_of_left_some PartialState.singletonReg_regs_self
+    have hANone : hA.regs reg = none := by
+      rcases hdAF.regs reg with hNone | hNone
+      · exact hNone
+      · rw [hFReg] at hNone
+        contradiction
+    apply hcompat.regs reg addr
+    rw [← huAF, PartialState.union_regs_of_left_none hANone]
+    exact hFReg
+  have hCs : s.callStack = cs := by
+    obtain ⟨hp, hcompat, hA, hF, _, huAF, hApre, _⟩ := hLocalPre
+    obtain ⟨h6, hRest, _, hu6, h6Eq, hRestPre⟩ := hApre
+    obtain ⟨h7, hRest2, _, hu7, h7Eq, hRest2Pre⟩ := hRestPre
+    obtain ⟨h8, hRest3, _, hu8, h8Eq, hRest3Pre⟩ := hRest2Pre
+    obtain ⟨h9, hRest4, _, hu9, h9Eq, hRest4Pre⟩ := hRest3Pre
+    obtain ⟨h10, hStack, _, hu10, h10Eq, hStackEq⟩ := hRest4Pre
+    have hAStack : hA.callStack = some cs := by
+      rw [← hu6, h6Eq, PartialState.union_callStack_of_left_none
+            PartialState.singletonReg_callStack,
+          ← hu7, h7Eq, PartialState.union_callStack_of_left_none
+            PartialState.singletonReg_callStack,
+          ← hu8, h8Eq, PartialState.union_callStack_of_left_none
+            PartialState.singletonReg_callStack,
+          ← hu9, h9Eq, PartialState.union_callStack_of_left_none
+            PartialState.singletonReg_callStack,
+          ← hu10, h10Eq, PartialState.union_callStack_of_left_none
+            PartialState.singletonReg_callStack,
+          hStackEq]
+      rfl
+    have hpStack : hp.callStack = some cs := by
+      rw [← huAF]
+      exact PartialState.union_callStack_of_left_some hAStack
+    exact hcompat.callStack cs hpStack
+  have hStep : step (.callx reg) s = step (.call_local target) s :=
+    callx_v3_step_spec reg addr textAddr target slotMap s hAddr hBase hMap hResolve
+      (by rw [hCs]; exact hDepth)
+  have hFetchCallx : fetch s.pc = some (.callx reg) := by
+    rw [hpc]
+    exact hcr pc _ CodeReq.singleton_self
+  have hFetchLocal : fetchLocal s.pc = some (.call_local target) := by
+    rw [hpc]
+    simp [fetchLocal]
+  have hBudget0 : s.cuConsumed ≤ s.cuBudget := by omega
+  have hExecEq : ∀ k, k ≤ 1 →
+      executeFn fetch s k = executeFn fetchLocal s k := by
+    intro k hk
+    cases k with
+    | zero => rfl
+    | succ k =>
+      have hk0 : k = 0 := by omega
+      subst k
+      rw [show (1 : Nat) = 0 + 1 from rfl,
+          executeFn_step fetch s 0 _ hex hBudget0 hFetchCallx,
+          executeFn_step fetchLocal s 0 _ hex hBudget0 hFetchLocal,
+          hStep]
+      rfl
+  have hLocal := call_local_spec target cs r6V r7V r8V r9V r10V pc hDepth
+  obtain ⟨k, hk, hPc, hRun, hCu, hPost⟩ :=
+    hLocal ((reg ↦ᵣ addr) ** R) hFramePc fetchLocal hLocalReq s
+      hLocalPre hpc hex (by omega)
+  refine ⟨k, hk, ?_, ?_, ?_, ?_⟩
+  · rw [hExecEq k hk]
+    exact hPc
+  · rw [hExecEq k hk]
+    exact hRun
+  · rw [hExecEq k hk]
+    exact hCu
+  · rw [hExecEq k hk]
+    exact holdsFor_sepConj_assoc.mpr hPost
 
 theorem exit_pops_spec (frame : CallFrame) (cs : List CallFrame)
     (r6Old r7Old r8Old r9Old r10Old : Nat) (pc : Nat) :

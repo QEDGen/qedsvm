@@ -4,6 +4,38 @@ use super::core::{lean_off, Expr};
 use super::diagnostic::{DiagnosticKind, LiftError};
 use super::input::BinaryCtx;
 
+/// Resolve a V3 `callx` virtual address through the loaded text slot map.
+/// A second `lddw` slot is deliberately rejected even though PcMap maps it
+/// back to the first slot's logical instruction.
+pub(super) fn resolve_callx_target_logical(
+    ctx: &BinaryCtx,
+    address: u64,
+) -> Result<usize, LiftError> {
+    if address < ctx.text_offset {
+        return Err(LiftError::new(
+            DiagnosticKind::CallUnresolved,
+            format!(
+                "V3 callx address 0x{address:x} precedes text base 0x{:x}",
+                ctx.text_offset
+            ),
+        ));
+    }
+    let slot = ((address - ctx.text_offset) / ebpf::INSN_SIZE as u64) as usize;
+    let logical = ctx.pc_map.slot_to_logical(slot).ok_or_else(|| {
+        LiftError::new(
+            DiagnosticKind::CallUnresolved,
+            format!("V3 callx address 0x{address:x} is outside program text"),
+        )
+    })?;
+    if slot > 0 && ctx.pc_map.slot_to_logical(slot - 1) == Some(logical) {
+        return Err(LiftError::new(
+            DiagnosticKind::CallUnresolved,
+            format!("V3 callx address 0x{address:x} targets an lddw continuation"),
+        ));
+    }
+    Ok(logical)
+}
+
 /// Convert an sBPF `Insn` to Lean constructor syntax. `call_target` provides the resolved callee PC (raw imm is a Murmur3 hash); `jump_target` is the caller-resolved logical target for conditional jumps.
 pub(super) fn insn_to_lean_full(
     insn: &ebpf::Insn,
@@ -264,6 +296,7 @@ pub(super) fn insn_to_lean_full(
                 }
             }
         }
+        CALL_REG if version == SBPFVersion::V3 => format!(".callx {}", reg(dst)),
         opc => {
             return Err(LiftError::new(
                 DiagnosticKind::OpcodeUnmodeled,
@@ -439,5 +472,28 @@ mod tests {
         let error = insn_to_lean_full(&insn, 2, Some(4), None, SBPFVersion::V3)
             .expect_err("unknown V3 static syscall must fail closed");
         assert_eq!(error.kind(), DiagnosticKind::CallUnresolved);
+    }
+
+    #[test]
+    fn callx_resolves_virtual_address_and_rejects_lddw_continuation() {
+        let path = std::path::Path::new("../tests/fixtures/sbpfv3_callx_path.so");
+        let program = BinaryCtx::load(path).expect("load V3 callx fixture");
+        assert_eq!(program.text_offset, 0x1_0000_0000);
+        assert_eq!(
+            resolve_callx_target_logical(&program, 0x1_0000_0028).unwrap(),
+            4
+        );
+        assert_eq!(
+            resolve_callx_target_logical(&program, 0x1_0000_0008)
+                .unwrap_err()
+                .kind(),
+            DiagnosticKind::CallUnresolved
+        );
+        assert_eq!(
+            resolve_callx_target_logical(&program, 0x1_0000_0100)
+                .unwrap_err()
+                .kind(),
+            DiagnosticKind::CallUnresolved
+        );
     }
 }

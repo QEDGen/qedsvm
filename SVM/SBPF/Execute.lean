@@ -191,14 +191,17 @@ theorem endianValue_lt (value width : Nat) (bigEndian : Bool) :
   unfold endianValue
   exact Nat.mod_lt _ (by decide)
 
-/-- Translate a V3 indirect call's virtual address to a logical PC. -/
-def callxTarget (s : State) (reg : Reg) : Option Nat := do
-  let addr := s.regs.get reg
-  if s.programTextAddr = 0 || addr < s.programTextAddr then none else
-  let slot := (addr - s.programTextAddr) / 8
-  let pc ← s.programSlotMap[slot]?
-  if slot > 0 && s.programSlotMap[slot - 1]? == some pc then none
+/-- Resolve a V3 virtual address against one loaded text segment and slot map. -/
+def resolveCallxTarget (textAddr : Nat) (slotMap : Array Nat) (addr : Nat) : Option Nat := do
+  if textAddr = 0 || addr < textAddr then none else
+  let slot := (addr - textAddr) / 8
+  let pc ← slotMap[slot]?
+  if slot > 0 && slotMap[slot - 1]? == some pc then none
   else some pc
+
+/-- Translate a V3 indirect call's virtual address to a logical PC. -/
+def callxTarget (s : State) (reg : Reg) : Option Nat :=
+  resolveCallxTarget s.programTextAddr s.programSlotMap (s.regs.get reg)
 
 /-- Indirect V3 call, sharing the direct-call frame shape. Raw V0 state has
     no V3 slot map and therefore retains its fail-closed indirect-call path. -/
@@ -741,6 +744,21 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
         | some insn =>
           rw [ih (chargeCu (step insn s))]
           simpa using step_preserves_cuBudget insn s
+
+/-- Loaded text metadata is immutable during instruction execution. -/
+@[simp] theorem execCallx_preserves_programTextAddr (reg : Reg) (s : State) :
+    (execCallx reg s).programTextAddr = s.programTextAddr := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
+
+@[simp] theorem execCallx_preserves_programSlotMap (reg : Reg) (s : State) :
+    (execCallx reg s).programSlotMap = s.programSlotMap := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
 
 /-! ## Paired execution (for tactic automation)
 

@@ -26,9 +26,15 @@ update, and its differential test compares the account data and 110 CU.
 
 - `sbpfv3_static_path.so`: `65683b76a373d24c167544d149820944919e177e60a2f5d2f2f35b0337bd5891`
 - `sbpfv3_account_path.so`: `6731c90b809e1befa31aa19da83fb8b10a7b269934673d995125f10938a90c6d`
+- `sbpfv3_callx_path.so`: `3889f01f5b6ab4f80d4fa558234a715a9505bc2745b103545710650614c13d10`
+- `sbpfv3_callx_invalid.so`: `1acde4a5b6c4afac84b9da5b249fcb76b06041b011e24cce6936c6d25342d691`
+- `sbpfv3_callx_depth.so`: `5724655afff475c9752665a3e209ac9f4da7737bdd64465cdfd99b60126e53f7`
 
-These two small fixtures are hand-assembled to keep their sectionless ELF
-layout and selected-path instruction sequence fixed.
+These fixtures are hand-assembled to keep their sectionless ELF layout and
+selected-path instruction sequence fixed. The three `callx` variants use the
+same builder. The valid path is
+`0,1,4,5,2,3` in logical PCs; the invalid and recursive variants exercise
+typed target and call-depth diagnostics in the symbolic walker.
 
 The differential test also builds strict-header V3 images in memory for the
 complete JMP32 condition/source matrix, `callx` frame/return, endian widths,
