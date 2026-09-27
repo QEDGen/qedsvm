@@ -64,6 +64,23 @@ and 6 respectively).
 `Sbpfv3SharedText`, `Sbpfv3SharedUpdate`, and `Sbpfv3SharedSkip` Lean examples
 share one complete ELF pin while proving both paths against its V3 text.
 
+## `sbpfv3_cpi_caller.so`
+
+Built from `sbpfv3_cpi_caller_src` (a V3 port of `cpi_envelope_caller_src`)
+with `cargo-build-sbf 4.3.0 --arch v3` and platform-tools 1.57. The V3 linker
+rejects an undefined `extern "C"` syscall, so the source calls
+`sol_invoke_signed_rust` through `solana-define-syscall` (a static V3 call).
+Rebuild with `cargo-build-sbf --arch v3` in the source directory, then copy
+`target/deploy/qedsvm_sbpfv3_cpi_caller.so` here. SHA-256:
+`17eff0ea37fba130295365cddedc44ed892d0175c51a0302769bc1a52297b487`.
+
+`sbpfv3_cpi_caller_success_and_rollback_match_mollusk` runs it against a V3
+callee that succeeds and one that fails. A captured trace shows the caller
+executing logical PCs 0..32 before the invoke at 33, which is exactly the
+prefix `qedlift` walks untraced (like the V0 envelope caller).
+`Generated.Sbpfv3CpiCallerLifted` carries the prefix triple and the
+`_cpi_bridge` corollary across the CPI for any callee contract.
+
 ## `sbpfv3_syscall_static.so`
 
 V3 (`e_flags = 3`) static-syscall fixture copied from

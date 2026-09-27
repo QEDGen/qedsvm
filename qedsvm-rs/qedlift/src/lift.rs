@@ -351,6 +351,12 @@ pub(super) fn lift_one_with_layouts(
 
     if let Some(terminal) = fault_terminal {
         emit_fault_corollary(&mut out, &tc, &state, terminal)?;
+        if ctx.version == solana_sbpf::program::SBPFVersion::V3 {
+            if let FaultTerminal::Abort(kind @ (AbortKind::Invoke | AbortKind::InvokeC)) = terminal
+            {
+                emit_cpi_bridge(&mut out, &tc, &state, kind);
+            }
+        }
     }
 
     let transition: Option<TransitionPathInfo> = match descriptor {
@@ -1327,6 +1333,47 @@ fn emit_balance_corollary(
         rr: &tc.rr,
         proof: &balance_proof,
     }));
+}
+
+// V3 CPI bridge: the walked prefix ends AT an invoke (fault terminal under
+// the closed-world `Cpi.exec`). `Cpi.cuTripleWithinMem_cpi_bridge` extends the
+// prefix across the CPI transition for any callee contract, describing the
+// state right after the invoke by `Cpi.Outcome` (commit on success, rollback
+// on failure). `(by decide)` discharges that the prefix CodeReq does not pin
+// the invoke PC.
+fn emit_cpi_bridge(out: &mut String, tc: &TripleCtx, state: &SymState, kind: AbortKind) {
+    let names = lifted_param_names(tc, state);
+    *out = out.replacen(
+        "import SVM.SBPF.SatWitness",
+        "import SVM.SBPF.SatWitness\nimport SVM.SBPF.CpiBridge",
+        1,
+    );
+    out.push_str(&format!(
+        "open Memory in\n\
+         /-- The traced prefix extended across the CPI at pc {exit}: for any callee\n    \
+         contract, the state after the invoke commits the callee's memory on\n    \
+         success and rolls it back on failure (`Cpi.Outcome`). -/\n\
+         theorem {module}_cpi_bridge\n    {binders}(callee : Cpi.CalleeSemantics) :\n    \
+         Cpi.cpiBridgeWithinMem {n} {m} {start} {exit}\n      \
+         ({cr})\n      \
+         ({pre})\n      \
+         ({post})\n      \
+         (fun rt => {rr}) {ctor} callee :=\n  \
+         Cpi.cuTripleWithinMem_cpi_bridge ({lifted} {names}) (by decide) {ctor} callee\n\n",
+        module = tc.module_name,
+        binders = tc.theorem_binders,
+        n = tc.n,
+        m = tc.m_bound,
+        start = tc.start_pc,
+        exit = tc.exit_pc,
+        cr = tc.cr_lean,
+        pre = tc.lifted_pre,
+        post = tc.lifted_post,
+        rr = tc.rr,
+        ctor = kind.ctor(),
+        lifted = tc.lifted_name,
+        names = names.join(" "),
+    ));
 }
 
 // Typed-fault corollary (Phase 7 sub-item 3): the walked happy path ends in
