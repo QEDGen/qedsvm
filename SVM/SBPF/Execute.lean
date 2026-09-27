@@ -199,14 +199,20 @@ def resolveCallxTarget (textAddr : Nat) (slotMap : Array Nat) (addr : Nat) : Opt
   if slot > 0 && slotMap[slot - 1]? == some pc then none
   else some pc
 
-/-- Translate a V3 indirect call's virtual address to a logical PC. -/
+/-- Resolve a V3 indirect call's virtual address through the loaded text
+    region. `none` when there is no V3 text region or the address is invalid. -/
+def resolveCallx (rt : Memory.RegionTable) (addr : Nat) : Option Nat := do
+  let text ← rt.textRegion?
+  resolveCallxTarget text.start text.textSlots addr
+
+/-- Translate a V3 indirect call's register value to a logical PC. -/
 def callxTarget (s : State) (reg : Reg) : Option Nat :=
-  resolveCallxTarget s.programTextAddr s.programSlotMap (s.regs.get reg)
+  resolveCallx s.regions (s.regs.get reg)
 
 /-- Indirect V3 call, sharing the direct-call frame shape. Raw V0 state has
-    no V3 slot map and therefore retains its fail-closed indirect-call path. -/
+    no V3 text region and therefore retains its fail-closed indirect-call path. -/
 def execCallx (reg : Reg) (s : State) : State :=
-  if s.programSlotMap.isEmpty then
+  if s.regions.textRegion?.isNone then
     { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION,
              vmError := some .unsupportedInstruction }
   else if s.callStack.length ≥ MAX_CALL_DEPTH then
@@ -744,21 +750,6 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
         | some insn =>
           rw [ih (chargeCu (step insn s))]
           simpa using step_preserves_cuBudget insn s
-
-/-- Loaded text metadata is immutable during instruction execution. -/
-@[simp] theorem execCallx_preserves_programTextAddr (reg : Reg) (s : State) :
-    (execCallx reg s).programTextAddr = s.programTextAddr := by
-  unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
-
-@[simp] theorem execCallx_preserves_programSlotMap (reg : Reg) (s : State) :
-    (execCallx reg s).programSlotMap = s.programSlotMap := by
-  unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
 
 /-! ## Paired execution (for tactic automation)
 

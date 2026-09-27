@@ -158,10 +158,6 @@ structure State where
       `executeFnCpiWithFuel`). agave caps stack height at 5 (≤4 nested CPIs);
       CPI dispatch fails closed past that (M6). -/
   invokeDepth : Nat := 0
-  /-- V3 executable text's virtual base. Zero means no V3 image is loaded. -/
-  programTextAddr : Nat := 0
-  /-- Physical 8-byte text slot to logical instruction PC (lddw occupies two slots). -/
-  programSlotMap : Array Nat := #[]
   deriving Inhabited
 
 def State.running (s : State) : Prop := s.exitCode = none

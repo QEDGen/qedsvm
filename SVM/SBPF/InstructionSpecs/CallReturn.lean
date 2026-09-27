@@ -5,39 +5,27 @@ namespace SVM.SBPF
 open Memory
 
 /-- A validated V3 indirect call has the same register and frame transition as
-    a direct local call. The hypotheses pin both the loaded text map and the
-    address-to-logical-PC result; neither comes from the observed trace. -/
+    a direct local call. The target is resolved through the loaded text region,
+    never taken from an observed trace. -/
 theorem callx_v3_step_eq_local (reg : Reg) (target : Nat) (s : State)
-    (hText : ¬ s.programSlotMap.isEmpty)
     (hDepth : s.callStack.length < MAX_CALL_DEPTH)
     (hTarget : callxTarget s reg = some target) :
     step (.callx reg) s = step (.call_local target) s := by
-  simp only [step, execCallx, if_neg hText,
+  have hText : s.regions.textRegion?.isNone = false := by
+    cases h : s.regions.textRegion? with
+    | none => simp [callxTarget, resolveCallx, h] at hTarget
+    | some _ => rfl
+  simp only [step, execCallx, hText, Bool.false_eq_true, if_false,
     if_neg (by omega : ¬ s.callStack.length ≥ MAX_CALL_DEPTH), hTarget]
 
-/-- A V3 callx whose destination register owns a validated program address
-    pushes exactly the direct-call frame and transfers to the logical callee.
-    The text base and slot map are explicit so a captured trace alone cannot
-    justify the target. -/
-theorem callx_v3_step_spec (reg : Reg) (addr textAddr target : Nat)
-    (slotMap : Array Nat) (s : State)
+/-- Register-level form: a callx whose register holds `addr`, resolved through
+    the region table to `target`, steps exactly like `call_local target`. -/
+theorem callx_v3_step_spec (reg : Reg) (addr target : Nat) (s : State)
     (hAddr : s.regs.get reg = addr)
-    (hBase : s.programTextAddr = textAddr)
-    (hMap : s.programSlotMap = slotMap)
-    (hResolve : resolveCallxTarget textAddr slotMap addr = some target)
+    (hResolve : resolveCallx s.regions addr = some target)
     (hDepth : s.callStack.length < MAX_CALL_DEPTH) :
-    step (.callx reg) s = step (.call_local target) s := by
-  apply callx_v3_step_eq_local reg target s
-  · rw [hMap]
-    intro hEmpty
-    cases slotMap with
-    | mk xs =>
-      cases xs with
-      | nil => simp [resolveCallxTarget] at hResolve
-      | cons x xs => simp at hEmpty
-  · exact hDepth
-  · rw [callxTarget, hBase, hMap, hAddr]
-    exact hResolve
+    step (.callx reg) s = step (.call_local target) s :=
+  callx_v3_step_eq_local reg target s hDepth (by rw [callxTarget, hAddr]; exact hResolve)
 
 /-! ## `call_local target` — push a frame, bump r10, jump (lift #3)
 
@@ -538,34 +526,31 @@ Dual of `call_local`: pop the top frame, restore r6..r10 to its saved values,
 PC moves to its return PC. The empty-stack case (termination) is
 `exit_aborts_spec` above. -/
 
-/-! A V3 path may pin its ELF text base and slot map as ambient immutable
-    execution data. This framed one-step form keeps the destination register
-    atom in the pre/post assertion and explicitly checks the text metadata on
-    the starting machine state. -/
+/-! ## `callx reg` — V3 indirect call
+
+Same frame transition as `call_local`, with the register's address resolved
+to the logical target through the loaded text region. The resolution is the
+triple's region side condition, so `sl_block_iter` conjuncts it into the
+path theorem like any memory-range requirement. The register atom is framed
+alongside the saved-register frame; `reg` must not be one of r6..r10 (the
+precondition would then be unsatisfiable, which the emitted satisfiability
+witness rejects). -/
 theorem callx_v3_spec
-    (reg : Reg) (addr textAddr target : Nat) (slotMap : Array Nat)
+    (reg : Reg) (addr target : Nat)
     (cs : List CallFrame) (r6V r7V r8V r9V r10V pc : Nat)
-    (hResolve : resolveCallxTarget textAddr slotMap addr = some target)
-    (hDepth : cs.length < MAX_CALL_DEPTH) :
-    ∀ (R : Assertion), R.pcFree →
-    ∀ (fetch : Nat → Option Insn),
-      (CodeReq.singleton pc (.callx reg)).SatisfiedBy fetch →
-    ∀ (s : State),
-      (((((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
+    (hDepth : cs.length < MAX_CALL_DEPTH := by
+      simp only [List.length_cons, List.length_nil, MAX_CALL_DEPTH]; omega) :
+    cuTripleWithinMem 1 0 pc target
+      (CodeReq.singleton pc (.callx reg))
+      ((((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
         (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ r10V) ** callStackIs cs) **
-        (reg ↦ᵣ addr)) ** R)).holdsFor s →
-      s.pc = pc → s.exitCode = none →
-      s.cuConsumed + 1 ≤ s.cuBudget →
-      s.programTextAddr = textAddr → s.programSlotMap = slotMap →
-      ∃ k, k ≤ 1 ∧
-        (executeFn fetch s k).pc = target ∧
-        (executeFn fetch s k).exitCode = none ∧
-        (executeFn fetch s k).cuConsumed ≤ s.cuConsumed + 1 ∧
-        (((((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
-          (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ (r10V + 0x1000)) **
-          callStackIs (⟨pc + 1, r6V, r7V, r8V, r9V, r10V⟩ :: cs)) **
-          (reg ↦ᵣ addr)) ** R)).holdsFor (executeFn fetch s k) := by
-  intro R hR fetch hcr s hPre hpc hex hbud hBase hMap
+        (reg ↦ᵣ addr)))
+      ((((.r6 ↦ᵣ r6V) ** (.r7 ↦ᵣ r7V) ** (.r8 ↦ᵣ r8V) **
+        (.r9 ↦ᵣ r9V) ** (.r10 ↦ᵣ (r10V + 0x1000)) **
+        callStackIs (⟨pc + 1, r6V, r7V, r8V, r9V, r10V⟩ :: cs)) **
+        (reg ↦ᵣ addr)))
+      (fun rt => resolveCallx rt addr = some target) := by
+  intro R hR fetch hcr s hPre hpc hex hbud hResolve
   let fetchLocal : Nat → Option Insn :=
     fun p => if p = pc then some (.call_local target) else fetch p
   have hLocalReq : (CodeReq.singleton pc (.call_local target)).SatisfiedBy fetchLocal := by
@@ -622,8 +607,7 @@ theorem callx_v3_spec
       exact PartialState.union_callStack_of_left_some hAStack
     exact hcompat.callStack cs hpStack
   have hStep : step (.callx reg) s = step (.call_local target) s :=
-    callx_v3_step_spec reg addr textAddr target slotMap s hAddr hBase hMap hResolve
-      (by rw [hCs]; exact hDepth)
+    callx_v3_step_spec reg addr target s hAddr hResolve (by rw [hCs]; exact hDepth)
   have hFetchCallx : fetch s.pc = some (.callx reg) := by
     rw [hpc]
     exact hcr pc _ CodeReq.singleton_self

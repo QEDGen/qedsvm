@@ -129,6 +129,7 @@ lean_lib Examples where
     `Generated.SbpfV3AccountPath,
     `Generated.Sbpfv3AccountPathLifted,
     `Generated.Sbpfv3CompiledAccountLifted,
+    `Generated.Sbpfv3CallxPathLifted,
     `Generated.Sbpfv3SharedText,
     `Generated.Sbpfv3SharedUpdate,
     `Generated.Sbpfv3SharedSkip,
