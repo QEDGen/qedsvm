@@ -68,8 +68,7 @@ theorem Sbpfv3SharedSkip_lifted_spec
       (.r0 ↦ᵣ toU64 0))
       (fun rt => rt.containsRange (effectiveAddr baseAddr 96) 1 = true) := by
   have h_11 := ldxb_spec .r2 .r1 96 (vR2Old) (baseAddr) oldMemB_0 11 (by decide)
-  have h_12 := jmp32_imm_spec .eq .r2 1 (oldMemB_0 % 256) 12 14
-  simp only [h_branch0] at h_12
+  have h_12 := jmp32_imm_not_taken_spec .eq .r2 1 (oldMemB_0 % 256) 12 14 h_branch0
   have h_13 := mov64_self_spec .r0 (vR0Old) 13 (by decide)
   have h_14 := jne_imm_taken_spec .r2 1 (oldMemB_0 % 256) 14 16 h_branch1
   have h_16 := mov64_imm_spec .r0 0 (vR0Old) 16 (by decide)

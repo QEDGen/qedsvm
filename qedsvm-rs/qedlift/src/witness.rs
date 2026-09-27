@@ -17,8 +17,7 @@ fn eval_branch(bh: &BranchHyp, env: &std::collections::BTreeMap<String, u64>) ->
     let r = match (&bh.kind, bh.taken) {
         (JeqImm, true) | (JneImm, false) => dv == immu,
         (JeqImm, false) | (JneImm, true) => dv != immu,
-        (Jeq32Imm, true) => (dv as u32) == (immu as u32),
-        (Jeq32Imm, false) => (dv as u32) != (immu as u32),
+        (Jmp32(cond), taken) => super::branch::jump32_holds(cond, dv, sv.unwrap_or(immu)) == taken,
         (JgtImm, true) => dv > immu,
         (JgtImm, false) => dv <= immu,
         (JltImm, true) => dv < immu,
@@ -83,11 +82,27 @@ fn branch_candidates(
     match (&bh.kind, bh.taken) {
         (JeqImm, true) | (JneImm, false) => vec![(immu, None)],
         (JeqImm, false) | (JneImm, true) => ne_imm,
-        (Jeq32Imm, true) => vec![(immu as u32 as u64, None)],
-        (Jeq32Imm, false) => ne_imm
-            .into_iter()
-            .filter(|(v, _)| (*v as u32) != (immu as u32))
-            .collect(),
+        // JMP32: small search space; the driver keeps the first candidate
+        // `eval_branch` verifies.
+        (Jmp32(_), _) => {
+            let rhs = sv.unwrap_or(immu);
+            let near = [
+                rhs,
+                rhs.wrapping_add(1),
+                rhs.wrapping_sub(1),
+                0,
+                1,
+                2,
+                u32::MAX as u64,
+            ];
+            if bh.src_value.is_some() && sv.is_none() {
+                near.iter()
+                    .flat_map(|d| near.iter().map(move |s| (*d, Some(*s))))
+                    .collect()
+            } else {
+                near.iter().map(|d| (*d, None)).collect()
+            }
+        }
         (JgtImm, true) => vec![(immu.wrapping_add(1), None)],
         (JgtImm, false) => vec![(0, None), (immu, None)],
         (JltImm, true) => {
@@ -282,16 +297,16 @@ fn branch_priority(bh: &BranchHyp) -> u8 {
     use BranchKind::*;
     let combo = matches!(&bh.dst_value, Expr::ByteCombo(_));
     match (&bh.kind, bh.taken) {
-        (JeqImm, true) | (Jeq32Imm, true) | (JneImm, false) | (JeqReg, true) | (JneReg, false) => {
+        (JeqImm, true) | (JneImm, false) | (JeqReg, true) | (JneReg, false) => {
             if combo {
                 0
             } else {
                 1
             }
         }
-        (JeqImm, false) | (Jeq32Imm, false) | (JneImm, true) | (JeqReg, false) | (JneReg, true) => {
-            3
-        }
+        (Jmp32("eq"), true) | (Jmp32("ne"), false) => 1,
+        (Jmp32("eq"), false) | (Jmp32("ne"), true) => 3,
+        (JeqImm, false) | (JneImm, true) | (JeqReg, false) | (JneReg, true) => 3,
         _ => 2,
     }
 }
@@ -461,6 +476,51 @@ pub(super) fn build_branch_witness(state: &SymState, vars: &[String]) -> Option<
                     env = trial;
                     break;
                 }
+            }
+        }
+    }
+
+    // Joint fallback for constraints that couple variables across classes
+    // (e.g. `a < b ∧ c < a ∧ a &&& d = 0`): coordinate-wise hill climbing over
+    // every branch variable, maximizing the number of satisfied hypotheses.
+    // Runs only when the greedy and repair passes left something unsatisfied.
+    let satisfied = |e: &std::collections::BTreeMap<String, u64>| {
+        state
+            .branches()
+            .iter()
+            .filter(|bh| eval_branch(bh, e) == Some(true))
+            .count()
+    };
+    if satisfied(&env) < state.branches().len() {
+        let mut bvars: Vec<String> = Vec::new();
+        let mut pool: Vec<u64> = (0u64..=256).collect();
+        for bh in state.branches() {
+            expr_vars(&bh.dst_value, &mut bvars);
+            if let Some(s) = &bh.src_value {
+                expr_vars(s, &mut bvars);
+            }
+            let im = bh.imm as u64;
+            pool.extend([im, im.wrapping_add(1), im.wrapping_sub(1)]);
+        }
+        bvars.sort();
+        bvars.dedup();
+        pool.sort();
+        pool.dedup();
+        for _round in 0..8 {
+            if satisfied(&env) == state.branches().len() {
+                break;
+            }
+            for v in &bvars {
+                let mut best = (satisfied(&env), env.get(v).copied().unwrap_or(0));
+                for &cand in &pool {
+                    let mut trial = env.clone();
+                    trial.insert(v.clone(), cand);
+                    let score = satisfied(&trial);
+                    if score > best.0 {
+                        best = (score, cand);
+                    }
+                }
+                env.insert(v.clone(), best.1);
             }
         }
     }

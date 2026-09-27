@@ -194,6 +194,66 @@ private def jaSpec (pcLit tgt : Expr) : MetaM SpecApp := do
   let app ← mkAppM ``SVM.SBPF.ja_spec #[tgt, pcLit]
   return { app, sideGoals := [] }
 
+/-- A fresh mvar typed as `spec`'s next explicit argument after `known`. -/
+private def trailingHypMVar (spec : Name) (known : Array Expr) : MetaM Expr := do
+  let ty ← whnf (← inferType (← mkAppM spec known))
+  match ty with
+  | .forallE _ dom _ _ => mkFreshExprMVar dom
+  | _ => throwError m!"SpecGen: {spec} takes no hypothesis after {known.size} arguments"
+
+/-- Apply `spec` to `known` and one trailing hypothesis argument, which is
+    left as a fresh mvar and exposed as a side goal (a path hypothesis or a
+    divisor bound, discharged by `<;> assumption` against the theorem's
+    hypotheses). -/
+private def hypSpec (spec : Name) (known : Array Expr) : MetaM SpecApp := do
+  let h ← trailingHypMVar spec known
+  return { app := mkApp (← mkAppM spec known) h, sideGoals := [h.mvarId!] }
+
+/-- As `hypSpec`, but the trailing hypothesis is closed, literal `Decidable`
+    fact (an immediate divisor's non-zeroness) proved by `decide` now. -/
+private def decidedSpec (spec : Name) (known : Array Expr) : MetaM SpecApp := do
+  let h ← trailingHypMVar spec known
+  h.mvarId!.assign (← mkDecideProof (← instantiateMVars (← inferType h)))
+  return { app := mkApp (← mkAppM spec known) h, sideGoals := [] }
+
+/-- Split a `Src` into `(isImm, payload)`. -/
+private def srcParts (src : Expr) : MetaM (Bool × Expr) := do
+  let srcN := src.consumeMData
+  match srcN.getAppFn.constName? with
+  | some ``SVM.SBPF.Src.imm => return (true, srcN.getAppArgs[0]!)
+  | some ``SVM.SBPF.Src.reg => return (false, srcN.getAppArgs[0]!)
+  | _ => throwError m!"SpecGen: unexpected Src {src}"
+
+/-- A conditional jump on the fall-through path: `immSpec`/`regSpec` are its
+    `*_not_taken_spec` lemmas; the path hypothesis is the side goal. -/
+private def notTakenJumpSpec (pcLit dst src tgt : Expr) (immSpec regSpec : Name) :
+    MetaM SpecApp := do
+  let (isImm, x) ← srcParts src
+  let vDst ← mkNatMVar
+  if isImm then
+    hypSpec immSpec #[dst, x, vDst, pcLit, tgt]
+  else
+    hypSpec regSpec #[dst, x, vDst, ← mkNatMVar, pcLit, tgt]
+
+/-- V3 JMP32 on the fall-through path. -/
+private def jmp32NotTakenSpec (pcLit cond dst src tgt : Expr) : MetaM SpecApp := do
+  let (isImm, x) ← srcParts src
+  let vDst ← mkNatMVar
+  if isImm then
+    hypSpec ``SVM.SBPF.jmp32_imm_not_taken_spec #[cond, dst, x, vDst, pcLit, tgt]
+  else
+    hypSpec ``SVM.SBPF.jmp32_reg_not_taken_spec #[cond, dst, x, vDst, ← mkNatMVar, pcLit, tgt]
+
+/-- Division/remainder: an immediate divisor's non-zeroness is decided; a
+    register divisor's is a side goal (the lift's `hnz_<pc>` hypothesis). -/
+private def divModSpec (pcLit dst src : Expr) (immSpec regSpec : Name) : MetaM SpecApp := do
+  let (isImm, x) ← srcParts src
+  let hne ← mkNeqR10 dst
+  if isImm then
+    decidedSpec immSpec #[dst, x, ← mkNatMVar, pcLit, hne]
+  else
+    hypSpec regSpec #[dst, x, ← mkNatMVar, ← mkNatMVar, pcLit, hne]
+
 /-! ## Top-level dispatcher -/
 
 /-- Spec application for one `(pc, insn)` pair: the Expr (mvars in
@@ -296,17 +356,67 @@ def mkSpec (pcLit : Expr) (insn : Expr) : MetaM SpecApp := do
   -- becomes a residual goal discharged by `<;> assumption` once the chain
   -- unifies `vDst`.
   | ``SVM.SBPF.Insn.jeq =>
+    if (← srcParts args[1]!).1 = false then
+      notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+        ``SVM.SBPF.jeq_reg_not_taken_spec ``SVM.SBPF.jeq_reg_not_taken_spec
+    else
     condJumpImmSpec pcLit args[0]! args[1]! args[2]!
       ``SVM.SBPF.jeq_imm_not_taken_spec
       (fun v i => do
         let u64 ← mkAppM ``SVM.SBPF.toU64 #[i]
         mkAppM ``Ne #[v, u64])
   | ``SVM.SBPF.Insn.jne =>
+    if (← srcParts args[1]!).1 = false then
+      notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+        ``SVM.SBPF.jne_reg_not_taken_spec ``SVM.SBPF.jne_reg_not_taken_spec
+    else
     condJumpImmSpec pcLit args[0]! args[1]! args[2]!
       ``SVM.SBPF.jne_imm_not_taken_spec
       (fun v i => do
         let u64 ← mkAppM ``SVM.SBPF.toU64 #[i]
         mkAppM ``Eq #[v, u64])
+  | ``SVM.SBPF.Insn.jgt =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jgt_imm_not_taken_spec ``SVM.SBPF.jgt_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jge =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jge_imm_not_taken_spec ``SVM.SBPF.jge_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jlt =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jlt_imm_not_taken_spec ``SVM.SBPF.jlt_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jle =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jle_imm_not_taken_spec ``SVM.SBPF.jle_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jsgt =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jsgt_imm_not_taken_spec ``SVM.SBPF.jsgt_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jsge =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jsge_imm_not_taken_spec ``SVM.SBPF.jsge_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jslt =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jslt_imm_not_taken_spec ``SVM.SBPF.jslt_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jsle =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jsle_imm_not_taken_spec ``SVM.SBPF.jsle_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jset =>
+    notTakenJumpSpec pcLit args[0]! args[1]! args[2]!
+      ``SVM.SBPF.jset_imm_not_taken_spec ``SVM.SBPF.jset_reg_not_taken_spec
+  | ``SVM.SBPF.Insn.jmp32 =>
+    jmp32NotTakenSpec pcLit args[0]! args[1]! args[2]! args[3]!
+  | ``SVM.SBPF.Insn.div64 =>
+    divModSpec pcLit args[0]! args[1]! ``SVM.SBPF.div64_imm_spec ``SVM.SBPF.div64_reg_spec
+  | ``SVM.SBPF.Insn.mod64 =>
+    divModSpec pcLit args[0]! args[1]! ``SVM.SBPF.mod64_imm_spec ``SVM.SBPF.mod64_reg_spec
+  | ``SVM.SBPF.Insn.div32 =>
+    divModSpec pcLit args[0]! args[1]! ``SVM.SBPF.div32_imm_spec ``SVM.SBPF.div32_reg_spec
+  | ``SVM.SBPF.Insn.mod32 =>
+    divModSpec pcLit args[0]! args[1]! ``SVM.SBPF.mod32_imm_spec ``SVM.SBPF.mod32_reg_spec
+  | ``SVM.SBPF.Insn.endian =>
+    let hne ← mkNeqR10 args[0]!
+    let app ← mkAppM ``SVM.SBPF.endian_spec
+      #[args[0]!, args[1]!, args[2]!, ← mkNatMVar, pcLit, hne]
+    return { app, sideGoals := [] }
   | ``SVM.SBPF.Insn.ja =>
     jaSpec pcLit args[0]!
   -- call_local: target PC literal + `call_local_spec`. The r6..r10 values

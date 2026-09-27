@@ -242,6 +242,28 @@ fn lifts_toolchain_built_v3_account_path() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn lifts_every_non_call_v3_form_on_one_path() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_isa_matrix.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let trace: Vec<usize> = (0..127).collect();
+    let result = lifter.lift(LiftOptions {
+        trace: Some(&trace),
+        module_override: Some("Sbpfv3IsaMatrixLifted".to_string()),
+        ..LiftOptions::default()
+    })?;
+    // All 44 conditional jumps carry jointly satisfiable path hypotheses.
+    assert!(result.lean.contains("(h_branch43 :"));
+    assert!(result.lean.contains("Branch-satisfiability witness"));
+    assert!(result.lean.contains("jump32Holds .sle"));
+    assert_eq!(
+        result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
+        include_str!("../../../examples/lean/Generated/Sbpfv3IsaMatrixLifted.lean")
+    );
+    Ok(())
+}
+
+#[test]
 fn shares_complete_v3_elf_across_two_paths() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_compiled_account.so");
     let program = ProgramImage::load(path)?;
