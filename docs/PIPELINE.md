@@ -172,6 +172,8 @@ Missing or unsupported IDL discriminator shapes make an instruction not analyzab
 
 A `.pcs` trace is one decimal logical PC per line. `scripts/capture_trace.sh` writes this file by running a single diff-mollusk test with `QEDSVM_TRACE_OUT` set.
 
+The trace records only the top-level program (CPI depth 0), so a run that crosses a CPI yields the caller-only path; the runner logs the invoke PC after the callee returns. Set `QEDSVM_TRACE_ALL_DEPTHS=1` to include nested callee PCs. For `--cpi-suffix`, each suffix `.pcs` starts at the PC right after the invoke.
+
 When `qedlift` receives both `--qedmeta` and `--trace`, it cross-checks the recovered `arm_entry_pc` against the trace. If the sidecar describes a different arm than the trace executes, the lift fails.
 
 ## Limits
