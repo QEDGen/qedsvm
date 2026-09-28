@@ -327,6 +327,157 @@ theorem buildCalleeVM_slots {s : State} {fuel' : Nat} {pid : ByteArray} {accts :
     | (cases h; done)
     | split at h
     | simp only [bind, Option.bind_eq_some_iff] at h)
+/-! ## Single-account write-back and sub-input bytes
+
+Lemmas for a callee invoked with one writable account (`slot1 p`): a
+successful commit is the explicit five-write composition, the sub-input
+block's header bytes are the account's owner/lamports/data_len/data bytes,
+and the u64 byte round-trips the write-back relies on. -/
+
+/-- A single writable slot whose commit succeeds (code 0): no violation fired,
+    the callee exited 0, and caller memory is the five write-backs in order. -/
+theorem commitCallee_single_ok (callerMem : Mem) (p : ParsedAcct) (subFinal : State) (f : Nat)
+    (hw : p.isWritable = true)
+    (h : (commitCallee callerMem [slot1 p] subFinal f).1.exitCode.getD 1 = 0) :
+    subFinal.exitCode = some 0 ∧
+    (commitCallee callerMem [slot1 p] subFinal f).2.1 =
+      loadBytesAt
+        (Memory.writeU64
+          (Memory.writeU64
+            (Memory.writeU64
+              (loadBytesAt callerMem
+                (readMemBytes subFinal.mem (INPUT_START + 8 + CPI_BLOCK_DATA_OFFSET)
+                  (Memory.readU64 subFinal.mem (INPUT_START + 8 + CPI_BLOCK_DATALEN_OFFSET)))
+                p.dataPtr)
+              p.dataLenRefAddr
+              (Memory.readU64 subFinal.mem (INPUT_START + 8 + CPI_BLOCK_DATALEN_OFFSET)))
+            (p.dataPtr - 8)
+            (Memory.readU64 subFinal.mem (INPUT_START + 8 + CPI_BLOCK_DATALEN_OFFSET)))
+          p.lamportsRefAddr
+          (Memory.readU64 subFinal.mem (INPUT_START + 8 + CPI_BLOCK_LAMPORTS_OFFSET)))
+        (readMemBytes subFinal.mem (INPUT_START + 8 + CPI_BLOCK_OWNER_OFFSET) 32)
+        p.ownerPtr := by
+  revert h
+  unfold commitCallee
+  simp only [List.any_cons, List.any_nil, Bool.or_false, slot1, hw, Bool.not_true,
+    Bool.false_eq_true, if_false, if_true, List.foldl_cons, List.foldl_nil]
+  split
+  · simp [ERR_INVALID_REALLOC]
+  · intro h
+    simp only at h ⊢
+    refine ⟨?_, trivial⟩
+    revert h
+    cases subFinal.exitCode <;> simp
+
+
+theorem get!_append (a b : ByteArray) (i : Nat) :
+    (a ++ b).get! i = if i < a.size then a.get! i else b.get! (i - a.size) := by
+  split
+  · exact get!_append_left a b i (by assumption)
+  · exact get!_append_right a b i (by omega)
+
+theorem u64ToLE_get! (n j : Nat) (hj : j < 8) :
+    (u64ToLE n).get! j = ((n / 256 ^ j) % 256).toUInt8 := by
+  unfold u64ToLE
+  show (_ : Array UInt8)[j]! = _
+  rw [foldl_push_range_eq]
+  simp [hj]
+
+/-- Header byte of a non-dup block: owner byte `j` at `40 + j`, lamports byte
+    `j` at `72 + j`, data_len byte `j` at `80 + j`, data byte `j` at `88 + j`. -/
+theorem emitNonDupBlock_get!_header (p : ParsedAcct) (k : Nat)
+    (hsz : p.key.size = 32 ∧ p.owner.size = 32) (hk : 40 ≤ k ∧ k < 88 + p.data.size) :
+    (emitNonDupBlock p).get! k =
+      if k < 72 then p.owner.get! (k - 40)
+      else if k < 80 then (u64ToLE p.lamports).get! (k - 72)
+      else if k < 88 then (u64ToLE p.dataLen).get! (k - 80)
+      else p.data.get! (k - 88) := by
+  rw [emitNonDupBlock_eq]
+  have h1 : (ByteArray.empty.push 0xFF).size = 1 := rfl
+  have h3 : (⟨#[if p.isSigner then 1 else 0, if p.isWritable then 1 else 0,
+              if p.executable then 1 else 0]⟩ : ByteArray).size = 3 := rfl
+  generalize ByteArray.empty.push 0xFF = D at h1 ⊢
+  generalize (⟨#[if p.isSigner then 1 else 0, if p.isWritable then 1 else 0,
+              if p.executable then 1 else 0]⟩ : ByteArray) = F at h3 ⊢
+  have h4 := zeroBytes_size 4
+  generalize zeroBytes 4 = P at h4 ⊢
+  generalize zeroBytes ((8 - p.dataLen % 8) % 8) = A
+  generalize zeroBytes MAX_PERMITTED_DATA_INCREASE = Z
+  generalize u64ToLE p.rentEpoch = R
+  have hl := u64ToLE_size p.lamports
+  have hd := u64ToLE_size p.dataLen
+  generalize u64ToLE p.lamports = L at hl ⊢
+  generalize u64ToLE p.dataLen = N at hd ⊢
+  obtain ⟨hks, hos⟩ := hsz
+  simp (disch := omega) only [get!_append, ByteArray.size_append, h1, h3, h4, hl, hd, hks, hos,
+    if_pos, if_neg]
+  simp only [Nat.reduceAdd]
+  repeat' split
+  all_goals first | rfl | (exfalso; omega)
+
+
+theorem emitNonDupBlock_size_ge (p : ParsedAcct) (hsz : p.key.size = 32 ∧ p.owner.size = 32) :
+    CPI_BLOCK_DATA_OFFSET + p.data.size ≤ (emitNonDupBlock p).size := by
+  rw [emitNonDupBlock_eq]
+  have hH := nonDupHeader_size p hsz
+  generalize (ByteArray.empty.push 0xFF
+        ++ (⟨#[if p.isSigner then 1 else 0, if p.isWritable then 1 else 0,
+              if p.executable then 1 else 0]⟩ : ByteArray)
+        ++ zeroBytes 4 ++ p.key ++ p.owner
+        ++ u64ToLE p.lamports ++ u64ToLE p.dataLen) = H at hH ⊢
+  generalize zeroBytes ((8 - p.dataLen % 8) % 8) = A
+  generalize zeroBytes MAX_PERMITTED_DATA_INCREASE = Z
+  generalize u64ToLE p.rentEpoch = R
+  simp only [ByteArray.size_append]; omega
+
+/-- Byte `8 + k` of a single-account sub-input is byte `k` of its block. -/
+theorem buildCpiSubInputN_single_get! (p : ParsedAcct) (pid ix : ByteArray) (k : Nat)
+    (hk : k < (emitNonDupBlock p).size) :
+    8 + k < (buildCpiSubInputN [slot1 p] pid ix).size ∧
+    (buildCpiSubInputN [slot1 p] pid ix).get! (8 + k) = (emitNonDupBlock p).get! k := by
+  simp only [buildCpiSubInputN, List.foldl_cons, List.foldl_nil, slot1,
+    ByteArray.empty_append]
+  generalize emitNonDupBlock p = E at hk ⊢
+  have h8 : ∀ k, (u64ToLE k).size = 8 := u64ToLE_size
+  refine ⟨by simp only [ByteArray.size_append, h8]; omega, ?_⟩
+  rw [get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
+      get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
+      get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
+      get!_append_right _ _ _ (by simp only [h8]; omega), h8, Nat.add_sub_cancel_left]
+
+/-! ## u64 byte round-trips -/
+
+theorem readU64_digit (m : Mem) (a j : Nat) (hj : j < 8) :
+    Memory.readU64 m a / 256 ^ j % 256 = m (a + j) % 256 := by
+  have h : ∃ b : Nat → Nat, (∀ i, b i < 256) ∧ (∀ i, m (a + i) % 256 = b i) ∧
+      Memory.readU64 m a = b 0 + b 1 * 256 + b 2 * 65536 + b 3 * 16777216 +
+        b 4 * 4294967296 + b 5 * 1099511627776 + b 6 * 281474976710656 +
+        b 7 * 72057594037927936 :=
+    ⟨fun i => m (a + i) % 256, fun i => Nat.mod_lt _ (by decide), fun _ => rfl, rfl⟩
+  obtain ⟨b, hb, hbm, hr⟩ := h
+  rw [hr, hbm]
+  have := hb 0; have := hb 1; have := hb 2; have := hb 3
+  have := hb 4; have := hb 5; have := hb 6; have := hb 7
+  match j, hj with
+  | 0, _ => simp only [Nat.pow_zero, Nat.div_one]; omega
+  | 1, _ => simp only [Nat.reducePow]; omega
+  | 2, _ => simp only [Nat.reducePow]; omega
+  | 3, _ => simp only [Nat.reducePow]; omega
+  | 4, _ => simp only [Nat.reducePow]; omega
+  | 5, _ => simp only [Nat.reducePow]; omega
+  | 6, _ => simp only [Nat.reducePow]; omega
+  | 7, _ => simp only [Nat.reducePow]; omega
+
+theorem writeU64_read_in (m : Mem) (addr v j : Nat) (hj : j < 8) :
+    (Memory.writeU64 m addr v) (addr + j) = v / 256 ^ j % 256 := by
+  rcases j with _ | _ | _ | _ | _ | _ | _ | _ | j
+  all_goals first
+    | (exfalso; omega)
+    | (show Mem.read _ _ = _
+       unfold Memory.writeU64
+       simp only [Mem.read_put]
+       simp)
+
 /-! ## Concrete regression -/
 
 private def demoAcct : ParsedAcct :=

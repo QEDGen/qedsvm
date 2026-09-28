@@ -414,5 +414,65 @@ theorem runnerCallee_writesWithin (registry : Nat → Option ByteArray) (sc : Sy
   rw [← h]
   exact stepCpi_mem_frame registry _ s fuel' sc hsc (hNative s hinv) a ha
 
+/-! ## The successful BPF arm
+
+A zero `r0` after an invoke (non-native) pins the BPF arm: the program id is
+registered, the callee built and ran, and caller memory is the commit's. -/
+
+/-- Code 0 after a non-native invoke comes from the registered-BPF arm. -/
+theorem cpiCallNextState_success (registry : Nat → Option ByteArray) (s : State)
+    (sc : Syscall) (fuel' : Nat) (runCallee : ByteArray → Option (State × Memory.Mem × Nat))
+    (hsc : sc = .sol_invoke_signed ∨ sc = .sol_invoke_signed_c)
+    (hN : invokeNativeNone s sc)
+    (h0 : (Runner.cpiCallNextState registry s sc fuel' runCallee).regs.r0 = 0) :
+    ∃ elf sf m f, registry (invokePid s sc) = some elf ∧ runCallee elf = some (sf, m, f) ∧
+      sf.exitCode.getD 1 = 0 ∧
+      (Runner.cpiCallNextState registry s sc fuel' runCallee).mem = m := by
+  revert h0
+  rcases hsc with rfl | rfl <;>
+    (unfold Runner.cpiCallNextState
+     extract_lets
+     repeat' split
+     all_goals intro h0
+     all_goals first
+       | (simp at h0; done)
+       | (rename_i hnat
+          have hN' := hN
+          unfold invokeNativeNone at hN'
+          exact absurd (hnat.symm.trans hN') (Option.some_ne_none _))
+       | (simp only [applyResult_r0] at h0
+          exact ⟨_, _, _, _, by assumption, by assumption, h0, by simp [applyResult, h0]⟩))
+
+
+/-- `stepCpi` form of `cpiCallNextState_success` for the C ABI: the callee
+    build, its run and the commit that produced code 0. -/
+theorem stepCpi_c_success (registry : Nat → Option ByteArray)
+    (subRun : (Nat → Option Insn) → State → Nat → State × Nat) (s : State) (fuel' : Nat)
+    (hN : invokeNativeNone s .sol_invoke_signed_c)
+    (h0 : (Runner.stepCpi registry subRun s fuel' (.call .sol_invoke_signed_c)).regs.r0 = 0) :
+    ∃ elf insns subS slots,
+      registry (invokePid s .sol_invoke_signed_c) = some elf ∧
+      Runner.buildCalleeVM s fuel'
+          (Runner.readMemBytes s.mem (Memory.readU64 s.mem s.regs.r1) 32)
+          (invokeAccts s .sol_invoke_signed_c) (invokeIxData s .sol_invoke_signed_c) elf
+        = some (insns, subS, slots) ∧
+      (Runner.commitCallee s.mem slots (subRun (Runner.fetchFromArray insns) subS fuel').1
+          (subRun (Runner.fetchFromArray insns) subS fuel').2).1.exitCode.getD 1 = 0 ∧
+      (Runner.stepCpi registry subRun s fuel' (.call .sol_invoke_signed_c)).mem =
+        (Runner.commitCallee s.mem slots (subRun (Runner.fetchFromArray insns) subS fuel').1
+          (subRun (Runner.fetchFromArray insns) subS fuel').2).2.1 := by
+  revert h0
+  unfold Runner.stepCpi
+  extract_lets runCallee
+  intro h0
+  obtain ⟨elf, sf, m, f, hreg, hrun, hc, hm⟩ :=
+    cpiCallNextState_success registry s _ fuel' _ (by simp) hN h0
+  simp only [runCallee, bind, Option.bind_eq_some_iff] at hrun
+  obtain ⟨⟨insns, subS, slots⟩, hbuild, hrun⟩ := hrun
+  simp only [Option.some.injEq] at hrun
+  refine ⟨elf, insns, subS, slots, hreg, hbuild, ?_, ?_⟩
+  · rw [hrun]; exact hc
+  · rw [hm, hrun]
+
 end Cpi
 end SVM.SBPF
