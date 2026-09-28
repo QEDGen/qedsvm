@@ -157,9 +157,33 @@ the byte addresses it may change. The contract owns exactly those bytes as
 `↦ₘ` cells; afterwards each holds `committedByte r a old`: the callee's
 proposed byte on success, the caller's own byte on rollback. -/
 
-/-- The callee changes caller memory only at the listed byte addresses. -/
+/-- The callee changes caller memory only inside the footprint `fp`, and only
+    on success (`r.code = 0`); a failing result is unconstrained here because
+    `applyResult` rolls memory back to `s.mem` regardless of what `r.mem`
+    proposed. -/
+def writesWithin (callee : CalleeSemantics) (fp : Nat → Prop) : Prop :=
+  ∀ s r, callee s r → r.code = 0 → ∀ a, ¬ fp a → r.mem a = s.mem a
+
+/-- The callee changes caller memory only at the listed byte addresses (on
+    success; see `writesWithin`). -/
 def writesOnly (callee : CalleeSemantics) (addrs : List Nat) : Prop :=
-  ∀ s r, callee s r → ∀ a, a ∉ addrs → r.mem a = s.mem a
+  writesWithin callee (· ∈ addrs)
+
+/-- Monotonicity: a wider footprint is an equally valid write frame. -/
+theorem writesWithin_mono {callee : CalleeSemantics} {fp fp' : Nat → Prop}
+    (hfp : ∀ a, fp a → fp' a) (h : writesWithin callee fp) : writesWithin callee fp' :=
+  fun s r hCallee hcode a hnot => h s r hCallee hcode a (fun ha => hnot (hfp a ha))
+
+/-- Restrict a callee semantics to states satisfying an invariant. -/
+def restrict (callee : CalleeSemantics) (inv : State → Prop) : CalleeSemantics :=
+  fun s r => inv s ∧ callee s r
+
+/-- A transition of the restricted callee is a transition of the original,
+    once the invariant is known to hold at the pre-state. -/
+theorem transitions_restrict {callee : CalleeSemantics} {inv : State → Prop} {s s' : State}
+    (hinv : inv s) (h : Transitions callee s s') : Transitions (restrict callee inv) s s' := by
+  obtain ⟨r, hCallee, hs'⟩ := h
+  exact ⟨r, ⟨hinv, hCallee⟩, hs'⟩
 
 /-- A footprint byte after the CPI: proposed on success, rolled back otherwise. -/
 def committedByte (r : CalleeResult) (a old : Nat) : Nat :=
@@ -400,10 +424,10 @@ theorem cpiTriple_of_writes (callee : CalleeSemantics) (v : Nat) (rd : ByteArray
             intro hmem
             obtain ⟨o, ho⟩ := lookup_isSome_of_mem hmem
             rw [h2mem a (by simp [ho])] at h; cases h
-          have hkeep := hW s r hCallee a hnot
           rw [← hc2.mem a w h]
           by_cases hcode : r.code = 0
-          · simp [applyResult, hcode, hkeep]
+          · have hkeep := hW s r hCallee hcode a hnot
+            simp [applyResult, hcode, hkeep]
           · simp [applyResult, hcode]
         pc := fun w h => by rw [h2pc] at h; cases h
         returnData := fun w h => by rw [h2rd] at h; cases h
