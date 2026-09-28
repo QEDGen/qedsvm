@@ -16,6 +16,7 @@
 import SVM.SBPF.Runner
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.CpiContract
+import SVM.SBPF.CpiSerialization
 
 namespace SVM.SBPF
 namespace Cpi
@@ -295,6 +296,123 @@ theorem runner_cpiPath {N1 M1 entry invokePc N2 M2 exit_ : Nat} {cr1 cr2 : CodeR
         rw [runner_invoke registry fetch _ sc _ hex1 hIbud (hpc1 ▸ hfI), hr0, hs']
         congr 1; omega
     _ = _ := runner_prefix registry fetch k2 _ _ hex2 hEbud
+
+/-! ## Generic write-back frame -/
+
+/-- The parsed, PDA-promoted, privilege-clamped account infos the runner's
+    invoke step hands the callee at `s` (both ABIs). -/
+def invokeAccts (s : State) (sc : Syscall) : List Runner.ParsedAcct :=
+  let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
+  let parsedAcctsRaw : List Runner.ParsedAcct :=
+    match sc with
+    | .sol_invoke_signed_c => Runner.parseCpiAccounts s.mem s.regs.r2 accountCount
+    | _ => Runner.parseAccountInfos s.mem s.regs.r2 accountCount
+  Runner.clampCpiPrivileges parsedAcctsRaw
+    (Runner.deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes) s.origPrivs
+
+/-- The slot table the runner builds for the callee at `s`. -/
+def invokeSlots (s : State) (sc : Syscall) : List Runner.AcctSlot :=
+  Runner.buildAcctSlots (invokeAccts s sc)
+
+/-- The program id `cpiCallNextState` computes at `s` (four LE u64 limbs). -/
+def invokePid (s : State) (sc : Syscall) : Nat :=
+  let pubkeyAddr : Nat := match sc with
+    | .sol_invoke_signed   => s.regs.r1 + 48
+    | .sol_invoke_signed_c => Memory.readU64 s.mem s.regs.r1
+    | _ => s.regs.r1
+  Memory.readU64 s.mem pubkeyAddr
+    + Memory.readU64 s.mem (pubkeyAddr + 8) * 2 ^ 64
+    + Memory.readU64 s.mem (pubkeyAddr + 16) * 2 ^ 128
+    + Memory.readU64 s.mem (pubkeyAddr + 24) * 2 ^ 192
+
+/-- The instruction data `cpiCallNextState` hands native dispatch. -/
+def invokeIxData (s : State) (sc : Syscall) : ByteArray :=
+  let ixDataPtr : Nat := Memory.readU64 s.mem (s.regs.r1 + 24)
+  let ixDataLen : Nat := match sc with
+    | .sol_invoke_signed   => Memory.readU64 s.mem (s.regs.r1 + 40)
+    | .sol_invoke_signed_c => Memory.readU64 s.mem (s.regs.r1 + 32)
+    | _ => 0
+  Runner.readMemBytes s.mem ixDataPtr ixDataLen
+
+/-- The native-program view of the invoke's accounts. -/
+def invokeNativeAccts (s : State) (sc : Syscall) : List SVM.Native.AcctInput :=
+  (invokeAccts s sc).map (fun p =>
+    { key := p.key, owner := p.owner, lamports := p.lamports,
+      dataLen := p.dataLen, isSigner := p.isSigner,
+      isWritable := p.isWritable,
+      lamportsRefAddr := p.lamportsRefAddr,
+      ownerPtr := p.ownerPtr, dataPtr := p.dataPtr,
+      dataLenRefAddr := p.dataLenRefAddr })
+
+/-- The invoke does not dispatch to a native program. -/
+def invokeNativeNone (s : State) (sc : Syscall) : Prop :=
+  SVM.Native.dispatch (invokePid s sc) (invokeIxData s sc) (invokeNativeAccts s sc) s.mem = none
+
+/-- The caller bytes the runner's write-back may touch for the invoke at `s`. -/
+def invokeFootprint (s : State) (sc : Syscall) (a : Nat) : Prop :=
+  Runner.writeBackFootprint (invokeSlots s sc) a
+
+/-- Outside `fp`, every non-native branch of `cpiCallNextState` leaves caller
+    memory unchanged, given that any successful callee run does. -/
+theorem cpiCallNextState_mem_frame (registry : Nat → Option ByteArray) (s : State)
+    (sc : Syscall) (fuel' : Nat) (runCallee : ByteArray → Option (State × Memory.Mem × Nat))
+    (hsc : sc = .sol_invoke_signed ∨ sc = .sol_invoke_signed_c)
+    (hN : invokeNativeNone s sc) (fp : Nat → Prop)
+    (hRC : ∀ elf t m f, runCallee elf = some (t, m, f) → ∀ a, ¬ fp a → m a = s.mem a)
+    (a : Nat) (ha : ¬ fp a) :
+    (Runner.cpiCallNextState registry s sc fuel' runCallee).mem a = s.mem a := by
+  rcases hsc with rfl | rfl <;>
+    (unfold Runner.cpiCallNextState
+     extract_lets
+     repeat' split
+     all_goals first
+       | rfl
+       | (rename_i hrun
+          show (if _ = 0 then _ else s.mem) a = s.mem a
+          split
+          · exact hRC _ _ _ _ hrun a ha
+          · rfl)
+       | (rename_i hnat
+          have hN' := hN
+          unfold invokeNativeNone at hN'
+          exact absurd (hnat.symm.trans hN') (Option.some_ne_none _)))
+
+
+/-- The runner's invoke step (any sub-run) changes caller memory only inside
+    the invoke's write-back footprint, when the program id is not native. -/
+theorem stepCpi_mem_frame (registry : Nat → Option ByteArray)
+    (subRun : (Nat → Option Insn) → State → Nat → State × Nat) (s : State) (fuel' : Nat)
+    (sc : Syscall) (hsc : sc = .sol_invoke_signed ∨ sc = .sol_invoke_signed_c)
+    (hN : invokeNativeNone s sc) (a : Nat) (ha : ¬ invokeFootprint s sc a) :
+    (Runner.stepCpi registry subRun s fuel' (.call sc)).mem a = s.mem a := by
+  rcases hsc with rfl | rfl <;>
+    (unfold Runner.stepCpi
+     extract_lets runCallee
+     refine cpiCallNextState_mem_frame registry s _ fuel' _ (by simp) hN
+       (invokeFootprint s _) ?_ a ha
+     intro elf t m f h b hb
+     simp only [runCallee, bind, Option.bind_eq_some_iff] at h
+     obtain ⟨⟨insns, subS, slots⟩, hbuild, h⟩ := h
+     simp only [Option.some.injEq] at h
+     have hm := congrArg (fun x : State × Memory.Mem × Nat => x.2.1) h
+     simp only at hm
+     rw [← hm, Runner.buildCalleeVM_slots hbuild]
+     exact Runner.commitCallee_mem_outside _ _ _ _ _ hb)
+
+/-- Generic write frame: every successful result of the runner's callee
+    relation for a BPF callee differs from caller memory only inside the
+    write-back footprint of the accounts parsed at the invoke. Stated
+    pointwise because the footprint depends on `s`. -/
+theorem runnerCallee_writesWithin (registry : Nat → Option ByteArray) (sc : Syscall)
+    (inv : State → Prop) (hsc : sc = .sol_invoke_signed ∨ sc = .sol_invoke_signed_c)
+    (hNative : ∀ s, inv s → invokeNativeNone s sc) :
+    ∀ s r, restrict (runnerCallee registry sc) inv s r → r.code = 0 →
+      ∀ a, ¬ invokeFootprint s sc a → r.mem a = s.mem a := by
+  rintro s r ⟨hinv, fuel', hr⟩ hc a ha
+  have h := congrArg (fun t => t.mem a) hr
+  simp only [chargeCu, applyResult, hc, if_true] at h
+  rw [← h]
+  exact stepCpi_mem_frame registry _ s fuel' sc hsc (hNative s hinv) a ha
 
 end Cpi
 end SVM.SBPF
