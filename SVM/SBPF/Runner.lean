@@ -558,7 +558,7 @@ def clampCpiPrivileges (parsed : List ParsedAcct) (derivedPdas : List ByteArray)
 
 /-- Next state for a CPI-call syscall (`sol_invoke_signed{,_c}`).
     Non-recursive — the sub-VM call is the `runCallee` closure supplied by
-    `executeFnCpiWithFuel`. Factored out to keep the per-instruction match
+    `stepCpi`. Factored out to keep the per-instruction match
     arms compact (helps proofs that case-split on the instruction). -/
 def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
     (sc : Syscall) (_fuel' : Nat)
@@ -853,6 +853,59 @@ def commitCallee (callerMem : Mem) (slots : List AcctSlot) (subFinal : State)
   else
     (subFinal, newCallerMem, subFuelRemaining)
 
+/-- One CPI-aware instruction step: the invoke arms (`sol_invoke_signed{,_c}`)
+    decode the instruction and run `cpiCallNextState`, every other
+    instruction is `step insn s`. The callee's sub-VM run is the parameter
+    `subRun`; `executeFnCpiWithFuel` supplies itself (at `fuel'`), so its
+    recursion stays structural on `fuel`. Named so proofs can reason about
+    the invoke step as a CPI transition (`Cpi.stepCpi_is_transition`). -/
+def stepCpi (registry : Nat → Option ByteArray)
+    (subRun : (Nat → Option Insn) → State → Nat → State × Nat)
+    (s : State) (fuel' : Nat) (insn : Insn) : State :=
+  -- `runCallee` keeps ONLY the sub-VM invocation (`subRun`, at `fuel'`)
+  -- inline; pre-build/post-commit are `buildCalleeVM`/`commitCallee`.
+  let runCallee (pidBytesIn : ByteArray) (parsedAcctsIn : List ParsedAcct)
+      (ixDataIn : ByteArray) (calleeBytes : ByteArray)
+      : Option (State × Mem × Nat) := do
+    let (calleeInsns, subS, slots) ←
+      buildCalleeVM s fuel' pidBytesIn parsedAcctsIn ixDataIn calleeBytes
+    let (subFinal, subFuelRemaining) := subRun
+      (fetchFromArray calleeInsns) subS fuel'
+    some (commitCallee s.mem slots subFinal subFuelRemaining)
+  match insn with
+  | .call .sol_invoke_signed =>
+    let pubkeyAddr := s.regs.r1 + 48
+    let pidBytes := readMemBytes s.mem pubkeyAddr 32
+    let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
+    -- Promote seed-derived PDAs so the callee's sub-input matches
+    -- what cpiCallNextState computes for Native/aliasing checks.
+    let parsedAcctsRaw := parseAccountInfos s.mem s.regs.r2 accountCount
+    let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
+    let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
+    -- Rust ABI Instruction: data:Vec { ptr@+24, cap@+32, len@+40 }.
+    let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
+    let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 40)
+    let ixData    := readMemBytes s.mem ixDataPtr ixDataLen
+    cpiCallNextState registry s .sol_invoke_signed fuel'
+      (runCallee pidBytes parsedAccts ixData)
+  | .call .sol_invoke_signed_c =>
+    let pubkeyAddr := Memory.readU64 s.mem s.regs.r1
+    let pidBytes := readMemBytes s.mem pubkeyAddr 32
+    let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
+    -- C ABI: `CpiAccount` (56B stride, direct ptrs, inline data_len).
+    -- Must use `parseCpiAccounts`, not `parseAccountInfos`, or
+    -- is_signer lands at the wrong offset → wrong PDA promotion (#10).
+    let parsedAcctsRaw := parseCpiAccounts s.mem s.regs.r2 accountCount
+    let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
+    let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
+    -- C ABI SolInstruction: data_addr@+24, data_len@+32.
+    let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
+    let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 32)
+    let ixData    := readMemBytes s.mem ixDataPtr ixDataLen
+    cpiCallNextState registry s .sol_invoke_signed_c fuel'
+      (runCallee pidBytes parsedAccts ixData)
+  | _ => step insn s
+
 /-- CU-accounting variant of `executeFnCpi`, returning final state + fuel
     remaining (`cuConsumed = initial - returned`). Each step (incl. a CPI)
     burns one caller fuel unit; CPI dispatch is delegated to
@@ -875,57 +928,40 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
       match fetch s.pc with
       | none => ({ s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }, fuel')
       | some insn =>
-        -- `runCallee` keeps ONLY the recursive sub-VM invocation inline (at
-        -- `fuel'`, strictly smaller → termination structural on `fuel`);
-        -- pre-build/post-commit are `buildCalleeVM`/`commitCallee`.
-        let runCallee (pidBytesIn : ByteArray) (parsedAcctsIn : List ParsedAcct)
-            (ixDataIn : ByteArray) (calleeBytes : ByteArray)
-            : Option (State × Mem × Nat) := do
-          let (calleeInsns, subS, slots) ←
-            buildCalleeVM s fuel' pidBytesIn parsedAcctsIn ixDataIn calleeBytes
-          let (subFinal, subFuelRemaining) := executeFnCpiWithFuel registry
-            (fetchFromArray calleeInsns) subS fuel'
-          some (commitCallee s.mem slots subFinal subFuelRemaining)
-        let s' : State :=
-          match insn with
-          | .call .sol_invoke_signed =>
-            let pubkeyAddr := s.regs.r1 + 48
-            let pidBytes := readMemBytes s.mem pubkeyAddr 32
-            let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            -- Promote seed-derived PDAs so the callee's sub-input matches
-            -- what cpiCallNextState computes for Native/aliasing checks.
-            let parsedAcctsRaw := parseAccountInfos s.mem s.regs.r2 accountCount
-            let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
-            let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
-            -- Rust ABI Instruction: data:Vec { ptr@+24, cap@+32, len@+40 }.
-            let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
-            let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 40)
-            let ixData    := readMemBytes s.mem ixDataPtr ixDataLen
-            cpiCallNextState registry s .sol_invoke_signed fuel'
-              (runCallee pidBytes parsedAccts ixData)
-          | .call .sol_invoke_signed_c =>
-            let pubkeyAddr := Memory.readU64 s.mem s.regs.r1
-            let pidBytes := readMemBytes s.mem pubkeyAddr 32
-            let accountCount := Memory.readU64 s.mem (s.regs.r1 + 16)
-            -- C ABI: `CpiAccount` (56B stride, direct ptrs, inline data_len).
-            -- Must use `parseCpiAccounts`, not `parseAccountInfos`, or
-            -- is_signer lands at the wrong offset → wrong PDA promotion (#10).
-            let parsedAcctsRaw := parseCpiAccounts s.mem s.regs.r2 accountCount
-            let derivedPdas := deriveSignerPdas s.mem s.regs.r4 s.regs.r5 s.progIdBytes
-            let parsedAccts := clampCpiPrivileges parsedAcctsRaw derivedPdas s.origPrivs
-            -- C ABI SolInstruction: data_addr@+24, data_len@+32.
-            let ixDataPtr := Memory.readU64 s.mem (s.regs.r1 + 24)
-            let ixDataLen := Memory.readU64 s.mem (s.regs.r1 + 32)
-            let ixData    := readMemBytes s.mem ixDataPtr ixDataLen
-            cpiCallNextState registry s .sol_invoke_signed_c fuel'
-              (runCallee pidBytes parsedAccts ixData)
-          | _ => step insn s
+        -- The sub-run is pinned at `fuel'` (the only fuel `stepCpi` passes
+        -- it) so the recursive call is fully applied at a structurally
+        -- smaller fuel; `stepCpi_executeFnCpiWithFuel` restates it as
+        -- `stepCpi registry (executeFnCpiWithFuel registry)`.
+        let s' : State := stepCpi registry
+          (fun f t _ => executeFnCpiWithFuel registry f t fuel') s fuel' insn
         traceStep (USize.ofNat s.pc) (USize.ofNat s.invokeDepth) fun _ =>
           if TRACE_STEPS then
             dbg_trace s!"STEP pc={hex s.pc 8} {hex s.regs.r0 16} {hex s.regs.r1 16} {hex s.regs.r2 16} {hex s.regs.r3 16} {hex s.regs.r4 16} {hex s.regs.r5 16} {hex s.regs.r6 16} {hex s.regs.r7 16} {hex s.regs.r8 16} {hex s.regs.r9 16} {hex s.regs.r10 16}"
             executeFnCpiWithFuel registry fetch (chargeCu s') fuel'
           else
             executeFnCpiWithFuel registry fetch (chargeCu s') fuel'
+
+/-- `stepCpi` only runs its sub-run at its own `fuel'`, so the fuel-pinned
+    sub-run `executeFnCpiWithFuel` supplies is interchangeable with the plain
+    `executeFnCpiWithFuel registry`. -/
+theorem stepCpi_executeFnCpiWithFuel (registry : Nat → Option ByteArray)
+    (s : State) (fuel' : Nat) (insn : Insn) :
+    stepCpi registry (fun f t _ => executeFnCpiWithFuel registry f t fuel') s fuel' insn
+      = stepCpi registry (executeFnCpiWithFuel registry) s fuel' insn := rfl
+
+/-- One unfolding of `executeFnCpiWithFuel` on a live, in-budget state at a
+    fetched instruction: charge one CU on the `stepCpi` successor and recurse
+    at `fuel'`. -/
+theorem executeFnCpiWithFuel_succ_insn (registry : Nat → Option ByteArray)
+    (fetch : Nat → Option Insn) (s : State) (fuel' : Nat) (insn : Insn)
+    (hex : s.exitCode = none) (hbud : ¬ s.cuConsumed > s.cuBudget)
+    (hf : fetch s.pc = some insn) :
+    executeFnCpiWithFuel registry fetch s (fuel' + 1)
+      = executeFnCpiWithFuel registry fetch
+          (chargeCu (stepCpi registry (executeFnCpiWithFuel registry) s fuel' insn)) fuel' := by
+  simp only [executeFnCpiWithFuel, hex, if_neg hbud, hf, traceStep, TRACE_STEPS,
+    Bool.false_eq_true, if_false]
+  rfl
 
 /-- Thin wrapper around `executeFnCpiWithFuel` discarding the fuel
     remainder; preserved for existing callers (demos + `run`/`runElf`). -/

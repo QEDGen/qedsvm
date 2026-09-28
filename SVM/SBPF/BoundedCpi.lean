@@ -585,7 +585,7 @@ theorem executeFnCpiWithFuel_bounded (registry : Nat → Option ByteArray) :
           obtain rfl : ERR_INVALID_PC = v := by simpa using hv
           decide
         | some insn =>
-          simp only [Runner.executeFnCpiWithFuel, hex, if_neg hover, hf,
+          simp only [Runner.executeFnCpiWithFuel, Runner.stepCpi, hex, if_neg hover, hf,
             Runner.traceStep, Runner.TRACE_STEPS, Bool.false_eq_true, if_false]
           -- The recursive-callee discharge (`hcallee`), uniform across both
           -- CPI ABIs: peel `buildCalleeVM` (bounded fresh sub-state), run the
