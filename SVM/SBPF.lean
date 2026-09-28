@@ -39,3 +39,4 @@ import SVM.SBPF.CodecRead
 import SVM.SBPF.ExitTriple
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.BoundedCpi
+import SVM.SBPF.CpiSerialization
