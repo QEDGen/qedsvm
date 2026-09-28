@@ -77,8 +77,22 @@ Each composed theorem carries a satisfiability witness for its precondition.
 Examples: `Generated.Sbpfv3CpiCaller{Lifted,LiftedSuccess,LiftedRollback}`
 (zero-account) and `Generated.Sbpfv3CpiWriter{Lifted,LiftedSuccess,LiftedRollback}`
 (account write), both diff-tested against Mollusk on success and rollback.
-Limits: the proof holds for every callee satisfying the stated contract;
-proving a concrete callee meets it is separate work. Suffixes with syscalls,
+
+`SVM/SBPF/CpiRunner.lean` connects these path theorems to execution:
+`runnerCallee` records the result of the runner's invoke step, and
+`runner_cpiPath` composes the runner's prefix, invoke and suffix. Its generic
+write-back theorem bounds memory changes to the writable account slots.
+`Examples.CpiWriterEndToEnd.writer_end_to_end` instantiates the path with the
+pinned V3 writer caller and callee. Under its stated input, privilege, region,
+budget and fuel conditions, the runner exits with code 0, account data byte 0
+equal to 42 and the heap marker equal to 43. The callee's byte value and
+narrow write frame are proved from its decoded instructions and the CPI
+serialization and write-back lemmas. `writer_runs` checks the same outcome
+on a concrete serialized input by running the runner (`native_decide`).
+
+This concrete result covers one writable account with unchanged data length,
+one callee path and no nested CPI. Native callees, reallocations and
+multi-account callers are outside this proof. Suffixes with syscalls,
 internal calls, byte blobs or address abstractions, and footprint bytes read
 at a width other than a byte, are rejected with a typed diagnostic. V0 CPI
 lifts still end at the invoke terminal.

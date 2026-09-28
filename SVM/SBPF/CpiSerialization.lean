@@ -370,6 +370,18 @@ theorem commitCallee_single_ok (callerMem : Mem) (p : ParsedAcct) (subFinal : St
     cases subFinal.exitCode <;> simp
 
 
+/-- A single writable slot within the realloc bound commits the callee's
+    final state unchanged (no violation fires). -/
+theorem commitCallee_single_fst (callerMem : Mem) (p : ParsedAcct) (subFinal : State) (f : Nat)
+    (hw : p.isWritable = true)
+    (hlen : Memory.readU64 subFinal.mem (INPUT_START + 8 + CPI_BLOCK_DATALEN_OFFSET) ≤
+      p.dataLen + MAX_PERMITTED_DATA_INCREASE) :
+    (commitCallee callerMem [slot1 p] subFinal f).1 = subFinal := by
+  unfold commitCallee
+  simp only [List.any_cons, List.any_nil, Bool.or_false, slot1, hw, Bool.not_true,
+    Bool.false_eq_true, if_false, if_true, List.foldl_cons, List.foldl_nil]
+  rw [if_neg (by simpa using hlen)]
+
 theorem get!_append (a b : ByteArray) (i : Nat) :
     (a ++ b).get! i = if i < a.size then a.get! i else b.get! (i - a.size) := by
   split

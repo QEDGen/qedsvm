@@ -19,6 +19,185 @@ import SVM.SBPF.CpiContract
 import SVM.SBPF.CpiSerialization
 
 namespace SVM.SBPF
+
+/-! ## Invoke-relevant state fields `executeFn` never changes
+
+The runner's invoke step reads `invokeDepth` (the depth limit) and
+`origPrivs` (privilege clamping); ordinary execution never writes either,
+so facts about them at a program's entry hold at its invoke. -/
+
+@[simp] theorem execTryFind_preserves_invokeDepth (s : State) :
+    (Pda.execTryFind s).invokeDepth = s.invokeDepth := by
+  simp only [Pda.execTryFind]
+  refine State.guardRead_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+    rfl
+  · rfl
+
+@[simp] theorem execTryFind_preserves_origPrivs (s : State) :
+    (Pda.execTryFind s).origPrivs = s.origPrivs := by
+  simp only [Pda.execTryFind]
+  refine State.guardRead_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+    rfl
+  · rfl
+
+@[simp] theorem hashWrite_preserves_invokeDepth (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).invokeDepth = s.invokeDepth := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl rfl
+
+@[simp] theorem guardedCommit_preserves_invokeDepth (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).invokeDepth = s.invokeDepth := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  cases result <;> rfl
+
+@[simp] theorem execRent_preserves_invokeDepth (s : State) :
+    (Sysvar.execRent s).invokeDepth = s.invokeDepth := by
+  simp only [Sysvar.execRent]; exact State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl rfl
+
+@[simp] theorem execEpochSchedule_preserves_invokeDepth (s : State) :
+    (Sysvar.execEpochSchedule s).invokeDepth = s.invokeDepth := by
+  simp only [Sysvar.execEpochSchedule]
+  exact State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_invokeDepth (s : State) :
+    (Logging.execLogData s).invokeDepth = s.invokeDepth := by
+  simp only [Logging.execLogData]
+  refine State.guardRead_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl rfl
+
+@[simp] theorem hashWrite_preserves_origPrivs (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).origPrivs = s.origPrivs := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.origPrivs) s _ _ _ rfl rfl
+
+@[simp] theorem guardedCommit_preserves_origPrivs (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).origPrivs = s.origPrivs := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  cases result <;> rfl
+
+@[simp] theorem execRent_preserves_origPrivs (s : State) :
+    (Sysvar.execRent s).origPrivs = s.origPrivs := by
+  simp only [Sysvar.execRent]; exact State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl rfl
+
+@[simp] theorem execEpochSchedule_preserves_origPrivs (s : State) :
+    (Sysvar.execEpochSchedule s).origPrivs = s.origPrivs := by
+  simp only [Sysvar.execEpochSchedule]
+  exact State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl rfl
+
+@[simp] theorem execLogData_preserves_origPrivs (s : State) :
+    (Logging.execLogData s).origPrivs = s.origPrivs := by
+  simp only [Logging.execLogData]
+  refine State.guardRead_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.origPrivs) s _ _ _ rfl rfl
+
+@[simp] theorem execSyscall_preserves_invokeDepth (sc : Syscall) (s : State) :
+    (execSyscall sc s).invokeDepth = s.invokeDepth := by
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
+
+@[simp] theorem execSyscall_preserves_origPrivs (sc : Syscall) (s : State) :
+    (execSyscall sc s).origPrivs = s.origPrivs := by
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
+
+@[simp] theorem execCallx_preserves_invokeDepth (reg : Reg) (s : State) :
+    (execCallx reg s).invokeDepth = s.invokeDepth := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
+
+@[simp] theorem execCallx_preserves_origPrivs (reg : Reg) (s : State) :
+    (execCallx reg s).origPrivs = s.origPrivs := by
+  unfold execCallx
+  split <;> try rfl
+  split <;> try rfl
+  split <;> rfl
+
+@[simp] theorem step_preserves_invokeDepth (insn : Insn) (s : State) :
+    (step insn s).invokeDepth = s.invokeDepth := by
+  cases insn <;>
+    first
+    | rfl
+    | (simp only [step]; rfl)
+    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; cases s.callStack <;> rfl)
+    | (simp only [step]; exact execCallx_preserves_invokeDepth _ _)
+    | (simp only [step]; exact execSyscall_preserves_invokeDepth _ _)
+
+@[simp] theorem step_preserves_origPrivs (insn : Insn) (s : State) :
+    (step insn s).origPrivs = s.origPrivs := by
+  cases insn <;>
+    first
+    | rfl
+    | (simp only [step]; rfl)
+    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; cases s.callStack <;> rfl)
+    | (simp only [step]; exact execCallx_preserves_origPrivs _ _)
+    | (simp only [step]; exact execSyscall_preserves_origPrivs _ _)
+
+@[simp] theorem executeFn_preserves_invokeDepth
+    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
+    (executeFn fetch s fuel).invokeDepth = s.invokeDepth := by
+  induction fuel generalizing s with
+  | zero => rfl
+  | succ n ih =>
+    unfold executeFn
+    cases h : s.exitCode with
+    | some _ => rfl
+    | none =>
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · rw [if_pos h_over]
+      · rw [if_neg h_over]
+        cases hf : fetch s.pc with
+        | none => rfl
+        | some insn =>
+          rw [ih (chargeCu (step insn s))]
+          simpa using step_preserves_invokeDepth insn s
+
+@[simp] theorem executeFn_preserves_origPrivs
+    (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
+    (executeFn fetch s fuel).origPrivs = s.origPrivs := by
+  induction fuel generalizing s with
+  | zero => rfl
+  | succ n ih =>
+    unfold executeFn
+    cases h : s.exitCode with
+    | some _ => rfl
+    | none =>
+      by_cases h_over : s.cuConsumed > s.cuBudget
+      · rw [if_pos h_over]
+      · rw [if_neg h_over]
+        cases hf : fetch s.pc with
+        | none => rfl
+        | some insn =>
+          rw [ih (chargeCu (step insn s))]
+          simpa using step_preserves_origPrivs insn s
+
 namespace Cpi
 
 /-- The callee relation the runner induces for invoke syscall `sc`. -/
@@ -473,6 +652,79 @@ theorem stepCpi_c_success (registry : Nat → Option ByteArray)
   refine ⟨elf, insns, subS, slots, hreg, hbuild, ?_, ?_⟩
   · rw [hrun]; exact hc
   · rw [hm, hrun]
+
+/-! ## The BPF arm, forward
+
+The converse direction: at a single-account invoke within the depth limit,
+routed to a registered, non-native program whose callee run is `(t, m, f)`,
+the invoke step is exactly the commit of that run. -/
+
+/-- A single-account, non-native invoke to a registered program commits the
+    callee run. -/
+theorem cpiCallNextState_bpf (registry : Nat → Option ByteArray) (s : State)
+    (sc : Syscall) (fuel' : Nat) (runCallee : ByteArray → Option (State × Memory.Mem × Nat))
+    (hsc : sc = .sol_invoke_signed ∨ sc = .sol_invoke_signed_c)
+    (p : Runner.ParsedAcct) (elf : ByteArray) (t : State) (m : Memory.Mem) (f : Nat)
+    (hdepth : s.invokeDepth + 1 ≤ 4) (hsingle : invokeAccts s sc = [p])
+    (hN : invokeNativeNone s sc) (hreg : registry (invokePid s sc) = some elf)
+    (hrun : runCallee elf = some (t, m, f)) :
+    Runner.cpiCallNextState registry s sc fuel' runCallee =
+      applyResult s ⟨t.exitCode.getD 1, m, t.log, t.returnData, t.returnDataProgId,
+        t.cuConsumed⟩ := by
+  rcases hsc with rfl | rfl <;>
+    (unfold Runner.cpiCallNextState
+     extract_lets pubkeyAddr pid accountCount parsedAcctsRaw derivedPdas parsedAccts
+       parsedArr aliased ixDataPtr ixDataLen ixData nativeAccts
+     have hpa : parsedAccts = [p] := hsingle
+     have hal : aliased = false := by simp [aliased, parsedArr, hpa]
+     have hnat : SVM.Native.dispatch pid ixData nativeAccts s.mem = none := hN
+     have hrg : registry pid = some elf := hreg
+     rw [if_neg (by omega), hal]
+     simp only [Bool.false_eq_true, if_false, hnat, hrg, hrun])
+
+/-- Package the committed state and memory of a BPF sub-run as a CPI result. -/
+def bpfResult (callerMem : Memory.Mem) (slots : List Runner.AcctSlot)
+    (run : State × Nat) : CalleeResult :=
+  let committed := Runner.commitCallee callerMem slots run.1 run.2
+  ⟨committed.1.exitCode.getD 1, committed.2.1,
+    committed.1.log, committed.1.returnData, committed.1.returnDataProgId,
+    committed.1.cuConsumed⟩
+
+theorem bpfResult_code (callerMem : Memory.Mem) (slots : List Runner.AcctSlot)
+    (run : State × Nat) :
+    (bpfResult callerMem slots run).code =
+      (Runner.commitCallee callerMem slots run.1 run.2).1.exitCode.getD 1 := rfl
+
+theorem bpfResult_cuConsumed (callerMem : Memory.Mem) (slots : List Runner.AcctSlot)
+    (run : State × Nat) :
+    (bpfResult callerMem slots run).cuConsumed =
+      (Runner.commitCallee callerMem slots run.1 run.2).1.cuConsumed := rfl
+
+/-- `stepCpi` form of `cpiCallNextState_bpf` for the C ABI: the invoke step
+    commits `commitCallee` of the callee's sub-run on the built VM. -/
+theorem stepCpi_c_bpf (registry : Nat → Option ByteArray)
+    (subRun : (Nat → Option Insn) → State → Nat → State × Nat) (s : State) (fuel' : Nat)
+    (p : Runner.ParsedAcct) (elf : ByteArray) (insns : Array Insn) (subS : State)
+    (slots : List Runner.AcctSlot)
+    (hdepth : s.invokeDepth + 1 ≤ 4) (hsingle : invokeAccts s .sol_invoke_signed_c = [p])
+    (hN : invokeNativeNone s .sol_invoke_signed_c)
+    (hreg : registry (invokePid s .sol_invoke_signed_c) = some elf)
+    (hbuild : Runner.buildCalleeVM s fuel'
+        (Runner.readMemBytes s.mem (Memory.readU64 s.mem s.regs.r1) 32)
+        (invokeAccts s .sol_invoke_signed_c) (invokeIxData s .sol_invoke_signed_c) elf
+      = some (insns, subS, slots)) :
+    Runner.stepCpi registry subRun s fuel' (.call .sol_invoke_signed_c) =
+      applyResult s (bpfResult s.mem slots (subRun (Runner.fetchFromArray insns) subS fuel')) := by
+  unfold Runner.stepCpi
+  extract_lets runCallee
+  -- The C arm's pid bytes, accounts and instruction data (the last lets).
+  rename_i pk pidB praw pAccts ixl ixd
+  have hb : Runner.buildCalleeVM s fuel' pidB pAccts ixd elf =
+      some (insns, subS, slots) := hbuild
+  refine cpiCallNextState_bpf registry s _ fuel' _ (Or.inr rfl) p elf _ _
+    (Runner.commitCallee s.mem slots (subRun (Runner.fetchFromArray insns) subS fuel').1
+      (subRun (Runner.fetchFromArray insns) subS fuel').2).2.2 hdepth hsingle hN hreg ?_
+  simp only [runCallee, hb, bind, Option.bind_some]
 
 end Cpi
 end SVM.SBPF
