@@ -113,6 +113,10 @@ const GUARDED_OOB_SO: &[u8] = include_bytes!("fixtures/guarded_oob.so");
 const CPI_ENVELOPE_CALLER_SO: &[u8] = include_bytes!("fixtures/cpi_envelope_caller.so");
 const SBPFV3_CPI_CALLER_SO: &[u8] = include_bytes!("fixtures/sbpfv3_cpi_caller.so");
 const SBPFV3_CPI_WRITER_SO: &[u8] = include_bytes!("fixtures/sbpfv3_cpi_writer.so");
+/// Pinned success callee for the V3 CPI writer: writes `data[0] := 42` and
+/// exits 0. Lifted as `Generated.Sbpfv3CpiWriterCalleeLifted` (checked path
+/// proof over pcs 0..2, exit at pc 3).
+const SBPFV3_CPI_WRITER_CALLEE_SO: &[u8] = include_bytes!("fixtures/sbpfv3_cpi_writer_callee.so");
 
 /// Embedded-bump-allocator demo: reads/commits the heap bump slot at
 /// 0x300000000 and writes + reads an allocated block. Exercises the
@@ -1097,12 +1101,16 @@ mod core_vm {
             let caller_id = pid(440 + case as u64 * 3);
             let callee_id = pid(441 + case as u64 * 3);
             let acct_key = pid(442 + case as u64 * 3);
-            let callee = v3_elf(&[
-                v3_insn(0xb7, 2, 0, 0, 42),
-                v3_insn(0x73, 1, 2, 96, 0),
-                v3_insn(0xb7, 0, 0, 0, exit_code),
-                v3_insn(0x95, 0, 0, 0, 0),
-            ]);
+            let callee: Vec<u8> = if exit_code == 0 {
+                SBPFV3_CPI_WRITER_CALLEE_SO.to_vec()
+            } else {
+                v3_elf(&[
+                    v3_insn(0xb7, 2, 0, 0, 42),
+                    v3_insn(0x73, 1, 2, 96, 0),
+                    v3_insn(0xb7, 0, 0, 0, exit_code),
+                    v3_insn(0x95, 0, 0, 0, 0),
+                ])
+            };
             let (pre_shared, pre_mollusk) = dual_account(1_000_000, vec![0, 0], callee_id, false);
             let (program_shared, program_mollusk) = dual_program();
             let ix = Instruction {

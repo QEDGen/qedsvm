@@ -73,6 +73,7 @@ lean_lib ExamplesCpi where
     `Generated.Sbpfv3CpiWriterLifted,
     `Generated.Sbpfv3CpiWriterLiftedSuccess,
     `Generated.Sbpfv3CpiWriterLiftedRollback,
+    `Generated.Sbpfv3CpiWriterCalleeLifted,
     `CpiEnvelopeDemo,
   ]
 

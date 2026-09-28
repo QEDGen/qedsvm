@@ -67,3 +67,12 @@ write_elf("sbpfv3_callx_invalid.so", CALLX_TEXT.replace(
 write_elf("sbpfv3_callx_depth.so", CALLX_TEXT.replace(
     bytes.fromhex("1802000028000000"), bytes.fromhex("1802000010000000"), 1,
 ))
+
+# CPI writer callee: data[0] of its first account := 42, then success.
+CPI_WRITER_CALLEE_TEXT = bytes.fromhex(
+    "b70200002a000000"  # mov64 r2, 42
+    "7321600000000000"  # stxb [r1+96], r2
+    "b700000000000000"  # mov64 r0, 0
+    "9500000000000000"  # exit
+)
+write_elf("sbpfv3_cpi_writer_callee.so", CPI_WRITER_CALLEE_TEXT)

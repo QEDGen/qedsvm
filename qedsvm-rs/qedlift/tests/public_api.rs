@@ -169,6 +169,23 @@ fn rejects_duplicate_cpi_footprint_bytes() -> Result<(), Box<dyn std::error::Err
 }
 
 #[test]
+fn lifts_the_cpi_writer_callee() -> Result<(), Box<dyn std::error::Error>> {
+    let path = Path::new("../tests/fixtures/sbpfv3_cpi_writer_callee.so");
+    let program = ProgramImage::load(path)?;
+    let lifter = Lifter::new(path, &program)?;
+    let result = lifter.lift(LiftOptions {
+        trace: Some(&[0, 1, 2, 3]),
+        module_override: Some("Sbpfv3CpiWriterCalleeLifted".to_string()),
+        ..LiftOptions::default()
+    })?;
+    assert_eq!(
+        result.lean.replace("../tests/fixtures/", "tests/fixtures/"),
+        include_str!("../../../examples/lean/Generated/Sbpfv3CpiWriterCalleeLifted.lean")
+    );
+    Ok(())
+}
+
+#[test]
 fn rejects_cpi_suffix_not_starting_after_invoke() -> Result<(), Box<dyn std::error::Error>> {
     let path = Path::new("../tests/fixtures/sbpfv3_cpi_caller.so");
     let program = ProgramImage::load(path)?;
