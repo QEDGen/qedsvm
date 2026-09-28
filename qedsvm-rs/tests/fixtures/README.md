@@ -118,6 +118,24 @@ qedlift --so tests/fixtures/sbpfv3_cpi_writer.so \
 `sbpfv3_cpi_caller.so` and `sbpfv3_cpi_caller_{success,rollback}.pcs`,
 without `--cpi-writes` (memory-preserving callee).
 
+## `sbpfv3_cpi_writer_callee.so`
+
+Sectionless V3 ELF from `build_sbpfv3_static_path.py` (run it to rebuild; the
+SHA-256 is pinned in `sbpfv3_fixtures.sha256`). Four instructions: store `42`
+into `data[0]` of its first account (offset 96 in the CPI input layout), then
+return success. This is the pinned success callee used by
+`sbpfv3_cpi_writer_commit_and_rollback_match_mollusk` (the `exit_code == 0`
+case; the rollback case still builds a failing callee inline with `v3_elf`).
+`sbpfv3_cpi_writer_callee.pcs` is the straight-line trace `0..3`.
+`Generated.Sbpfv3CpiWriterCalleeLifted` is its checked path proof, lifted with:
+
+```
+qedlift --so tests/fixtures/sbpfv3_cpi_writer_callee.so \
+  --trace tests/fixtures/sbpfv3_cpi_writer_callee.pcs \
+  --module Sbpfv3CpiWriterCalleeLifted \
+  --output ../examples/lean/Generated/Sbpfv3CpiWriterCalleeLifted.lean
+```
+
 ## `sbpfv3_isa_matrix.so`
 
 Sectionless V3 ELF from `build_sbpfv3_isa_matrix.py` (run it to rebuild; the
