@@ -89,6 +89,11 @@ equal to 42 and the heap marker equal to 43. The callee's byte value and
 narrow write frame are proved from its decoded instructions and the CPI
 serialization and write-back lemmas. `writer_runs` checks the same outcome
 on a concrete serialized input by running the runner (`native_decide`).
+Trust note: besides the standard axioms, `writer_end_to_end` depends on
+`native_decide` pins of the callee ELF (its header, version, load layout,
+decoded text and entry slot) and on the generated lift's own V3 text pin.
+Proving these decodes in the kernel is not attempted: kernel evaluation of
+ELF decoding is prohibitively slow.
 
 This concrete result covers one writable account with unchanged data length,
 one callee path and no nested CPI. Native callees, reallocations and
