@@ -150,7 +150,7 @@ private def readMemBytes (mem : Mem) (addr len : Nat) : ByteArray :=
     (fun acc i => acc.push ((mem (addr + i)) % 256).toUInt8) #[]⟩
 
 /-- u64 LE → 8 ByteArray bytes. -/
-private def u64ToLE (n : Nat) : ByteArray :=
+def u64ToLE (n : Nat) : ByteArray :=
   ⟨(List.range 8).foldl
     (fun acc i => acc.push ((n / 256^i) % 256).toUInt8) #[]⟩
 
@@ -243,7 +243,7 @@ def parseAccountInfo (mem : Mem) (addr : Nat) : ParsedAcct :=
 def MAX_PERMITTED_DATA_INCREASE : Nat := 10240
 
 /-- Repeat a byte `n` times into a ByteArray. -/
-private def zeroBytes (n : Nat) : ByteArray :=
+def zeroBytes (n : Nat) : ByteArray :=
   ⟨(List.range n).foldl (fun acc _ => acc.push 0) #[]⟩
 
 /-- Build a one-account sub-input buffer for a CPI. Matches
@@ -403,7 +403,7 @@ def parseCpiAccounts (mem : Mem) (baseAddr count : Nat) : List ParsedAcct :=
 
 /-- Emit a single non-dup account block (88 + dataLen + align_pad +
     MAX_PERMITTED_DATA_INCREASE + 8 bytes). -/
-private def emitNonDupBlock (p : ParsedAcct) : ByteArray :=
+def emitNonDupBlock (p : ParsedAcct) : ByteArray :=
   let dupMarker   := ByteArray.empty.push 0xFF
   let signer      : UInt8 := if p.isSigner then 1 else 0
   let writable    : UInt8 := if p.isWritable then 1 else 0
