@@ -75,6 +75,7 @@ lean_lib ExamplesCpi where
     `Generated.Sbpfv3CpiWriterLiftedRollback,
     `Generated.Sbpfv3CpiWriterCalleeLifted,
     `CpiEnvelopeDemo,
+    `CpiRunnerSmoke,
   ]
 
 -- Examples — standalone proofs demonstrating the verification chain
