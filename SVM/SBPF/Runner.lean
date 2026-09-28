@@ -145,7 +145,7 @@ not the caller's input. Built in Lean mirroring `qedsvm-rs/src/serialize.rs`.
 
 /-- Read `len` bytes from `mem` at `addr`. Local copy of `Machine.readBytes`
     so the Runner doesn't pull in `Machine` (keeps the dep graph clean). -/
-private def readMemBytes (mem : Mem) (addr len : Nat) : ByteArray :=
+def readMemBytes (mem : Mem) (addr len : Nat) : ByteArray :=
   ⟨(List.range len).foldl
     (fun acc i => acc.push ((mem (addr + i)) % 256).toUInt8) #[]⟩
 
