@@ -176,6 +176,157 @@ theorem loadInput_read_outside {mem : Mem} {input : ByteArray} {a : Nat}
   unfold loadInput
   rw [loadBytesAt_read, if_neg ha]
 
+/-! ## Write-back (`commitCallee`) read lemmas
+
+After the callee runs, `commitCallee` folds over the slots and, for each
+writable non-dup slot, writes the post-call data (`postLen` bytes at
+`dataPtr`), both `data_len` slots (`dataLenRefAddr`, `dataPtr - 8`), the
+lamports and the owner back into caller memory. A violation (realloc past
+`dataLen + MAX_PERMITTED_DATA_INCREASE`, or a modified read-only account)
+returns `callerMem` unchanged. -/
+
+theorem foldl_push_range_eq {β : Type} (f : Nat → β) (n : Nat) :
+    (List.range n).foldl (fun acc i => acc.push (f i)) #[] = ((List.range n).map f).toArray := by
+  induction n with
+  | zero => rfl
+  | succ n ih =>
+    rw [List.range_succ, List.foldl_append, ih]
+    simp
+
+theorem readMemBytes_size (mem : Mem) (addr len : Nat) :
+    (readMemBytes mem addr len).size = len := by
+  unfold readMemBytes
+  exact (foldl_push_size (List.range len) _ #[]).trans (by simp)
+
+theorem readMemBytes_get! (mem : Mem) (addr len i : Nat) (hi : i < len) :
+    (readMemBytes mem addr len).get! i = ((mem (addr + i)) % 256).toUInt8 := by
+  unfold readMemBytes
+  show (_ : Array UInt8)[i]! = _
+  rw [foldl_push_range_eq]
+  simp [hi]
+
+/-- The bytes one writable non-dup slot's write-back may touch: the data
+    range up to the realloc bound (a committed `postLen` never exceeds
+    `dataLen + MAX_PERMITTED_DATA_INCREASE`), both `data_len` slots
+    (`dataLenRefAddr` and `dataPtr - 8`, truncated subtraction as in
+    `commitCallee`), lamports and owner. -/
+def slotWriteBack (p : ParsedAcct) (a : Nat) : Prop :=
+  (p.dataPtr ≤ a ∧ a < p.dataPtr + p.dataLen + MAX_PERMITTED_DATA_INCREASE) ∨
+  (p.dataLenRefAddr ≤ a ∧ a < p.dataLenRefAddr + 8) ∨
+  (p.dataPtr - 8 ≤ a ∧ a < p.dataPtr - 8 + 8) ∨
+  (p.lamportsRefAddr ≤ a ∧ a < p.lamportsRefAddr + 8) ∨
+  (p.ownerPtr ≤ a ∧ a < p.ownerPtr + 32)
+
+/-- Every byte `commitCallee` may write for `slots`. -/
+def writeBackFootprint (slots : List AcctSlot) (a : Nat) : Prop :=
+  ∃ slot ∈ slots, slot.dupOf? = none ∧ slot.parsed.isWritable = true ∧
+    slotWriteBack slot.parsed a
+
+theorem writeU64_read_outside (mem : Mem) (addr val a : Nat)
+    (h : ¬ (addr ≤ a ∧ a < addr + 8)) : (writeU64 mem addr val) a = mem a :=
+  writeU64_read_other mem addr val a (by omega) (by omega) (by omega) (by omega)
+    (by omega) (by omega) (by omega) (by omega)
+
+/-- A fold whose step preserves address `a` for every element outside `P`
+    preserves `a`. -/
+theorem foldl_frame {α : Type} (f : Mem → α → Mem) (P : α → Prop) (a : Nat) :
+    ∀ (l : List α) (mem : Mem), (∀ x ∈ l, ∀ m, ¬ P x → f m x a = m a) →
+      (∀ x ∈ l, ¬ P x) → (l.foldl f mem) a = mem a
+  | [], _, _, _ => rfl
+  | x :: xs, mem, hf, hP => by
+    rw [List.foldl_cons, foldl_frame f P a xs _ (fun y hy => hf y (List.mem_cons_of_mem _ hy))
+      (fun y hy => hP y (List.mem_cons_of_mem _ hy))]
+    exact hf x List.mem_cons_self _ (hP x List.mem_cons_self)
+
+/-- `commitCallee` leaves caller memory outside the write-back footprint
+    untouched (on every branch: violations return `callerMem`). -/
+theorem commitCallee_mem_outside (callerMem : Mem) (slots : List AcctSlot) (subFinal : State)
+    (f a : Nat) (ha : ¬ writeBackFootprint slots a) :
+    (commitCallee callerMem slots subFinal f).2.1 a = callerMem a := by
+  unfold commitCallee
+  extract_lets roV reV newMem
+  split
+  · rfl
+  split
+  · rfl
+  rename_i hre _
+  show newMem a = callerMem a
+  have hbound : ∀ slot ∈ slots, slot.dupOf? = none → slot.parsed.isWritable = true →
+      Memory.readU64 subFinal.mem (INPUT_START + slot.blockOff + CPI_BLOCK_DATALEN_OFFSET)
+        ≤ slot.parsed.dataLen + MAX_PERMITTED_DATA_INCREASE := by
+    intro slot hs hd hw
+    have := hre
+    simp only [reV, List.any_eq_true, not_exists, not_and] at this
+    have h := this slot hs
+    rw [hd] at h
+    simp only [hw, Bool.not_true, Bool.false_eq_true, if_false, decide_eq_true_eq] at h
+    omega
+  refine foldl_frame _ (fun slot => slot.dupOf? = none ∧ slot.parsed.isWritable = true ∧
+      slotWriteBack slot.parsed a) a slots callerMem ?_ ?_
+  · intro slot hs m hn
+    simp only
+    split
+    · rfl
+    rename_i hd
+    by_cases hw : slot.parsed.isWritable = true
+    · simp only [hw, Bool.not_true, Bool.false_eq_true, if_false]
+      have hb := hbound slot hs hd hw
+      simp only [slotWriteBack, hd, hw, true_and] at hn
+      rw [loadBytesAt_read, readMemBytes_size, if_neg (by omega), writeU64_read_outside _ _ _ _ (by omega),
+        writeU64_read_outside _ _ _ _ (by omega), writeU64_read_outside _ _ _ _ (by omega),
+        loadBytesAt_read, readMemBytes_size, if_neg (by omega)]
+    · simp [hw]
+  · intro slot hs h
+    exact ha ⟨slot, hs, h⟩
+
+/-- For a single writable account whose post-call length is unchanged, the
+    committed data byte `i` is the callee's final byte at the sole block's
+    data offset (mod 256, as `readMemBytes`/`loadBytesAt` store bytes). The
+    later length/lamports/owner writes are excluded by the disjointness
+    hypotheses. -/
+theorem commitCallee_data (callerMem : Mem) (slots : List AcctSlot) (subFinal : State)
+    (f : Nat) (p : ParsedAcct) (i : Nat)
+    (hslots : slots = [slot1 p])
+    (hw : p.isWritable = true)
+    (hlen : Memory.readU64 subFinal.mem (INPUT_START + 8 + CPI_BLOCK_DATALEN_OFFSET) = p.dataLen)
+    (hi : i < p.dataLen)
+    (hdl : ¬ (p.dataLenRefAddr ≤ p.dataPtr + i ∧ p.dataPtr + i < p.dataLenRefAddr + 8))
+    (hdp : 8 ≤ p.dataPtr)
+    (hlam : ¬ (p.lamportsRefAddr ≤ p.dataPtr + i ∧ p.dataPtr + i < p.lamportsRefAddr + 8))
+    (hown : ¬ (p.ownerPtr ≤ p.dataPtr + i ∧ p.dataPtr + i < p.ownerPtr + 32)) :
+    (commitCallee callerMem slots subFinal f).2.1 (p.dataPtr + i) =
+      subFinal.mem (INPUT_START + 8 + CPI_BLOCK_DATA_OFFSET + i) % 256 := by
+  subst hslots
+  unfold commitCallee
+  simp only [List.any_cons, List.any_nil, Bool.or_false, slot1, hw, Bool.not_true,
+    Bool.false_eq_true, if_false, if_true, hlen, List.foldl_cons, List.foldl_nil]
+  rw [if_neg (by simp only [decide_eq_true_eq]; omega)]
+  rw [loadBytesAt_read, readMemBytes_size, if_neg (by omega), writeU64_read_outside _ _ _ _ hlam,
+    writeU64_read_outside _ _ _ _ (by omega), writeU64_read_outside _ _ _ _ hdl,
+    loadBytesAt_read, readMemBytes_size, if_pos (by omega), Nat.add_sub_cancel_left,
+    readMemBytes_get! _ _ _ _ hi]
+  simp
+/-- A successful callee build lays out exactly `buildAcctSlots` of the
+    accounts it was given. -/
+theorem buildCalleeVM_slots {s : State} {fuel' : Nat} {pid : ByteArray} {accts : List ParsedAcct}
+    {ix bytes : ByteArray} {insns : Array Insn} {t : State} {slots : List AcctSlot}
+    (h : buildCalleeVM s fuel' pid accts ix bytes = some (insns, t, slots)) :
+    slots = buildAcctSlots accts := by
+  unfold buildCalleeVM at h
+  extract_lets tryElf isElf sl subInput baseMem jp at h
+  have hjp : ∀ x i t' sl', jp x = some (i, t', sl') → sl' = sl := by
+    intro x i t' sl' hx
+    rcases x with ⟨a, b, c, d, e⟩
+    simp only [jp, bind, Option.bind] at hx
+    split at hx
+    · cases hx
+    · cases hx; rfl
+  repeat' (first
+    | exact hjp _ _ _ _ h
+    | (obtain ⟨_, _, h⟩ := h)
+    | (cases h; done)
+    | split at h
+    | simp only [bind, Option.bind_eq_some_iff] at h)
 /-! ## Concrete regression -/
 
 private def demoAcct : ParsedAcct :=
