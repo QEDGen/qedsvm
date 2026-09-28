@@ -90,6 +90,20 @@ fuel and compute budget, `invokeDepth = 0`, the caller's single account (no
 aliasing), `hNative` for the callee's program id, the callee registered at
 that id, and the caller's own path hypotheses.
 
+## Refinements found while planning
+
+- The runner charges one step unit on top of the CPI result, so
+  `runnerCallee` relates `chargeCu (stepCpi …)` to `applyResult s r`, where
+  `Runner.stepCpi` is the invoke step factored out of `executeFnCpiWithFuel`
+  (the callee sub-run passed as a parameter).
+- `writesWithin`/`writesOnly` constrain only successful results
+  (`r.code = 0`); failed results are rolled back by `applyResult`, and a
+  callee that ran out of fuel or faulted then needs no frame.
+- The callee's program id, account descriptors and account block are caller
+  memory, so contracts are proved for `Cpi.restrict (runnerCallee …) inv`
+  with `inv` stating those memory facts; the end-to-end proof supplies `inv`
+  at the invoke state.
+
 ## Deliverables
 
 - `qedsvm-rs/tests/fixtures/sbpfv3_cpi_writer_callee.so`: hand-assembled
