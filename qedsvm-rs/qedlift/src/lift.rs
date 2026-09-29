@@ -30,6 +30,7 @@ use crate::state::{RegionClause, SymState};
 use crate::transition::{
     emit_transition_fault, emit_transition_path, BItem, FaultTail, RefineTarget, TransitionPathInfo,
 };
+use crate::transition_outcome::TransitionFailure;
 use crate::witness::build_branch_witness;
 use qed_analysis::layout::AccountLayout;
 use qed_artifacts::RefinementDescriptor;
@@ -52,9 +53,10 @@ pub struct LiftResult {
     pub refinement: Option<(String, String)>,
     /// Explicit generation verdict. `Emitted` still requires a successful Lean build.
     pub refinement_outcome: RefinementOutcome,
-    /// Whole-transition path metadata (#40): present when the lift emitted a
-    /// `*_transition_path` corollary; feeds `emit_transition_bundle`.
-    pub(crate) transition: Option<TransitionPathInfo>,
+    /// Whole-transition path metadata (#40), present when a descriptor was
+    /// given: the `*_transition_path` corollary's info (feeds
+    /// `emit_transition_bundle`), or why the emitter fell closed.
+    pub(crate) transition: Option<Result<TransitionPathInfo, TransitionFailure>>,
     /// Shared `.text` module `(module_name, lean)` (batch dedup): emitted when
     /// `shared_text` was requested — the binary's Text/SlotMap/FnRegistry defs,
     /// written ONCE as `Generated/{base}Text.lean` and imported by every arm.
@@ -392,8 +394,8 @@ pub(super) fn lift_one_with_layouts(
         }
     }
 
-    let transition: Option<TransitionPathInfo> = match descriptor {
-        Some(desc) => emit_transition_corollary(
+    let transition = descriptor.map(|desc| {
+        emit_transition_corollary(
             &mut out,
             desc,
             &tc,
@@ -405,9 +407,11 @@ pub(super) fn lift_one_with_layouts(
             insns,
             idl,
             sidecar_layouts,
-        ),
-        None => None,
-    };
+        )
+    });
+    if let Some(Err(e)) = &transition {
+        eprintln!("transition: {e}; skipping path corollary");
+    }
 
     out.push_str(&render::end_namespace(&tc.module_name));
 
@@ -1698,7 +1702,7 @@ fn emit_transition_corollary(
     insns: &[ebpf::Insn],
     idl: Option<&serde_json::Value>,
     sidecar_layouts: Option<&[AccountLayout]>,
-) -> Option<TransitionPathInfo> {
+) -> Result<TransitionPathInfo, TransitionFailure> {
     let abs_subst = &tc.abs_subst;
     let pre: &[Atom] = &tc.pre;
     let post: &[Atom] = &tc.post;
@@ -1714,8 +1718,6 @@ fn emit_transition_corollary(
     let cs_atom = tc.cs_atom;
     let cr_lean = &tc.cr_lean;
     let (n, start_pc, exit_pc) = (tc.n, tc.start_pc, tc.exit_pc);
-    let mut transition: Option<TransitionPathInfo> = None;
-
     // Terminal kind: a clean `.exit` (error/success return) or a typed
     // abort/panic fault. OOB fault terminals fall closed for now.
     let wired_binders = has_trace
@@ -1734,149 +1736,178 @@ fn emit_transition_corollary(
             .get(exit_pc)
             .map(|i| i.opc == ebpf::EXIT)
             .unwrap_or(false);
-    if terminal_exit || (wired_binders && (terminal_fault || terminal_oob)) {
-        // Binder metadata + positional args in `_lifted_spec` signature order.
-        let mut bitems: Vec<BItem> = vars.iter().cloned().map(BItem::Val).collect();
-        let mut names: Vec<String> = vars.clone();
-        if use_block_iter && !abstractions.is_empty() {
-            for (p, _, _) in abstractions {
-                bitems.push(BItem::Val(p.clone()));
-                names.push(p.clone());
+    if !(terminal_exit || (wired_binders && (terminal_fault || terminal_oob))) {
+        let why = if !has_trace {
+            "an untraced lift (transition paths need --trace)".to_string()
+        } else if !wired_binders {
+            let mut parts = Vec::new();
+            if !cs_atom.is_empty() {
+                parts.push("a non-empty call stack");
             }
-            for (i, (param, h, _)) in abstractions.iter().enumerate() {
-                bitems.push(BItem::Hyp {
-                    name: h.clone(),
-                    prop: format!("{} = {}", param, folded_rhs[i]),
-                });
-                names.push(h.clone());
+            if !state.bytearray_vars().is_empty() {
+                parts.push("byte-array binders");
             }
-        }
-        for (v, k) in state.load_vars() {
-            bitems.push(BItem::Hyp {
-                name: format!("h{}_lt", v),
-                prop: format!("{} < 2 ^ {}", v, k),
-            });
-            names.push(format!("h{}_lt", v));
-        }
-        for (i, bh) in state.branches().iter().enumerate() {
-            bitems.push(BItem::Guard {
-                prop: bh.lean_hyp(),
-            });
-            names.push(bh.name(i));
-        }
-        for (name, prop) in state.side_hypotheses() {
-            bitems.push(BItem::Hyp {
-                name: name.clone(),
-                prop: prop.clone(),
-            });
-            names.push(name.clone());
-        }
-        // Target: the balance-corrected triple when shifts were cleaned
-        // (its post carries the clean `+`/`-` field value).
-        let (t_name, t_binders, t_post) = if shifts.is_empty() {
-            (lifted_name.clone(), theorem_binders.clone(), post)
+            if !state.memset_blobs().is_empty() {
+                parts.push("memset blobs");
+            }
+            if !state.blob_side_hypotheses().is_empty() {
+                parts.push("blob side hypotheses");
+            }
+            if !state.syscall_cu_vars().is_empty() {
+                parts.push("syscall CU binders");
+            }
+            format!("a path with {}", parts.join(", "))
+        } else if matches!(fault_terminal, Some(FaultTerminal::Abort(k))
+            if matches!(k, AbortKind::Invoke | AbortKind::InvokeC))
+        {
+            "a path ending in a CPI invoke".to_string()
         } else {
-            let mut extra = String::new();
-            for (k, sh) in shifts.iter().enumerate() {
-                match sh {
-                    Shift::Sub(a, b) => {
-                        let al = fold_abstractions(a.to_lean(), abs_subst);
-                        let bl = fold_abstractions(b.to_lean(), abs_subst);
-                        extra.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
-                        extra.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
-                        bitems.push(BItem::Hyp {
-                            name: format!("h_funds{}", k),
-                            prop: format!("{} ≤ {}", bl, al),
-                        });
-                        bitems.push(BItem::Hyp {
-                            name: format!("h_src_lt{}", k),
-                            prop: format!("{} < 2 ^ 64", al),
-                        });
-                        names.push(format!("h_funds{}", k));
-                        names.push(format!("h_src_lt{}", k));
-                    }
-                    Shift::Add(a, b) => {
-                        let al = fold_abstractions(a.to_lean(), abs_subst);
-                        let bl = fold_abstractions(b.to_lean(), abs_subst);
-                        extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
-                        bitems.push(BItem::Hyp {
-                            name: format!("h_noovf{}", k),
-                            prop: format!("{} + {} < 2 ^ 64", al, bl),
-                        });
-                        names.push(format!("h_noovf{}", k));
-                    }
-                    Shift::AddConst(a, c) => {
-                        let al = fold_abstractions(a.to_lean(), abs_subst);
-                        extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
-                        bitems.push(BItem::Hyp {
-                            name: format!("h_noovf{}", k),
-                            prop: format!("{} + {} < 2 ^ 64", al, c),
-                        });
-                        names.push(format!("h_noovf{}", k));
-                    }
-                }
-            }
-            (
-                format!("{}_balance_correct", module_name),
-                format!("{}{}", theorem_binders, extra),
-                post_clean,
-            )
+            format!("a path not ending at `exit` (pc {exit_pc})")
         };
-        let tctx = RefinementCtx {
-            lift_module: module_name,
-            pre,
-            post: t_post,
-            abs_subst,
-            vars,
-            n_cu: n,
-            start_pc,
-            exit_pc,
-            idl,
-            sidecar_layouts,
-        };
-        let t_args = names.join(" ");
-        let target = RefineTarget {
-            name: &t_name,
-            args: &t_args,
-            binders: &t_binders,
-            bitems,
-        };
-        let emitted = if terminal_fault || terminal_oob {
-            let t_post_s = format!("{}{}", atoms_to_lean(t_post, abs_subst), cs_atom);
-            let (ctor, spec, oob_info) = match fault_terminal {
-                Some(FaultTerminal::Abort(k)) => (k.ctor(), k.faults_spec(), None),
-                Some(FaultTerminal::Oob(o)) => (
-                    o.ctor,
-                    o.faults_spec,
-                    Some((o.region_reg, o.region_size, o.region_writable)),
-                ),
-                _ => unreachable!("gated on a fault terminal"),
-            };
-            emit_transition_fault(
-                desc,
-                tctx,
-                target,
-                m_bound,
-                cr_lean,
-                rr,
-                FaultTail {
-                    ctor,
-                    spec,
-                    oob: oob_info,
-                    target_post: &t_post_s,
-                },
-            )
-        } else {
-            emit_transition_path(desc, tctx, target, m_bound, cr_lean, rr)
-        };
-        if let Some((text, info)) = emitted {
-            out.push_str(&text);
-            *out = out.replace(
-                "import SVM.SBPF.SatWitness",
-                "import SVM.SBPF.SatWitness\nimport SVM.Solana.Abstract.Transition",
-            );
-            transition = Some(info);
+        return Err(TransitionFailure::unsupported(
+            RefinementReason::UnsupportedShape,
+            format!("{why} is not wired in the transition emitter"),
+        ));
+    }
+    // Binder metadata + positional args in `_lifted_spec` signature order.
+    let mut bitems: Vec<BItem> = vars.iter().cloned().map(BItem::Val).collect();
+    let mut names: Vec<String> = vars.clone();
+    if use_block_iter && !abstractions.is_empty() {
+        for (p, _, _) in abstractions {
+            bitems.push(BItem::Val(p.clone()));
+            names.push(p.clone());
+        }
+        for (i, (param, h, _)) in abstractions.iter().enumerate() {
+            bitems.push(BItem::Hyp {
+                name: h.clone(),
+                prop: format!("{} = {}", param, folded_rhs[i]),
+            });
+            names.push(h.clone());
         }
     }
-    transition
+    for (v, k) in state.load_vars() {
+        bitems.push(BItem::Hyp {
+            name: format!("h{}_lt", v),
+            prop: format!("{} < 2 ^ {}", v, k),
+        });
+        names.push(format!("h{}_lt", v));
+    }
+    for (i, bh) in state.branches().iter().enumerate() {
+        bitems.push(BItem::Guard {
+            prop: bh.lean_hyp(),
+        });
+        names.push(bh.name(i));
+    }
+    for (name, prop) in state.side_hypotheses() {
+        bitems.push(BItem::Hyp {
+            name: name.clone(),
+            prop: prop.clone(),
+        });
+        names.push(name.clone());
+    }
+    // Target: the balance-corrected triple when shifts were cleaned
+    // (its post carries the clean `+`/`-` field value).
+    let (t_name, t_binders, t_post) = if shifts.is_empty() {
+        (lifted_name.clone(), theorem_binders.clone(), post)
+    } else {
+        let mut extra = String::new();
+        for (k, sh) in shifts.iter().enumerate() {
+            match sh {
+                Shift::Sub(a, b) => {
+                    let al = fold_abstractions(a.to_lean(), abs_subst);
+                    let bl = fold_abstractions(b.to_lean(), abs_subst);
+                    extra.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
+                    extra.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
+                    bitems.push(BItem::Hyp {
+                        name: format!("h_funds{}", k),
+                        prop: format!("{} ≤ {}", bl, al),
+                    });
+                    bitems.push(BItem::Hyp {
+                        name: format!("h_src_lt{}", k),
+                        prop: format!("{} < 2 ^ 64", al),
+                    });
+                    names.push(format!("h_funds{}", k));
+                    names.push(format!("h_src_lt{}", k));
+                }
+                Shift::Add(a, b) => {
+                    let al = fold_abstractions(a.to_lean(), abs_subst);
+                    let bl = fold_abstractions(b.to_lean(), abs_subst);
+                    extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
+                    bitems.push(BItem::Hyp {
+                        name: format!("h_noovf{}", k),
+                        prop: format!("{} + {} < 2 ^ 64", al, bl),
+                    });
+                    names.push(format!("h_noovf{}", k));
+                }
+                Shift::AddConst(a, c) => {
+                    let al = fold_abstractions(a.to_lean(), abs_subst);
+                    extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
+                    bitems.push(BItem::Hyp {
+                        name: format!("h_noovf{}", k),
+                        prop: format!("{} + {} < 2 ^ 64", al, c),
+                    });
+                    names.push(format!("h_noovf{}", k));
+                }
+            }
+        }
+        (
+            format!("{}_balance_correct", module_name),
+            format!("{}{}", theorem_binders, extra),
+            post_clean,
+        )
+    };
+    let tctx = RefinementCtx {
+        lift_module: module_name,
+        pre,
+        post: t_post,
+        abs_subst,
+        vars,
+        n_cu: n,
+        start_pc,
+        exit_pc,
+        idl,
+        sidecar_layouts,
+    };
+    let t_args = names.join(" ");
+    let target = RefineTarget {
+        name: &t_name,
+        args: &t_args,
+        binders: &t_binders,
+        bitems,
+    };
+    let emitted = if terminal_fault || terminal_oob {
+        let t_post_s = format!("{}{}", atoms_to_lean(t_post, abs_subst), cs_atom);
+        let (ctor, spec, oob_info) = match fault_terminal {
+            Some(FaultTerminal::Abort(k)) => (k.ctor(), k.faults_spec(), None),
+            Some(FaultTerminal::Oob(o)) => (
+                o.ctor,
+                o.faults_spec,
+                Some((o.region_reg, o.region_size, o.region_writable)),
+            ),
+            _ => unreachable!("gated on a fault terminal"),
+        };
+        emit_transition_fault(
+            desc,
+            tctx,
+            target,
+            m_bound,
+            cr_lean,
+            rr,
+            FaultTail {
+                ctor,
+                spec,
+                oob: oob_info,
+                target_post: &t_post_s,
+            },
+        )
+    } else {
+        emit_transition_path(desc, tctx, target, m_bound, cr_lean, rr)
+    };
+    let (text, info) = emitted?;
+    out.push_str(&text);
+    *out = out.replace(
+        "import SVM.SBPF.SatWitness",
+        "import SVM.SBPF.SatWitness\nimport SVM.Solana.Abstract.Transition",
+    );
+    Ok(info)
 }

@@ -171,13 +171,13 @@ pub(super) fn run_transition(
                 continue;
             }
         };
-        let Some(info) = r.transition else {
-            outcomes.push(PathOutcome::no_corollary(
-                label,
-                &module,
-                &r.refinement_outcome,
-            ));
-            continue;
+        let info = match r.transition {
+            Some(Ok(info)) => info,
+            Some(Err(f)) => {
+                outcomes.push(PathOutcome::from_failure(label, &module, f));
+                continue;
+            }
+            None => unreachable!("run_transition always passes a descriptor"),
         };
         if let PathKind::Return {
             exit_code: None, ..
@@ -201,17 +201,12 @@ pub(super) fn run_transition(
         };
     }
     match emit_transition_bundle(&stem_pascal, &stem_snake, &modules, &infos) {
-        Some(bundle) => TransitionRun {
+        Ok(bundle) => TransitionRun {
             outcome: TransitionOutcome::emitted(&bundle.0, outcomes),
             artifacts: Some((path_files, bundle)),
         },
-        None => TransitionRun {
-            outcome: TransitionOutcome::failed(
-                OutcomeStatus::Unsupported,
-                TransitionOnlyReason::BundleFailed.into(),
-                "transition bundle emission failed (binder conflict; see stderr)",
-                outcomes,
-            ),
+        Err(f) => TransitionRun {
+            outcome: TransitionOutcome::failed(f.status, f.reason, f.message, outcomes),
             artifacts: None,
         },
     }
