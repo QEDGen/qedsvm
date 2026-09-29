@@ -10,7 +10,7 @@
 
 use serde::Serialize;
 
-use crate::refinement::{RefinementOutcome, RefinementReason};
+use crate::refinement::RefinementReason;
 
 /// Bumped on any breaking change to the JSON shape.
 pub const TRANSITION_OUTCOME_SCHEMA: u32 = 1;
@@ -88,12 +88,18 @@ pub enum TransitionOnlyReason {
     TraceUnreadable,
     /// The lift itself failed before any transition codegen.
     LiftFailed,
-    /// The lift succeeded but the transition emitter fell closed.
-    NoTransitionCorollary,
+    /// A framed tracked-field name collides with a binder of the lift.
+    BinderConflict,
     /// A return path whose exit code is not a constant.
     SymbolicExitCode,
     /// Every path emitted, but the bundle theorem did not.
     BundleFailed,
+}
+
+impl From<RefinementReason> for TransitionReason {
+    fn from(r: RefinementReason) -> Self {
+        TransitionReason::Refinement(r)
+    }
 }
 
 impl From<TransitionOnlyReason> for TransitionReason {
@@ -129,6 +135,10 @@ impl PathOutcome {
         }
     }
 
+    pub(crate) fn from_failure(label: &str, module: &str, f: TransitionFailure) -> Self {
+        Self::failed(label, module, f.status, f.reason, f.message)
+    }
+
     pub(crate) fn failed(
         label: &str,
         module: &str,
@@ -145,35 +155,45 @@ impl PathOutcome {
             message: Some(message.into()),
         }
     }
+}
 
-    /// A lift that produced no transition corollary. When the descriptor
-    /// refinement on the same lift was rejected or unsupported, report its
-    /// reason (the likelier cause); otherwise the emitter fell closed.
-    pub(crate) fn no_corollary(label: &str, module: &str, refinement: &RefinementOutcome) -> Self {
-        let base = "path produced no transition corollary (fail-closed; see stderr)";
-        match refinement {
-            RefinementOutcome::Rejected { reason, message } => Self::failed(
-                label,
-                module,
-                OutcomeStatus::Rejected,
-                TransitionReason::Refinement(*reason),
-                format!("{base}; refinement rejected: {message}"),
-            ),
-            RefinementOutcome::Unsupported { reason, message } => Self::failed(
-                label,
-                module,
-                OutcomeStatus::Unsupported,
-                TransitionReason::Refinement(*reason),
-                format!("{base}; refinement unsupported: {message}"),
-            ),
-            _ => Self::failed(
-                label,
-                module,
-                OutcomeStatus::Unsupported,
-                TransitionOnlyReason::NoTransitionCorollary.into(),
-                base,
-            ),
+/// Why the transition emitter fell closed on one path (or on the bundle).
+/// `rejected` means the binary disagrees with the descriptor; `unsupported`
+/// means the shape is outside what the emitter wires.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TransitionFailure {
+    pub(crate) status: OutcomeStatus,
+    pub(crate) reason: TransitionReason,
+    pub(crate) message: String,
+}
+
+impl TransitionFailure {
+    pub(crate) fn rejected(
+        reason: impl Into<TransitionReason>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: OutcomeStatus::Rejected,
+            reason: reason.into(),
+            message: message.into(),
         }
+    }
+
+    pub(crate) fn unsupported(
+        reason: impl Into<TransitionReason>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            status: OutcomeStatus::Unsupported,
+            reason: reason.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for TransitionFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
     }
 }
 

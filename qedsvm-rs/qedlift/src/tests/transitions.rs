@@ -243,3 +243,84 @@ fn transition_outcome_reports_a_failed_path_without_stopping() {
     assert!(paths[1]["message"].as_str().is_some_and(|m| !m.is_empty()));
     assert_eq!(paths[2]["status"], "emitted");
 }
+
+/// `guarded_counter` with its descriptor JSON edited by `edit`.
+fn guarded_counter_outcome_with(edit: impl FnOnce(&mut serde_json::Value)) -> serde_json::Value {
+    let mut d: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("../tests/fixtures/guarded_counter.descriptor.json").unwrap(),
+    )
+    .unwrap();
+    edit(&mut d);
+    let path = std::env::temp_dir().join(format!(
+        "qedlift-typed-{}-{}.json",
+        std::process::id(),
+        d.to_string().len()
+    ));
+    std::fs::write(&path, d.to_string()).unwrap();
+    let got = transition_outcome_json(
+        std::path::Path::new("../tests/fixtures/guarded_counter.so"),
+        path.to_str().unwrap(),
+    );
+    let _ = std::fs::remove_file(&path);
+    got
+}
+
+/// The `(status, reason, message)` of each path, in label order.
+fn path_verdicts(outcome: &serde_json::Value) -> Vec<(String, String, String)> {
+    let field = |p: &serde_json::Value, k: &str| p[k].as_str().unwrap_or("").to_string();
+    outcome["paths"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| (field(p, "status"), field(p, "reason"), field(p, "message")))
+        .collect()
+}
+
+/// The transition emitter reports exactly why it fell closed on each path:
+/// a descriptor the binary contradicts is `rejected`, an unwired shape or a
+/// missing layout is `unsupported`, each with its own reason.
+#[test]
+fn transition_outcome_reports_exact_failure_reasons() {
+    let v = |s: &str, r: &str, m: &str| (s.to_string(), r.to_string(), m.to_string());
+
+    // Wrong constant: the success path's write is not `+7`, so `counter`
+    // changes outside the descriptor op. The abort path is unaffected.
+    let got = guarded_counter_outcome_with(|d| d["op"] = serde_json::json!({"add_const": 7}));
+    assert_eq!(got["status"], "rejected");
+    assert_eq!(
+        path_verdicts(&got),
+        [
+            v("emitted", "", ""),
+            v(
+                "rejected",
+                "mutation_mismatch",
+                "tracked field \"counter\" changes outside the descriptor op"
+            ),
+        ]
+    );
+
+    // An opaque blob field in the tracked layout is not wired.
+    let got = guarded_counter_outcome_with(|d| {
+        d["layout"].as_array_mut().unwrap().push(
+            serde_json::json!({"offset": 16, "kind": "bytes", "width_bytes": 8, "name": "blob"}),
+        )
+    });
+    assert_eq!(got["status"], "unsupported");
+    let blob = v(
+        "unsupported",
+        "unsupported_shape",
+        "blob field \"blob\" not wired in the transition emitter",
+    );
+    assert_eq!(path_verdicts(&got), [blob.clone(), blob]);
+
+    // No inline layout and no IDL: nothing to track.
+    let got = guarded_counter_outcome_with(|d| {
+        d.as_object_mut().unwrap().remove("layout");
+    });
+    let missing = v(
+        "unsupported",
+        "missing_layout",
+        "no account layout for \"GuardedCounter\"",
+    );
+    assert_eq!(path_verdicts(&got), [missing.clone(), missing]);
+}

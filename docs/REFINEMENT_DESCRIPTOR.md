@@ -234,16 +234,21 @@ generated Lean:
   `access_violation`). A spec rejection (`requires C else E`) is usually a
   `return` with a non-zero exit code and no tracked write, as on
   `guarded_counter`'s `abort` path above, not a `fault`.
-- A path that is not emitted carries `status` (`rejected` or `unsupported`),
-  `reason` and `message` instead of a kind. `reason` is a refinement reason
-  (see above) when the path's descriptor refinement explains the failure,
-  else one of `trace_unreadable`, `lift_failed`, `no_transition_corollary`
-  or `symbolic_exit_code` (a return whose exit code is not a constant).
+- A path that is not emitted carries `status`, `reason` and `message`
+  instead of a kind. The reason is the exact point where the transition
+  emitter fell closed. `rejected` means the binary contradicts the
+  descriptor (`mutation_mismatch`: a tracked field changes outside the
+  descriptor op). `unsupported` means the shape is not wired:
+  `missing_layout`, `unsupported_shape` (the message names the shape, such
+  as a blob field or a path ending in a CPI invoke), `binder_conflict` (a
+  framed field name collides with a lift binder), `trace_unreadable`,
+  `lift_failed`, or `symbolic_exit_code` (a return whose exit code is not a
+  constant).
 - Every path is attempted. If any is not emitted, top-level `status` is
   `rejected` (some path was rejected) or `unsupported`, no bundle is
   written, and the command exits unsuccessfully. Run-level failures carry a
   top-level `reason`: `too_few_traces` (fewer than two traces) or
-  `bundle_failed`.
+  `bundle_failed` (the message names the conflicting hypothesis).
 - `schema` is bumped on any breaking change to this shape.
 
 As with `refinement outcome`, `emitted` means generation succeeded; Lean must

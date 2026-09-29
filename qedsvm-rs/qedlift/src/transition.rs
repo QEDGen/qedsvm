@@ -10,8 +10,9 @@ use qed_artifacts::RefinementDescriptor;
 use crate::core::{Atom, Expr, Width};
 use crate::emit::{atoms_to_lean, fold_abstractions};
 use crate::input::{resolve_layout, DescriptorOp};
+use crate::refinement::RefinementReason;
 use crate::refinement::{cell_val, cell_val_dword, RefinementCtx};
-use crate::transition_outcome::{PathKind, VmErrorKind};
+use crate::transition_outcome::{PathKind, TransitionFailure, TransitionOnlyReason, VmErrorKind};
 
 /// Structured binder metadata for one path corollary's signature, in
 /// signature order. Drives the bundle's canonical renaming.
@@ -58,7 +59,7 @@ pub(super) fn emit_transition_path(
     m_bound: &str,
     cr: &str,
     rr: &str,
-) -> Option<(String, TransitionPathInfo)> {
+) -> Result<(String, TransitionPathInfo), TransitionFailure> {
     emit_transition_path_impl(desc, ctx, target, m_bound, cr, rr)
 }
 
@@ -70,7 +71,7 @@ pub(super) fn emit_transition_fault(
     cr: &str,
     rr: &str,
     tail: FaultTail<'_>,
-) -> Option<(String, TransitionPathInfo)> {
+) -> Result<(String, TransitionPathInfo), TransitionFailure> {
     emit_transition_fault_impl(desc, ctx, target, m_bound, cr, rr, tail)
 }
 
@@ -79,7 +80,7 @@ pub(super) fn emit_transition_bundle(
     stem_snake: &str,
     path_modules: &[String],
     paths: &[TransitionPathInfo],
-) -> Option<(String, String)> {
+) -> Result<(String, String), TransitionFailure> {
     emit_transition_bundle_impl(stem_pascal, stem_snake, path_modules, paths)
 }
 fn replace_ident(hay: &str, from: &str, to: &str) -> String {
@@ -111,7 +112,7 @@ pub(super) fn emit_transition_bundle_impl(
     stem_snake: &str,
     path_modules: &[String],
     paths: &[TransitionPathInfo],
-) -> Option<(String, String)> {
+) -> Result<(String, String), TransitionFailure> {
     // The param-cell naming discovered by the mutating path applies to all.
     let param_rename: Option<(String, String)> = paths.iter().find_map(|p| {
         p.param_cell
@@ -158,12 +159,10 @@ pub(super) fn emit_transition_bundle_impl(
                     let cp = rename_all(p, prop);
                     if let Some((_, existing)) = hyps.iter().find(|(n2, _)| *n2 == cn) {
                         if *existing != cp {
-                            eprintln!(
-                                "transition bundle: hypothesis {:?} \
-                                       conflicts across paths; skipping bundle",
-                                cn
-                            );
-                            return None;
+                            return Err(TransitionFailure::unsupported(
+                                TransitionOnlyReason::BundleFailed,
+                                format!("bundle hypothesis {:?} conflicts across paths", cn),
+                            ));
                         }
                     } else {
                         hyps.push((cn, cp));
@@ -276,7 +275,7 @@ end Examples.{module}
         conjuncts = conjuncts.join(" ∧\n    "),
         proofs = proofs.join(",\n   ")
     );
-    Some((module, lean))
+    Ok((module, lean))
 }
 // ════════════════════════════════════════════════════════════════
 // Whole-transition codegen (#40 gap 1) — per-path `AsmRefinesTransitionPath`
@@ -300,7 +299,7 @@ pub(super) fn emit_transition_path_impl(
     m_bound: &str,
     cr: &str,
     rr: &str,
-) -> Option<(String, TransitionPathInfo)> {
+) -> Result<(String, TransitionPathInfo), TransitionFailure> {
     let RefinementCtx {
         lift_module: module_name,
         pre,
@@ -322,19 +321,33 @@ pub(super) fn emit_transition_path_impl(
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
     let layout = match desc.explicit_layout() {
         Some(l) => l,
-        None => resolve_layout(sidecar_layouts, idl, &desc.account)?,
+        None => resolve_layout(sidecar_layouts, idl, &desc.account).ok_or_else(|| {
+            TransitionFailure::unsupported(
+                RefinementReason::MissingLayout,
+                format!("no account layout for {:?}", desc.account),
+            )
+        })?,
     };
     let mutated_off = layout
         .fields
         .iter()
-        .find(|f| f.name == desc.mutated)?
+        .find(|f| f.name == desc.mutated)
+        .ok_or_else(|| {
+            TransitionFailure::rejected(
+                RefinementReason::MissingField,
+                format!("layout has no field {:?}", desc.mutated),
+            )
+        })?
         .offset as i64;
 
     // Exit code: the post's r0 value (the shared `.exit` returns it).
-    let r0 = post_atoms.iter().find_map(|a| match a {
-        Atom::Reg(0, v) => Some(v),
-        _ => None,
-    })?;
+    let r0 = post_atoms
+        .iter()
+        .find_map(|a| match a {
+            Atom::Reg(0, v) => Some(v),
+            _ => None,
+        })
+        .ok_or_else(|| unwired("no r0 in the post at `.exit`"))?;
     let code = fold(r0);
 
     // ── Mutation detection (mirrors `emit_descriptor_refinement`) ──
@@ -426,10 +439,13 @@ pub(super) fn emit_transition_path_impl(
     let (base_raw, base_expr, base_off) = match &mutation {
         Some((b, off, _, _, _)) => (b.to_lean(), fold(b), off - mutated_off),
         None => {
-            let r1 = pre.iter().find_map(|a| match a {
-                Atom::Reg(1, v) => Some(v.clone()),
-                _ => None,
-            })?;
+            let r1 = pre
+                .iter()
+                .find_map(|a| match a {
+                    Atom::Reg(1, v) => Some(v.clone()),
+                    _ => None,
+                })
+                .ok_or_else(|| unwired("no r1 (account base) in the pre"))?;
             (r1.to_lean(), fold(&r1), 0)
         }
     };
@@ -485,13 +501,13 @@ pub(super) fn emit_transition_path_impl(
                     let pv = fold(v);
                     if let Some(pov) = post_dword_val(&base_raw, abs) {
                         if pov != pv {
-                            eprintln!(
-                                "transition: tracked field {:?} changes \
-                                       outside the descriptor op; skipping path \
-                                       corollary",
-                                f.name
-                            );
-                            return None;
+                            return Err(TransitionFailure::rejected(
+                                RefinementReason::MutationMismatch,
+                                format!(
+                                    "tracked field {:?} changes outside the descriptor op",
+                                    f.name
+                                ),
+                            ));
                         }
                     }
                     pre_fields.push(format!("({}, .u64 {})", off, pv));
@@ -500,12 +516,7 @@ pub(super) fn emit_transition_path_impl(
                     renames.push((pv, f.name.clone()));
                 } else {
                     if taken(&f.name, &bitems) {
-                        eprintln!(
-                            "transition: framed-field name {:?} collides \
-                                   with a lift binder; skipping",
-                            f.name
-                        );
-                        return None;
+                        return Err(binder_conflict(&f.name));
                     }
                     binders_extra.push_str(&format!("({} : Nat)\n    ", f.name));
                     bitems.push(BItem::Val(f.name.clone()));
@@ -526,7 +537,7 @@ pub(super) fn emit_transition_path_impl(
                     renames.push((pv, f.name.clone()));
                 } else {
                     if taken(&f.name, &bitems) {
-                        return None;
+                        return Err(binder_conflict(&f.name));
                     }
                     binders_extra.push_str(&format!("({} : Nat)\n    ", f.name));
                     bitems.push(BItem::Val(f.name.clone()));
@@ -542,17 +553,12 @@ pub(super) fn emit_transition_path_impl(
                 // Framed only (v1): a lift-owned pubkey inside a transition
                 // layout falls closed.
                 if (0..4).any(|i| cell_val(pre, &base_raw, abs + 8 * i, false).is_some()) {
-                    eprintln!(
-                        "transition: owned pubkey field {:?} not wired; \
-                               skipping path corollary",
-                        f.name
-                    );
-                    return None;
+                    return Err(unwired(format!("owned pubkey field {:?}", f.name)));
                 }
                 let limbs: Vec<String> = (0..4).map(|i| format!("{}{}", f.name, i)).collect();
                 for limb in &limbs {
                     if taken(limb, &bitems) {
-                        return None;
+                        return Err(binder_conflict(limb));
                     }
                     binders_extra.push_str(&format!("({} : Nat)\n    ", limb));
                     bitems.push(BItem::Val(limb.clone()));
@@ -570,12 +576,7 @@ pub(super) fn emit_transition_path_impl(
                 }
             }
             FieldKind::Bytes(_) => {
-                eprintln!(
-                    "transition: blob field {:?} not wired in the \
-                           transition walker; skipping path corollary",
-                    f.name
-                );
-                return None;
+                return Err(unwired(format!("blob field {:?}", f.name)));
             }
         }
     }
@@ -626,8 +627,7 @@ pub(super) fn emit_transition_path_impl(
         .cloned()
         .collect();
     if setup_post.is_empty() {
-        eprintln!("transition: empty setup post not wired; skipping path corollary");
-        return None;
+        return Err(unwired("empty setup post"));
     }
     let setup_pre_s = atoms_to_lean(&setup_pre, abs_subst);
     let setup_post_s = atoms_to_lean(&setup_post, abs_subst);
@@ -734,7 +734,7 @@ theorem {corollary}
         _ => None,
     };
 
-    Some((
+    Ok((
         text,
         TransitionPathInfo {
             namespace: format!("Examples.Lifted.{}", module_name),
@@ -766,7 +766,7 @@ pub(super) fn emit_transition_fault_impl(
     cr: &str,
     rr: &str,
     tail: FaultTail<'_>,
-) -> Option<(String, TransitionPathInfo)> {
+) -> Result<(String, TransitionPathInfo), TransitionFailure> {
     let RefinementCtx {
         lift_module: module_name,
         pre,
@@ -794,15 +794,23 @@ pub(super) fn emit_transition_fault_impl(
     let fold = |e: &Expr| fold_abstractions(e.to_lean(), abs_subst);
     let layout = match desc.explicit_layout() {
         Some(l) => l,
-        None => resolve_layout(sidecar_layouts, idl, &desc.account)?,
+        None => resolve_layout(sidecar_layouts, idl, &desc.account).ok_or_else(|| {
+            TransitionFailure::unsupported(
+                RefinementReason::MissingLayout,
+                format!("no account layout for {:?}", desc.account),
+            )
+        })?,
     };
 
     // A fault path owns no mutated cell: anchor the account at r1's entry
     // value (the same v1 convention as preservation exit paths).
-    let r1 = pre.iter().find_map(|a| match a {
-        Atom::Reg(1, v) => Some(v.clone()),
-        _ => None,
-    })?;
+    let r1 = pre
+        .iter()
+        .find_map(|a| match a {
+            Atom::Reg(1, v) => Some(v.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| unwired("no r1 (account base) in the pre"))?;
     let (base_raw, base_expr, base_off) = (r1.to_lean(), fold(&r1), 0i64);
     let base_arg = base_expr.clone();
 
@@ -833,7 +841,7 @@ pub(super) fn emit_transition_fault_impl(
                     renames.push((pv, f.name.clone()));
                 } else {
                     if taken(&f.name, &bitems) {
-                        return None;
+                        return Err(binder_conflict(&f.name));
                     }
                     binders_extra.push_str(&format!("({} : Nat)\n    ", f.name));
                     bitems.push(BItem::Val(f.name.clone()));
@@ -852,7 +860,7 @@ pub(super) fn emit_transition_fault_impl(
                     renames.push((pv, f.name.clone()));
                 } else {
                     if taken(&f.name, &bitems) {
-                        return None;
+                        return Err(binder_conflict(&f.name));
                     }
                     binders_extra.push_str(&format!("({} : Nat)\n    ", f.name));
                     bitems.push(BItem::Val(f.name.clone()));
@@ -865,17 +873,12 @@ pub(super) fn emit_transition_fault_impl(
             }
             FieldKind::Pubkey => {
                 if (0..4).any(|i| cell_val(pre, &base_raw, abs + 8 * i, false).is_some()) {
-                    eprintln!(
-                        "transition: owned pubkey field {:?} not wired; \
-                               skipping fault-path corollary",
-                        f.name
-                    );
-                    return None;
+                    return Err(unwired(format!("owned pubkey field {:?}", f.name)));
                 }
                 let limbs: Vec<String> = (0..4).map(|i| format!("{}{}", f.name, i)).collect();
                 for limb in &limbs {
                     if taken(limb, &bitems) {
-                        return None;
+                        return Err(binder_conflict(limb));
                     }
                     binders_extra.push_str(&format!("({} : Nat)\n    ", limb));
                     bitems.push(BItem::Val(limb.clone()));
@@ -892,12 +895,7 @@ pub(super) fn emit_transition_fault_impl(
                 }
             }
             FieldKind::Bytes(_) => {
-                eprintln!(
-                    "transition: blob field {:?} not wired in the \
-                           transition walker; skipping fault-path corollary",
-                    f.name
-                );
-                return None;
+                return Err(unwired(format!("blob field {:?}", f.name)));
             }
         }
     }
@@ -941,10 +939,15 @@ pub(super) fn emit_transition_fault_impl(
     let oob_parts: Option<(String, String, &'static str, i64)> = match oob {
         None => None,
         Some((reg, size, writable)) => {
-            let r1v = post_atoms.iter().find_map(|a| match a {
-                Atom::Reg(r, v) if *r == reg => Some(fold2(v)),
-                _ => None,
-            })?;
+            let r1v = post_atoms
+                .iter()
+                .find_map(|a| match a {
+                    Atom::Reg(r, v) if *r == reg => Some(fold2(v)),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    unwired(format!("OOB region register r{reg} missing from the post"))
+                })?;
             let rest: Vec<Atom> = post_atoms
                 .iter()
                 .filter(|a| !matches!(a, Atom::Reg(r, _) if *r == reg))
@@ -1092,7 +1095,7 @@ theorem {corollary}
         prefix_have = prefix_have
     );
 
-    Some((
+    Ok((
         text,
         TransitionPathInfo {
             namespace: format!("Examples.Lifted.{}", module_name),
@@ -1117,4 +1120,20 @@ fn const_u64(e: &Expr) -> Option<u64> {
         Expr::Mod(inner, m) if *m != 0 => Some(const_u64(inner)? % m),
         _ => None,
     }
+}
+
+/// A shape the transition emitter does not wire yet.
+fn unwired(what: impl Into<String>) -> TransitionFailure {
+    TransitionFailure::unsupported(
+        RefinementReason::UnsupportedShape,
+        format!("{} not wired in the transition emitter", what.into()),
+    )
+}
+
+/// A framed tracked-field name that collides with a lift binder.
+fn binder_conflict(name: &str) -> TransitionFailure {
+    TransitionFailure::unsupported(
+        TransitionOnlyReason::BinderConflict,
+        format!("framed field name {name:?} collides with a lift binder"),
+    )
 }
