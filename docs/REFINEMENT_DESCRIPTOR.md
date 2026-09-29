@@ -215,3 +215,36 @@ fixtures: `guarded_counter.descriptor.json` (+
 `guarded_abort.descriptor.json` (+ `guarded_abort_{panic,success}.pcs`), and
 the OOB-path `guarded_oob.descriptor.json` (+ `guarded_oob_{oob,success}.pcs`),
 pinned by `guarded_{counter,abort,oob}_transition_is_mechanically_emitted`.
+
+### Transition outcome (#70)
+
+Transition mode writes one `transition outcome: {JSON}` line to stderr, also
+when the run fails, so a caller gets a per-path verdict without parsing the
+generated Lean:
+
+```json
+{"schema":1,"status":"emitted","bundle":"GuardedCounterTransition","paths":[
+  {"label":"abort","module":"GuardedCounterAbort","status":"emitted","kind":"return","exit_code":1,"tracked_written":false},
+  {"label":"success","module":"GuardedCounterSuccess","status":"emitted","kind":"return","exit_code":0,"tracked_written":true}]}
+```
+
+- `label` is the `<label>` of the `<stem>_<label>.pcs` trace.
+- `kind` is `return` (with `exit_code` and whether the descriptor's tracked
+  field was written) or `fault` (with `vm_error`: `abort` or
+  `access_violation`). A spec rejection (`requires C else E`) is usually a
+  `return` with a non-zero exit code and no tracked write, as on
+  `guarded_counter`'s `abort` path above, not a `fault`.
+- A path that is not emitted carries `status` (`rejected` or `unsupported`),
+  `reason` and `message` instead of a kind. `reason` is a refinement reason
+  (see above) when the path's descriptor refinement explains the failure,
+  else one of `trace_unreadable`, `lift_failed`, `no_transition_corollary`
+  or `symbolic_exit_code` (a return whose exit code is not a constant).
+- Every path is attempted. If any is not emitted, top-level `status` is
+  `rejected` (some path was rejected) or `unsupported`, no bundle is
+  written, and the command exits unsuccessfully. Run-level failures carry a
+  top-level `reason`: `too_few_traces` (fewer than two traces) or
+  `bundle_failed`.
+- `schema` is bumped on any breaking change to this shape.
+
+As with `refinement outcome`, `emitted` means generation succeeded; Lean must
+still check the modules.

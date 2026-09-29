@@ -12,6 +12,9 @@ use crate::input::{
 };
 use crate::lift::{lift_one_with_layouts, LiftOptions, LiftOutput, LiftRequest};
 use crate::transition::{emit_transition_bundle, TransitionPathInfo};
+use crate::transition_outcome::{
+    OutcomeStatus, PathKind, PathOutcome, TransitionOnlyReason, TransitionOutcome,
+};
 use qed_analysis::profile::{fold_trace, folded_lines, symbolicate_trace};
 use qed_analysis::symbolicate::SymbolIndex;
 use qed_artifacts::RefinementDescriptor;
@@ -52,27 +55,73 @@ fn discover_path_traces(so: &Path) -> Vec<(String, std::path::PathBuf)> {
     out
 }
 
+/// The emitted Lean of a `--transition` run: per-path `(module, lean)`
+/// files and the `(module, lean)` bundle.
+pub(super) type TransitionArtifacts = (Vec<(String, String)>, (String, String));
+
+/// A `--transition` run: the structured outcome (#70), always, plus the
+/// artifacts when every path and the bundle emitted.
+pub(super) struct TransitionRun {
+    pub(super) outcome: TransitionOutcome,
+    pub(super) artifacts: Option<TransitionArtifacts>,
+}
+
+impl TransitionRun {
+    /// The artifacts, or the outcome's failure summary.
+    pub(super) fn into_artifacts(self) -> Result<TransitionArtifacts, String> {
+        let outcome = self.outcome;
+        self.artifacts.ok_or_else(|| {
+            let status = serde_json::to_value(outcome.status)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            let mut msg = format!("--transition: {status}");
+            if let Some(m) = &outcome.message {
+                msg.push_str(&format!(": {m}"));
+            }
+            for p in outcome
+                .paths
+                .iter()
+                .filter(|p| p.status != OutcomeStatus::Emitted)
+            {
+                msg.push_str(&format!(
+                    "\n  path {:?}: {}",
+                    p.label,
+                    p.message.as_deref().unwrap_or("")
+                ));
+            }
+            msg
+        })
+    }
+}
+
 /// Whole-transition emission (#40): lift every discovered path of `so`
 /// (descriptor-driven, trace-guided; each lift carries its
-/// `*_transition_path` corollary) and emit the bundle theorem. Returns the
-/// per-path `(module, lean)` files and the `(module, lean)` bundle.
-#[allow(clippy::type_complexity)]
+/// `*_transition_path` corollary) and emit the bundle theorem. Every path is
+/// attempted, so the outcome reports each one; artifacts are returned only
+/// when all paths and the bundle emitted.
 pub(super) fn run_transition(
     so: &Path,
     ctx: &BinaryCtx,
     analysis: &Analysis<'_>,
     descriptor: &RefinementDescriptor,
     idl: Option<&serde_json::Value>,
-) -> Result<(Vec<(String, String)>, (String, String)), Box<dyn std::error::Error>> {
+) -> TransitionRun {
     let traces = discover_path_traces(so);
     if traces.len() < 2 {
-        return Err(format!(
-            "--transition: need ≥ 2 discovered `<stem>_<path>.pcs` traces \
-             beside {}, found {}",
-            so.display(),
-            traces.len()
-        )
-        .into());
+        return TransitionRun {
+            outcome: TransitionOutcome::failed(
+                OutcomeStatus::Unsupported,
+                TransitionOnlyReason::TooFewTraces.into(),
+                format!(
+                    "need >= 2 discovered `<stem>_<path>.pcs` traces beside {}, found {}",
+                    so.display(),
+                    traces.len()
+                ),
+                Vec::new(),
+            ),
+            artifacts: None,
+        };
     }
     let stem_snake = so
         .file_stem()
@@ -82,10 +131,29 @@ pub(super) fn run_transition(
     let mut path_files: Vec<(String, String)> = Vec::new();
     let mut modules: Vec<String> = Vec::new();
     let mut infos: Vec<TransitionPathInfo> = Vec::new();
+    let mut outcomes: Vec<PathOutcome> = Vec::new();
     for (label, pcs) in &traces {
         let module = format!("{}{}", stem_pascal, pascal_case(label));
-        let trace = load_trace(pcs)?;
-        let r = lift_one_with_layouts(
+        let unsupported = |reason: TransitionOnlyReason, message: String| {
+            PathOutcome::failed(
+                label,
+                &module,
+                OutcomeStatus::Unsupported,
+                reason.into(),
+                message,
+            )
+        };
+        let trace = match load_trace(pcs) {
+            Ok(t) => t,
+            Err(e) => {
+                outcomes.push(unsupported(
+                    TransitionOnlyReason::TraceUnreadable,
+                    e.to_string(),
+                ));
+                continue;
+            }
+        };
+        let r = match lift_one_with_layouts(
             so,
             ctx,
             analysis,
@@ -96,21 +164,57 @@ pub(super) fn run_transition(
                 descriptor: Some(descriptor),
                 ..LiftRequest::default()
             },
-        )?;
-        let info = r.transition.ok_or_else(|| {
-            format!(
-                "--transition: path {:?} produced no transition corollary \
-             (see stderr for the fail-closed reason)",
-                label
-            )
-        })?;
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                outcomes.push(unsupported(TransitionOnlyReason::LiftFailed, e.to_string()));
+                continue;
+            }
+        };
+        let Some(info) = r.transition else {
+            outcomes.push(PathOutcome::no_corollary(
+                label,
+                &module,
+                &r.refinement_outcome,
+            ));
+            continue;
+        };
+        if let PathKind::Return {
+            exit_code: None, ..
+        } = info.kind
+        {
+            outcomes.push(unsupported(
+                TransitionOnlyReason::SymbolicExitCode,
+                "return path's exit code (r0 at `.exit`) is not a constant".to_string(),
+            ));
+            continue;
+        }
+        outcomes.push(PathOutcome::emitted(label, &module, info.kind.clone()));
         path_files.push((module.clone(), r.lean));
         modules.push(module);
         infos.push(info);
     }
-    let bundle = emit_transition_bundle(&stem_pascal, &stem_snake, &modules, &infos)
-        .ok_or("transition bundle emission failed (binder conflict — see stderr)")?;
-    Ok((path_files, bundle))
+    if outcomes.iter().any(|p| p.status != OutcomeStatus::Emitted) {
+        return TransitionRun {
+            outcome: TransitionOutcome::from_failed_paths(outcomes),
+            artifacts: None,
+        };
+    }
+    match emit_transition_bundle(&stem_pascal, &stem_snake, &modules, &infos) {
+        Some(bundle) => TransitionRun {
+            outcome: TransitionOutcome::emitted(&bundle.0, outcomes),
+            artifacts: Some((path_files, bundle)),
+        },
+        None => TransitionRun {
+            outcome: TransitionOutcome::failed(
+                OutcomeStatus::Unsupported,
+                TransitionOnlyReason::BundleFailed.into(),
+                "transition bundle emission failed (binder conflict; see stderr)",
+                outcomes,
+            ),
+            artifacts: None,
+        },
+    }
 }
 
 /// Profiling mode (`--profile`): symbolicate a `.pcs` trace against the
@@ -340,7 +444,12 @@ pub(super) fn run_transition_mode(
         .as_ref()
         .ok_or("--transition needs --output-dir")?;
     std::fs::create_dir_all(out_dir)?;
-    let (paths, (bmod, blean)) = run_transition(&args.so, ctx, analysis, desc, idl_value)?;
+    let run = run_transition(&args.so, ctx, analysis, desc, idl_value);
+    eprintln!(
+        "transition outcome: {}",
+        serde_json::to_string(&run.outcome)?
+    );
+    let (paths, (bmod, blean)) = run.into_artifacts()?;
     println!("=== qedlift (transition) ===");
     println!("  input  : {}", args.so.display());
     for (m, lean) in &paths {

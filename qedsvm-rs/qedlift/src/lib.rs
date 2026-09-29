@@ -22,6 +22,7 @@ mod spec_call;
 mod state;
 mod syscalls;
 mod transition;
+mod transition_outcome;
 mod witness;
 
 pub use api::{CpiPathModule, CpiSuffix, Lifter};
