@@ -11,6 +11,7 @@ use crate::core::{Atom, Expr, Width};
 use crate::emit::{atoms_to_lean, fold_abstractions};
 use crate::input::{resolve_layout, DescriptorOp};
 use crate::refinement::{cell_val, cell_val_dword, RefinementCtx};
+use crate::transition_outcome::{PathKind, VmErrorKind};
 
 /// Structured binder metadata for one path corollary's signature, in
 /// signature order. Drives the bundle's canonical renaming.
@@ -40,7 +41,9 @@ pub(super) struct FaultTail<'a> {
 /// One path's contribution to the transition bundle.
 pub(super) struct TransitionPathInfo {
     pub(super) namespace: String,
-    pub(super) pred: &'static str,
+    /// Return (exit code, tracked write) or typed fault; drives both the
+    /// corollary's predicate and the `transition outcome:` JSON (#70).
+    pub(super) kind: PathKind,
     pub(super) corollary: String,
     pub(super) stmt: String,
     pub(super) bitems: Vec<BItem>,
@@ -184,7 +187,7 @@ pub(super) fn emit_transition_bundle_impl(
             })
             .collect();
         let stmt = rename_all(p, &p.stmt);
-        let obligation = format!("SVM.Solana.Abstract.{}\n{}", p.pred, stmt);
+        let obligation = format!("SVM.Solana.Abstract.{}\n{}", p.kind.pred(), stmt);
         let conjunct = if guards.is_empty() {
             obligation
         } else {
@@ -328,10 +331,11 @@ pub(super) fn emit_transition_path_impl(
         .offset as i64;
 
     // Exit code: the post's r0 value (the shared `.exit` returns it).
-    let code = post_atoms.iter().find_map(|a| match a {
-        Atom::Reg(0, v) => Some(fold(v)),
+    let r0 = post_atoms.iter().find_map(|a| match a {
+        Atom::Reg(0, v) => Some(v),
         _ => None,
     })?;
+    let code = fold(r0);
 
     // ── Mutation detection (mirrors `emit_descriptor_refinement`) ──
     let is_initmem = |e: &Expr| matches!(e, Expr::InitMem(_));
@@ -734,7 +738,10 @@ theorem {corollary}
         text,
         TransitionPathInfo {
             namespace: format!("Examples.Lifted.{}", module_name),
-            pred: "AsmRefinesTransitionPath",
+            kind: PathKind::Return {
+                exit_code: const_u64(r0),
+                tracked_written: mutation.is_some(),
+            },
             corollary,
             stmt,
             bitems,
@@ -990,16 +997,17 @@ pub(super) fn emit_transition_fault_impl(
         .map(|h| format!(" (handler {})", h))
         .unwrap_or_default();
     // Combined rr for an OOB tail: prefix requirement ∧ the region condition.
-    let (vm_error, rr_full) = match &oob_parts {
-        None => (".abort", format!("fun rt => {}", rr)),
+    let (vm_error_kind, rr_full) = match &oob_parts {
+        None => (VmErrorKind::Abort, format!("fun rt => {}", rr)),
         Some((r1v, _, pred, size)) => (
-            ".accessViolation",
+            VmErrorKind::AccessViolation,
             format!(
                 "fun rt => ({}) ∧ rt.{} ({}) {} = false",
                 rr, pred, r1v, size
             ),
         ),
     };
+    let vm_error = vm_error_kind.lean_ctor();
     let stmt = format!(
         "      (({cr}).union
         (CodeReq.singleton {exit_pc} (.call {ctor})))
@@ -1088,7 +1096,9 @@ theorem {corollary}
         text,
         TransitionPathInfo {
             namespace: format!("Examples.Lifted.{}", module_name),
-            pred: "AsmRefinesTransitionFault",
+            kind: PathKind::Fault {
+                vm_error: vm_error_kind,
+            },
             corollary,
             stmt,
             bitems,
@@ -1096,4 +1106,15 @@ theorem {corollary}
             param_cell: None,
         },
     ))
+}
+
+/// The concrete value of a constant exit-code expression (`toU64 k`,
+/// optionally reduced mod `m`); `None` when it depends on the input.
+fn const_u64(e: &Expr) -> Option<u64> {
+    match e {
+        Expr::Const(k) => Some(*k as u64),
+        Expr::ToU64(inner) => const_u64(inner),
+        Expr::Mod(inner, m) if *m != 0 => Some(const_u64(inner)? % m),
+        _ => None,
+    }
 }
