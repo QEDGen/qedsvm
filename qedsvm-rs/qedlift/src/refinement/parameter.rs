@@ -29,25 +29,9 @@ pub(crate) fn resolve_parameter(
     if input.account_index >= input.account_data_lengths.len() {
         return Err(invalid("account_index is outside input_layout".to_string()));
     }
-    // Same aligned, non-duplicate layout as SVM.Solana.InputLayout.
-    let mut cursor = 8usize;
-    let mut account_offset = 0usize;
-    for (index, &len) in input.account_data_lengths.iter().enumerate() {
-        if index == input.account_index {
-            account_offset = cursor
-                .checked_add(88)
-                .ok_or_else(|| invalid("account offset overflow".into()))?;
-        }
-        let padded = len
-            .checked_add(10240)
-            .and_then(|n| n.checked_add(7))
-            .map(|n| n / 8 * 8)
-            .ok_or_else(|| invalid("account size overflow".into()))?;
-        cursor = cursor
-            .checked_add(96)
-            .and_then(|n| n.checked_add(padded))
-            .ok_or_else(|| invalid("input size overflow".into()))?;
-    }
+    let offsets = qed_analysis::input_layout::aligned_input_offsets(&input.account_data_lengths)
+        .map_err(|message| invalid(message.into()))?;
+    let account_offset = offsets.account_data[input.account_index];
     let idl = ctx
         .idl
         .ok_or_else(|| missing("parameter binding requires an IDL"))?;
@@ -57,9 +41,9 @@ pub(crate) fn resolve_parameter(
         .ok_or_else(|| missing("parameter binding requires a handler"))?;
     let relative = u64_argument_offset(idl, handler, add_param)
         .map_err(|message| Outcome::rejected(Reason::InvalidParameterBinding, message))?;
-    let argument_offset = cursor
-        .checked_add(8)
-        .and_then(|n| n.checked_add(relative))
+    let argument_offset = offsets
+        .instruction_data
+        .checked_add(relative)
         .and_then(|n| i64::try_from(n).ok())
         .ok_or_else(|| invalid("argument offset overflow".into()))?;
     // Only entry-point lifts establish r1 as the serialized input pointer.

@@ -1818,8 +1818,7 @@ fn emit_transition_corollary(
                     let bl = fold_abstractions(b.to_lean(), abs_subst);
                     extra.push_str(&format!("(h_funds{} : {} ≤ {})\n    ", k, bl, al));
                     extra.push_str(&format!("(h_src_lt{} : {} < 2 ^ 64)\n    ", k, al));
-                    bitems.push(BItem::Hyp {
-                        name: format!("h_funds{}", k),
+                    bitems.push(BItem::Guard {
                         prop: format!("{} ≤ {}", bl, al),
                     });
                     bitems.push(BItem::Hyp {
@@ -1833,8 +1832,7 @@ fn emit_transition_corollary(
                     let al = fold_abstractions(a.to_lean(), abs_subst);
                     let bl = fold_abstractions(b.to_lean(), abs_subst);
                     extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, bl));
-                    bitems.push(BItem::Hyp {
-                        name: format!("h_noovf{}", k),
+                    bitems.push(BItem::Guard {
                         prop: format!("{} + {} < 2 ^ 64", al, bl),
                     });
                     names.push(format!("h_noovf{}", k));
@@ -1842,8 +1840,7 @@ fn emit_transition_corollary(
                 Shift::AddConst(a, c) => {
                     let al = fold_abstractions(a.to_lean(), abs_subst);
                     extra.push_str(&format!("(h_noovf{} : {} + {} < 2 ^ 64)\n    ", k, al, c));
-                    bitems.push(BItem::Hyp {
-                        name: format!("h_noovf{}", k),
+                    bitems.push(BItem::Guard {
                         prop: format!("{} + {} < 2 ^ 64", al, c),
                     });
                     names.push(format!("h_noovf{}", k));

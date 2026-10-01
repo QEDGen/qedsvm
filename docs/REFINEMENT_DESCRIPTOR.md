@@ -196,6 +196,18 @@ fixtures still produce raw observed-transition bundles with unnamed operand
 binders; these are not successful discharges of a named parameter obligation.
 Transition bundling does not upgrade `refinement_outcome` or establish all-path coverage.
 
+With a v3 `add_param` descriptor, every path uses the declared account-data base
+and IDL argument location, including rejection paths that do not write the
+account. A mutation must match the selected field and argument cells. Arithmetic
+assumptions such as non-overflow stay inside the relevant path's implication;
+they do not exclude overflow rejection from the bundle. Framed pubkey fields are
+supported, while owned pubkey mutations remain unsupported.
+
+`sbpfv3_vault_deposit.descriptor.json` exercises a 41-byte vault with owner,
+total, and bump fields. Its four captured paths cover success, zero amount,
+overflow, and an unknown discriminator. `VaultDepositTransitionWitness.lean`
+instantiates all four checked branch proofs, including overflow at `u64::MAX`.
+
 A path whose walk ends in a typed abort/panic fault (the `abort` /
 `sol_panic_` syscalls) gets an `AsmRefinesTransitionFault` corollary instead
 (`*_transition_fault`, composed via `cuTripleWithinMem_seq_fault_pure`):

@@ -18,8 +18,7 @@ open SVM SVM.SBPF SVM.SBPF.Memory SVM.Solana.Abstract
 theorem guarded_counter_transition
     (baseAddr m0 vR2Old vR0Old counter vR3Old : Nat)
     (hm0_lt : m0 < 2 ^ 64)
-    (hcounter_lt : counter < 2 ^ 64)
-    (h_noovf0 : counter + m0 < 2 ^ 64) :
+    (hcounter_lt : counter < 2 ^ 64) :
     (m0 = toU64 0 →
       SVM.Solana.Abstract.AsmRefinesTransitionPath
       (((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 0)).union
@@ -41,6 +40,7 @@ theorem guarded_counter_transition
       (effectiveAddr baseAddr 0 ↦U64 m0) **
       (.r2 ↦ᵣ m0))) ∧
     (m0 ≠ toU64 0 →
+     counter + m0 < 2 ^ 64 →
       SVM.Solana.Abstract.AsmRefinesTransitionPath
       (((((((((CodeReq.singleton 0 (.ldx .dword .r2 .r1 0)).union
         (CodeReq.singleton 1 (.jeq .r2 (.imm (0)) 7))).union
@@ -70,7 +70,7 @@ theorem guarded_counter_transition
       (.r3 ↦ᵣ wrapAdd counter m0))) :=
   ⟨fun hg0 =>
       Examples.Lifted.GuardedCounterAbort.GuardedCounterAbort_transition_path baseAddr m0 vR2Old vR0Old hm0_lt hg0 counter,
-   fun hg0 =>
-      Examples.Lifted.GuardedCounterSuccess.GuardedCounterSuccess_transition_path baseAddr m0 vR2Old counter vR3Old vR0Old hm0_lt hcounter_lt hg0 h_noovf0⟩
+   fun hg0 hg1 =>
+      Examples.Lifted.GuardedCounterSuccess.GuardedCounterSuccess_transition_path baseAddr m0 vR2Old counter vR3Old vR0Old hm0_lt hcounter_lt hg0 hg1⟩
 
 end Examples.GuardedCounterTransition

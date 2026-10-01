@@ -23,6 +23,41 @@ pub(super) enum BItem {
     Guard { prop: String },
 }
 
+/// Legacy transitions describe observed cells. A v3 parameter descriptor
+/// instead binds both the account and argument to entry-point serialization.
+fn transition_binding(
+    desc: &RefinementDescriptor,
+    ctx: RefinementCtx<'_>,
+    layout: &qed_analysis::layout::AccountLayout,
+) -> Result<Option<crate::refinement::parameter::ParameterBinding>, TransitionFailure> {
+    if desc.input_layout.is_none()
+        && (desc.schema_version < 3 || matches!(desc.op, DescriptorOp::AddConst { .. }))
+    {
+        return Ok(None);
+    }
+    let binding =
+        crate::refinement::parameter::resolve_parameter(desc, ctx).map_err(|outcome| {
+            use crate::refinement::RefinementOutcome;
+            match outcome {
+                RefinementOutcome::Rejected { reason, message } => {
+                    TransitionFailure::rejected(reason, message)
+                }
+                RefinementOutcome::Unsupported { reason, message } => {
+                    TransitionFailure::unsupported(reason, message)
+                }
+                _ => unreachable!("parameter resolution returns only failed outcomes"),
+            }
+        })?;
+    let input = desc.input_layout.as_ref().expect("resolved input layout");
+    if layout.size > input.account_data_lengths[input.account_index] {
+        return Err(TransitionFailure::rejected(
+            RefinementReason::InvalidLayout,
+            "account layout exceeds declared data length",
+        ));
+    }
+    Ok(Some(binding))
+}
+
 /// The lifted triple a transition corollary composes with.
 pub(super) struct RefineTarget<'a> {
     pub(super) name: &'a str,
@@ -339,6 +374,7 @@ pub(super) fn emit_transition_path_impl(
             )
         })?
         .offset as i64;
+    let binding = transition_binding(desc, ctx, &layout)?;
 
     // Exit code: the post's r0 value (the shared `.exit` returns it).
     let r0 = post_atoms
@@ -425,28 +461,47 @@ pub(super) fn emit_transition_path_impl(
             }
         }
     }
-    if let Some((_, off, _, _, _)) = &mutation {
-        // The bytes must mutate the field the descriptor names (offset check
-        // is against the account base derived from this very cell, so it is
-        // the base-anchoring choice, not an independent fact — the real check
-        // is that no OTHER tracked field changes, below).
-        let _ = off;
+    if let (Some(binding), Some((base, off, _, _, param))) = (&binding, &mutation) {
+        if crate::core::canon_addr(base, *off)
+            != crate::core::canon_addr(&binding.input_base, binding.account_offset + mutated_off)
+        {
+            return Err(TransitionFailure::rejected(
+                RefinementReason::MutationMismatch,
+                "mutation does not target the declared serialized account field",
+            ));
+        }
+        if !param
+            .as_ref()
+            .is_some_and(|p| binding.matches_value(p, ctx))
+        {
+            return Err(TransitionFailure::rejected(
+                RefinementReason::ParameterMismatch,
+                "mutation operand does not match the IDL-bound parameter",
+            ));
+        }
     }
 
-    // Account base: derived from the mutated cell when present; a
-    // preservation path owns no mutated cell, so anchor at r1's entry value
-    // (v1 convention — the loader input pointer).
-    let (base_raw, base_expr, base_off) = match &mutation {
-        Some((b, off, _, _, _)) => (b.to_lean(), fold(b), off - mutated_off),
-        None => {
-            let r1 = pre
-                .iter()
-                .find_map(|a| match a {
-                    Atom::Reg(1, v) => Some(v.clone()),
-                    _ => None,
-                })
-                .ok_or_else(|| unwired("no r1 (account base) in the pre"))?;
-            (r1.to_lean(), fold(&r1), 0)
+    // The validated v3 layout anchors every path, including preservation.
+    // Without that contract, retain the legacy observed-cell convention.
+    let (base_raw, base_expr, base_off) = if let Some(binding) = &binding {
+        (
+            binding.input_base.to_lean(),
+            fold(&binding.input_base),
+            binding.account_offset,
+        )
+    } else {
+        match &mutation {
+            Some((b, off, _, _, _)) => (b.to_lean(), fold(b), off - mutated_off),
+            None => {
+                let r1 = pre
+                    .iter()
+                    .find_map(|a| match a {
+                        Atom::Reg(1, v) => Some(v.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| unwired("no r1 (account base) in the pre"))?;
+                (r1.to_lean(), fold(&r1), 0)
+            }
         }
     };
     let base_arg = if base_off == 0 {
@@ -688,7 +743,7 @@ theorem {corollary}
 {stmt} := by
   unfold SVM.Solana.Abstract.AsmRefinesTransitionPath
   simp only [SVM.Solana.Abstract.codecsPre, SVM.Solana.Abstract.codecsPost,
-             codecCoarse, FieldVal.coarse, sepConj_emp_right_eq, Nat.add_zero]
+             codecCoarse, FieldVal.coarse{codec_simp}, sepConj_emp_right_eq, Nat.add_zero]
   refine cuTripleWithinMem_seq_exit ?_ ?_
   · repeat' apply CodeReq.Disjoint_union_left
     all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)
@@ -706,33 +761,47 @@ theorem {corollary}
         binders_extra = binders_extra,
         stmt = stmt,
         frame = frame_s,
-        args = target_args
+        args = target_args,
+        codec_simp = if layout
+            .fields
+            .iter()
+            .any(|f| matches!(f.kind, FieldKind::Pubkey))
+        {
+            ", pubkeyIs, Nat.add_assoc"
+        } else {
+            ""
+        }
     );
 
-    let param_cell = match (&desc.op, &mutation) {
-        (DescriptorOp::AddParam { add_param }, Some((_, _, _, _, Some(p))))
-            if crate::refinement::parameter::resolve_parameter(desc, ctx)
-                .is_ok_and(|binding| binding.matches_value(p, ctx)) =>
-        {
-            // The param operand is a pre-read cell on the account base; find it.
-            pre.iter().find_map(|a| match a {
-                Atom::Mem {
-                    addr_base,
-                    addr_off,
-                    width,
-                    value,
-                    ..
-                } if matches!(width, Width::Dword)
-                    && addr_base.to_lean() == base_raw
-                    && fold(value) == *p =>
+    let param_cell =
+        if let (Some(binding), DescriptorOp::AddParam { add_param }) = (&binding, &desc.op) {
+            Some((binding.argument_offset - base_off, add_param.clone()))
+        } else {
+            match (&desc.op, &mutation) {
+                (DescriptorOp::AddParam { add_param }, Some((_, _, _, _, Some(p))))
+                    if crate::refinement::parameter::resolve_parameter(desc, ctx)
+                        .is_ok_and(|binding| binding.matches_value(p, ctx)) =>
                 {
-                    Some((addr_off - base_off, add_param.clone()))
+                    // The param operand is a pre-read cell on the account base; find it.
+                    pre.iter().find_map(|a| match a {
+                        Atom::Mem {
+                            addr_base,
+                            addr_off,
+                            width,
+                            value,
+                            ..
+                        } if matches!(width, Width::Dword)
+                            && addr_base.to_lean() == base_raw
+                            && fold(value) == *p =>
+                        {
+                            Some((addr_off - base_off, add_param.clone()))
+                        }
+                        _ => None,
+                    })
                 }
                 _ => None,
-            })
-        }
-        _ => None,
-    };
+            }
+        };
 
     Ok((
         text,
@@ -801,6 +870,7 @@ pub(super) fn emit_transition_fault_impl(
             )
         })?,
     };
+    let binding = transition_binding(desc, ctx, &layout)?;
 
     // A fault path owns no mutated cell: anchor the account at r1's entry
     // value (the same v1 convention as preservation exit paths).
@@ -811,8 +881,13 @@ pub(super) fn emit_transition_fault_impl(
             _ => None,
         })
         .ok_or_else(|| unwired("no r1 (account base) in the pre"))?;
-    let (base_raw, base_expr, base_off) = (r1.to_lean(), fold(&r1), 0i64);
-    let base_arg = base_expr.clone();
+    let base_off = binding.as_ref().map_or(0, |b| b.account_offset);
+    let (base_raw, base_expr) = (r1.to_lean(), fold(&r1));
+    let base_arg = if base_off == 0 {
+        base_expr.clone()
+    } else {
+        format!("({base_expr} + {base_off})")
+    };
 
     // ── Walk the layout PRE-only: owned scalars flow through, unowned are
     //    framed as field-named params. ──
@@ -1075,7 +1150,7 @@ theorem {corollary}
 {stmt} := by
   unfold SVM.Solana.Abstract.AsmRefinesTransitionFault
   simp only [SVM.Solana.Abstract.codecsPre,
-             codecCoarse, FieldVal.coarse, sepConj_emp_right_eq, Nat.add_zero]
+             codecCoarse, FieldVal.coarse{codec_simp}, sepConj_emp_right_eq, Nat.add_zero]
   {tail_refine}
   · repeat' apply CodeReq.Disjoint_union_left
     all_goals exact CodeReq.singleton_disjoint_singleton _ _ (by decide)
@@ -1092,7 +1167,16 @@ theorem {corollary}
         stmt = stmt,
         vm_error = vm_error,
         tail_refine = tail_refine,
-        prefix_have = prefix_have
+        prefix_have = prefix_have,
+        codec_simp = if layout
+            .fields
+            .iter()
+            .any(|f| matches!(f.kind, FieldKind::Pubkey))
+        {
+            ", pubkeyIs, Nat.add_assoc"
+        } else {
+            ""
+        }
     );
 
     Ok((
@@ -1106,7 +1190,12 @@ theorem {corollary}
             stmt,
             bitems,
             renames,
-            param_cell: None,
+            param_cell: binding.and_then(|b| match &desc.op {
+                DescriptorOp::AddParam { add_param } => {
+                    Some((b.argument_offset - base_off, add_param.clone()))
+                }
+                _ => None,
+            }),
         },
     ))
 }

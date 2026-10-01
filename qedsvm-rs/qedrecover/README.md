@@ -74,6 +74,22 @@ the claimed refinement is true.
 
 ## Fail-closed checks
 
+For a dispatcher that loads instruction data directly from the aligned Solana
+input buffer, declare its account lengths in the claimed instruction's overlay:
+
+```toml
+[instruction.input_layout]
+account_data_lengths = [41]
+```
+
+This lists one non-duplicate account per IDL account role, in serialization order.
+Recovery computes the instruction-data offset (10400 for this example) and
+requires a direct load through the unchanged entry `r1`. A prior write to `r1`,
+a call, an out-of-range load offset, or an unmatched dispatcher is unsupported.
+The lengths are input assumptions; recovery does not prove the runtime supplies
+them. Without this declaration, the legacy offset-zero dispatcher search applies.
+See `sbpfv3_vault_deposit.qedoverlay.toml` for a complete example.
+
 Recovery refuses or reports unsupported inputs rather than guessing when:
 
 - the IDL discriminator shape is not analyzable;
@@ -84,6 +100,10 @@ Recovery refuses or reports unsupported inputs rather than guessing when:
 
 The sidecar pins both the `.so` and IDL with SHA-256 so a proof cannot silently be
 retargeted to different artifacts.
+
+When an output artifact is requested, failure to recover a claimed instruction
+returns a nonzero exit status. A report without output flags may still describe
+unsupported instructions.
 
 ## Tests
 
