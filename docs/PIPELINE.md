@@ -159,17 +159,33 @@ key. Its counter update has no fund transfer or CPI.
 
 Repeat the commands above with `sbpfv3_vault_authorized` as the fixture stem and
 `Sbpfv3VaultAuthorizedDepositLifted.lean` as the recovered lift output. Recovery
-finds discriminator load/compare/arm PCs 48/49/50. The transition mode emits 19
+finds discriminator load/compare/arm PCs 48/49/50. The transition mode emits 21
 captured cases, including success, malformed inputs, missing signature, each
 owner-key mismatch, zero amount, and overflow. Every case agrees with Mollusk
 on exit, account state, return data, and CU. The full bundle and concrete branch
 witnesses are included in `lake build Examples` and the axiom audit.
 
+The branch-edge audit checks both edges of every conditional jump against the
+retained traces, except the first-record duplicate marker: Solana serialization
+always writes a non-duplicate marker for the first record. The additional cases
+exercise a nonempty authority and an executable vault.
+
+`AuthorizedVaultCoverage.all_inputs_terminate` proves an execution result for
+every input satisfying one common declared-layout snapshot, bounded input words,
+readable load regions, a writable total, an empty call stack, PC zero, no prior
+exit, and at least 64 remaining CU. It exhausts the checks in bytecode order,
+reaches the specified success or rejection within 64 steps/CU, preserves owner
+and bump, and updates total by the input amount only on success. Its proof uses
+only standard Lean axioms; the complete ELF/text/decode pins use the same
+`native_decide` boundary as generated lifts.
+
 The descriptor's `[41, 0]` account lengths still describe the proof's memory
 layout. For an early schema rejection, the theorem frames the declared vault
 codec; it does not turn a malformed account into a valid IDL account or prove
 that every arbitrary serialized buffer satisfies that codec. These are guarded
-transition proofs over captured paths, not an exhaustive parser verification.
+transition proofs over captured paths. The separate coverage theorem closes the
+valid declared-layout executions; it is not an exhaustive parser verification
+for arbitrary serialized buffers or a theorem about memory/CU faults.
 
 ## PC Spaces
 

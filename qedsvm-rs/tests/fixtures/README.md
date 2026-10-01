@@ -296,14 +296,23 @@ The `core_vm::sbpfv3_vault_authorized_*` tests supply real account metadata to b
 engines. Exit codes are 0 success, 1 zero amount, 2 unknown discriminator, 3
 overflow, 4 owner mismatch, 5 missing signature, 6 unsupported account shape,
 7 instruction length mismatch, and 8 vault access flags. All rejection cases
-preserve account state. The 19 retained `.pcs` files were captured with each
+preserve account state. The 21 retained `.pcs` files were captured with each
 test in a separate process and `QEDSVM_TRACE_OUT` set to its trace path.
 
 The IDL, overlay (`account_data_lengths = [41, 0]`), recovered sidecar, descriptor,
 and SHA-256 accompany the binary. Lean checks the generated transition bundle,
 the recovered deposit lift, and concrete branch witnesses in
-`AuthorizedVaultTransitionWitness.lean`. Account length assumptions and
-captured-path coverage limits remain explicit; see `docs/PIPELINE.md`.
+`AuthorizedVaultTransitionWitness.lean`. The branch-edge audit covers every
+conditional edge reachable through normal serialization, including nonempty
+authority and executable-vault rejection. The first record cannot be a duplicate
+in the Solana ABI.
+
+`AuthorizedVaultCoverage.lean` additionally checks universal termination and the
+classified vault result under one common `[41, 0]` snapshot, bounded words,
+readable/writable regions, and 64 remaining CU. Its symbolic proof is checked by
+the standard-axiom gate; ELF/text/decode pins use `native_decide`, as in generated
+lifts. Arbitrary serialization and memory/CU faults remain outside this theorem;
+see `docs/PIPELINE.md`.
 
 ## Third-party `.so` fixtures (no `_src/`)
 

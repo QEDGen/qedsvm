@@ -275,9 +275,11 @@ lean_lib Examples where
     `Generated.Sbpfv3VaultDepositZeroLifted,
     `Generated.Sbpfv3VaultDepositTransition,
     `Generated.Sbpfv3VaultAuthorizedDuplicateLifted,
+    `Generated.Sbpfv3VaultAuthorizedExecutableLifted,
     `Generated.Sbpfv3VaultAuthorizedLongInstructionLifted,
     `Generated.Sbpfv3VaultAuthorizedMissingAccountLifted,
     `Generated.Sbpfv3VaultAuthorizedMissingSignerLifted,
+    `Generated.Sbpfv3VaultAuthorizedNonemptyAuthorityLifted,
     `Generated.Sbpfv3VaultAuthorizedOverflowLifted,
     `Generated.Sbpfv3VaultAuthorizedReadonlyLifted,
     `Generated.Sbpfv3VaultAuthorizedShortInstructionLifted,
@@ -297,6 +299,7 @@ lean_lib Examples where
     `Generated.Sbpfv3VaultDepositDepositLifted,
     `VaultDepositTransitionWitness,
     `AuthorizedVaultTransitionWitness,
+    `AuthorizedVaultCoverage,
     `Generated.Sbpfv3VaultAuthorizedDepositLifted,
     -- The FAULT-path variant: guarded_abort's guard-fail path ends in the
     -- `abort` syscall, so its path corollary is `AsmRefinesTransitionFault`

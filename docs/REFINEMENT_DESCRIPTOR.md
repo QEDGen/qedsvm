@@ -212,9 +212,13 @@ overflow, and an unknown discriminator. `VaultDepositTransitionWitness.lean`
 instantiates all four checked branch proofs, including overflow at `u64::MAX`.
 
 `sbpfv3_vault_authorized.descriptor.json` adds a checked two-account schema and
-owner signature checks. Its 19 captured cases include a mismatch in each owner
+owner signature checks. Its 21 captured cases include a mismatch in each owner
 limb, missing signature, malformed instruction/account shapes, and overflow.
 `AuthorizedVaultTransitionWitness.lean` instantiates every captured branch.
+`AuthorizedVaultCoverage.lean` proves termination and the classified vault
+postcondition for all inputs satisfying its common `[41, 0]` layout, word bounds,
+memory regions, and 64-CU execution precondition. This fixture-specific theorem
+does not change the captured-path scope of transition bundles in general.
 
 A path whose walk ends in a typed abort/panic fault (the `abort` /
 `sol_panic_` syscalls) gets an `AsmRefinesTransitionFault` corollary instead

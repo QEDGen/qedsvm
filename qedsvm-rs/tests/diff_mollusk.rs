@@ -1401,8 +1401,15 @@ mod core_vm {
         if expected_exit == 0 {
             expected[32..40].copy_from_slice(&expected_total.to_le_bytes());
         }
-        let (vault, reference_vault) = dual_account(1_000_000, data, Pubkey::from(owner), false);
-        let (authority, reference_authority) = dual_account(1_000_000, vec![], pid(0), false);
+        let (vault, reference_vault) =
+            dual_account(1_000_000, data, Pubkey::from(owner), case == "executable");
+        let authority_data = if case == "nonempty_authority" {
+            vec![1]
+        } else {
+            vec![]
+        };
+        let (authority, reference_authority) =
+            dual_account(1_000_000, authority_data, pid(0), false);
         let discriminator: u64 = if case == "unknown" { 9 } else { 1 };
         let amount: u64 = match case {
             "zero" => 0,
@@ -1520,6 +1527,8 @@ mod core_vm {
         sbpfv3_vault_authorized_short_vault => ("short_vault", 6, 9),
         sbpfv3_vault_authorized_missing_account => ("missing_account", 6, 9),
         sbpfv3_vault_authorized_duplicate => ("duplicate", 6, 9),
+        sbpfv3_vault_authorized_nonempty_authority => ("nonempty_authority", 6, 9),
+        sbpfv3_vault_authorized_executable => ("executable", 8, 9),
         sbpfv3_vault_authorized_readonly => ("readonly", 8, 9),
         sbpfv3_vault_authorized_wrong_program_owner_0 => ("wrong_program_owner_0", 4, 9),
         sbpfv3_vault_authorized_wrong_program_owner_1 => ("wrong_program_owner_1", 4, 9),
