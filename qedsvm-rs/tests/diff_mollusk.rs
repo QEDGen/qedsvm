@@ -1377,6 +1377,159 @@ mod core_vm {
         assert_v3_vault_deposit(9, 9, 7, 9, 2, 4);
     }
 
+    // Removing any parser/authorization guard must turn its rejection case
+    // into a different exit or a state change. All inputs are runtime-serialized
+    // by both engines; expected exits and totals are literal test arguments.
+    fn assert_authorized_vault(case: &str, expected_exit: u64, expected_total: u64) {
+        let program_id = pid(705);
+        let vault_id = pid(706);
+        let authority_id = Pubkey::from([0x35; 32]);
+        let mut data = vec![0x35; 41];
+        let total = if case == "overflow" { u64::MAX } else { 9 };
+        data[32..40].copy_from_slice(&total.to_le_bytes());
+        let mut owner = program_id.to_bytes();
+        if let Some(limb) = case.strip_prefix("wrong_owner_") {
+            data[limb.parse::<usize>().unwrap() * 8] ^= 1;
+        }
+        if let Some(limb) = case.strip_prefix("wrong_program_owner_") {
+            owner[limb.parse::<usize>().unwrap() * 8] ^= 1;
+        }
+        if case == "short_vault" {
+            data.truncate(40);
+        }
+        let mut expected = data.clone();
+        if expected_exit == 0 {
+            expected[32..40].copy_from_slice(&expected_total.to_le_bytes());
+        }
+        let (vault, reference_vault) = dual_account(1_000_000, data, Pubkey::from(owner), false);
+        let (authority, reference_authority) = dual_account(1_000_000, vec![], pid(0), false);
+        let discriminator: u64 = if case == "unknown" { 9 } else { 1 };
+        let amount: u64 = match case {
+            "zero" => 0,
+            "overflow" => 1,
+            _ => 7,
+        };
+        let mut instruction_data = discriminator.to_le_bytes().to_vec();
+        instruction_data.extend_from_slice(&amount.to_le_bytes());
+        if case == "short_instruction" {
+            instruction_data.truncate(8);
+        }
+        if case == "long_instruction" {
+            instruction_data.push(0);
+        }
+        let mut metas = vec![
+            if case == "readonly" {
+                AccountMeta::new_readonly(vault_id, false)
+            } else {
+                AccountMeta::new(vault_id, false)
+            },
+            AccountMeta::new_readonly(authority_id, case != "missing_signer"),
+        ];
+        if case == "missing_account" {
+            metas.pop();
+        }
+        if case == "duplicate" {
+            metas[1] = AccountMeta::new_readonly(vault_id, true);
+        }
+        let ix = Instruction {
+            program_id,
+            accounts: metas,
+            data: instruction_data,
+        };
+        let actual = svm_with(&[(
+            program_id,
+            include_bytes!("fixtures/sbpfv3_vault_authorized.so"),
+        )])
+        .process_instruction(&ix, &[(vault_id, vault), (authority_id, authority.clone())])
+        .unwrap();
+        let reference = mollusk_with(&[(
+            program_id,
+            include_bytes!("fixtures/sbpfv3_vault_authorized.so"),
+        )])
+        .process_instruction(
+            &ix,
+            &[
+                (vault_id, reference_vault),
+                (authority_id, reference_authority.clone()),
+            ],
+        );
+        assert_no_poststate_backstop(&actual);
+        if expected_exit == 0 {
+            assert_eq!(actual.program_result, FsProgramResult::Success);
+            assert_eq!(reference.raw_result, Ok(()));
+        } else {
+            assert_eq!(
+                actual.program_result,
+                FsProgramResult::Failure {
+                    exit_code: expected_exit
+                }
+            );
+            assert_eq!(
+                reference.raw_result,
+                Err(InstructionError::Custom(expected_exit as u32))
+            );
+        }
+        assert_eq!(fs_acct_by_key(&actual, &vault_id).data(), expected);
+        assert_eq!(
+            u64::from_le_bytes(
+                fs_acct_by_key(&actual, &vault_id).data()[32..40]
+                    .try_into()
+                    .unwrap()
+            ),
+            expected_total
+        );
+        if ix.accounts.iter().any(|a| a.pubkey == authority_id) {
+            assert_eq!(fs_acct_by_key(&actual, &authority_id), &authority);
+        }
+        // qedsvm reports instruction account slots (including duplicates),
+        // while Mollusk reports supplied accounts, including unused ones.
+        // Compare state by identity rather than these different list shapes.
+        assert_eq!(
+            ml_acct_by_key(&reference, &authority_id),
+            &reference_authority
+        );
+        for (key, account) in &actual.resulting_accounts {
+            let other = ml_acct_by_key(&reference, key);
+            assert_eq!(account.data(), other.data);
+            assert_eq!(account.lamports(), other.lamports);
+            assert_eq!(account.owner().as_ref(), other.owner.as_ref());
+            assert_eq!(account.executable(), other.executable);
+            assert_eq!(account.rent_epoch(), other.rent_epoch);
+        }
+        assert_eq!(actual.return_data, reference.return_data);
+        assert_eq!(
+            actual.compute_units_consumed,
+            reference.compute_units_consumed
+        );
+    }
+
+    macro_rules! authorized_vault_cases {
+        ($( $name:ident => ($case:literal, $exit:expr, $total:expr) ),* $(,)?) => {
+            $(#[test] fn $name() { assert_authorized_vault($case, $exit, $total); })*
+        };
+    }
+    authorized_vault_cases! {
+        sbpfv3_vault_authorized_success => ("success", 0, 16),
+        sbpfv3_vault_authorized_wrong_owner_0 => ("wrong_owner_0", 4, 9),
+        sbpfv3_vault_authorized_wrong_owner_1 => ("wrong_owner_1", 4, 9),
+        sbpfv3_vault_authorized_wrong_owner_2 => ("wrong_owner_2", 4, 9),
+        sbpfv3_vault_authorized_wrong_owner_3 => ("wrong_owner_3", 4, 9),
+        sbpfv3_vault_authorized_missing_signer => ("missing_signer", 5, 9),
+        sbpfv3_vault_authorized_short_instruction => ("short_instruction", 7, 9),
+        sbpfv3_vault_authorized_long_instruction => ("long_instruction", 7, 9),
+        sbpfv3_vault_authorized_short_vault => ("short_vault", 6, 9),
+        sbpfv3_vault_authorized_missing_account => ("missing_account", 6, 9),
+        sbpfv3_vault_authorized_duplicate => ("duplicate", 6, 9),
+        sbpfv3_vault_authorized_readonly => ("readonly", 8, 9),
+        sbpfv3_vault_authorized_wrong_program_owner_0 => ("wrong_program_owner_0", 4, 9),
+        sbpfv3_vault_authorized_wrong_program_owner_1 => ("wrong_program_owner_1", 4, 9),
+        sbpfv3_vault_authorized_wrong_program_owner_2 => ("wrong_program_owner_2", 4, 9),
+        sbpfv3_vault_authorized_wrong_program_owner_3 => ("wrong_program_owner_3", 4, 9),
+        sbpfv3_vault_authorized_zero => ("zero", 1, 9),
+        sbpfv3_vault_authorized_overflow => ("overflow", 3, u64::MAX),
+        sbpfv3_vault_authorized_unknown => ("unknown", 2, 9),
+    }
+
     /// Guarded-counter SUCCESS path (#40): one account → serialized count u64 = 1
     /// = `amount` ≠ 0, so the guard passes and the program adds it to the u64 at
     /// input[8..16] (serialization metadata — ignored by post-deserialize, so the

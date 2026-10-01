@@ -1,0 +1,99 @@
+# qedmeta sidecar — emitted by qedrecover (do not edit by hand).
+# Schema: see qedsvm-rs/spec/qedmeta.md.
+
+schema_version = 2
+spec_version   = "qedmeta/0.2"
+
+[target]
+sha256       = "1e2c7b27197968c2152de28f38abb59d32d9c8d40efc12aa2ce416b35cf0e1ad"
+program_name = "authorizedVault"
+program_id   = "DzRTMs89NXY7HWyVuJeLWUyFkfpRgEqSqpw5t1GR3X1R"
+
+[idl]
+format = "codama"
+inline = false
+ref    = "sbpfv3_vault_authorized.codama.json"
+sha256 = "907e41eb0898e70d29eb352ded9577a2b0fdc008ca64bd69b587bf49df1d6872"
+
+[[account_layout]]
+name   = "vault"
+source = "codama"
+size   = 41
+
+[[account_layout.field]]
+name        = "owner"
+offset      = 0
+kind        = "pubkey"
+[[account_layout.field]]
+name        = "total"
+offset      = 32
+kind        = "u64"
+[[account_layout.field]]
+name        = "bump"
+offset      = 40
+kind        = "byte"
+
+[[instruction]]
+name      = "deposit"
+refines   = "Mir.vaultDeposit"
+cu_budget = 200
+
+[instruction.discriminator]
+value       = 1
+width_bytes = 8
+format      = "u64"
+
+[[instruction.account]]
+name     = "vault"
+writable = true
+signer   = false
+layout   = "vault"
+[[instruction.account]]
+name     = "authority"
+writable = false
+signer   = true
+
+[instruction.recovered]
+dispatch_load_pc   = 48
+dispatch_jeq_pc    = 49
+arm_entry_pc       = 50
+enclosing_func_pc  = 0
+block_count        = 8
+total_instructions = 16
+blocks = []
+
+[[instruction.idiom]]
+pc      = 48
+pattern = "read_discriminator"
+detail  = "width=8"
+
+[[instruction.const_exit]]
+block_start = 62
+exit_code   = 1
+role        = "error"
+[[instruction.const_exit]]
+block_start = 59
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 64
+exit_code   = 3
+role        = "error"
+[[instruction.tag]]
+block_start = 50
+role        = "happy"
+[[instruction.tag]]
+block_start = 52
+role        = "happy"
+[[instruction.tag]]
+block_start = 57
+role        = "happy"
+[[instruction.tag]]
+block_start = 58
+role        = "happy"
+[[instruction.tag]]
+block_start = 63
+role        = "happy"
+[[instruction.tag]]
+block_start = 59
+role        = "happy"

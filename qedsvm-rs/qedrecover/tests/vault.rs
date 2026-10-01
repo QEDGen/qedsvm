@@ -1,6 +1,44 @@
 use std::path::Path;
 use std::process::Command;
 
+#[test]
+fn recovers_authorized_vault_after_parser_and_authorization_guards() {
+    let fixtures = Path::new("../tests/fixtures").canonicalize().unwrap();
+    let meta =
+        std::env::temp_dir().join(format!("qedrecover-authorized-{}.toml", std::process::id()));
+    let output = Command::new(env!("CARGO_BIN_EXE_qedrecover"))
+        .arg("--so")
+        .arg(fixtures.join("sbpfv3_vault_authorized.so"))
+        .arg("--overlay")
+        .arg(fixtures.join("sbpfv3_vault_authorized.qedoverlay.toml"))
+        .arg("--trace")
+        .arg(fixtures.join("sbpfv3_vault_authorized_success.pcs"))
+        .arg("--qedmeta-out")
+        .arg(&meta)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sidecar = qed_artifacts::load_qedmeta(&meta).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&meta).unwrap(),
+        std::fs::read_to_string(fixtures.join("sbpfv3_vault_authorized.qedmeta.toml")).unwrap()
+    );
+    let recovered = sidecar.instructions[0].recovered.as_ref().unwrap();
+    assert_eq!(
+        (
+            recovered.dispatch_load_pc,
+            recovered.dispatch_jeq_pc,
+            recovered.arm_entry_pc
+        ),
+        (48, 49, 50)
+    );
+    std::fs::remove_file(meta).unwrap();
+}
+
 /// Nonzero-offset recovery is allowed only at the instruction-data position
 /// derived from the overlay's explicit account lengths.
 #[test]

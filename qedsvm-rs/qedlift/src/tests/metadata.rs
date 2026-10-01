@@ -2,17 +2,22 @@ use super::super::*;
 
 #[test]
 fn v3_recovered_arm_consumes_the_real_instruction_trace() {
+    check_v3_recovered_arm("sbpfv3_vault_deposit", "Sbpfv3VaultDepositDeposit");
+    check_v3_recovered_arm("sbpfv3_vault_authorized", "Sbpfv3VaultAuthorizedDeposit");
+}
+
+fn check_v3_recovered_arm(stem: &str, module: &str) {
     let fixtures = std::path::Path::new("../tests/fixtures");
-    let so = fixtures.join("sbpfv3_vault_deposit.so");
+    let so = fixtures.join(format!("{stem}.so"));
     let ctx = load_binary(&so).unwrap();
     let analysis = Analysis::from_executable(&ctx.executable).unwrap();
-    let meta = load_qedmeta(&fixtures.join("sbpfv3_vault_deposit.qedmeta.toml")).unwrap();
+    let meta = load_qedmeta(&fixtures.join(format!("{stem}.qedmeta.toml"))).unwrap();
     let arm = meta.instructions[0]
         .recovered
         .as_ref()
         .unwrap()
         .arm_entry_pc;
-    let trace = load_trace(&fixtures.join("sbpfv3_vault_deposit_success.pcs")).unwrap();
+    let trace = load_trace(&fixtures.join(format!("{stem}_success.pcs"))).unwrap();
     let layouts = sidecar_account_layouts(&meta);
     let result = lift_one_with_layouts(
         &so,
@@ -20,7 +25,7 @@ fn v3_recovered_arm_consumes_the_real_instruction_trace() {
         &analysis,
         LiftRequest {
             target_disc: Some(1),
-            module_override: Some("Sbpfv3VaultDepositDeposit".into()),
+            module_override: Some(module.into()),
             arm_name: Some("Deposit"),
             trace: Some(&trace),
             arm_entry: Some(arm),
@@ -31,15 +36,13 @@ fn v3_recovered_arm_consumes_the_real_instruction_trace() {
     .unwrap();
     assert_eq!(
         result.lean.lines().skip(1).collect::<Vec<_>>(),
-        std::fs::read_to_string(
-            "../../examples/lean/Generated/Sbpfv3VaultDepositDepositLifted.lean"
-        )
-        .unwrap()
-        .lines()
-        .skip(1)
-        .collect::<Vec<_>>()
+        std::fs::read_to_string(format!("../../examples/lean/Generated/{module}Lifted.lean"))
+            .unwrap()
+            .lines()
+            .skip(1)
+            .collect::<Vec<_>>()
     );
-    let wrong_trace = load_trace(&fixtures.join("sbpfv3_vault_deposit_unknown.pcs")).unwrap();
+    let wrong_trace = load_trace(&fixtures.join(format!("{stem}_unknown.pcs"))).unwrap();
     assert!(
         lift_one_with_layouts(
             &so,

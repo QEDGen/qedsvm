@@ -200,13 +200,21 @@ With a v3 `add_param` descriptor, every path uses the declared account-data base
 and IDL argument location, including rejection paths that do not write the
 account. A mutation must match the selected field and argument cells. Arithmetic
 assumptions such as non-overflow stay inside the relevant path's implication;
-they do not exclude overflow rejection from the bundle. Framed pubkey fields are
-supported, while owned pubkey mutations remain unsupported.
+they do not exclude overflow rejection from the bundle. Return paths support
+pubkey fields whose aligned `u64` limbs are read but preserved. Unread limbs are
+framed, so a mismatch can reject after reading only part of the key. Pubkey
+mutations and partial-width reads fail closed; fault paths still require framed
+pubkey fields.
 
 `sbpfv3_vault_deposit.descriptor.json` exercises a 41-byte vault with owner,
 total, and bump fields. Its four captured paths cover success, zero amount,
 overflow, and an unknown discriminator. `VaultDepositTransitionWitness.lean`
 instantiates all four checked branch proofs, including overflow at `u64::MAX`.
+
+`sbpfv3_vault_authorized.descriptor.json` adds a checked two-account schema and
+owner signature checks. Its 19 captured cases include a mismatch in each owner
+limb, missing signature, malformed instruction/account shapes, and overflow.
+`AuthorizedVaultTransitionWitness.lean` instantiates every captured branch.
 
 A path whose walk ends in a typed abort/panic fault (the `abort` /
 `sol_panic_` syscalls) gets an `AsmRefinesTransitionFault` corollary instead
@@ -220,7 +228,7 @@ the tail is the per-syscall `*_faults_oob` triple, frame_right-extended to
 the prefix remainder and composed via the Mem-Mem `cuTripleWithinMem_seq_fault`
 — the bundle conjunct's region requirement is `prefix rr ∧ region OOB`.
 
-Fail-closed: blob/owned-pubkey tracked fields, call-local prefixes, and
+Fail-closed: blob fields, unsupported pubkey reads/mutations, call-local prefixes, and
 cross-path binder conflicts skip emission with a stderr note. Worked
 fixtures: `guarded_counter.descriptor.json` (+
 `guarded_counter_{abort,success}.pcs`), the fault-path

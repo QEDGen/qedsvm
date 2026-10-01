@@ -23,6 +23,14 @@ pub(super) enum BItem {
     Guard { prop: String },
 }
 
+fn memory_binder_name(offset: i64) -> String {
+    if offset < 0 {
+        format!("mNeg{}", offset.unsigned_abs())
+    } else {
+        format!("m{offset}")
+    }
+}
+
 /// Legacy transitions describe observed cells. A v3 parameter descriptor
 /// instead binds both the account and argument to entry-point serialization.
 fn transition_binding(
@@ -152,7 +160,7 @@ pub(super) fn emit_transition_bundle_impl(
     let param_rename: Option<(String, String)> = paths.iter().find_map(|p| {
         p.param_cell
             .as_ref()
-            .map(|(off, name)| (format!("m{}", off), name.clone()))
+            .map(|(off, name)| (memory_binder_name(*off), name.clone()))
     });
 
     let rename_all = |p: &TransitionPathInfo, s: &str| -> String {
@@ -605,30 +613,62 @@ pub(super) fn emit_transition_path_impl(
                 }
             }
             FieldKind::Pubkey => {
-                // Framed only (v1): a lift-owned pubkey inside a transition
-                // layout falls closed.
-                if (0..4).any(|i| cell_val(pre, &base_raw, abs + 8 * i, false).is_some()) {
-                    return Err(unwired(format!("owned pubkey field {:?}", f.name)));
-                }
-                let limbs: Vec<String> = (0..4).map(|i| format!("{}{}", f.name, i)).collect();
-                for limb in &limbs {
-                    if taken(limb, &bitems) {
-                        return Err(binder_conflict(limb));
+                // Authorization may read only a prefix of the pubkey before
+                // rejecting. Own the read limbs and frame the remaining ones;
+                // each owned limb must be unchanged in the returned state.
+                if pre.iter().any(|atom| match atom {
+                    Atom::Mem {
+                        addr_base,
+                        addr_off,
+                        width,
+                        ..
+                    } if addr_base.to_lean() == base_raw => {
+                        let size = match width {
+                            Width::Byte => 1,
+                            Width::Halfword => 2,
+                            Width::Word => 4,
+                            Width::Dword => 8,
+                        };
+                        let overlaps = *addr_off < abs + 32 && addr_off.saturating_add(size) > abs;
+                        overlaps && (!matches!(width, Width::Dword) || (*addr_off - abs) % 8 != 0)
                     }
-                    binders_extra.push_str(&format!("({} : Nat)\n    ", limb));
-                    bitems.push(BItem::Val(limb.clone()));
+                    _ => false,
+                }) {
+                    return Err(unwired(format!("partial-width pubkey field {:?}", f.name)));
+                }
+                let mut limbs = Vec::new();
+                for i in 0..4 {
+                    let cell_off = abs + 8 * i;
+                    let name = format!("{}{}", f.name, i);
+                    if let Some(v) = cell_val_dword(pre, &base_raw, cell_off) {
+                        let value = fold(v);
+                        if post_dword_val(&base_raw, cell_off).as_deref() != Some(&value) {
+                            return Err(TransitionFailure::rejected(
+                                RefinementReason::MutationMismatch,
+                                format!(
+                                    "pubkey field {:?} changes outside the descriptor op",
+                                    f.name
+                                ),
+                            ));
+                        }
+                        owned.push((base_raw.clone(), cell_off, false));
+                        renames.push((value.clone(), name));
+                        limbs.push(value);
+                    } else {
+                        if taken(&name, &bitems) {
+                            return Err(binder_conflict(&name));
+                        }
+                        binders_extra.push_str(&format!("({name} : Nat)\n    "));
+                        bitems.push(BItem::Val(name.clone()));
+                        frame.push(format!(
+                            "(effectiveAddr {base_expr} {cell_off} ↦U64 {name})"
+                        ));
+                        limbs.push(name);
+                    }
                 }
                 let rec = format!("⟨{}⟩", limbs.join(", "));
                 pre_fields.push(format!("({}, .pubkey {})", off, rec));
                 post_fields.push(format!("({}, .pubkey {})", off, rec));
-                for (i, limb) in limbs.iter().enumerate() {
-                    frame.push(format!(
-                        "(effectiveAddr {} {} ↦U64 {})",
-                        base_expr,
-                        abs + 8 * i as i64,
-                        limb
-                    ));
-                }
             }
             FieldKind::Bytes(_) => {
                 return Err(unwired(format!("blob field {:?}", f.name)));
@@ -657,7 +697,7 @@ pub(super) fn emit_transition_path_impl(
                 if bitems.iter().any(|b| matches!(b, BItem::Val(x) if *x == v))
                     && !renames.iter().any(|(from, _)| *from == v)
                 {
-                    renames.push((v, format!("m{}", rel)));
+                    renames.push((v, memory_binder_name(rel)));
                 }
             }
         }
@@ -993,7 +1033,7 @@ pub(super) fn emit_transition_fault_impl(
                 if bitems.iter().any(|b| matches!(b, BItem::Val(x) if *x == v))
                     && !renames.iter().any(|(from, _)| *from == v)
                 {
-                    renames.push((v, format!("m{}", rel)));
+                    renames.push((v, memory_binder_name(rel)));
                 }
             }
         }

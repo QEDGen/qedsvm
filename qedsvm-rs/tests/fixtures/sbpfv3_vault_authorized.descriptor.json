@@ -1,0 +1,17 @@
+{
+  "_comment": "Two checked non-duplicate records: 41-byte vault and empty signer authority. Tracked vault starts at 96, instruction data at 20736. These lengths remain explicit theorem assumptions.",
+  "schema_version": 3,
+  "account": "vault",
+  "handler": "deposit",
+  "mutated": "total",
+  "op": {
+    "add_param": "amount"
+  },
+  "input_layout": {
+    "account_data_lengths": [
+      41,
+      0
+    ],
+    "account_index": 0
+  }
+}
