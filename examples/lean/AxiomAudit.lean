@@ -26,6 +26,7 @@ import Generated.GuardedCounterTransition
 import Generated.GuardedAbortTransition
 import Generated.GuardedOobTransition
 import VaultDepositTransitionWitness
+import AuthorizedVaultTransitionWitness
 
 open Lean Elab Command
 
@@ -167,3 +168,24 @@ elab "#assert_std_axioms " id:ident : command => do
 -- range-disjoint helpers. Must stay axiom-clean (omega/simp, never sorry).
 #assert_std_axioms SVM.SBPF.holdsFor_codecCoarse_of_reads
 #assert_std_axioms SVM.SBPF.holdsFor_codecCoarse_of_reads_bounded
+
+#assert_std_axioms Examples.Sbpfv3VaultAuthorizedTransition.sbpfv3_vault_authorized_transition
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.duplicate
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.long_instruction
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.missing_account
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.missing_signer
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.overflow
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.readonly
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.short_instruction
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.short_vault
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.success
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.unknown
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_owner_0
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_owner_1
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_owner_2
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_owner_3
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_program_owner_0
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_program_owner_1
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_program_owner_2
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_program_owner_3
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.zero

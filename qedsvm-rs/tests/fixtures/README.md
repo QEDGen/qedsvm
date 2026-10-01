@@ -279,6 +279,32 @@ status, complete account state, return data, and CU. Recovery and lift tests
 pin the metadata and generated Lean; `VaultDepositTransitionWitness.lean`
 checks concrete success and rejection proofs. See `docs/PIPELINE.md` for commands.
 
+## `sbpfv3_vault_authorized.so`
+
+The checked-schema successor to the fixed-layout vault above: 66 strict sBPF v3
+instructions, built with the same toolchain. It validates two non-duplicate
+records (41-byte vault, empty authority), exact 16-byte instruction data, vault
+writability, the authority's signature, and all four limbs of both the vault's
+program owner and stored authority key. It increments the total without moving
+funds. Duplicate and unsupported account shapes are rejected.
+
+```bash
+cargo build-sbf --manifest-path qedsvm-rs/tests/fixtures/sbpfv3_vault_authorized_src/Cargo.toml --arch v3 --tools-version v1.57 --offline
+```
+
+The `core_vm::sbpfv3_vault_authorized_*` tests supply real account metadata to both
+engines. Exit codes are 0 success, 1 zero amount, 2 unknown discriminator, 3
+overflow, 4 owner mismatch, 5 missing signature, 6 unsupported account shape,
+7 instruction length mismatch, and 8 vault access flags. All rejection cases
+preserve account state. The 19 retained `.pcs` files were captured with each
+test in a separate process and `QEDSVM_TRACE_OUT` set to its trace path.
+
+The IDL, overlay (`account_data_lengths = [41, 0]`), recovered sidecar, descriptor,
+and SHA-256 accompany the binary. Lean checks the generated transition bundle,
+the recovered deposit lift, and concrete branch witnesses in
+`AuthorizedVaultTransitionWitness.lean`. Account length assumptions and
+captured-path coverage limits remain explicit; see `docs/PIPELINE.md`.
+
 ## Third-party `.so` fixtures (no `_src/`)
 
 These three `.so` files were vendored verbatim from

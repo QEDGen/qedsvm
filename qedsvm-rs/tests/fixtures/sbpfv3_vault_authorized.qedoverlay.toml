@@ -1,0 +1,13 @@
+schema_version = 1
+idl = "sbpfv3_vault_authorized.codama.json"
+
+[[instruction]]
+name = "deposit"
+refines = "Mir.vaultDeposit"
+cu_budget = 200
+
+[instruction.account_layouts]
+vault = "vault"
+
+[instruction.input_layout]
+account_data_lengths = [41, 0]

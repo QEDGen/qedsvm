@@ -1,4 +1,113 @@
 use super::super::*;
+use solana_sbpf::ebpf;
+
+/// Reading owner limbs for authorization must preserve the complete pubkey
+/// codec, including paths that reject before reading all four limbs.
+#[test]
+fn authorized_v3_vault_transitions_preserve_read_pubkeys() {
+    let so = std::path::Path::new("../tests/fixtures/sbpfv3_vault_authorized.so");
+    let ctx = load_binary(so).unwrap();
+    let analysis = Analysis::from_executable(&ctx.executable).unwrap();
+    let desc = load_descriptor(std::path::Path::new(
+        "../tests/fixtures/sbpfv3_vault_authorized.descriptor.json",
+    ))
+    .unwrap();
+    let idl = serde_json::from_str(
+        &std::fs::read_to_string("../tests/fixtures/sbpfv3_vault_authorized.codama.json").unwrap(),
+    )
+    .unwrap();
+    let run = run_transition(so, &ctx, &analysis, &desc, Some(&idl));
+    let outcome = serde_json::to_value(&run.outcome).unwrap();
+    assert_eq!(outcome["status"], "emitted", "{outcome}");
+    let (mut paths, (bundle_name, bundle)) = run.into_artifacts().unwrap();
+    assert_eq!(paths.len(), 19);
+    assert!(
+        bundle.contains("mNeg96"),
+        "metadata before the account needs a legal Lean binder"
+    );
+    assert!(
+        !bundle.contains("m-96"),
+        "signed offsets must not become subtraction in binder names"
+    );
+    assert!(!bundle.split(" :\n").next().unwrap().contains("h_noovf"));
+    paths.push((bundle_name, bundle));
+    for (module, lean) in paths {
+        let suffix = if module.ends_with("Transition") {
+            ""
+        } else {
+            "Lifted"
+        };
+        let path = format!("../../examples/lean/Generated/{module}{suffix}.lean");
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(&path, &lean).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            lean,
+            "{path} is not mechanically emitted"
+        );
+    }
+}
+
+#[test]
+fn authorized_vault_rejects_pubkey_mutations_and_partial_width_reads() {
+    let fixtures = std::path::Path::new("../tests/fixtures");
+    let original_so = fixtures.join("sbpfv3_vault_authorized.so");
+    let original = load_binary(&original_so).unwrap();
+    let analysis = Analysis::from_executable(&original.executable).unwrap();
+    let (_, text) = original.executable.get_text_bytes();
+    let bytes = std::fs::read(&original_so).unwrap();
+    let start = bytes.windows(text.len()).position(|w| w == text).unwrap();
+    let desc = load_descriptor(&fixtures.join("sbpfv3_vault_authorized.descriptor.json")).unwrap();
+    let idl = serde_json::from_str(
+        &std::fs::read_to_string(fixtures.join("sbpfv3_vault_authorized.codama.json")).unwrap(),
+    )
+    .unwrap();
+    for (label, expected_reason) in [
+        ("mutation", "mutation_mismatch"),
+        ("partial_read", "unsupported_shape"),
+    ] {
+        let mut modified = bytes.clone();
+        let pc = analysis
+            .instructions
+            .iter()
+            .position(|i| {
+                if label == "mutation" {
+                    i.opc == ebpf::ST_DW_REG && i.dst == 1 && i.off == 128
+                } else {
+                    i.opc == ebpf::LD_DW_REG && i.src == 1 && i.off == 96
+                }
+            })
+            .unwrap();
+        if label == "mutation" {
+            modified[start + pc * 8 + 2..start + pc * 8 + 4].copy_from_slice(&96i16.to_le_bytes());
+        } else {
+            modified[start + pc * 8] = ebpf::LD_B_REG;
+        }
+        let dir = std::env::temp_dir().join(format!("qedlift-auth-{label}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let so = dir.join("sbpfv3_vault_authorized.so");
+        std::fs::write(&so, modified).unwrap();
+        for path in ["success", "wrong_owner_0"] {
+            let name = format!("sbpfv3_vault_authorized_{path}.pcs");
+            std::fs::copy(fixtures.join(&name), dir.join(&name)).unwrap();
+        }
+        let ctx = load_binary(&so).unwrap();
+        let analysis = Analysis::from_executable(&ctx.executable).unwrap();
+        let run = run_transition(&so, &ctx, &analysis, &desc, Some(&idl));
+        assert!(run.artifacts.is_none(), "{label} must not emit a bundle");
+        let outcome = serde_json::to_value(run.outcome).unwrap();
+        assert!(
+            outcome["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["reason"] == expected_reason),
+            "{label}: {outcome}"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
 
 /// Real instruction data and account bytes must refer to the same vault on
 /// mutating and rejecting paths. In particular, the overflow input must not
