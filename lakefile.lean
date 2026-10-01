@@ -269,6 +269,13 @@ lean_lib Examples where
     `Generated.GuardedCounterSuccessLifted,
     `Generated.GuardedCounterAbortLifted,
     `Generated.GuardedCounterTransition,
+    `Generated.Sbpfv3VaultDepositOverflowLifted,
+    `Generated.Sbpfv3VaultDepositSuccessLifted,
+    `Generated.Sbpfv3VaultDepositUnknownLifted,
+    `Generated.Sbpfv3VaultDepositZeroLifted,
+    `Generated.Sbpfv3VaultDepositTransition,
+    `Generated.Sbpfv3VaultDepositDepositLifted,
+    `VaultDepositTransitionWitness,
     -- The FAULT-path variant: guarded_abort's guard-fail path ends in the
     -- `abort` syscall, so its path corollary is `AsmRefinesTransitionFault`
     -- (typed .abort, codecs owned in the pre) and the bundle mixes

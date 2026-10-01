@@ -249,6 +249,36 @@ Two CPI fixtures, both from `cargo-build-sbf`:
   post-state reflects the mutation. Source in
   `cpi_increment_caller_src/`.
 
+## `sbpfv3_vault_deposit.so`
+
+A source-built strict sBPF v3 vault fixture, with 19 instructions. It assumes one
+aligned, non-duplicate 41-byte account: owner pubkey at byte 0, total `u64` at
+byte 32, and bump at byte 40. Instruction data contains a `u64` discriminator
+followed by a `u64` amount. This is a fixed-layout verification fixture; it does
+not implement general input parsing or owner authorization.
+
+Rebuild with cargo-build-sbf 4.3.0 / platform-tools 1.57:
+
+```bash
+cargo build-sbf --manifest-path qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit_src/Cargo.toml --arch v3 --tools-version v1.57 --offline
+```
+
+The retained ELF's SHA-256 is recorded in `sbpfv3_fixtures.sha256`. The Codama
+IDL, overlay, recovered sidecar, and v3 descriptor accompany the same binary.
+The `.pcs` traces came from qedsvm executions checked against Mollusk:
+
+| Path | Discriminator | Total | Amount | Exit | New total | CU |
+| --- | --- | --- | --- | --- | --- | --- |
+| success | 1 | 9 | 7 | 0 | 16 | 16 |
+| zero | 1 | 9 | 0 | 1 | 9 | 7 |
+| overflow | 1 | `u64::MAX` | 1 | 3 | `u64::MAX` | 14 |
+| unknown | 9 | 9 | 7 | 2 | 9 | 4 |
+
+The four `sbpfv3_vault_deposit_*_matches_mollusk` differential tests compare
+status, complete account state, return data, and CU. Recovery and lift tests
+pin the metadata and generated Lean; `VaultDepositTransitionWitness.lean`
+checks concrete success and rejection proofs. See `docs/PIPELINE.md` for commands.
+
 ## Third-party `.so` fixtures (no `_src/`)
 
 These three `.so` files were vendored verbatim from

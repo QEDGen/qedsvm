@@ -1,0 +1,95 @@
+# qedmeta sidecar — emitted by qedrecover (do not edit by hand).
+# Schema: see qedsvm-rs/spec/qedmeta.md.
+
+schema_version = 2
+spec_version   = "qedmeta/0.2"
+
+[target]
+sha256       = "dae9bb98ab53109628719df2c655b1a79f907eb7c8e35765c78a1bf672a87c19"
+program_name = "vault"
+program_id   = "11111111111111111111111111111111"
+
+[idl]
+format = "codama"
+inline = false
+ref    = "sbpfv3_vault_deposit.codama.json"
+sha256 = "99f0560138f0a953029029f7bb2cd5d77a1a2a0db6eebe4b46ecc6e2799b1483"
+
+[[account_layout]]
+name   = "vault"
+source = "codama"
+size   = 41
+
+[[account_layout.field]]
+name        = "owner"
+offset      = 0
+kind        = "pubkey"
+[[account_layout.field]]
+name        = "total"
+offset      = 32
+kind        = "u64"
+[[account_layout.field]]
+name        = "bump"
+offset      = 40
+kind        = "byte"
+
+[[instruction]]
+name      = "deposit"
+refines   = "Mir.vaultDeposit"
+cu_budget = 100
+
+[instruction.discriminator]
+value       = 1
+width_bytes = 8
+format      = "u64"
+
+[[instruction.account]]
+name     = "vault"
+writable = true
+signer   = false
+layout   = "vault"
+
+[instruction.recovered]
+dispatch_load_pc   = 1
+dispatch_jeq_pc    = 2
+arm_entry_pc       = 3
+enclosing_func_pc  = 0
+block_count        = 8
+total_instructions = 16
+blocks = []
+
+[[instruction.idiom]]
+pc      = 1
+pattern = "read_discriminator"
+detail  = "width=8"
+
+[[instruction.const_exit]]
+block_start = 15
+exit_code   = 1
+role        = "error"
+[[instruction.const_exit]]
+block_start = 12
+exit_code   = 0
+role        = "success"
+[[instruction.const_exit]]
+block_start = 17
+exit_code   = 3
+role        = "error"
+[[instruction.tag]]
+block_start = 3
+role        = "happy"
+[[instruction.tag]]
+block_start = 5
+role        = "happy"
+[[instruction.tag]]
+block_start = 10
+role        = "happy"
+[[instruction.tag]]
+block_start = 11
+role        = "happy"
+[[instruction.tag]]
+block_start = 16
+role        = "happy"
+[[instruction.tag]]
+block_start = 12
+role        = "happy"

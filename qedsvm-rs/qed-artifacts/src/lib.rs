@@ -319,6 +319,16 @@ pub struct OverlayInstruction {
     pub cu_budget: Option<u64>,
     #[serde(default)]
     pub account_layouts: BTreeMap<String, String>,
+    /// Optional aligned, non-duplicate serialized account lengths. Enables
+    /// recognition of a direct load at entry r1 + instruction-data offset.
+    #[serde(default)]
+    pub input_layout: Option<RecoveryInputLayout>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryInputLayout {
+    pub account_data_lengths: Vec<usize>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -1,5 +1,118 @@
 use super::super::*;
 
+/// Real instruction data and account bytes must refer to the same vault on
+/// mutating and rejecting paths. In particular, the overflow input must not
+/// be excluded by a bundle-wide no-overflow premise.
+#[test]
+fn sbpfv3_vault_transition_binds_all_paths_to_serialized_account() {
+    let so = std::path::Path::new("../tests/fixtures/sbpfv3_vault_deposit.so");
+    let ctx = load_binary(so).unwrap();
+    let analysis = Analysis::from_executable(&ctx.executable).unwrap();
+    let desc = load_descriptor(std::path::Path::new(
+        "../tests/fixtures/sbpfv3_vault_deposit.descriptor.json",
+    ))
+    .unwrap();
+    let idl: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("../tests/fixtures/sbpfv3_vault_deposit.codama.json").unwrap(),
+    )
+    .unwrap();
+    let run = run_transition(so, &ctx, &analysis, &desc, Some(&idl));
+    let outcome = serde_json::to_value(&run.outcome).unwrap();
+    assert_eq!(outcome["status"], "emitted", "{outcome}");
+    let (paths, (bundle_name, bundle)) = run.into_artifacts().unwrap();
+    assert_eq!(paths.len(), 4);
+    for (module, lean) in &paths {
+        let corollary = lean
+            .split("## Whole-transition path corollary")
+            .nth(1)
+            .unwrap();
+        assert!(
+            corollary.contains("[((baseAddr + 96),"),
+            "{module} tracks the wrong account"
+        );
+    }
+    let signature = bundle.split(" :\n").next().unwrap();
+    assert!(
+        !signature.contains("h_noovf"),
+        "overflow must remain an admissible path"
+    );
+    assert!(
+        !bundle.contains("m10408"),
+        "the amount must have one IDL-bound name across paths"
+    );
+    assert!(
+        !bundle.contains("m128"),
+        "the vault total must have one name across paths"
+    );
+    let mut artifacts = paths;
+    artifacts.push((bundle_name, bundle));
+    for (module, lean) in artifacts {
+        let suffix = if module.ends_with("Transition") {
+            ""
+        } else {
+            "Lifted"
+        };
+        let path = format!("../../examples/lean/Generated/{module}{suffix}.lean");
+        if std::env::var("QEDLIFT_BLESS").is_ok() {
+            std::fs::write(&path, &lean).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            lean,
+            "{path} is not mechanically emitted"
+        );
+    }
+}
+
+#[test]
+fn v3_transition_refuses_missing_and_incorrect_parameter_bindings() {
+    let so = std::path::Path::new("../tests/fixtures/sbpfv3_vault_deposit.so");
+    let ctx = load_binary(so).unwrap();
+    let analysis = Analysis::from_executable(&ctx.executable).unwrap();
+    let original: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("../tests/fixtures/sbpfv3_vault_deposit.descriptor.json").unwrap(),
+    )
+    .unwrap();
+    let idl: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string("../tests/fixtures/sbpfv3_vault_deposit.codama.json").unwrap(),
+    )
+    .unwrap();
+    for (edit, status, reason) in [
+        ("missing_layout", "unsupported", "missing_parameter_binding"),
+        ("wrong_argument", "rejected", "parameter_mismatch"),
+        ("wrong_field", "rejected", "mutation_mismatch"),
+        ("short_account", "rejected", "invalid_layout"),
+        ("wrong_index", "rejected", "invalid_parameter_binding"),
+    ] {
+        let mut descriptor = original.clone();
+        match edit {
+            "missing_layout" => {
+                descriptor.as_object_mut().unwrap().remove("input_layout");
+            }
+            "wrong_argument" => descriptor["op"]["add_param"] = serde_json::json!("discriminator"),
+            "wrong_field" => descriptor["mutated"] = serde_json::json!("bump"),
+            "short_account" => {
+                descriptor["input_layout"]["account_data_lengths"] = serde_json::json!([8])
+            }
+            "wrong_index" => descriptor["input_layout"]["account_index"] = serde_json::json!(1),
+            _ => unreachable!(),
+        }
+        let descriptor = serde_json::from_value(descriptor).unwrap();
+        let run = run_transition(so, &ctx, &analysis, &descriptor, Some(&idl));
+        assert!(run.artifacts.is_none(), "{edit} must not produce a bundle");
+        let outcome = serde_json::to_value(&run.outcome).unwrap();
+        assert_eq!(outcome["status"], status, "{edit}: {outcome}");
+        assert!(
+            outcome["paths"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["reason"] == reason),
+            "{edit}: {outcome}"
+        );
+    }
+}
+
 /// #40 OOB-fault-path variant: guarded_oob's guard-fail path performs an
 /// out-of-bounds `sol_get_clock_sysvar` write, so its path corollary is
 /// an `AsmRefinesTransitionFault … .accessViolation` composed via the

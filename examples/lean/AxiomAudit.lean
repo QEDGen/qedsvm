@@ -25,6 +25,7 @@ import Generated.OobSha256Lifted
 import Generated.GuardedCounterTransition
 import Generated.GuardedAbortTransition
 import Generated.GuardedOobTransition
+import VaultDepositTransitionWitness
 
 open Lean Elab Command
 
@@ -69,6 +70,11 @@ elab "#assert_std_axioms " id:ident : command => do
 -- … .accessViolation` via the Mem-Mem `cuTripleWithinMem_seq_fault`
 -- (combined rr = prefix ∧ OOB region condition).
 #assert_std_axioms Examples.GuardedOobTransition.guarded_oob_transition
+#assert_std_axioms Examples.Sbpfv3VaultDepositTransition.sbpfv3_vault_deposit_transition
+#assert_std_axioms Examples.VaultDepositTransitionWitness.success_credit
+#assert_std_axioms Examples.VaultDepositTransitionWitness.zero_rejection
+#assert_std_axioms Examples.VaultDepositTransitionWitness.overflow_rejection
+#assert_std_axioms Examples.VaultDepositTransitionWitness.unknown_rejection
 -- The C-ABI invoke terminal's typed-fault spec.
 #assert_std_axioms SVM.SBPF.call_sol_invoke_signed_c_faults_spec
 -- Gap 3: the loader-serialization offset algebra must reproduce the

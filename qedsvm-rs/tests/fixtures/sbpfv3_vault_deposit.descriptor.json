@@ -1,0 +1,9 @@
+{
+  "_comment": "Aligned Solana input with one non-duplicate 41-byte vault account. Account data starts at 96; instruction data starts at 10400. The IDL binds amount to its first u64 argument. These input lengths are explicit theorem layout assumptions.",
+  "schema_version": 3,
+  "account": "vault",
+  "handler": "deposit",
+  "mutated": "total",
+  "op": { "add_param": "amount" },
+  "input_layout": { "account_data_lengths": [41], "account_index": 0 }
+}

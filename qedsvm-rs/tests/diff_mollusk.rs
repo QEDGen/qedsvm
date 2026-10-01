@@ -1298,6 +1298,85 @@ mod core_vm {
         }
     }
 
+    fn assert_v3_vault_deposit(
+        discriminator: u64,
+        total: u64,
+        amount: u64,
+        expected_total: u64,
+        exit_code: u64,
+        expected_cu: u64,
+    ) {
+        let program_id = pid(703);
+        let account_id = pid(704);
+        let so = include_bytes!("fixtures/sbpfv3_vault_deposit.so");
+        let mut data = vec![0x35; 41];
+        data[32..40].copy_from_slice(&total.to_le_bytes());
+        let mut expected = data.clone();
+        expected[32..40].copy_from_slice(&expected_total.to_le_bytes());
+        let (account, mollusk_account) = dual_account(1_000_000, data, program_id, false);
+        let mut instruction_data = discriminator.to_le_bytes().to_vec();
+        instruction_data.extend_from_slice(&amount.to_le_bytes());
+        let ix = Instruction {
+            program_id,
+            accounts: vec![AccountMeta::new(account_id, false)],
+            data: instruction_data,
+        };
+        let actual = svm_with(&[(program_id, so)])
+            .process_instruction(&ix, &[(account_id, account)])
+            .unwrap();
+        let reference = mollusk_with(&[(program_id, so)])
+            .process_instruction(&ix, &[(account_id, mollusk_account)]);
+        if exit_code == 0 {
+            assert!(matches!(actual.program_result, FsProgramResult::Success));
+            assert!(matches!(reference.program_result, MlProgramResult::Success));
+        } else {
+            assert_eq!(
+                actual.program_result,
+                FsProgramResult::Failure { exit_code }
+            );
+            assert_eq!(
+                reference.raw_result,
+                Err(InstructionError::Custom(exit_code as u32))
+            );
+        }
+        assert_eq!(actual.resulting_accounts[0].1.data(), expected);
+        assert_resulting_accounts_match(&actual, &reference, true, true, true);
+        assert_eq!(
+            actual.resulting_accounts[0].1.executable(),
+            reference.resulting_accounts[0].1.executable
+        );
+        assert_eq!(
+            actual.resulting_accounts[0].1.rent_epoch(),
+            reference.resulting_accounts[0].1.rent_epoch
+        );
+        assert_eq!(actual.return_data, reference.return_data);
+        assert_eq!(actual.compute_units_consumed, expected_cu);
+        assert_eq!(
+            actual.compute_units_consumed,
+            reference.compute_units_consumed
+        );
+    }
+
+    #[test]
+    fn sbpfv3_vault_deposit_success_matches_mollusk() {
+        assert_v3_vault_deposit(1, 9, 7, 16, 0, 16);
+    }
+
+    #[test]
+    fn sbpfv3_vault_deposit_zero_matches_mollusk() {
+        assert_v3_vault_deposit(1, 9, 0, 9, 1, 7);
+    }
+
+    #[test]
+    fn sbpfv3_vault_deposit_overflow_matches_mollusk() {
+        assert_v3_vault_deposit(1, u64::MAX, 1, u64::MAX, 3, 14);
+    }
+
+    #[test]
+    fn sbpfv3_vault_deposit_unknown_matches_mollusk() {
+        assert_v3_vault_deposit(9, 9, 7, 9, 2, 4);
+    }
+
     /// Guarded-counter SUCCESS path (#40): one account → serialized count u64 = 1
     /// = `amount` ≠ 0, so the guard passes and the program adds it to the u64 at
     /// input[8..16] (serialization metadata — ignored by post-deserialize, so the

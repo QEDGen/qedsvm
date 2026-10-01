@@ -121,6 +121,17 @@ pub(crate) fn find_dispatch_arm(
     load_opc: u8,
     disc_value: i64,
 ) -> Option<(usize, usize, usize)> {
+    find_dispatch_arm_at_offset(instructions, start_pc, load_opc, disc_value, 0, false)
+}
+
+fn find_dispatch_arm_at_offset(
+    instructions: &[ebpf::Insn],
+    start_pc: usize,
+    load_opc: u8,
+    disc_value: i64,
+    load_offset: i16,
+    entry_input: bool,
+) -> Option<(usize, usize, usize)> {
     let n = instructions.len();
     // Solana ABI: program input is always r1. Restricting source to r1 avoids false matches
     // on account-parsing loads that also read offset 0 of other pointers.
@@ -128,7 +139,18 @@ pub(crate) fn find_dispatch_arm(
     let mut pc = start_pc;
     while pc < n {
         let load = &instructions[pc];
-        if load.opc != load_opc || load.off != 0 || load.src != INPUT_PTR_REG {
+        if load.opc != load_opc || load.off != load_offset || load.src != INPUT_PTR_REG {
+            pc += 1;
+            continue;
+        }
+        // An explicit serialized-input position refers to entry r1. Calls or
+        // pointer writes before the load invalidate that provenance. Legacy
+        // zero-offset recognition retains its instruction-pointer convention.
+        if entry_input
+            && instructions[..pc].iter().any(|i| {
+                writes_dst(i, INPUT_PTR_REG) || matches!(i.opc, ebpf::CALL_IMM | ebpf::CALL_REG)
+            })
+        {
             pc += 1;
             continue;
         }
@@ -158,7 +180,8 @@ pub(crate) fn find_dispatch_arm(
     None
 }
 
-/// True if `insn` writes `reg` (i.e. is not a compare-jump, which only reads dst).
+/// Conservative register clobber check. Compare-jumps and memory stores
+/// read their destination register; a store writes the addressed memory.
 fn writes_dst(insn: &ebpf::Insn, reg: u8) -> bool {
     if insn.dst != reg {
         return false;
@@ -189,7 +212,18 @@ fn writes_dst(insn: &ebpf::Insn, reg: u8) -> bool {
             | ebpf::JSET32_IMM
             | ebpf::JSET64_IMM
     );
-    !is_cmp_jump
+    let is_store = matches!(
+        opc,
+        ebpf::ST_B_IMM
+            | ebpf::ST_H_IMM
+            | ebpf::ST_W_IMM
+            | ebpf::ST_DW_IMM
+            | ebpf::ST_B_REG
+            | ebpf::ST_H_REG
+            | ebpf::ST_W_REG
+            | ebpf::ST_DW_REG
+    );
+    !is_cmp_jump && !is_store
 }
 
 /// BFS over the CFG from `entry`. `bound` restricts the walk to a set of block-start PCs
@@ -365,6 +399,7 @@ pub(crate) fn recover_one<'a>(
     analysis: &'a Analysis<'a>,
     pc_map: &PcMap,
     idl_ix: &'a IdlInstruction,
+    input_layout: Option<&qed_artifacts::RecoveryInputLayout>,
 ) -> Result<Recovery<'a>, String> {
     let disc = match discriminator_info(idl_ix) {
         Some(d) => d,
@@ -373,11 +408,31 @@ pub(crate) fn recover_one<'a>(
     let load_opc = discriminator_load_opc(&disc.format)
         .expect("discriminator_info filters unsupported discriminator formats");
 
-    let (load_pc, jeq_pc, arm_entry) =
-        match find_dispatch_arm(&analysis.instructions, 0, load_opc, disc.value) {
-            Some(t) => t,
-            None => return Ok(Recovery::DispatchMiss { disc }),
-        };
+    let dispatch = if let Some(input) = input_layout {
+        if input.account_data_lengths.len() != idl_ix.accounts.len() {
+            return Err(
+                "input_layout must declare one non-duplicate length per IDL account".into(),
+            );
+        }
+        let offsets =
+            qed_analysis::input_layout::aligned_input_offsets(&input.account_data_lengths)?;
+        let offset = i16::try_from(offsets.instruction_data)
+            .map_err(|_| "instruction-data offset exceeds direct-load range")?;
+        find_dispatch_arm_at_offset(
+            &analysis.instructions,
+            0,
+            load_opc,
+            disc.value,
+            offset,
+            true,
+        )
+    } else {
+        find_dispatch_arm(&analysis.instructions, 0, load_opc, disc.value)
+    };
+    let (load_pc, jeq_pc, arm_entry) = match dispatch {
+        Some(t) => t,
+        None => return Ok(Recovery::DispatchMiss { disc }),
+    };
 
     let func_set = function_block_set(analysis, arm_entry);
     let func_start = func_set.iter().next().copied().unwrap_or(arm_entry);
@@ -422,4 +477,53 @@ pub(crate) fn recover_one<'a>(
         idiom_tags,
         const_exits,
     }))
+}
+
+#[cfg(test)]
+mod input_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn serialized_discriminator_requires_entry_input_provenance() {
+        let image = qed_analysis::image::ProgramImage::load(Path::new(
+            "../tests/fixtures/sbpfv3_vault_deposit.so",
+        ))
+        .unwrap();
+        let analysis = Analysis::from_executable(&image.executable).unwrap();
+        let instructions = &analysis.instructions;
+        let mut storing = instructions.clone();
+        storing[0].opc = ebpf::ST_DW_REG;
+        storing[0].dst = 1;
+        storing[0].src = 0;
+        storing[0].off = 128;
+        assert_eq!(
+            find_dispatch_arm_at_offset(&storing, 0, ebpf::LD_DW_REG, 1, 10400, true),
+            Some((1, 2, 3)),
+            "a memory store through r1 preserves the entry input pointer"
+        );
+        assert_eq!(
+            find_dispatch_arm_at_offset(instructions, 0, ebpf::LD_DW_REG, 1, 10400, true),
+            Some((1, 2, 3))
+        );
+        assert!(
+            find_dispatch_arm_at_offset(instructions, 0, ebpf::LD_DW_REG, 1, 10368, true).is_none()
+        );
+        for call in [false, true] {
+            let mut altered = instructions.clone();
+            altered[0].opc = if call {
+                ebpf::CALL_IMM
+            } else {
+                ebpf::MOV64_IMM
+            };
+            altered[0].dst = 1;
+            assert!(
+                find_dispatch_arm_at_offset(&altered, 0, ebpf::LD_DW_REG, 1, 10400, true).is_none()
+            );
+        }
+        let mut altered = instructions.clone();
+        altered[1].src = 2;
+        assert!(
+            find_dispatch_arm_at_offset(&altered, 0, ebpf::LD_DW_REG, 1, 10400, true).is_none()
+        );
+    }
 }

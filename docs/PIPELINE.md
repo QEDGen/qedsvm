@@ -112,6 +112,45 @@ Check generated proofs:
 lake build Examples
 ```
 
+## Source-built v3 vault example
+
+The retained `sbpfv3_vault_deposit` fixture exercises aligned input serialization
+and a structured account with a pubkey, total, and bump. Recover its deposit arm
+and check the sidecar handoff on the successful execution trace:
+
+```bash
+cargo run --manifest-path qedsvm-rs/Cargo.toml -p qedrecover -- \
+  --so qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit.so \
+  --overlay qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit.qedoverlay.toml \
+  --trace qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit_success.pcs \
+  --qedmeta-out /tmp/sbpfv3_vault_deposit.qedmeta.toml
+
+cargo run --manifest-path qedsvm-rs/Cargo.toml -p qedlift -- \
+  --so qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit.so \
+  --qedmeta /tmp/sbpfv3_vault_deposit.qedmeta.toml \
+  --idl qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit.codama.json \
+  --trace qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit_success.pcs \
+  --output examples/lean/Generated/Sbpfv3VaultDepositDepositLifted.lean
+```
+
+Separately, emit structured transitions from the same ELF, IDL, descriptor, and
+four captured traces. This mode consumes the descriptor directly:
+
+```bash
+cargo run --manifest-path qedsvm-rs/Cargo.toml -p qedlift -- \
+  --so qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit.so \
+  --idl qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit.codama.json \
+  --descriptor qedsvm-rs/tests/fixtures/sbpfv3_vault_deposit.descriptor.json \
+  --transition --output-dir examples/lean/Generated
+lake build Examples
+```
+
+The bundle proves the guarded success, zero-amount, overflow, and unknown-
+discriminator transitions. `VaultDepositTransitionWitness.lean` instantiates
+each branch, and `AxiomAudit` checks their axiom dependencies. The fixed account
+lengths are explicit input assumptions; the trace bundle does not establish
+exhaustive coverage of arbitrary executions.
+
 ## PC Spaces
 
 Two PC spaces are used:

@@ -89,7 +89,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             None => String::new(),
         };
 
-        match recover_one(&analysis, pc_map, idl_ix)? {
+        match recover_one(
+            &analysis,
+            pc_map,
+            idl_ix,
+            ov.and_then(|o| o.input_layout.as_ref()),
+        )? {
             Recovery::Unsupported => {
                 idl_unsupp += 1;
                 println!(
@@ -162,6 +167,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     if !claimed.is_empty() {
         println!("=== detailed view (overlay-claimed) ===");
     }
+    let mut missing_claims = Vec::new();
     for ovix in claimed {
         let idl_ix = idl
             .program
@@ -255,8 +261,9 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
 
-        match recover_one(&analysis, pc_map, idl_ix)? {
+        match recover_one(&analysis, pc_map, idl_ix, ovix.input_layout.as_ref())? {
             Recovery::Unsupported => {
+                missing_claims.push(ovix.name.clone());
                 if disc_value.is_some() {
                     println!("    [skip recognition: unsupported discriminator shape]");
                 } else {
@@ -264,6 +271,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Recovery::DispatchMiss { disc } => {
+                missing_claims.push(ovix.name.clone());
                 println!(
                     "    dispatch:    NOT FOUND \
                           (no `{}` + `jeq imm={}` pair from entry)",
@@ -396,6 +404,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    if (args.qedmeta_out.is_some() || args.output.is_some()) && !missing_claims.is_empty() {
+        return Err(format!(
+            "requested recovery artifacts were not emitted for: {}",
+            missing_claims.join(", ")
+        )
+        .into());
+    }
     Ok(())
 }
 
@@ -622,11 +637,12 @@ mod tests {
             .iter()
             .find(|i| i.name == "transfer")
             .unwrap();
-        let recovered = match recover_one(&analysis, &pc_map, idl_ix).expect("recover transfer") {
-            Recovery::Arm(r) => r,
-            Recovery::Unsupported => panic!("transfer IDL should be recoverable"),
-            Recovery::DispatchMiss { .. } => panic!("transfer dispatch arm should be found"),
-        };
+        let recovered =
+            match recover_one(&analysis, &pc_map, idl_ix, None).expect("recover transfer") {
+                Recovery::Arm(r) => r,
+                Recovery::Unsupported => panic!("transfer IDL should be recoverable"),
+                Recovery::DispatchMiss { .. } => panic!("transfer dispatch arm should be found"),
+            };
         let trace = load_trace(Path::new("../tests/fixtures/p_token_transfer.pcs")).expect("trace");
 
         let mut buf: Vec<u8> = Vec::new();
