@@ -27,6 +27,7 @@ import Generated.GuardedAbortTransition
 import Generated.GuardedOobTransition
 import VaultDepositTransitionWitness
 import AuthorizedVaultTransitionWitness
+import AuthorizedVaultCoverage
 
 open Lean Elab Command
 
@@ -171,6 +172,10 @@ elab "#assert_std_axioms " id:ident : command => do
 
 #assert_std_axioms Examples.Sbpfv3VaultAuthorizedTransition.sbpfv3_vault_authorized_transition
 #assert_std_axioms Examples.AuthorizedVaultTransitionWitness.duplicate
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.executable
+#assert_std_axioms Examples.AuthorizedVaultTransitionWitness.nonempty_authority
+#assert_std_axioms Examples.AuthorizedVaultCoverage.noOverflow_of_not_wrapped
+#assert_std_axioms Examples.AuthorizedVaultCoverage.all_inputs_terminate
 #assert_std_axioms Examples.AuthorizedVaultTransitionWitness.long_instruction
 #assert_std_axioms Examples.AuthorizedVaultTransitionWitness.missing_account
 #assert_std_axioms Examples.AuthorizedVaultTransitionWitness.missing_signer

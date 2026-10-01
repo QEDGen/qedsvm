@@ -1,6 +1,51 @@
 use super::super::*;
 use solana_sbpf::ebpf;
 
+#[test]
+fn authorized_vault_captures_every_runtime_reachable_branch_edge() {
+    let fixtures = std::path::Path::new("../tests/fixtures");
+    let so = fixtures.join("sbpfv3_vault_authorized.so");
+    let ctx = load_binary(&so).unwrap();
+    let analysis = Analysis::from_executable(&ctx.executable).unwrap();
+    let mut edges = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(fixtures).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("sbpfv3_vault_authorized_")
+            && path.extension().is_some_and(|e| e == "pcs")
+        {
+            let trace = load_trace(&path).unwrap();
+            edges.extend(trace.windows(2).map(|pair| (pair[0], pair[1])));
+        }
+    }
+    let mut missing = Vec::new();
+    for (pc, insn) in analysis.instructions.iter().enumerate() {
+        if matches!(insn.opc & 7, 5 | 6)
+            && !matches!(
+                insn.opc,
+                ebpf::JA | ebpf::CALL_IMM | ebpf::CALL_REG | ebpf::EXIT
+            )
+        {
+            let target = (pc as i64 + 1 + i64::from(insn.off)) as usize;
+            for next in [pc + 1, target] {
+                // The runtime always serializes the first account with the
+                // non-duplicate marker. This branch is excluded by the ABI,
+                // and the Lean declared-layout theorem requires that marker.
+                if (pc, next) != (4, 63) && !edges.contains(&(pc, next)) {
+                    missing.push((pc, next));
+                }
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "uncaptured runtime-reachable branch edges: {missing:?}"
+    );
+}
+
 /// Reading owner limbs for authorization must preserve the complete pubkey
 /// codec, including paths that reject before reading all four limbs.
 #[test]
@@ -20,7 +65,7 @@ fn authorized_v3_vault_transitions_preserve_read_pubkeys() {
     let outcome = serde_json::to_value(&run.outcome).unwrap();
     assert_eq!(outcome["status"], "emitted", "{outcome}");
     let (mut paths, (bundle_name, bundle)) = run.into_artifacts().unwrap();
-    assert_eq!(paths.len(), 19);
+    assert_eq!(paths.len(), 21);
     assert!(
         bundle.contains("mNeg96"),
         "metadata before the account needs a legal Lean binder"

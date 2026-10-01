@@ -9,9 +9,11 @@
 -/
 
 import Generated.Sbpfv3VaultAuthorizedDuplicateLifted
+import Generated.Sbpfv3VaultAuthorizedExecutableLifted
 import Generated.Sbpfv3VaultAuthorizedLongInstructionLifted
 import Generated.Sbpfv3VaultAuthorizedMissingAccountLifted
 import Generated.Sbpfv3VaultAuthorizedMissingSignerLifted
+import Generated.Sbpfv3VaultAuthorizedNonemptyAuthorityLifted
 import Generated.Sbpfv3VaultAuthorizedOverflowLifted
 import Generated.Sbpfv3VaultAuthorizedReadonlyLifted
 import Generated.Sbpfv3VaultAuthorizedShortInstructionLifted
@@ -95,6 +97,70 @@ theorem sbpfv3_vault_authorized_transition
       (effectiveAddr baseAddr 8 ↦ₘ mNeg88) **
       (effectiveAddr baseAddr 88 ↦U64 mNeg8) **
       (effectiveAddr baseAddr 10392 ↦ₘ m10296))) ∧
+    (mNeg96 = toU64 2 →
+     mNeg88 % 256 = toU64 255 →
+     mNeg8 = toU64 41 →
+     m10296 % 256 = toU64 255 →
+     m10376 = toU64 0 →
+     m20632 = toU64 16 →
+     mNeg86 % 256 = toU64 1 →
+     mNeg85 % 256 ≠ toU64 0 →
+      SVM.Solana.Abstract.AsmRefinesTransitionPath
+      (((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r0 (.imm (6)))).union
+        (CodeReq.singleton 1 (.ldx .dword .r2 .r1 0))).union
+        (CodeReq.singleton 2 (.jne .r2 (.imm (2)) 63))).union
+        (CodeReq.singleton 3 (.ldx .byte .r2 .r1 8))).union
+        (CodeReq.singleton 4 (.jne .r2 (.imm (255)) 63))).union
+        (CodeReq.singleton 5 (.ldx .dword .r2 .r1 88))).union
+        (CodeReq.singleton 6 (.jne .r2 (.imm (41)) 63))).union
+        (CodeReq.singleton 7 (.ldx .byte .r2 .r1 10392))).union
+        (CodeReq.singleton 8 (.jne .r2 (.imm (255)) 63))).union
+        (CodeReq.singleton 9 (.ldx .dword .r2 .r1 10472))).union
+        (CodeReq.singleton 10 (.jne .r2 (.imm (0)) 63))).union
+        (CodeReq.singleton 11 (.mov64 .r0 (.imm (7))))).union
+        (CodeReq.singleton 12 (.ldx .dword .r2 .r1 20728))).union
+        (CodeReq.singleton 13 (.jne .r2 (.imm (16)) 63))).union
+        (CodeReq.singleton 14 (.mov64 .r0 (.imm (8))))).union
+        (CodeReq.singleton 15 (.ldx .byte .r2 .r1 10))).union
+        (CodeReq.singleton 16 (.jne .r2 (.imm (1)) 63))).union
+        (CodeReq.singleton 17 (.ldx .byte .r2 .r1 11))).union
+        (CodeReq.singleton 18 (.jne .r2 (.imm (0)) 63)))).union
+        (CodeReq.singleton 63 .exit))
+      (19 + 1) (0) 0
+      (fun rt => (((((((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 8) 1 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 10392) 1 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 10472) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 20728) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 10) 1 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 11) 1 = true)
+      (toU64 8)
+      [((baseAddr + 96),
+        [(0, .pubkey ⟨owner0, owner1, owner2, owner3⟩), (32, .u64 total), (40, .byte bump)],
+        [(0, .pubkey ⟨owner0, owner1, owner2, owner3⟩), (32, .u64 total), (40, .byte bump)])]
+      (((.r0 ↦ᵣ vR0Old) **
+      (.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 mNeg96) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 8 ↦ₘ mNeg88) **
+      (effectiveAddr baseAddr 88 ↦U64 mNeg8) **
+      (effectiveAddr baseAddr 10392 ↦ₘ m10296) **
+      (effectiveAddr baseAddr 10472 ↦U64 m10376) **
+      (effectiveAddr baseAddr 20728 ↦U64 m20632) **
+      (effectiveAddr baseAddr 10 ↦ₘ mNeg86) **
+      (effectiveAddr baseAddr 11 ↦ₘ mNeg85)) **
+       callStackIs [])
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 mNeg96) **
+      (.r2 ↦ᵣ mNeg85 % 256) **
+      (effectiveAddr baseAddr 8 ↦ₘ mNeg88) **
+      (effectiveAddr baseAddr 88 ↦U64 mNeg8) **
+      (effectiveAddr baseAddr 10392 ↦ₘ m10296) **
+      (effectiveAddr baseAddr 10472 ↦U64 m10376) **
+      (effectiveAddr baseAddr 20728 ↦U64 m20632) **
+      (effectiveAddr baseAddr 10 ↦ₘ mNeg86) **
+      (effectiveAddr baseAddr 11 ↦ₘ mNeg85))) ∧
     (mNeg96 = toU64 2 →
      mNeg88 % 256 = toU64 255 →
      mNeg8 = toU64 41 →
@@ -237,6 +303,50 @@ theorem sbpfv3_vault_authorized_transition
       (effectiveAddr baseAddr 10 ↦ₘ mNeg86) **
       (effectiveAddr baseAddr 11 ↦ₘ mNeg85) **
       (effectiveAddr baseAddr 10393 ↦ₘ m10297))) ∧
+    (mNeg96 = toU64 2 →
+     mNeg88 % 256 = toU64 255 →
+     mNeg8 = toU64 41 →
+     m10296 % 256 = toU64 255 →
+     m10376 ≠ toU64 0 →
+      SVM.Solana.Abstract.AsmRefinesTransitionPath
+      (((((((((((((CodeReq.singleton 0 (.mov64 .r0 (.imm (6)))).union
+        (CodeReq.singleton 1 (.ldx .dword .r2 .r1 0))).union
+        (CodeReq.singleton 2 (.jne .r2 (.imm (2)) 63))).union
+        (CodeReq.singleton 3 (.ldx .byte .r2 .r1 8))).union
+        (CodeReq.singleton 4 (.jne .r2 (.imm (255)) 63))).union
+        (CodeReq.singleton 5 (.ldx .dword .r2 .r1 88))).union
+        (CodeReq.singleton 6 (.jne .r2 (.imm (41)) 63))).union
+        (CodeReq.singleton 7 (.ldx .byte .r2 .r1 10392))).union
+        (CodeReq.singleton 8 (.jne .r2 (.imm (255)) 63))).union
+        (CodeReq.singleton 9 (.ldx .dword .r2 .r1 10472))).union
+        (CodeReq.singleton 10 (.jne .r2 (.imm (0)) 63)))).union
+        (CodeReq.singleton 63 .exit))
+      (11 + 1) (0) 0
+      (fun rt => ((((rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 8) 1 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 10392) 1 = true) ∧
+                  rt.containsRange (effectiveAddr baseAddr 10472) 8 = true)
+      (toU64 6)
+      [((baseAddr + 96),
+        [(0, .pubkey ⟨owner0, owner1, owner2, owner3⟩), (32, .u64 total), (40, .byte bump)],
+        [(0, .pubkey ⟨owner0, owner1, owner2, owner3⟩), (32, .u64 total), (40, .byte bump)])]
+      (((.r0 ↦ᵣ vR0Old) **
+      (.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 mNeg96) **
+      (.r2 ↦ᵣ vR2Old) **
+      (effectiveAddr baseAddr 8 ↦ₘ mNeg88) **
+      (effectiveAddr baseAddr 88 ↦U64 mNeg8) **
+      (effectiveAddr baseAddr 10392 ↦ₘ m10296) **
+      (effectiveAddr baseAddr 10472 ↦U64 m10376)) **
+       callStackIs [])
+      ((.r1 ↦ᵣ baseAddr) **
+      (effectiveAddr baseAddr 0 ↦U64 mNeg96) **
+      (.r2 ↦ᵣ m10376) **
+      (effectiveAddr baseAddr 8 ↦ₘ mNeg88) **
+      (effectiveAddr baseAddr 88 ↦U64 mNeg8) **
+      (effectiveAddr baseAddr 10392 ↦ₘ m10296) **
+      (effectiveAddr baseAddr 10472 ↦U64 m10376))) ∧
     (mNeg96 = toU64 2 →
      mNeg88 % 256 = toU64 255 →
      mNeg8 = toU64 41 →
@@ -1973,12 +2083,16 @@ theorem sbpfv3_vault_authorized_transition
       (effectiveAddr baseAddr 20744 ↦U64 amount))) :=
   ⟨fun hg0 hg1 hg2 hg3 =>
       Examples.Lifted.Sbpfv3VaultAuthorizedDuplicate.Sbpfv3VaultAuthorizedDuplicate_transition_path vR0Old baseAddr mNeg96 vR2Old mNeg88 mNeg8 m10296 hmNeg96_lt hmNeg8_lt hg0 hg1 hg2 hg3 owner0 owner1 owner2 owner3 total bump,
+   fun hg0 hg1 hg2 hg3 hg4 hg5 hg6 hg7 =>
+      Examples.Lifted.Sbpfv3VaultAuthorizedExecutable.Sbpfv3VaultAuthorizedExecutable_transition_path vR0Old baseAddr mNeg96 vR2Old mNeg88 mNeg8 m10296 m10376 m20632 mNeg86 mNeg85 hmNeg96_lt hmNeg8_lt hm10376_lt hm20632_lt hg0 hg1 hg2 hg3 hg4 hg5 hg6 hg7 owner0 owner1 owner2 owner3 total bump,
    fun hg0 hg1 hg2 hg3 hg4 hg5 =>
       Examples.Lifted.Sbpfv3VaultAuthorizedLongInstruction.Sbpfv3VaultAuthorizedLongInstruction_transition_path vR0Old baseAddr mNeg96 vR2Old mNeg88 mNeg8 m10296 m10376 m20632 hmNeg96_lt hmNeg8_lt hm10376_lt hm20632_lt hg0 hg1 hg2 hg3 hg4 hg5 owner0 owner1 owner2 owner3 total bump,
    fun hg0 =>
       Examples.Lifted.Sbpfv3VaultAuthorizedMissingAccount.Sbpfv3VaultAuthorizedMissingAccount_transition_path vR0Old baseAddr mNeg96 vR2Old hmNeg96_lt hg0 owner0 owner1 owner2 owner3 total bump,
    fun hg0 hg1 hg2 hg3 hg4 hg5 hg6 hg7 hg8 =>
       Examples.Lifted.Sbpfv3VaultAuthorizedMissingSigner.Sbpfv3VaultAuthorizedMissingSigner_transition_path vR0Old baseAddr mNeg96 vR2Old mNeg88 mNeg8 m10296 m10376 m20632 mNeg86 mNeg85 m10297 hmNeg96_lt hmNeg8_lt hm10376_lt hm20632_lt hg0 hg1 hg2 hg3 hg4 hg5 hg6 hg7 hg8 owner0 owner1 owner2 owner3 total bump,
+   fun hg0 hg1 hg2 hg3 hg4 =>
+      Examples.Lifted.Sbpfv3VaultAuthorizedNonemptyAuthority.Sbpfv3VaultAuthorizedNonemptyAuthority_transition_path vR0Old baseAddr mNeg96 vR2Old mNeg88 mNeg8 m10296 m10376 hmNeg96_lt hmNeg8_lt hm10376_lt hg0 hg1 hg2 hg3 hg4 owner0 owner1 owner2 owner3 total bump,
    fun hg0 hg1 hg2 hg3 hg4 hg5 hg6 hg7 hg8 hg9 hg10 hg11 hg12 hg13 hg14 hg15 hg16 hg17 hg18 hg19 hg20 =>
       Examples.Lifted.Sbpfv3VaultAuthorizedOverflow.Sbpfv3VaultAuthorizedOverflow_transition_path vR0Old baseAddr mNeg96 vR2Old mNeg88 mNeg8 m10296 m10376 m20632 mNeg86 mNeg85 m10297 m20656 mNeg48 vR3Old m20664 mNeg40 m20672 mNeg32 m20680 mNeg24 m10304 owner0 m10312 owner1 m10320 owner2 m10328 owner3 m20640 amount total vR4Old hmNeg96_lt hmNeg8_lt hm10376_lt hm20632_lt hm20656_lt hmNeg48_lt hm20664_lt hmNeg40_lt hm20672_lt hmNeg32_lt hm20680_lt hmNeg24_lt hm10304_lt howner0_lt hm10312_lt howner1_lt hm10320_lt howner2_lt hm10328_lt howner3_lt hm20640_lt hamount_lt htotal_lt hg0 hg1 hg2 hg3 hg4 hg5 hg6 hg7 hg8 hg9 hg10 hg11 hg12 hg13 hg14 hg15 hg16 hg17 hg18 hg19 hg20 bump,
    fun hg0 hg1 hg2 hg3 hg4 hg5 hg6 =>
