@@ -118,6 +118,10 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms Examples.Lifted.OobCreatePda.OobCreatePda_fault_correct
 #assert_std_axioms SVM.SBPF.call_sol_sha256_faults_oob_spec
 #assert_std_axioms Examples.Lifted.OobSha256.OobSha256_fault_correct
+#assert_std_axioms SVM.SBPF.Misc.execGetSysvar_faults_oob_out
+#assert_std_axioms SVM.SBPF.Misc.execGetSysvar_faults_oob_id
+#assert_std_axioms SVM.SBPF.call_sol_get_sysvar_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_sysvar_cells17_spec
 
 -- Pattern library Layer 3 (ENFORCES direction): the p-token error-path lifts
 -- and their EnforcedError compositions carry their own IN-MODULE assertions

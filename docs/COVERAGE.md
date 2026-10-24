@@ -154,7 +154,7 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | --- | --- | --- |
 | `sol_log_` | Mechanical | Models the log call shape and CU bound used by generated lifts. |
 | `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. |
-| `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. |
+| `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. The output slice must be writable and the 32-byte id readable (`rr`), else `.accessViolation` (`sbpfv3_oob_get_sysvar_{out,id}.so`). |
 | `sol_invoke_signed_rust` | Terminal (V0), bridged/composed (V3) | The proof-facing CPI in `step` is the fail-closed `Cpi.exec` stub (audit C5), so an invoke ends the walk (`.unsupportedInstruction` typed-fault terminal); the lifted prefix's post owns the caller-side envelope cells (`cpiEnvelope`, see below). V3 lifts extend across it via `<M>_cpi_bridge` and `lift_cpi_paths` (see "V3 caller paths across a CPI"). |
 | `sol_invoke_signed_c` | Terminal (V0), bridged/composed (V3) | Same as the Rust ABI (`cpiEnvelopeC` is the C-ABI envelope encoding); `sbpfv3_cpi_writer.so` is the C-ABI V3 fixture. |
 | `sol_sha256` | Mechanical | Single-slice success path: descriptor cells recover `(ptr, len)`, the digest is written to a framed `↦Bytes32` atom, `r0 := 0` (`call_sol_sha256_spec`). |

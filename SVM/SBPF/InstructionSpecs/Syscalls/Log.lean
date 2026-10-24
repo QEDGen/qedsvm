@@ -230,15 +230,18 @@ theorem call_sol_get_sysvar_spec
     (h_disj : idA + 32 ≤ outA ∨ outA + lenV ≤ idA)
     (hCu : ∀ s : State,
         (step (.call .sol_get_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    -- H6: `[outA, outA+lenV)` writable, then the 32-byte id at `idA` readable.
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) ** (outA ↦Bytes bsOut))
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
-        (idA ↦Bytes32 idBytes) ** (outA ↦Bytes slice)) := by
-  intro R hRfree fetch hcr s hPR hpc hex hbud
+        (idA ↦Bytes32 idBytes) ** (outA ↦Bytes slice))
+      (fun rt => rt.containsWritable outA lenV = true ∧
+                 rt.containsRange idA 32 = true) := by
+  intro R hRfree fetch hcr s hPR hpc hex hbud hrr
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
   obtain ⟨h_r0, h_T1, hd_r0_T1, hu_r0_T1, h_r0_pred, h_T1_sat⟩ := h_P_sat
   obtain ⟨h_r1, h_T2, hd_r1_T2, hu_r1_T2, h_r1_pred, h_T2_sat⟩ := h_T1_sat
@@ -418,6 +421,11 @@ theorem call_sol_get_sysvar_spec
     rw [hs_r1_field, h_readBytes]; exact hBuf
   have h_if3 : ¬ (s.regs.r3 + s.regs.r4 > buf.size) := by
     rw [hs_r3_field, hs_r4_field]; exact Nat.not_lt.mpr hInRange
+  -- H6 guards: output writable, id readable (from `rr`)
+  have h_gw : s.regs.r4 = 0 ∨ s.regions.containsWritable s.regs.r2 s.regs.r4 = true := by
+    rw [hs_r2_field, hs_r4_field]; exact Or.inr hrr.1
+  have h_gr : (32 : Nat) = 0 ∨ s.regions.containsRange s.regs.r1 32 = true := by
+    rw [hs_r1_field]; exact Or.inr hrr.2
   have hfetch : fetch s.pc = some (.call .sol_get_sysvar) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 =
@@ -426,28 +434,33 @@ theorem call_sol_get_sysvar_spec
         executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]; show ((Misc.execGetSysvar s).regs) = s.regs.set .r0 0
-    simp only [Misc.execGetSysvar, if_neg h_if1, if_neg h_if2, h_discr,
+    simp only [Misc.execGetSysvar, State.guardWrite, State.guardRead,
+               if_neg h_if1, if_pos h_gw, if_pos h_gr, if_neg h_if2, h_discr,
                if_neg h_if3]
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; rfl
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]; show (Misc.execGetSysvar s).exitCode = none
-    simp only [Misc.execGetSysvar, if_neg h_if1, if_neg h_if2, h_discr,
+    simp only [Misc.execGetSysvar, State.guardWrite, State.guardRead,
+               if_neg h_if1, if_pos h_gw, if_pos h_gr, if_neg h_if2, h_discr,
                if_neg h_if3]
     exact hex
   have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
     rw [hstep_eq]; show (Misc.execGetSysvar s).returnData = s.returnData
-    simp only [Misc.execGetSysvar, if_neg h_if1, if_neg h_if2, h_discr,
+    simp only [Misc.execGetSysvar, State.guardWrite, State.guardRead,
+               if_neg h_if1, if_pos h_gw, if_pos h_gr, if_neg h_if2, h_discr,
                if_neg h_if3]
   have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
     rw [hstep_eq]; show (Misc.execGetSysvar s).callStack = s.callStack
-    simp only [Misc.execGetSysvar, if_neg h_if1, if_neg h_if2, h_discr,
+    simp only [Misc.execGetSysvar, State.guardWrite, State.guardRead,
+               if_neg h_if1, if_pos h_gw, if_pos h_gr, if_neg h_if2, h_discr,
                if_neg h_if3]
   have hexec_mem_at_out (i : Nat) (hi : i < lenV) :
       (executeFn fetch s 1).mem (outA + i) = (buf.get! (offV + i)).toNat := by
     rw [hstep_eq]
     show ((Misc.execGetSysvar s).mem) (outA + i) = (buf.get! (offV + i)).toNat
-    simp only [Misc.execGetSysvar, if_neg h_if1, if_neg h_if2, h_discr,
+    simp only [Misc.execGetSysvar, State.guardWrite, State.guardRead,
+               if_neg h_if1, if_pos h_gw, if_pos h_gr, if_neg h_if2, h_discr,
                if_neg h_if3]
     rw [Mem_read_default, hs_r2_field, hs_r3_field, hs_r4_field]
     rw [if_pos ⟨Nat.le_add_right _ _, by omega⟩,
@@ -457,7 +470,8 @@ theorem call_sol_get_sysvar_spec
       (executeFn fetch s 1).mem a = s.mem a := by
     rw [hstep_eq]
     show ((Misc.execGetSysvar s).mem) a = s.mem a
-    simp only [Misc.execGetSysvar, if_neg h_if1, if_neg h_if2, h_discr,
+    simp only [Misc.execGetSysvar, State.guardWrite, State.guardRead,
+               if_neg h_if1, if_pos h_gw, if_pos h_gr, if_neg h_if2, h_discr,
                if_neg h_if3]
     rw [Mem_read_default, hs_r2_field, hs_r3_field, hs_r4_field]
     rw [if_neg]
@@ -994,7 +1008,8 @@ oldB)`. -/
 set_option maxHeartbeats 1600000 in
 /-- `sol_get_sysvar` (success, exact 17-byte slice) over a cell-granular out
     region. The slice decomposition `hsl` and cell addresses `ha1`/`ha2` are
-    parameters the emitter discharges by `decide` / surfaces as side hyps. -/
+    parameters the emitter discharges by `decide` / surfaces as side hyps. H6:
+    `rr` as `call_sol_get_sysvar_spec` (out writable, id readable). -/
 theorem call_sol_get_sysvar_cells17_spec
     (r0Old idA outA offV lenV a1 a2 : Nat)
     (oldD0 oldD1 oldB w0 w1 wb : Nat)
@@ -1015,7 +1030,7 @@ theorem call_sol_get_sysvar_cells17_spec
     (h_disj : idA + 32 ≤ outA ∨ outA + lenV ≤ idA)
     (hCu : ∀ s : State,
         (step (.call .sol_get_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
+    cuTripleWithinMem 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_sysvar))
       ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
@@ -1024,7 +1039,9 @@ theorem call_sol_get_sysvar_cells17_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) **
-        ((outA ↦U64 w0) ** ((a1 ↦U64 w1) ** (a2 ↦ₘ wb)))) := by
+        ((outA ↦U64 w0) ** ((a1 ↦U64 w1) ** (a2 ↦ₘ wb))))
+      (fun rt => rt.containsWritable outA lenV = true ∧
+                 rt.containsRange idA 32 = true) := by
   -- cells ↔ blob decomposition, parametric over the cell values
   have hcells : ∀ (d0 d1 b : Nat), b < 256 → ∀ h',
       memBytesIs outA (PartialState.u64LE d0
@@ -1057,7 +1074,7 @@ theorem call_sol_get_sysvar_cells17_spec
       ++ (PartialState.u64LE oldD1 ++ PartialState.byteBA oldB)).size
       = lenV := by
     simp [ByteArray.size_append, hLen]
-  refine cuTripleWithin_weaken ?_ ?_
+  refine cuTripleWithinMem_weaken ?_ ?_ (fun _ x => x)
     (call_sol_get_sysvar_spec r0Old idA outA offV lenV idBytes buf slice
       (PartialState.u64LE oldD0
         ++ (PartialState.u64LE oldD1 ++ PartialState.byteBA oldB))

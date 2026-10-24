@@ -367,6 +367,18 @@ const OOB_SECP256K1_SO: &[u8] = include_bytes!("fixtures/oob_secp256k1.so");
 /// Source in `oob_create_pda_src/`.
 const OOB_CREATE_PDA_SO: &[u8] = include_bytes!("fixtures/oob_create_pda.so");
 
+/// sBPF V3: `sol_get_sysvar` for rent with a readable id but its 17-byte output
+/// 256 MiB past the heap (below `MM_INPUT_START`). agave's `translate_mut!`
+/// traps; `Misc.execGetSysvar` routes the slice through `guardWrite` and faults.
+/// Source in `sbpfv3_oob_get_sysvar_out_src/`.
+const SBPFV3_OOB_GET_SYSVAR_OUT_SO: &[u8] = include_bytes!("fixtures/sbpfv3_oob_get_sysvar_out.so");
+
+/// sBPF V3: `sol_get_sysvar` into a valid stack buffer with the 32-byte id
+/// 256 MiB past the heap. agave's `translate_type::<Pubkey>` traps;
+/// `Misc.execGetSysvar` routes the id through `guardRead` and faults.
+/// Source in `sbpfv3_oob_get_sysvar_id_src/`.
+const SBPFV3_OOB_GET_SYSVAR_ID_SO: &[u8] = include_bytes!("fixtures/sbpfv3_oob_get_sysvar_id.so");
+
 /// BPF caller that invokes `system_instruction::transfer` between
 /// its first two account_infos. Companion fixture for Tier-1 #2
 /// (native programs). Source in `system_transfer_caller_src/`.
@@ -2305,6 +2317,22 @@ mod oob {
     #[test]
     fn oob_create_pda_fails_on_both() {
         assert_vm_faults_on_both(250, OOB_CREATE_PDA_SO, "oob_create_pda");
+    }
+
+    /// H6: sol_get_sysvar output 256 MiB OOB (V3); translate_mut! → guardWrite VM-faults on both.
+    #[test]
+    fn sbpfv3_oob_get_sysvar_out_fails_on_both() {
+        assert_vm_faults_on_both(
+            251,
+            SBPFV3_OOB_GET_SYSVAR_OUT_SO,
+            "sbpfv3_oob_get_sysvar_out",
+        );
+    }
+
+    /// H6: sol_get_sysvar id 256 MiB OOB (V3); translate_type::<Pubkey> → guardRead VM-faults on both.
+    #[test]
+    fn sbpfv3_oob_get_sysvar_id_fails_on_both() {
+        assert_vm_faults_on_both(252, SBPFV3_OOB_GET_SYSVAR_ID_SO, "sbpfv3_oob_get_sysvar_id");
     }
 }
 

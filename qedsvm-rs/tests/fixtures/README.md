@@ -43,6 +43,21 @@ return data, and compute units; the rollback path compares error class and
 post-state bytes. Its failed-CPI meter currently records qedsvm's charged
 nested fuel separately from Mollusk's refunded meter.
 
+## `sbpfv3_oob_get_sysvar_{out,id}.so`
+
+Built from `sbpfv3_oob_get_sysvar_{out,id}_src` with `cargo-build-sbf 4.3.0
+--arch v3` and platform-tools 1.57 (rebuild the same way, copy
+`target/deploy/qedsvm_sbpfv3_oob_get_sysvar_{out,id}.so`). SHA-256s are pinned
+in `sbpfv3_fixtures.sha256`; clean rebuilds are byte-identical.
+
+Both ask `sol_get_sysvar` for the 17-byte rent slice, through
+`solana-define-syscall`. `out` passes a readable id and an output buffer 256
+MiB past the heap (below `MM_INPUT_START`, so the parameter-address check does
+not fire); `id` writes into a stack buffer but points the id there instead.
+agave traps both (`translate_mut!` on the output, then `translate_type::<Pubkey>`
+on the id), and so does `Misc.execGetSysvar` through `guardWrite`/`guardRead`.
+`sbpfv3_oob_get_sysvar_{out,id}_fails_on_both` check the matching VM fault.
+
 ## `sbpfv3_compiled_account.so`
 
 Built from `sbpfv3_compiled_account_src` with `cargo-build-sbf 4.3.0 --arch

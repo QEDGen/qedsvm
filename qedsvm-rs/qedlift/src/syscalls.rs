@@ -425,7 +425,8 @@ const RENT_BURN_PERCENT: i64 = 50;
 /// Emit `sol_get_sysvar` (H8 Phase C-2). Only the RENT id at offset 0, length 17 (pinocchio
 /// `Rent::get()`) is modeled, shaped to `call_sol_get_sysvar_cells17_spec`. Out region owned as
 /// two `↦U64` cells + one `↦ₘ` byte (post: mollusk-default rent 6960/1.0-bits/50); address-bound
-/// and disjointness side conditions surfaced as hypotheses.
+/// and disjointness side conditions surfaced as hypotheses. H6: `rr` gains the output-writable and
+/// id-readable clauses.
 pub(super) fn emit_sol_get_sysvar(
     state: &mut SymState,
     spec_calls: &mut Vec<SpecCall>,
@@ -468,6 +469,26 @@ pub(super) fn emit_sol_get_sysvar(
             &id_bytes[..8]
         )));
     }
+
+    // H6 rr in the spec's conjunct order: the 17-byte output writable, then
+    // the 32-byte id readable, kept as ONE grouped fold-unit (the id clause
+    // CONTINUES the group) so the goal matches `(prior) ∧ (wOut ∧ rId)`.
+    let g0 = state.region_requirements_mut().len();
+    state.region_requirements_mut().push((
+        r2v.clone(),
+        0,
+        Width::Byte,
+        true,
+        Some((r2v.clone(), Expr::Const(17))),
+    ));
+    state.region_requirements_mut().push((
+        r1v.clone(),
+        0,
+        Width::Byte,
+        false,
+        Some((r1v.clone(), Expr::Const(32))),
+    ));
+    state.region_continuations_mut().insert(g0 + 1);
 
     let (_idx, ncu_name, hcu_name) = state.alloc_syscall("GetSysvar");
 
