@@ -3,7 +3,7 @@
 -- agave's `SyscallGetSysvar` serves slices of the BINCODE-serialized sysvars in
 -- the sysvar cache (exactly seven: clock, epoch_schedule, epoch_rewards, rent,
 -- slot_hashes, stake_history, last_restart_slot; else in-band `SYSVAR_NOT_FOUND`).
--- Contents are the MOLLUSK DEFAULTS (`Sysvars::default()`), pinned against
+-- Contents are the MOLLUSK DEFAULTS (`Mollusk::default().sysvars`, agave 4.3), pinned against
 -- `bincode::serialize` in `qedsvm-rs/tests/sysvar_buffer_pins.rs` so a default
 -- bump fails in Rust rather than silently diverging the model.
 --
@@ -71,8 +71,10 @@ def lastRestartSlotId : ByteArray :=
 
 /-! ## Serialized buffers (mollusk defaults, bincode) -/
 
-/-- `Clock::default()`: 5 zero u64/i64 fields = 40 zero bytes. -/
-def clockBuf : ByteArray := zeros 40
+/-- Mollusk default `Clock`: `slot = 1` (`DEFAULT_CLOCK_SLOT`), the other four
+    u64/i64 fields 0. 40 bytes. -/
+def clockBuf : ByteArray :=
+  ⟨#[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00] ++ Array.replicate 32 0⟩
 
 /-- `EpochSchedule::without_warmup()`: slots_per_epoch = leader_schedule_slot_offset
     = 432_000 (0x69780 → LE `80 97 06 ..`), warmup = false, rest 0. bincode bool is
@@ -86,12 +88,12 @@ def epochScheduleBuf : ByteArray :=
     (u64 + u64 + 32-byte hash + u128 + u64 + u64 + bool). -/
 def epochRewardsBuf : ByteArray := zeros 81
 
-/-- `Rent::default()`: `lamports_per_byte_year = 3480` (0x0D98),
-    `exemption_threshold = 2.0` (f64 bits `0x4000_0000_0000_0000`),
+/-- `Rent::default()` (SIMD-0194): `lamports_per_byte = 6960` (0x1B30),
+    `exemption_threshold = 1.0` (f64 bits `0x3FF0_0000_0000_0000`),
     `burn_percent = 50`. 17 bytes. -/
 def rentBuf : ByteArray :=
-  ⟨#[0x98, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40,
+  ⟨#[0x30, 0x1b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f,
      0x32]⟩
 
 /-- Mollusk default `SlotHashes`: 512 × `(slot 0, Hash::default())`. bincode `Vec`:

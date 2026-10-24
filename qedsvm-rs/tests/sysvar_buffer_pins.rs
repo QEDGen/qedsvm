@@ -64,12 +64,10 @@ fn sysvar_buffers_match_lean_constants() {
     let m = Mollusk::default();
     let s = &m.sysvars;
 
-    // clockBuf = zeros 40
-    assert_eq!(
-        bincode::serialize(&s.clock).unwrap(),
-        vec![0u8; 40],
-        "clockBuf"
-    );
+    // clockBuf = slot 1 (mollusk DEFAULT_CLOCK_SLOT, u64 LE) + 32 zero bytes
+    let mut clock = vec![0u8; 40];
+    clock[0] = 0x01;
+    assert_eq!(bincode::serialize(&s.clock).unwrap(), clock, "clockBuf");
 
     // epochScheduleBuf = 432_000 ×2 (u64 LE) + false + 16 zero bytes
     let mut epoch_schedule = Vec::new();
@@ -90,9 +88,9 @@ fn sysvar_buffers_match_lean_constants() {
         "epochRewardsBuf"
     );
 
-    // rentBuf = 3480 (u64 LE) + 2.0 (f64 LE) + 50
+    // rentBuf = 6960 (u64 LE) + 1.0 (f64 LE) + 50  (SIMD-0194)
     let rent = vec![
-        0x98, 0x0d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x32,
+        0x30, 0x1b, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0x32,
     ];
     assert_eq!(bincode::serialize(&s.rent).unwrap(), rent, "rentBuf");
 

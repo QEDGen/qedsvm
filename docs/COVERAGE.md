@@ -46,7 +46,9 @@ refinement (only registered shapes get refinements); loops need per-path
 unrolling via traces.
 
 **Runtime alignment.** Pinned: `solana-sbpf` 0.14.4, Mollusk
-`0.12.1-agave-4.0`, `cargo-build-sbf` 4.3.0, platform-tools 1.57; V3 fixture
+`0.16.2` (agave 4.3: SIMD-0194 rent, mollusk `DEFAULT_CLOCK_SLOT = 1`, both
+mirrored in `SysvarData.lean` and pinned by `sysvar_buffer_pins.rs`),
+`cargo-build-sbf` 4.3.0, platform-tools 1.57; V3 fixture
 bytes are SHA-256 pinned (`tests/fixtures/sbpfv3_fixtures.sha256`, checked in
 CI). Agave 4.4's `solana-sbpf` 0.24.0 was reviewed and shows no V3 semantic
 delta; the final conformance run against an Agave 4.4 Mollusk is pending

@@ -1,13 +1,13 @@
-//! Diff-testing helpers: converters between `solana-account 4.x` (`qedsvm::Svm`) and
-//! `solana-account 3.x` (`mollusk_svm`; Mollusk hasn't moved to 4.x yet). Feature: `diff-mollusk`.
+//! Diff-testing helpers: converters between `AccountSharedData` (`qedsvm::Svm`) and
+//! `Account` (`mollusk_svm`), both `solana-account 4.x`. Feature: `diff-mollusk`.
 
 use solana_account::{AccountSharedData, ReadableAccount, WritableAccount};
 use solana_pubkey::Pubkey;
 
-/// Convert `(pubkey, mollusk_account::Account)` list to `(pubkey, AccountSharedData)`.
-/// Field-by-field copy — byte semantics agree; only the owning crate version differs.
+/// Convert `(pubkey, solana_account::Account)` list to `(pubkey, AccountSharedData)`.
+/// Field-by-field copy.
 pub fn mollusk_to_qedsvm(
-    accounts: &[(Pubkey, mollusk_account::Account)],
+    accounts: &[(Pubkey, solana_account::Account)],
 ) -> Vec<(Pubkey, AccountSharedData)> {
     accounts
         .iter()
@@ -15,38 +15,32 @@ pub fn mollusk_to_qedsvm(
         .collect()
 }
 
-/// Convert a single `mollusk_account::Account` into `AccountSharedData`.
-pub fn mollusk_account_to_shared(a: &mollusk_account::Account) -> AccountSharedData {
-    // `solana_pubkey::Pubkey` byte layout is stable across 3.x/4.x —
-    // both wrap a `[u8; 32]`. Reinterpret the owner directly.
-    let owner_bytes: &[u8; 32] = a.owner.as_array();
-    let owner = Pubkey::from(*owner_bytes);
-
-    let mut shared = AccountSharedData::new(a.lamports, a.data.len(), &owner);
+/// Convert a single `solana_account::Account` into `AccountSharedData`.
+pub fn mollusk_account_to_shared(a: &solana_account::Account) -> AccountSharedData {
+    let mut shared = AccountSharedData::new(a.lamports, a.data.len(), &a.owner);
     shared.set_data_from_slice(&a.data);
     shared.set_executable(a.executable);
     shared.set_rent_epoch(a.rent_epoch);
     shared
 }
 
-/// Convert `(pubkey, AccountSharedData)` list to `(pubkey, mollusk_account::Account)`.
+/// Convert `(pubkey, AccountSharedData)` list to `(pubkey, solana_account::Account)`.
 /// Inverse of [`mollusk_to_qedsvm`].
 pub fn qedsvm_to_mollusk(
     accounts: &[(Pubkey, AccountSharedData)],
-) -> Vec<(Pubkey, mollusk_account::Account)> {
+) -> Vec<(Pubkey, solana_account::Account)> {
     accounts
         .iter()
         .map(|(k, a)| (*k, shared_to_mollusk_account(a)))
         .collect()
 }
 
-/// Convert a single `AccountSharedData` into `mollusk_account::Account`. Inverse of [`mollusk_account_to_shared`].
-pub fn shared_to_mollusk_account(a: &AccountSharedData) -> mollusk_account::Account {
-    let owner_bytes: [u8; 32] = *a.owner().as_array();
-    mollusk_account::Account {
+/// Convert a single `AccountSharedData` into `solana_account::Account`. Inverse of [`mollusk_account_to_shared`].
+pub fn shared_to_mollusk_account(a: &AccountSharedData) -> solana_account::Account {
+    solana_account::Account {
         lamports: a.lamports(),
         data: a.data().to_vec(),
-        owner: mollusk_pubkey::Pubkey::from(owner_bytes),
+        owner: *a.owner(),
         executable: a.executable(),
         rent_epoch: a.rent_epoch(),
     }
@@ -61,11 +55,11 @@ mod tests {
         data: Vec<u8>,
         exec: bool,
         epoch: u64,
-    ) -> mollusk_account::Account {
-        mollusk_account::Account {
+    ) -> solana_account::Account {
+        solana_account::Account {
             lamports,
             data,
-            owner: mollusk_account::Account::default().owner,
+            owner: solana_account::Account::default().owner,
             executable: exec,
             rent_epoch: epoch,
         }
@@ -83,7 +77,6 @@ mod tests {
 
     #[test]
     fn owner_byte_layout_preserved() {
-        // Pubkey is `[u8; 32]` on both sides — not `Into`-convertible, but bytes round-trip exactly.
         let m = mollusk_acct(0, vec![], false, 0);
         let owner_bytes_before = *m.owner.as_array();
         let shared = mollusk_account_to_shared(&m);

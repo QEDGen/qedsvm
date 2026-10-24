@@ -49,8 +49,8 @@ theorem PTokenInitializeMint2_decode_pins :
       2920, 2928, 2936, 2944, 2952, 2960, 2968, 29784, 30560, 30568, 32856, 32864, 32872, 32880, 32888, 32896, 
       33624, 33632, 33640, 33648, 33656, 33664, 92296, 92304, 92312, 92320, 92328, 92336, 92344, 92360, 92368, 92376, 
       92384, 92416, 92424, 92432, 92440, 92448, 92456, 92464, 92472, 33672, 33680, 33688, 33696, 33704, 33712, 33720, 
-      33728, 33736, 33744, 33760, 33768, 33784, 33792, 33800, 33808, 37488, 37496, 37504, 37512, 37520, 37528, 37536, 
-      37544, 37552, 37560, 37568, 37576, 37584, 37592, 37600, 37608, 37616, 37624, 37632, 37640, 37648].map fun off =>
+      33728, 33736, 33744, 33760, 33800, 33808, 37488, 37496, 37504, 37512, 37520, 37528, 37536, 37544, 37552, 37560, 
+      37568, 37576, 37584, 37592, 37600, 37608, 37616, 37624, 37632, 37640, 37648].map fun off =>
       Decode.decodeInsn PTokenText PTokenSlotMap off PTokenFnRegistry) = [
       some (.ldx .byte .r2 .r1 0, 8),
       some (.jeq .r2 (.imm (3)) 304, 8),
@@ -120,9 +120,6 @@ theorem PTokenInitializeMint2_decode_pins :
       some (.ldx .dword .r3 .r8 72, 8),
       some (.lddw .r2 (4607182418800017408), 16),
       some (.jeq .r6 (.reg .r2) 3942, 8),
-      some (.lddw .r2 (4611686018427387904), 16),
-      some (.jne .r6 (.reg .r2) 4347, 8),
-      some (.lsh64 .r1 (.imm (1)), 8),
       some (.ldx .dword .r4 .r10 (-2096), 8),
       some (.ja 4371, 8),
       some (.mov64 .r6 (.imm (3)), 8),
@@ -207,12 +204,11 @@ theorem PTokenInitializeMint2_lifted_spec
     (h_branch12 : oldMemB_0 + 256 * (oldMemB_1 + 256 * (oldMemB_2 + 256 * (oldMemB_3 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * oldMemB_7)))))) ≠ toU64 0)
     (h_branch13 : 0 = toU64 0)
     (h_branch14 : toU64 0 ≠ toU64 1)
-    (h_branch15 : 4611686018427387904 ≠ toU64 4607182418800017408)
-    (h_branch16 : 4611686018427387904 = toU64 4611686018427387904)
-    (h_branch17 : oldMemD_9 = toU64 82)
-    (h_branch18 : oldMemB_32 % 256 = toU64 0)
-    (h_branch19 : ¬ oldMemD_31 < ((wrapMul 3480 (wrapAdd oldMemD_9 (toU64 128))) <<< (toU64 1 % 64)) % U64_MODULUS)
-    (h_branch20 : toU64 0 = toU64 0)
+    (h_branch15 : 4607182418800017408 = toU64 4607182418800017408)
+    (h_branch16 : oldMemD_9 = toU64 82)
+    (h_branch17 : oldMemB_32 % 256 = toU64 0)
+    (h_branch18 : ¬ oldMemD_31 < wrapMul 6960 (wrapAdd oldMemD_9 (toU64 128)))
+    (h_branch19 : toU64 0 = toU64 0)
     (h_alias_3924 : effectiveAddr (wrapAdd baseAddr (toU64 8)) (80) = effectiveAddr (baseAddr) (88))
     (h_alias_10838_0 : effectiveAddr (vR10Old + 4096) (-4) = effectiveAddr (vR10Old + 4096) (-7) + 3)
     (h_sysvar_out_10845 : (wrapAdd (vR10Old + 4096) (toU64 (-24))) < Memory.INPUT_START)
@@ -228,15 +224,15 @@ theorem PTokenInitializeMint2_lifted_spec
     (h_alias_10850_5 : effectiveAddr (vR10Old + 4096) (-4) + 1 = effectiveAddr (vR10Old + 4096) (-8) + 5)
     (h_alias_10850_6 : effectiveAddr (vR10Old + 4096) (-4) + 2 = effectiveAddr (vR10Old + 4096) (-8) + 6)
     (h_alias_10850_7 : effectiveAddr (vR10Old + 4096) (-4) + 3 = effectiveAddr (vR10Old + 4096) (-8) + 7)
-    (hReloadLt_10852 : 4611686018427387904 < 2 ^ 64)
+    (hReloadLt_10852 : 4607182418800017408 < 2 ^ 64)
     (h_alias_10852 : effectiveAddr (vR10Old + 4096) (-16) = effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (8))
-    (hReloadLt_10854 : 3480 < 2 ^ 64)
+    (hReloadLt_10854 : 6960 < 2 ^ 64)
     (h_alias_10854 : effectiveAddr (vR10Old + 4096) (-24) = effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (0))
     (hReloadLt_3928 : toU64 0 < 2 ^ 32)
     (h_alias_3928 : effectiveAddr (vR10Old) (-32) = effectiveAddr (wrapAdd vR10Old (toU64 (-32))) (0))
-    (hReloadLt_3932 : 3480 < 2 ^ 64)
+    (hReloadLt_3932 : 6960 < 2 ^ 64)
     (h_alias_3932 : effectiveAddr (vR10Old) (-24) = effectiveAddr (wrapAdd vR10Old (toU64 (-32))) (8))
-    (hReloadLt_3934 : 4611686018427387904 < 2 ^ 64)
+    (hReloadLt_3934 : 4607182418800017408 < 2 ^ 64)
     (h_alias_3934 : effectiveAddr (vR10Old) (-16) = effectiveAddr (wrapAdd vR10Old (toU64 (-32))) (16))
     (hReloadLt_3935 : wrapAdd baseAddr (toU64 8) < 2 ^ 64)
     (hReloadLt_3942 : ((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS < 2 ^ 64)
@@ -244,8 +240,8 @@ theorem PTokenInitializeMint2_lifted_spec
     (hReloadLt_4388 : oldMemB_12 % 256 < 2 ^ 64)
     (nCuGetSysvar22 : Nat)
     (hCuGetSysvar22 : ∀ s : State, (step (.call .sol_get_sysvar) s).cuConsumed ≤ s.cuConsumed + nCuGetSysvar22)
-    : cuTripleWithinMem 94 nCuGetSysvar22 198 3542
-      (((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((CodeReq.singleton 198 (.ldx .byte .r2 .r1 0)).union
+    : cuTripleWithinMem 91 nCuGetSysvar22 198 3542
+      ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((CodeReq.singleton 198 (.ldx .byte .r2 .r1 0)).union
         (CodeReq.singleton 199 (.jeq .r2 (.imm (3)) 304))).union
         (CodeReq.singleton 200 (.jne .r2 (.imm (4)) 312))).union
         (CodeReq.singleton 312 (.mov64 .r0 (.reg .r1)))).union
@@ -313,9 +309,6 @@ theorem PTokenInitializeMint2_lifted_spec
         (CodeReq.singleton 3936 (.ldx .dword .r3 .r8 72))).union
         (CodeReq.singleton 3937 (.lddw .r2 (4607182418800017408)))).union
         (CodeReq.singleton 3938 (.jeq .r6 (.reg .r2) 3942))).union
-        (CodeReq.singleton 3939 (.lddw .r2 (4611686018427387904)))).union
-        (CodeReq.singleton 3940 (.jne .r6 (.reg .r2) 4347))).union
-        (CodeReq.singleton 3941 (.lsh64 .r1 (.imm (1))))).union
         (CodeReq.singleton 3942 (.ldx .dword .r4 .r10 (-2096)))).union
         (CodeReq.singleton 3943 (.ja 4371))).union
         (CodeReq.singleton 4371 (.mov64 .r6 (.imm (3))))).union
@@ -427,12 +420,12 @@ theorem PTokenInitializeMint2_lifted_spec
       (effectiveAddr addr1 (-7) + 2 ↦ₘ 0) **
       (.r3 ↦ᵣ oldMemD_36) **
       (toU64 4295070680 ↦Bytes32 SysvarData.rentId) **
-      (effectiveAddr addr2 0 ↦U64 3480) **
-      (effectiveAddr addr2 8 ↦U64 4611686018427387904) **
+      (effectiveAddr addr2 0 ↦U64 6960) **
+      (effectiveAddr addr2 8 ↦U64 4607182418800017408) **
       (effectiveAddr addr2 16 ↦ₘ 50) **
       (effectiveAddr addr3 24 ↦U64 50 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0))))))) **
-      (effectiveAddr addr3 16 ↦U64 4611686018427387904) **
-      (effectiveAddr addr3 8 ↦U64 3480) **
+      (effectiveAddr addr3 16 ↦U64 4607182418800017408) **
+      (effectiveAddr addr3 8 ↦U64 6960) **
       (effectiveAddr addr3 0 ↦U32 toU64 0) **
       (effectiveAddr vR10Old (-2080) ↦U64 oldMemB_12 % 256) **
       (effectiveAddr addr4 72 ↦U64 oldMemD_31) **
@@ -535,49 +528,46 @@ theorem PTokenInitializeMint2_lifted_spec
   have h_10842 := lddw_spec .r1 4295070680 (wrapAdd vR10Old (toU64 (-32))) 10842 (by decide)
   have h_10843 := mov64_imm_spec .r3 0 (vR3Old) 10843 (by decide)
   have h_10844 := mov64_imm_spec .r4 17 (wrapAdd baseAddr (toU64 8)) 10844 (by decide)
-  have h_10845 := call_sol_get_sysvar_cells17_spec (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 4295070680) (wrapAdd (vR10Old + 4096) (toU64 (-24))) 0 17 (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (8)) (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (16)) oldMemD_23 oldMemD_24 oldMemB_25 3480 4611686018427387904 50 SysvarData.rentId SysvarData.rentBuf SysvarData.rentBuf 10845 nCuGetSysvar22 rfl SysvarData.sysvarBuffer_rent (by decide) h_sysvar_out_10845 (by decide) h_sysvar_outlen_10845 rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) holdMemB_25_lt h_sysvar_a1_10845 h_sysvar_a2_10845 h_sysvar_disj_10845 hCuGetSysvar22
+  have h_10845 := call_sol_get_sysvar_cells17_spec (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 4295070680) (wrapAdd (vR10Old + 4096) (toU64 (-24))) 0 17 (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (8)) (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (16)) oldMemD_23 oldMemD_24 oldMemB_25 6960 4607182418800017408 50 SysvarData.rentId SysvarData.rentBuf SysvarData.rentBuf 10845 nCuGetSysvar22 rfl SysvarData.sysvarBuffer_rent (by decide) h_sysvar_out_10845 (by decide) h_sysvar_outlen_10845 rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) holdMemB_25_lt h_sysvar_a1_10845 h_sysvar_a2_10845 h_sysvar_disj_10845 hCuGetSysvar22
   have h_10846 := jeq_imm_taken_spec .r0 0 (0) 10846 10850 h_branch13
   have h_10850 := ldxdw_bytes_spec .r1 .r10 (-8) (toU64 4295070680) (vR10Old + 4096) 50 0 0 0 0 0 0 0 (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (16)) (effectiveAddr (vR10Old + 4096) (-7)) (effectiveAddr (vR10Old + 4096) (-7) + 1) (effectiveAddr (vR10Old + 4096) (-7) + 2) (effectiveAddr (vR10Old + 4096) (-4)) (effectiveAddr (vR10Old + 4096) (-4) + 1) (effectiveAddr (vR10Old + 4096) (-4) + 2) (effectiveAddr (vR10Old + 4096) (-4) + 3) 10850 (by decide) (by omega) (by omega) (by omega) (by omega) (by omega) (by omega) (by omega) (by omega) h_alias_10850_0 h_alias_10850_1 h_alias_10850_2 h_alias_10850_3 h_alias_10850_4 h_alias_10850_5 h_alias_10850_6 h_alias_10850_7
   have h_10851 := stxdw_spec .r6 .r1 24 (wrapAdd vR10Old (toU64 (-32))) (50 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0))))))) oldMemD_26 10851
-  have h_10852 := ldxdw_spec .r1 .r10 (-16) (50 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0))))))) (vR10Old + 4096) 4611686018427387904 10852 (by decide) hReloadLt_10852
+  have h_10852 := ldxdw_spec .r1 .r10 (-16) (50 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0))))))) (vR10Old + 4096) 4607182418800017408 10852 (by decide) hReloadLt_10852
   rw [h_alias_10852] at h_10852
-  have h_10853 := stxdw_spec .r6 .r1 16 (wrapAdd vR10Old (toU64 (-32))) (4611686018427387904) oldMemD_27 10853
-  have h_10854 := ldxdw_spec .r1 .r10 (-24) (4611686018427387904) (vR10Old + 4096) 3480 10854 (by decide) hReloadLt_10854
+  have h_10853 := stxdw_spec .r6 .r1 16 (wrapAdd vR10Old (toU64 (-32))) (4607182418800017408) oldMemD_27 10853
+  have h_10854 := ldxdw_spec .r1 .r10 (-24) (4607182418800017408) (vR10Old + 4096) 6960 10854 (by decide) hReloadLt_10854
   rw [h_alias_10854] at h_10854
-  have h_10855 := stxdw_spec .r6 .r1 8 (wrapAdd vR10Old (toU64 (-32))) (3480) oldMemD_28 10855
+  have h_10855 := stxdw_spec .r6 .r1 8 (wrapAdd vR10Old (toU64 (-32))) (6960) oldMemD_28 10855
   have h_10856 := stxw_spec .r6 .r7 0 (wrapAdd vR10Old (toU64 (-32))) (toU64 0) oldMemW_29 10856
   have h_10857 := exit_pops_spec ⟨3927 + 1, (oldMemD_9), ((oldMemB_0 + 256 * (oldMemB_1 + 256 * (oldMemB_2 + 256 * (oldMemB_3 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * oldMemB_7)))))))), ((oldMemB_12 % 256)), ((toU64 0)), (vR10Old)⟩ [] (wrapAdd vR10Old (toU64 (-32))) (toU64 0) (oldMemB_12 % 256) (toU64 0) (vR10Old + 4096) 10857
   dsimp only at h_10857
-  have h_3928 := ldxw_spec .r1 .r10 (-32) (3480) (vR10Old) (toU64 0) 3928 (by decide) hReloadLt_3928
+  have h_3928 := ldxw_spec .r1 .r10 (-32) (6960) (vR10Old) (toU64 0) 3928 (by decide) hReloadLt_3928
   rw [h_alias_3928] at h_3928
   have h_3929 := jeq_imm_not_taken_spec .r1 1 (toU64 0) 3929 4530 h_branch14
   have h_3930 := stxdw_spec .r10 .r8 (-2080) (vR10Old) (oldMemB_12 % 256) oldMemD_30 3930
   have h_3931 := add64_imm_spec .r6 128 (oldMemD_9) 3931 (by decide)
-  have h_3932 := ldxdw_spec .r1 .r10 (-24) (toU64 0) (vR10Old) 3480 3932 (by decide) hReloadLt_3932
+  have h_3932 := ldxdw_spec .r1 .r10 (-24) (toU64 0) (vR10Old) 6960 3932 (by decide) hReloadLt_3932
   rw [h_alias_3932] at h_3932
-  have h_3933 := mul64_reg_spec .r1 .r6 (3480) (wrapAdd oldMemD_9 (toU64 128)) 3933 (by decide)
-  have h_3934 := ldxdw_spec .r6 .r10 (-16) (wrapAdd oldMemD_9 (toU64 128)) (vR10Old) 4611686018427387904 3934 (by decide) hReloadLt_3934
+  have h_3933 := mul64_reg_spec .r1 .r6 (6960) (wrapAdd oldMemD_9 (toU64 128)) 3933 (by decide)
+  have h_3934 := ldxdw_spec .r6 .r10 (-16) (wrapAdd oldMemD_9 (toU64 128)) (vR10Old) 4607182418800017408 3934 (by decide) hReloadLt_3934
   rw [h_alias_3934] at h_3934
   have h_3935 := ldxdw_spec .r8 .r10 (-2072) (oldMemB_12 % 256) (vR10Old) (wrapAdd baseAddr (toU64 8)) 3935 (by decide) hReloadLt_3935
   have h_3936 := ldxdw_spec .r3 .r8 72 (toU64 0) (wrapAdd baseAddr (toU64 8)) oldMemD_31 3936 (by decide) holdMemD_31_lt
   have h_3937 := lddw_spec .r2 4607182418800017408 (wrapAdd (vR10Old + 4096) (toU64 (-24))) 3937 (by decide)
-  have h_3938 := jeq_reg_not_taken_spec .r6 .r2 (4611686018427387904) (toU64 4607182418800017408) 3938 3942 h_branch15
-  have h_3939 := lddw_spec .r2 4611686018427387904 (toU64 4607182418800017408) 3939 (by decide)
-  have h_3940 := jne_reg_not_taken_spec .r6 .r2 (4611686018427387904) (toU64 4611686018427387904) 3940 4347 h_branch16
-  have h_3941 := lsh64_imm_spec .r1 1 (wrapMul 3480 (wrapAdd oldMemD_9 (toU64 128))) 3941 (by decide)
+  have h_3938 := jeq_reg_taken_spec .r6 .r2 (4607182418800017408) (toU64 4607182418800017408) 3938 3942 h_branch15
   have h_3942 := ldxdw_spec .r4 .r10 (-2096) (toU64 17) (vR10Old) (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) 3942 (by decide) hReloadLt_3942
   have h_3943 := ja_spec 4371 3943
-  have h_4371 := mov64_imm_spec .r6 3 (4611686018427387904) 4371 (by decide)
-  have h_4372 := ldxdw_spec .r2 .r8 80 (toU64 4611686018427387904) (wrapAdd baseAddr (toU64 8)) oldMemD_9 4372 (by decide) holdMemD_9_lt
+  have h_4371 := mov64_imm_spec .r6 3 (4607182418800017408) 4371 (by decide)
+  have h_4372 := ldxdw_spec .r2 .r8 80 (toU64 4607182418800017408) (wrapAdd baseAddr (toU64 8)) oldMemD_9 4372 (by decide) holdMemD_9_lt
   rw [h_alias_4372] at h_4372
-  have h_4373 := jne_imm_not_taken_spec .r2 82 (oldMemD_9) 4373 6095 h_branch17
+  have h_4373 := jne_imm_not_taken_spec .r2 82 (oldMemD_9) 4373 6095 h_branch16
   have h_4374 := ldxb_spec .r2 .r8 133 (oldMemD_9) (wrapAdd baseAddr (toU64 8)) oldMemB_32 4374 (by decide)
-  have h_4375 := jne_imm_not_taken_spec .r2 0 (oldMemB_32 % 256) 4375 4487 h_branch18
-  have h_4376 := jlt_reg_not_taken_spec .r3 .r1 (oldMemD_31) (((wrapMul 3480 (wrapAdd oldMemD_9 (toU64 128))) <<< (toU64 1 % 64)) % U64_MODULUS) 4376 4680 h_branch19
+  have h_4375 := jne_imm_not_taken_spec .r2 0 (oldMemB_32 % 256) 4375 4487 h_branch17
+  have h_4376 := jlt_reg_not_taken_spec .r3 .r1 (oldMemD_31) (wrapMul 6960 (wrapAdd oldMemD_9 (toU64 128))) 4376 4680 h_branch18
   have h_4377 := add64_imm_spec .r4 10 (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) 4377 (by decide)
   have h_4378 := stb_spec .r8 88 1 (wrapAdd baseAddr (toU64 8)) (oldMemB_33) 4378
   have h_4379 := stb_spec .r8 133 1 (wrapAdd baseAddr (toU64 8)) (oldMemB_32) 4379
-  have h_4380 := ldxdw_spec .r1 .r4 0 (((wrapMul 3480 (wrapAdd oldMemD_9 (toU64 128))) <<< (toU64 1 % 64)) % U64_MODULUS) (wrapAdd (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 10)) oldMemD_34 4380 (by decide) holdMemD_34_lt
+  have h_4380 := ldxdw_spec .r1 .r4 0 (wrapMul 6960 (wrapAdd oldMemD_9 (toU64 128))) (wrapAdd (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 10)) oldMemD_34 4380 (by decide) holdMemD_34_lt
   have h_4381 := ldxdw_spec .r2 .r4 8 (oldMemB_32 % 256) (wrapAdd (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 10)) oldMemD_35 4381 (by decide) holdMemD_35_lt
   have h_4382 := ldxdw_spec .r3 .r4 16 (oldMemD_31) (wrapAdd (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 10)) oldMemD_36 4382 (by decide) holdMemD_36_lt
   have h_4383 := ldxdw_same_spec .r4 24 (wrapAdd (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 10)) oldMemD_37 4383 (by decide) holdMemD_37_lt
@@ -588,9 +578,9 @@ theorem PTokenInitializeMint2_lifted_spec
   have h_4388 := ldxdw_spec .r1 .r10 (-2080) (oldMemD_34) (vR10Old) (oldMemB_12 % 256) 4388 (by decide) hReloadLt_4388
   have h_4389 := stxb_spec .r8 .r1 132 (wrapAdd baseAddr (toU64 8)) (oldMemB_12 % 256) oldMemB_42 4389
   have h_4390 := mov64_imm_spec .r0 0 (0) 4390 (by decide)
-  have h_4391 := jeq_imm_taken_spec .r9 0 (toU64 0) 4391 3542 h_branch20
-  sl_rw_abs [h_addr1, h_addr4, h_addr3, h_addr2, h_addr0, h_addr5] at [h_198, h_199, h_200, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_3474, h_3564, h_3565, h_3837, h_3838, h_3839, h_3840, h_3841, h_3842, h_3922, h_3923, h_3924, h_3925, h_3926, h_3927, h_10836, h_10837, h_10838, h_10839, h_10840, h_10841, h_10842, h_10843, h_10844, h_10845, h_10846, h_10850, h_10851, h_10852, h_10853, h_10854, h_10855, h_10856, h_10857, h_3928, h_3929, h_3930, h_3931, h_3932, h_3933, h_3934, h_3935, h_3936, h_3937, h_3938, h_3939, h_3940, h_3941, h_3942, h_3943, h_4371, h_4372, h_4373, h_4374, h_4375, h_4376, h_4377, h_4378, h_4379, h_4380, h_4381, h_4382, h_4383, h_4384, h_4385, h_4386, h_4387, h_4388, h_4389, h_4390, h_4391]
-  sl_block_iter [h_198, h_199, h_200, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_3474, h_3564, h_3565, h_3837, h_3838, h_3839, h_3840, h_3841, h_3842, h_3922, h_3923, h_3924, h_3925, h_3926, h_3927, h_10836, h_10837, h_10838, h_10839, h_10840, h_10841, h_10842, h_10843, h_10844, h_10845, h_10846, h_10850, h_10851, h_10852, h_10853, h_10854, h_10855, h_10856, h_10857, h_3928, h_3929, h_3930, h_3931, h_3932, h_3933, h_3934, h_3935, h_3936, h_3937, h_3938, h_3939, h_3940, h_3941, h_3942, h_3943, h_4371, h_4372, h_4373, h_4374, h_4375, h_4376, h_4377, h_4378, h_4379, h_4380, h_4381, h_4382, h_4383, h_4384, h_4385, h_4386, h_4387, h_4388, h_4389, h_4390, h_4391] generalizing [oldMemB_0 + 256 * (oldMemB_1 + 256 * (oldMemB_2 + 256 * (oldMemB_3 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * oldMemB_7)))))), (oldMemB_12 % 256) % 256, oldMemB_12 % 256, oldMemB_11 % 256, (toU64 1) % 256]
+  have h_4391 := jeq_imm_taken_spec .r9 0 (toU64 0) 4391 3542 h_branch19
+  sl_rw_abs [h_addr1, h_addr4, h_addr3, h_addr2, h_addr0, h_addr5] at [h_198, h_199, h_200, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_3474, h_3564, h_3565, h_3837, h_3838, h_3839, h_3840, h_3841, h_3842, h_3922, h_3923, h_3924, h_3925, h_3926, h_3927, h_10836, h_10837, h_10838, h_10839, h_10840, h_10841, h_10842, h_10843, h_10844, h_10845, h_10846, h_10850, h_10851, h_10852, h_10853, h_10854, h_10855, h_10856, h_10857, h_3928, h_3929, h_3930, h_3931, h_3932, h_3933, h_3934, h_3935, h_3936, h_3937, h_3938, h_3942, h_3943, h_4371, h_4372, h_4373, h_4374, h_4375, h_4376, h_4377, h_4378, h_4379, h_4380, h_4381, h_4382, h_4383, h_4384, h_4385, h_4386, h_4387, h_4388, h_4389, h_4390, h_4391]
+  sl_block_iter [h_198, h_199, h_200, h_312, h_313, h_314, h_315, h_316, h_317, h_318, h_319, h_320, h_321, h_330, h_331, h_332, h_333, h_334, h_335, h_336, h_337, h_338, h_339, h_3474, h_3564, h_3565, h_3837, h_3838, h_3839, h_3840, h_3841, h_3842, h_3922, h_3923, h_3924, h_3925, h_3926, h_3927, h_10836, h_10837, h_10838, h_10839, h_10840, h_10841, h_10842, h_10843, h_10844, h_10845, h_10846, h_10850, h_10851, h_10852, h_10853, h_10854, h_10855, h_10856, h_10857, h_3928, h_3929, h_3930, h_3931, h_3932, h_3933, h_3934, h_3935, h_3936, h_3937, h_3938, h_3942, h_3943, h_4371, h_4372, h_4373, h_4374, h_4375, h_4376, h_4377, h_4378, h_4379, h_4380, h_4381, h_4382, h_4383, h_4384, h_4385, h_4386, h_4387, h_4388, h_4389, h_4390, h_4391] generalizing [oldMemB_0 + 256 * (oldMemB_1 + 256 * (oldMemB_2 + 256 * (oldMemB_3 + 256 * (oldMemB_4 + 256 * (oldMemB_5 + 256 * (oldMemB_6 + 256 * oldMemB_7)))))), (oldMemB_12 % 256) % 256, oldMemB_12 % 256, oldMemB_11 % 256, (toU64 1) % 256]
 
 /-! ## Satisfiability witness (soundness-audit H8)
 
@@ -754,11 +744,10 @@ example :
       (1 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0)))))) ≠ toU64 0) ∧
       (0 = toU64 0) ∧
       (toU64 0 ≠ toU64 1) ∧
-      (4611686018427387904 ≠ toU64 4607182418800017408) ∧
-      (4611686018427387904 = toU64 4611686018427387904) ∧
+      (4607182418800017408 = toU64 4607182418800017408) ∧
       (82 = toU64 82) ∧
       (0 % 256 = toU64 0) ∧
-      (¬ 1461600 < ((wrapMul 3480 (wrapAdd 82 (toU64 128))) <<< (toU64 1 % 64)) % U64_MODULUS) ∧
+      (¬ 1461600 < wrapMul 6960 (wrapAdd 82 (toU64 128))) ∧
       (toU64 0 = toU64 0) ∧
       (1 < 2 ^ 8) ∧
       (0 < 2 ^ 8) ∧
@@ -783,6 +772,6 @@ example :
       (0 < 2 ^ 64) ∧
       (0 < 2 ^ 64) ∧
       (0 < 2 ^ 64) := by
-  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> native_decide
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> native_decide
 
 end Examples.Lifted.PTokenInitializeMint2

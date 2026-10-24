@@ -330,7 +330,7 @@ const OOB_POSEIDON_INPUT_SO: &[u8] = include_bytes!("fixtures/oob_poseidon_input
 
 /// Calls `sol_get_clock_sysvar` with a 40-byte output buffer 256 MiB out of
 /// region. agave translates the output (`translate_type_mut::<Clock>`) and
-/// traps; post-fix (stage 4a) `Sysvar.execClock` (via `zeroFillR1`) routes the
+/// traps; post-fix (stage 4a) `Sysvar.execClock` routes the
 /// write through `guardWrite` and faults. Source in `oob_clock_sysvar_src/`.
 const OOB_CLOCK_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_clock_sysvar.so");
 
@@ -528,7 +528,7 @@ fn fs_acct_by_key<'a>(fs_r: &'a qedsvm::InstructionResult, key: &Pubkey) -> &'a 
 fn ml_acct_by_key<'a>(
     m_r: &'a mollusk_svm::result::InstructionResult,
     key: &Pubkey,
-) -> &'a mollusk_account::Account {
+) -> &'a solana_account::Account {
     m_r.resulting_accounts
         .iter()
         .find(|(k, _)| k == key)
@@ -544,7 +544,7 @@ fn dual_account(
     data: Vec<u8>,
     owner: Pubkey,
     executable: bool,
-) -> (AccountSharedData, mollusk_account::Account) {
+) -> (AccountSharedData, solana_account::Account) {
     let shared = AccountSharedData::from(Account {
         lamports,
         data: data.clone(),
@@ -552,7 +552,7 @@ fn dual_account(
         executable,
         rent_epoch: 0,
     });
-    let mollusk = mollusk_account::Account {
+    let mollusk = solana_account::Account {
         lamports,
         data,
         owner,
@@ -564,7 +564,7 @@ fn dual_account(
 
 /// `dual_account` for the standard executable:true program-account fixture
 /// (the callee program entry required in the caller's account list for CPI).
-fn dual_program() -> (AccountSharedData, mollusk_account::Account) {
+fn dual_program() -> (AccountSharedData, solana_account::Account) {
     dual_account(
         1,
         vec![],
@@ -599,7 +599,7 @@ fn mollusk_with(programs: &[(Pubkey, &[u8])]) -> Mollusk {
 /// System-program stub mirroring mollusk's `keyed_account_for_system_program`
 /// on BOTH engines, so resulting_accounts compares cleanly.
 /// Returns (system id, qedsvm account, mollusk account).
-fn system_program_stub() -> (Pubkey, AccountSharedData, mollusk_account::Account) {
+fn system_program_stub() -> (Pubkey, AccountSharedData, solana_account::Account) {
     let (id, acct) = mollusk_svm::program::keyed_account_for_system_program();
     let fs = AccountSharedData::from(Account {
         lamports: acct.lamports,
@@ -2159,12 +2159,12 @@ mod syscalls {
         assert_eq!(d[0], 0, "rent r0");
         assert_eq!(
             &d[1..18],
-            &[0x98, 0x0d, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x40, 0x32],
-            "rent bytes"
+            &[0x30, 0x1b, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0x32],
+            "rent bytes (SIMD-0194: 6960 / 1.0 / 50)"
         );
         assert_eq!(
             &d[19..28],
-            &[0, 0, 0, 0, 0, 0, 0, 0x40, 0x32],
+            &[0, 0, 0, 0, 0, 0, 0xf0, 0x3f, 0x32],
             "rent offset-8 slice"
         );
         assert_eq!(d[69], 2, "unknown id must be SYSVAR_NOT_FOUND (2)");
@@ -2271,7 +2271,7 @@ mod oob {
         assert_vm_faults_on_both(244, OOB_POSEIDON_INPUT_SO, "oob_poseidon_input");
     }
 
-    /// H6: sol_get_clock_sysvar output 256 MiB OOB; translate_type_mut::<Clock> → zeroFillR1 guardWrite VM-faults on both.
+    /// H6: sol_get_clock_sysvar output 256 MiB OOB; translate_type_mut::<Clock> → execClock guardWrite VM-faults on both.
     #[test]
     fn oob_clock_sysvar_fails_on_both() {
         assert_vm_faults_on_both(245, OOB_CLOCK_SYSVAR_SO, "oob_clock_sysvar");
@@ -3792,7 +3792,7 @@ mod p_token {
             &[
                 (
                     source_key,
-                    mollusk_account::Account {
+                    solana_account::Account {
                         lamports: LAMPORTS,
                         data: src.clone(),
                         owner: program_id,
@@ -3802,7 +3802,7 @@ mod p_token {
                 ),
                 (
                     dest_key,
-                    mollusk_account::Account {
+                    solana_account::Account {
                         lamports: LAMPORTS,
                         data: dst.clone(),
                         owner: program_id,
@@ -3812,7 +3812,7 @@ mod p_token {
                 ),
                 (
                     authority,
-                    mollusk_account::Account {
+                    solana_account::Account {
                         lamports: 1_000_000,
                         data: vec![],
                         owner: Pubkey::default(),
@@ -3890,7 +3890,7 @@ mod p_token {
             .map(|(k, l, d, o)| {
                 (
                     *k,
-                    mollusk_account::Account {
+                    solana_account::Account {
                         lamports: *l,
                         data: d.clone(),
                         owner: *o,
@@ -4189,7 +4189,7 @@ mod p_token {
             &[
                 (
                     acct_key,
-                    mollusk_account::Account {
+                    solana_account::Account {
                         lamports: ACCT_LAMPORTS,
                         data: acct_data.clone(),
                         owner: program_id,
@@ -4199,7 +4199,7 @@ mod p_token {
                 ),
                 (
                     mint_key,
-                    mollusk_account::Account {
+                    solana_account::Account {
                         lamports: MINT_LAMPORTS,
                         data: mint_data.clone(),
                         owner: program_id,
@@ -4209,7 +4209,7 @@ mod p_token {
                 ),
                 (
                     owner,
-                    mollusk_account::Account {
+                    solana_account::Account {
                         lamports: 1_000_000,
                         data: vec![],
                         owner: Pubkey::default(),
@@ -4846,7 +4846,8 @@ mod cpi {
         let callee_id = pid(54);
         let acct_key = pid(55);
 
-        let lamports = 1_000_000u64;
+        // Rent-exempt at the post-grow 24 B (mollusk enforces rent-state transitions).
+        let lamports = 2_000_000u64;
         let data: Vec<u8> = vec![0u8; 16];
         let (pre_shared, pre_mollusk) = dual_account(lamports, data.clone(), callee_id, false);
         let (callee_program_shared, callee_program_mollusk) = dual_program();
@@ -5685,7 +5686,7 @@ mod system_cpi {
         let new_pk = pid(72);
         let target_owner = pid(73); // arbitrary "program owner" for the new acct
 
-        let lamports_to_send: u64 = 2_000_000;
+        let lamports_to_send: u64 = 3_000_000; // ≥ rent-exempt minimum for 165 B (2_039_280)
         let space: u64 = 165; // SPL Token's mint account size — exercises non-zero space allocation
         let initial_payer: u64 = 5_000_000;
 
@@ -6067,7 +6068,7 @@ mod system_cpi {
             a.set_owner(system_program);
             a
         };
-        let payer_pre_ml = mollusk_account::Account {
+        let payer_pre_ml = solana_account::Account {
             lamports: 1_000_000_000_000,
             data: vec![],
             owner: system_program,
@@ -6075,13 +6076,13 @@ mod system_cpi {
             rent_epoch: 0,
         };
         let state_pre_fs = AccountSharedData::default();
-        let state_pre_ml = mollusk_account::Account::default();
+        let state_pre_ml = solana_account::Account::default();
         let authority_pre_fs = {
             let mut a = AccountSharedData::default();
             a.set_owner(system_program);
             a
         };
-        let authority_pre_ml = mollusk_account::Account {
+        let authority_pre_ml = solana_account::Account {
             lamports: 0,
             data: vec![],
             owner: system_program,
