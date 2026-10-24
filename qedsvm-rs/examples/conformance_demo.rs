@@ -70,7 +70,7 @@ fn run_fixture(
     program_id: Pubkey,
     ix: Instruction,
     fs_accounts: Vec<(Pubkey, AccountSharedData)>,
-    m_accounts: Vec<(Pubkey, mollusk_account::Account)>,
+    m_accounts: Vec<(Pubkey, solana_account::Account)>,
 ) -> Comparison {
     // ---- qedsvm ----
     let mut fs = Svm::default().with_cu_budget(1_400_000);
@@ -188,7 +188,7 @@ fn incrementer() -> Comparison {
         executable: false,
         rent_epoch: 0,
     });
-    let m_pre = mollusk_account::Account {
+    let m_pre = solana_account::Account {
         lamports,
         data: data.clone(),
         owner: program_id,
@@ -249,21 +249,21 @@ fn p_token_transfer() -> Comparison {
         rent_epoch: 0,
     });
 
-    let m_src = mollusk_account::Account {
+    let m_src = solana_account::Account {
         lamports: LAMPORTS,
         data: source.clone(),
         owner: program_id,
         executable: false,
         rent_epoch: 0,
     };
-    let m_dst = mollusk_account::Account {
+    let m_dst = solana_account::Account {
         lamports: LAMPORTS,
         data: dest.clone(),
         owner: program_id,
         executable: false,
         rent_epoch: 0,
     };
-    let m_auth = mollusk_account::Account {
+    let m_auth = solana_account::Account {
         lamports: 1_000_000,
         data: vec![],
         owner: Pubkey::default(),

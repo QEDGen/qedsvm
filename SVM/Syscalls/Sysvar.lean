@@ -1,9 +1,10 @@
--- Sysvar-getter syscalls: fill the buffer at `*r1` with the sysvar's
--- mainnet-default contents. Most (clock, epoch_schedule, …) zero-fill. Rent does
--- NOT: SPL Token feeds its real fields (lamports_per_byte_year=3480,
--- exemption_threshold=2.0, burn_percent=50) into a software-f64 `is_exempt`,
--- which executes a different instruction count than zero-values — the cross-engine
--- CU diff against mollusk depends on matching it. All getters charge base 100.
+-- Sysvar-getter syscalls: fill the buffer at `*r1` with the mollusk-default
+-- (agave 4.3) sysvar contents. Most (last_restart_slot, fees, epoch_rewards)
+-- zero-fill; clock carries mollusk's `DEFAULT_CLOCK_SLOT = 1`. Rent is real: SPL
+-- Token feeds its fields (SIMD-0194: lamports_per_byte=6960,
+-- exemption_threshold=1.0, burn_percent=50) into `is_exempt`, which executes a
+-- different instruction count per threshold value — the cross-engine CU diff
+-- against mollusk depends on matching it. All getters charge base 100.
 
 import SVM.SBPF.Machine
 
@@ -39,16 +40,23 @@ def cu : Nat := 100
       if a ≥ outA ∧ a - outA < n then 0 else s.mem a
     { s with regs := s.regs.set .r0 0, mem := mem' }
 
-/-- `sol_get_clock_sysvar`: 40 bytes
-    (slot, epoch_start_ts, epoch, leader_epoch, unix_ts). -/
-@[simp] def execClock          (s : State) : State := zeroFillR1 s 40
+/-- `sol_get_clock_sysvar`: 40 bytes (slot, epoch_start_ts, epoch, leader_epoch,
+    unix_ts). Mollusk default: `slot = 1` (`DEFAULT_CLOCK_SLOT`), rest 0. Same
+    single-`guardWrite` shape as `zeroFillR1` (stays `@[simp]` for the sweeps). -/
+@[simp] def execClock          (s : State) : State :=
+  let outA := s.regs.r1
+  s.guardWrite outA 40 fun s =>
+    let mem' : Memory.Mem := fun a =>
+      if a = outA then 1  -- slot = 1 (u64 LE low byte)
+      else if a ≥ outA ∧ a - outA < 40 then 0 else s.mem a
+    { s with regs := s.regs.set .r0 0, mem := mem' }
 
-/-- `sol_get_rent_sysvar`: write the 17-byte mainnet-default `Rent` at `*r1`. LE:
-      [0..8)   lamports_per_byte_year : u64 = 3480 (0xD98)
-      [8..16)  exemption_threshold    : f64 = 2.0  (bits 0x4000_0000_0000_0000)
-      [16]     burn_percent           : u8  = 50
-    Must be real, not zero: SPL Token's software-f64 `is_exempt` runs a different
-    instruction count on these vs zero, and agave sees them, so CU equality needs it. -/
+/-- `sol_get_rent_sysvar`: write the 17-byte SIMD-0194 default `Rent` at `*r1`. LE:
+      [0..8)   lamports_per_byte   : u64 = 6960 (0x1B30)
+      [8..16)  exemption_threshold : f64 = 1.0  (bits 0x3FF0_0000_0000_0000)
+      [16]     burn_percent        : u8  = 50
+    Must be real, not zero: SPL Token's `is_exempt` runs a different instruction
+    count per threshold value, and agave sees these, so CU equality needs it. -/
 -- H6: `guardWrite r1 17` region-checks the output before filling. NOT `@[simp]`:
 -- the 17-byte `if`-chain `mem'` chokes the blanket Execute sweeps (simp can't push
 -- field projections through the big record); the `@[simp]` field lemmas below +
@@ -58,22 +66,22 @@ def execRent           (s : State) : State :=
   s.guardWrite outA 17 fun s =>
     -- Byte-by-byte: the address-keyed `if` chain stays decidable without `writeU64`'s axioms.
     let mem' : Memory.Mem := fun a =>
-      if      a = outA + 0  then 0x98  -- lamports_per_byte_year = 3480 = 0x0000_0000_0000_0D98
-      else if a = outA + 1  then 0x0D
+      if      a = outA + 0  then 0x30  -- lamports_per_byte = 6960 = 0x0000_0000_0000_1B30
+      else if a = outA + 1  then 0x1B
       else if a = outA + 2  then 0
       else if a = outA + 3  then 0
       else if a = outA + 4  then 0
       else if a = outA + 5  then 0
       else if a = outA + 6  then 0
       else if a = outA + 7  then 0
-      else if a = outA + 8  then 0     -- exemption_threshold = 2.0 (f64 bits = 0x4000_0000_0000_0000)
+      else if a = outA + 8  then 0     -- exemption_threshold = 1.0 (f64 bits = 0x3FF0_0000_0000_0000)
       else if a = outA + 9  then 0
       else if a = outA + 10 then 0
       else if a = outA + 11 then 0
       else if a = outA + 12 then 0
       else if a = outA + 13 then 0
-      else if a = outA + 14 then 0
-      else if a = outA + 15 then 0x40
+      else if a = outA + 14 then 0xF0
+      else if a = outA + 15 then 0x3F
       else if a = outA + 16 then 50    -- burn_percent = 50
       else s.mem a
     { s with regs := s.regs.set .r0 0, mem := mem' }
@@ -120,7 +128,7 @@ def execEpochSchedule  (s : State) : State :=
 /-- `sol_get_epoch_rewards_sysvar`: 81 bytes (active = false). -/
 @[simp] def execEpochRewards   (s : State) : State := zeroFillR1 s 81
 
-/-- Fault direction for the `zeroFillR1` getters (clock / last_restart_slot / fees
+/-- Fault direction for the `zeroFillR1` getters (last_restart_slot / fees
     / epoch_rewards): a non-empty output `[r1,n)` outside a writable region traps.
     H6 model-side boundary pin; complements the cross-engine `oob_clock_sysvar.so`. -/
 theorem zeroFillR1_faults_oob (s : State) (n : Nat) (hne : n ≠ 0)
@@ -136,7 +144,7 @@ theorem zeroFillR1_faults_oob (s : State) (n : Nat) (hne : n ≠ 0)
 /-- Companion to `zeroFillR1_faults_oob`: the same out-of-region output pins the
     `exitCode` sentinel (guardWrite sets both). Lets a `cuTripleFaultsWithin`
     corollary discharge its exitCode AND vmError conjuncts (used by the lifted
-    clock/last_restart_slot/fees/epoch_rewards getters). -/
+    last_restart_slot/fees/epoch_rewards getters). -/
 theorem zeroFillR1_faults_oob_exitCode (s : State) (n : Nat) (hne : n ≠ 0)
     (hoob : s.regions.containsWritable s.regs.r1 n = false) :
     (zeroFillR1 s n).exitCode = some ERR_ACCESS_VIOLATION := by
@@ -144,6 +152,29 @@ theorem zeroFillR1_faults_oob_exitCode (s : State) (n : Nat) (hne : n ≠ 0)
   rw [if_neg (by
     rintro (h | h)
     · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+/-- Clock-getter fault direction (its `slot = 1` write is not a `zeroFillR1`):
+    an out-of-region 40-byte output traps. Complements `oob_clock_sysvar.so`. -/
+theorem execClock_faults_oob (s : State)
+    (hoob : s.regions.containsWritable s.regs.r1 40 = false) :
+    (execClock s).vmError = some .accessViolation := by
+  simp only [execClock, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  rfl
+
+/-- Companion to `execClock_faults_oob`: pins the `exitCode` sentinel too. -/
+theorem execClock_faults_oob_exitCode (s : State)
+    (hoob : s.regions.containsWritable s.regs.r1 40 = false) :
+    (execClock s).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [execClock, State.guardWrite]
+  rw [if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
     · rw [hoob] at h; exact absurd h (by decide))]
   rfl
 

@@ -461,7 +461,7 @@ pub enum PostStateError {
     },
 }
 
-/// Default Rent: `lamports_per_byte_year(3480) * exemption_threshold(2.0) = 6960` per byte.
+/// Default Rent (SIMD-0194): `lamports_per_byte(6960) * exemption_threshold(1.0) = 6960` per byte.
 const RENT_LAMPORTS_PER_BYTE_EXEMPT: u64 = 6960;
 
 /// Fixed per-account overhead (`ACCOUNT_STORAGE_OVERHEAD`) included in the rent-exempt minimum.

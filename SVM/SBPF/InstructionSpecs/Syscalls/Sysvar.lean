@@ -9,13 +9,13 @@ open Memory
 All six sysvar-getter success specs were retired once each output write gained a
 `guardWrite` region check (H6 stage 4a/4c): the unconditional success triples
 became false (the write can fault) and had no consumers. Fault direction pinned
-model-side by `Sysvar.{zeroFillR1,execRent,execEpochSchedule}_faults_oob` and
+model-side by `Sysvar.{zeroFillR1,execClock,execRent,execEpochSchedule}_faults_oob` and
 cross-engine by `oob_clock_sysvar.so`. -/
 
 /-! ## H6 OOB-fault triple — `sol_get_clock_sysvar` (write-region family)
 
-The `cuTripleFaultsWithinMem` for the clock getter (`execClock = zeroFillR1 s
-40`): its 40-byte output `[r1, r1+40)` routes through `guardWrite`, so an
+The `cuTripleFaultsWithinMem` for the clock getter (`execClock`, a 40-byte
+`guardWrite`): its 40-byte output `[r1, r1+40)` routes through `guardWrite`, so an
 out-of-region `r1` traps with `.accessViolation`. The write-region (`rr` uses
 `containsWritable`, vs the secp read-region's `containsRange`) sibling of
 `call_sol_secp256k1_recover_faults_oob_spec`; the `*_fault_correct` emitter
@@ -54,10 +54,10 @@ theorem call_sol_get_clock_sysvar_faults_oob_spec (r1V : Nat) (pc : Nat) (nCu : 
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_⟩
   · rw [hexec]
     show (Sysvar.execClock s).exitCode = some VmError.accessViolation.toSentinel
-    exact Sysvar.zeroFillR1_faults_oob_exitCode s 40 (by decide) hoob
+    exact Sysvar.execClock_faults_oob_exitCode s hoob
   · rw [hexec]
     show (Sysvar.execClock s).vmError = some .accessViolation
-    exact Sysvar.zeroFillR1_faults_oob s 40 (by decide) hoob
+    exact Sysvar.execClock_faults_oob s hoob
   · rw [hstep_eq]
     show (step (.call .sol_get_clock_sysvar) s).cuConsumed + 1
       ≤ s.cuConsumed + 1 + nCu

@@ -416,9 +416,15 @@ const RENT_ID_BYTES: [u8; 32] = [
     0x58, 0xda, 0xee, 0x08, 0x9b, 0xa1, 0xfd, 0x44, 0xe3, 0xdb, 0xd9, 0x8a, 0x00, 0x00, 0x00, 0x00,
 ];
 
+/// Mollusk-default (agave 4.3, SIMD-0194) rent words, mirroring `SysvarData.rentBuf`:
+/// `lamports_per_byte`, `exemption_threshold` as f64 bits (1.0), `burn_percent`.
+const RENT_LAMPORTS_PER_BYTE: i64 = 6960;
+const RENT_EXEMPTION_THRESHOLD_BITS: i64 = 0x3FF0_0000_0000_0000;
+const RENT_BURN_PERCENT: i64 = 50;
+
 /// Emit `sol_get_sysvar` (H8 Phase C-2). Only the RENT id at offset 0, length 17 (pinocchio
 /// `Rent::get()`) is modeled, shaped to `call_sol_get_sysvar_cells17_spec`. Out region owned as
-/// two `↦U64` cells + one `↦ₘ` byte (post: mollusk-default rent 3480/2.0-bits/50); address-bound
+/// two `↦U64` cells + one `↦ₘ` byte (post: mollusk-default rent 6960/1.0-bits/50); address-bound
 /// and disjointness side conditions surfaced as hypotheses.
 pub(super) fn emit_sol_get_sysvar(
     state: &mut SymState,
@@ -472,9 +478,9 @@ pub(super) fn emit_sol_get_sysvar(
     state.note_access(&r1v, 0, 32, format!("sysvarId:{}", r1v.to_lean()));
 
     let mut cells: Vec<(i64, Width, u32, i64)> = vec![
-        (0, Width::Dword, 64, 3480),
-        (8, Width::Dword, 64, 4611686018427387904),
-        (16, Width::Byte, 8, 50),
+        (0, Width::Dword, 64, RENT_LAMPORTS_PER_BYTE),
+        (8, Width::Dword, 64, RENT_EXEMPTION_THRESHOLD_BITS),
+        (16, Width::Byte, 8, RENT_BURN_PERCENT),
     ];
     let mut old_names: Vec<String> = Vec::new();
     for (coff, w, bits, post) in cells.drain(..) {
@@ -555,7 +561,7 @@ pub(super) fn emit_sol_get_sysvar(
     let have_line = format!(
         "have h_{pc} := call_sol_get_sysvar_cells17_spec {r0} ({id}) ({out}) 0 17 \
 (effectiveAddr ({outraw}) (8)) (effectiveAddr ({outraw}) (16)) \
-{o0} {o1} {o2} 3480 4611686018427387904 50 \
+{o0} {o1} {o2} {RENT_LAMPORTS_PER_BYTE} {RENT_EXEMPTION_THRESHOLD_BITS} {RENT_BURN_PERCENT} \
 SysvarData.rentId SysvarData.rentBuf SysvarData.rentBuf {pc} {ncu} \
 rfl SysvarData.sysvarBuffer_rent (by decide) {hout} (by decide) {houtlen} \
 rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) h{o2}_lt \

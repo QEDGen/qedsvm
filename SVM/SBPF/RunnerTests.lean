@@ -827,15 +827,15 @@ def stackHeightProgram : ByteArray :=
 
 example : Runner.runForExit stackHeightProgram = some 1 := by native_decide
 
-/-! ## Demo 18 — `sol_get_clock_sysvar` zeroes the output buffer
+/-! ## Demo 18 — `sol_get_clock_sysvar` overwrites the output buffer
 
-The sysvar getter writes 40 bytes (Clock layout) to `*r1`. Our model
-zero-fills — real sysvar values aren't tracked. Verify by pre-loading
-input with `0xFF` bytes and observing that they're overwritten with 0
+The sysvar getter writes 40 bytes (Clock layout) to `*r1`: the mollusk
+default `slot = 1` (`DEFAULT_CLOCK_SLOT`), every other field 0. Verify by
+pre-loading input with `0xFF` bytes and observing that they're overwritten
 after the syscall:
 
 ```
-  call sol_get_clock_sysvar     ; writes 40 zero bytes at *r1 (= INPUT_START)
+  call sol_get_clock_sysvar     ; writes slot = 1, rest 0, at *r1 (= INPUT_START)
   ldxb r0, [r1 + 5]              ; read byte 5 of the buffer (= 0 now)
   exit
 ```
@@ -854,6 +854,20 @@ example :
     Runner.runForExit clockSysvarDemo
       { input := padInput ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ 40 }
       = some 0 := by
+  native_decide
+
+/-- Same program reading byte 0 (`ldxb r0, [r1 + 0]`): the slot's low byte = 1. -/
+def clockSysvarSlotDemo : ByteArray :=
+  let h := SyscallHash.sol_get_clock_sysvar_hash
+  ⟨#[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    0x71, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example :
+    Runner.runForExit clockSysvarSlotDemo
+      { input := padInput ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ 40 }
+      = some 1 := by
   native_decide
 
 /-! ## Demo 22 — `sol_sha256` hashes "abc" and writes the 32-byte digest
