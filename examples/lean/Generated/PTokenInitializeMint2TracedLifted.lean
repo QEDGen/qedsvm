@@ -440,7 +440,7 @@ theorem PTokenInitializeMint2_lifted_spec
       (effectiveAddr addr4 100 ↦U64 oldMemD_35) **
       (effectiveAddr addr4 92 ↦U64 oldMemD_34) **
       (effectiveAddr addr4 132 ↦ₘ (oldMemB_12 % 256) % 256) ** callStackIs [])
-      (fun rt => (((((((((((((((((((((((((((((((((((((((rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
+      (fun rt => ((((((((((((((((((((((((((((((((((((((((rt.containsRange (effectiveAddr baseAddr 0) 1 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 0) 8 = true) ∧
                   rt.containsWritable (effectiveAddr vR10Old (-2072)) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
@@ -452,6 +452,8 @@ theorem PTokenInitializeMint2_lifted_spec
                   rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr1 (-4)) 4 = true) ∧
                   rt.containsWritable (effectiveAddr addr1 (-7)) 4 = true) ∧
+                  (rt.containsWritable (addr2) (17) = true) ∧
+                  rt.containsRange (toU64 4295070680) (32) = true) ∧
                   rt.containsRange (effectiveAddr addr1 (-8)) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr3 24) 8 = true) ∧
                   rt.containsRange (effectiveAddr addr2 8) 8 = true) ∧

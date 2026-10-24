@@ -52,7 +52,8 @@ def cu : Nat := 100
 
     1. `var_addr ≥ MM_INPUT_START` → `ERR_ACCESS_VIOLATION`
        (`syscall_parameter_address_restrictions`, active under `all_enabled()`).
-    2. mem translation of `[var_addr, +length)` + 32-byte id — NOT modeled (H6).
+    2. H6: `[var_addr, +length)` must be writable (`translate_mut!`), then the
+       32-byte id readable (`translate_type::<Pubkey>`), else `.accessViolation`.
     3. `offset+length` / `var_addr+length` overflowing u64 → `ERR_INVALID_LENGTH`.
     4. id not in cache → r0 := 2 (`SYSVAR_NOT_FOUND`, in-band; no abort).
     5. `offset+length > buf.size` → r0 := 1 (`OFFSET_LENGTH_EXCEEDS_SYSVAR`).
@@ -67,7 +68,9 @@ def cu : Nat := 100
   let len  := s.regs.r4
   if outA ≥ Memory.INPUT_START then
     { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
-  else if off + len ≥ U64_MODULUS ∨ outA + len ≥ U64_MODULUS then
+  else s.guardWrite outA len fun s =>
+  s.guardRead idA 32 fun s =>
+  if off + len ≥ U64_MODULUS ∨ outA + len ≥ U64_MODULUS then
     { s with exitCode := some ERR_INVALID_LENGTH, vmError := some .invalidLength }
   else
     match SysvarData.sysvarBuffer (readBytes s.mem idA 32) with
@@ -81,6 +84,36 @@ def cu : Nat := 100
             (buf.get! (off + (a - outA))).toNat
           else s.mem a
         { s with regs := s.regs.set .r0 0, mem := mem' }
+
+/-- H6 fault direction, output slice: a non-empty `[r2, r2+r4)` outside a writable
+    region traps (agave `translate_mut!` on `var_addr`). Pinned cross-engine by
+    `oob_get_sysvar.so`. -/
+theorem execGetSysvar_faults_oob_out (s : State)
+    (hin : s.regs.r2 < Memory.INPUT_START) (hne : s.regs.r4 ≠ 0)
+    (hoob : s.regions.containsWritable s.regs.r2 s.regs.r4 = false) :
+    (execGetSysvar s).vmError = some .accessViolation ∧
+    (execGetSysvar s).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [execGetSysvar, State.guardWrite, State.accessFault]
+  rw [if_neg (Nat.not_le.mpr hin), if_neg (by
+    rintro (h | h)
+    · exact hne h
+    · rw [hoob] at h; exact absurd h (by decide))]
+  exact ⟨rfl, rfl⟩
+
+/-- H6 fault direction, sysvar id: with the output slice writable, a 32-byte id
+    at `r1` outside every region traps (agave `translate_type::<Pubkey>`). -/
+theorem execGetSysvar_faults_oob_id (s : State)
+    (hin : s.regs.r2 < Memory.INPUT_START)
+    (hout : s.regs.r4 = 0 ∨ s.regions.containsWritable s.regs.r2 s.regs.r4 = true)
+    (hoob : s.regions.containsRange s.regs.r1 32 = false) :
+    (execGetSysvar s).vmError = some .accessViolation ∧
+    (execGetSysvar s).exitCode = some ERR_ACCESS_VIOLATION := by
+  simp only [execGetSysvar, State.guardWrite, State.guardRead, State.accessFault]
+  rw [if_neg (Nat.not_le.mpr hin), if_pos hout, if_neg (by
+    rintro (h | h)
+    · exact absurd h (by decide)
+    · rw [hoob] at h; exact absurd h (by decide))]
+  exact ⟨rfl, rfl⟩
 
 /-- Unknown / unregistered syscall hash. Agave rejects (`UnknownSyscall`); we fail
     closed rather than fabricate `r0 := 0` (which would let a proof continue past a
