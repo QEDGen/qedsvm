@@ -29,6 +29,8 @@ import VaultDepositTransitionWitness
 import AuthorizedVaultTransitionWitness
 import AuthorizedVaultCoverage
 import PToken.ErrorConvert
+import PToken.ErrorTail
+import PToken.PanicChain
 
 open Lean Elab Command
 
@@ -202,3 +204,13 @@ elab "#assert_std_axioms " id:ident : command => do
 -- p_token fn 116 (ProgramError -> u64): computes `convVal`, which is never 0.
 #assert_std_axioms Examples.PTokenErrorConvert.error_convert_spec
 #assert_std_axioms Examples.PTokenErrorConvert.convVal_ne_zero
+-- Fail-closed reachability: callee-agnostic return, budget monotonicity, and p_token's shared
+-- error tail (logger call crossed without a spec; fn 116's code is never 0).
+#assert_std_axioms SVM.SBPF.callee_returns_or_faults
+#assert_std_axioms SVM.SBPF.execSyscall_failsClosed
+#assert_std_axioms SVM.SBPF.executeFn_withBudget
+#assert_std_axioms SVM.SBPF.failsClosed_call
+#assert_std_axioms SVM.SBPF.failsClosed_of_raised
+#assert_std_axioms Examples.PTokenErrorTail.error_tail_fails_closed
+#assert_std_axioms SVM.SBPF.failsClosed_straight
+#assert_std_axioms Examples.PTokenPanicChain.panic_sites_fail_closed

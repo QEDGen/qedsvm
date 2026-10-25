@@ -140,6 +140,10 @@ lean_lib Examples where
     -- tree `qed_analysis::cfg` recovers.
     `PToken.ErrorConvert,
     `PToken.ErrorConvertPins,
+    `PToken.ErrorTail,
+    `PToken.ErrorTailPins,
+    `PToken.PanicChain,
+    `PToken.PanicChainPins,
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     -- Logger: a real, non-Pinocchio Solana program (Rust/solana-program)

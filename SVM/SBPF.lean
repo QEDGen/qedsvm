@@ -40,3 +40,6 @@ import SVM.SBPF.ExitTriple
 import SVM.SBPF.RunnerBridge
 import SVM.SBPF.BoundedCpi
 import SVM.SBPF.CpiSerialization
+import SVM.SBPF.CalleeReturn
+import SVM.SBPF.BudgetMono
+import SVM.SBPF.FailClosed
