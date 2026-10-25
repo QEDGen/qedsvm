@@ -145,7 +145,7 @@ The symbolic executor and `SpecGen` cover common compute and memory instructions
 | Internal call / return | Mechanical |  |
 | Back-branch / loop | Triple only | A trace gives bounded unrolling for that concrete path only; no loop invariant is inferred. |
 | Dispatch routing completeness | Triple only | For SPL p_token, `dispatch_routing_complete` proves the entry dispatcher is total and deterministic: every discriminator byte routes to a definite, known destination (no value is stuck/unhandled), backed by per-level routing lemmas two levels deep. Hand-written; not yet emitted by `qedlift`. |
-| Whole-program per-path arm + fault coverage | Unsupported | No theorem states that all account-state paths reach a proven arm or a fail-closed fault (the deep CFG fault sinks are not routed). |
+| Whole-program per-path arm + fault coverage | Partial | For SPL p_token, `qed_analysis::cfg` partitions every exit edge: one program `exit` (PC 3542), 25 success edges (`r0 = 0`), and a shared error tail every other path funnels into. `ptoken_error_tail_fails_closed` proves, on the real decoded `.text`, that a run from the tail never halts with exit code 0 unless it carries a typed fault: the logger call is crossed without a spec (`failsClosed_call`, callee-agnostic return), fn 116's `ProgramError` conversion is never 0, and the bound holds at every CU budget (`executeFn_withBudget`). `ptoken_panic_sites_fail_closed` covers the 12 panic sites the same way (straight-line noreturn chain into `sol_panic_`). Not yet covered: the path conditions that guard the 25 success edges. Hand-written; not yet emitted by `qedlift`. |
 
 ## Syscalls
 
