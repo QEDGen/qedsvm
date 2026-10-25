@@ -2,14 +2,15 @@
   A checked abstract interpretation of top-level runs. Each PC gets an abstract state saying,
   per register, what is known about its value in terms of the run's initial state `s0`: a
   constant, a pointer into the input buffer, the frame pointer, or a value loaded from a fixed
-  input offset; plus whether the input buffer is still unwritten. A Lean worklist computes the
+  input offset; plus which input ranges may have been written. A Lean worklist computes the
   map (unverified); `absCheck` checks that it is a post-fixpoint of the transfer function over
   the static CFG (`callSucc`), and `abs_sound` turns a passing check into: every top-level
   state of the run satisfies its PC's abstract state.
 
   Internal calls keep r6-r10 (`callee_returns_or_faults` restores them) and forget r0-r5 and
   the input; syscalls forget everything but r10 and the input. Stores through the frame
-  pointer cannot reach the input buffer, so they keep it. This is what turns a guard fact
+  pointer cannot reach the input buffer; stores at a fixed input offset record the 8 bytes
+  they may write, so loads elsewhere in the input stay pinned. This is what turns a guard fact
   about registers (`PathCond`) into a fact about the input accounts.
 -/
 import SVM.SBPF.StaticReach
@@ -113,7 +114,7 @@ def AVal.denote (s0 : State) : AVal → Nat → Prop
   | .fp, v => v = STACK_TOP
   | .inLoad w off, v => v = readByWidth s0.mem (INPUT_START + off) w
 
-/-- One abstract state: a value per register and whether the input is still unwritten. -/
+/-- One abstract state: a value per register, and the input ranges written since the start. -/
 structure AState where
   r0 : AVal := .top
   r1 : AVal := .top
@@ -126,7 +127,9 @@ structure AState where
   r8 : AVal := .top
   r9 : AVal := .top
   r10 : AVal := .top
-  memSame : Bool := false
+  /-- Input ranges `(off, len)` that may have been written since the start (every other
+      input byte still holds its initial value); `none` means anything may have been. -/
+  written : Option (List (Nat × Nat)) := none
   deriving DecidableEq, Repr
 
 def AState.get (a : AState) : Reg → AVal
@@ -140,32 +143,52 @@ def AState.set (a : AState) : Reg → AVal → AState
   | .r6, v => { a with r6 := v } | .r7, v => { a with r7 := v } | .r8, v => { a with r8 := v }
   | .r9, v => { a with r9 := v } | .r10, _ => a
 
-/-- The input buffer still holds the initial bytes. -/
-def MemSame (s0 s : State) : Prop := ∀ x, INPUT_START ≤ x → s.mem.read x = s0.mem.read x
+/-- Address `x` lies outside every listed input range. -/
+def Untouched (ws : List (Nat × Nat)) (x : Nat) : Prop :=
+  ∀ r ∈ ws, x < INPUT_START + r.1 ∨ INPUT_START + r.1 + r.2 ≤ x
+
+/-- The input buffer still holds the initial bytes outside the ranges `ws`. -/
+def MemSameExcept (s0 s : State) (ws : List (Nat × Nat)) : Prop :=
+  ∀ x, INPUT_START ≤ x → Untouched ws x → s.mem.read x = s0.mem.read x
 
 def Concrete (s0 : State) (a : AState) (s : State) : Prop :=
-  (∀ r, (a.get r).denote s0 (s.regs.get r)) ∧ (a.memSame = true → MemSame s0 s)
+  (∀ r, (a.get r).denote s0 (s.regs.get r)) ∧
+    (∀ ws, a.written = some ws → MemSameExcept s0 s ws)
+
+/-- The 8 input bytes at offset `k` lie outside every range of `ws`. -/
+def rangeFree (ws : List (Nat × Nat)) (k : Nat) : Bool :=
+  ws.all fun r => k + 8 ≤ r.1 || r.1 + r.2 ≤ k
 
 /-! ## Transfer function -/
 
-/-- After a syscall: only r10 and nothing about the input survive. -/
+/-- After a syscall: only r10 survives; nothing is known about the input. -/
 def AState.afterSyscall (a : AState) : AState := { r10 := a.r10 }
 
 /-- After an internal call returns: r6-r10 survive. -/
 def AState.afterCall (a : AState) : AState :=
   { r6 := a.r6, r7 := a.r7, r8 := a.r8, r9 := a.r9, r10 := a.r10 }
 
-/-- A store keeps the input only when it goes through the frame pointer with a small offset. -/
+/-- A store through the frame pointer (small offset) leaves the input alone; one through an
+    input pointer records the 8 bytes it may write; any other store forgets the input. -/
 def AState.afterStore (a : AState) (dst : Reg) (off : Int) : AState :=
-  if a.get dst = .fp ∧ off ≤ 0x1000 then a else { a with memSame := false }
+  match a.get dst with
+  | .fp => if off ≤ 0x1000 then a else { a with written := none }
+  | .inPtr o =>
+    if 0 ≤ (o : Int) + off then
+      { a with written := a.written.map (((((o : Int) + off).toNat, 8)) :: ·) }
+    else { a with written := none }
+  | _ => { a with written := none }
 
 def absStep (a : AState) : Insn → AState
   | .lddw dst imm => a.set dst (.const (toU64 imm))
   | .mov64 dst (.imm i) => a.set dst (.const (toU64 i))
   | .mov64 dst (.reg r) => a.set dst (a.get r)
   | .ldx w dst src off =>
-    a.set dst (match a.get src, a.memSame with
-      | .inPtr o, true => if 0 ≤ (o : Int) + off then .inLoad w ((o : Int) + off).toNat else .top
+    a.set dst (match a.get src, a.written with
+      | .inPtr o, some ws =>
+        if 0 ≤ (o : Int) + off ∧ rangeFree ws ((o : Int) + off).toNat = true then
+          .inLoad w ((o : Int) + off).toNat
+        else .top
       | _, _ => .top)
   | .st _ dst off _ => a.afterStore dst off
   | .stx _ dst off _ => a.afterStore dst off
@@ -182,7 +205,7 @@ def absStep (a : AState) : Insn → AState
 
 theorem concrete_regs_mem {s0 : State} {a : AState} {s t : State} (hc : Concrete s0 a s)
     (hr : t.regs = s.regs) (hm : t.mem = s.mem) : Concrete s0 a t :=
-  ⟨fun r => by rw [hr]; exact hc.1 r, fun h x hx => by rw [hm]; exact hc.2 h x hx⟩
+  ⟨fun r => by rw [hr]; exact hc.1 r, fun ws h x hx hu => by rw [hm]; exact hc.2 ws h x hx hu⟩
 
 theorem AState.get_set_same (a : AState) (d : Reg) (X : AVal) (hd : d ≠ .r10) :
     (a.set d X).get d = X := by
@@ -192,16 +215,16 @@ theorem AState.get_set_other (a : AState) (d r : Reg) (X : AVal) (h : r ≠ d) :
     (a.set d X).get r = a.get r := by
   cases d <;> cases r <;> first | rfl | exact absurd rfl h
 
-theorem AState.set_memSame (a : AState) (d : Reg) (X : AVal) :
-    (a.set d X).memSame = a.memSame := by cases d <;> rfl
+theorem AState.set_written (a : AState) (d : Reg) (X : AVal) :
+    (a.set d X).written = a.written := by cases d <;> rfl
 
 /-- Writing a register: the written value must match `X` (unless it is `r10`, which neither
     side changes); everything else carries over. -/
 theorem concrete_set {s0 : State} {a : AState} {s t : State} (hc : Concrete s0 a s)
     (d : Reg) (v : Nat) (X : AVal) (hX : d ≠ .r10 → X.denote s0 v)
     (hr : t.regs = s.regs.set d v) (hm : t.mem = s.mem) : Concrete s0 (a.set d X) t := by
-  refine ⟨fun r => ?_, fun h x hx => by
-    rw [AState.set_memSame] at h; rw [hm]; exact hc.2 h x hx⟩
+  refine ⟨fun r => ?_, fun ws h x hx hu => by
+    rw [AState.set_written] at h; rw [hm]; exact hc.2 ws h x hx hu⟩
   rw [hr]
   by_cases hd : d = .r10
   · subst hd
@@ -217,6 +240,15 @@ theorem concrete_set {s0 : State} {a : AState} {s t : State} (hc : Concrete s0 a
 
 theorem writeByWidth_read_far (m : Memory.Mem) (addr val : Nat) (w : Width) (x : Nat)
     (hx : addr + 8 ≤ x) : (writeByWidth m addr val w).read x = m.read x := by
+  cases w
+  · exact writeU8_read_other m addr val x (by omega)
+  · exact writeU16_read_other m addr val x (by omega) (by omega)
+  · exact writeU32_read_other m addr val x (by omega) (by omega) (by omega) (by omega)
+  · exact writeU64_read_other m addr val x (by omega) (by omega) (by omega) (by omega)
+      (by omega) (by omega) (by omega) (by omega)
+
+theorem writeByWidth_read_outside (m : Memory.Mem) (addr val : Nat) (w : Width) (x : Nat)
+    (hx : x < addr ∨ addr + 8 ≤ x) : (writeByWidth m addr val w).read x = m.read x := by
   cases w
   · exact writeU8_read_other m addr val x (by omega)
   · exact writeU16_read_other m addr val x (by omega) (by omega)
@@ -240,25 +272,31 @@ theorem effectiveAddr_input (o : Nat) (off : Int) (h : 0 ≤ (o : Int) + off) :
 
 theorem ldx_value_sound (s0 s : State) (a : AState) (hc : Concrete s0 a s) (w : Width)
     (src : Reg) (off : Int) :
-    (match a.get src, a.memSame with
-      | .inPtr o, true => if 0 ≤ (o : Int) + off then AVal.inLoad w ((o : Int) + off).toNat
-          else .top
+    (match a.get src, a.written with
+      | .inPtr o, some ws =>
+        if 0 ≤ (o : Int) + off ∧ rangeFree ws ((o : Int) + off).toNat = true then
+          AVal.inLoad w ((o : Int) + off).toNat
+        else .top
       | _, _ => .top).denote s0 (readByWidth s.mem (effectiveAddr (s.regs.get src) off) w) := by
   have hsrc := hc.1 src
-  cases hg : a.get src <;> cases hm : a.memSame
+  cases hg : a.get src <;> cases hm : a.written
   all_goals first | exact trivial | skip
-  rename_i o
+  rename_i o ws
   rw [hg] at hsrc
   simp only [AVal.denote] at hsrc
-  show (if 0 ≤ (o : Int) + off then AVal.inLoad w ((o : Int) + off).toNat else AVal.top).denote
-    s0 _
+  show (if 0 ≤ (o : Int) + off ∧ rangeFree ws ((o : Int) + off).toNat = true then
+      AVal.inLoad w ((o : Int) + off).toNat else AVal.top).denote s0 _
   split
-  · rename_i hpos
+  · rename_i h
+    obtain ⟨hpos, hfree⟩ := h
     show _ = _
     rw [hsrc, effectiveAddr_input o off hpos]
     apply readByWidth_congr
-    intro i _
-    exact hc.2 hm _ (by omega)
+    intro i hi
+    refine hc.2 ws hm _ (by omega) (fun r hr => ?_)
+    have := List.all_eq_true.mp hfree r hr
+    simp only [Bool.or_eq_true, decide_eq_true_eq] at this
+    omega
   · trivial
 
 theorem store_keeps (s0 s : State) (a : AState) (hc : Concrete s0 a s) (dst : Reg) (off : Int)
@@ -266,20 +304,39 @@ theorem store_keeps (s0 s : State) (a : AState) (hc : Concrete s0 a s) (dst : Re
     Concrete s0 (a.afterStore dst off)
       { s with mem := writeByWidth s.mem (effectiveAddr (s.regs.get dst) off) val w,
                pc := s.pc + 1 } := by
-  unfold AState.afterStore
-  split
-  · rename_i h
-    obtain ⟨hfp, hoff⟩ := h
-    have hd := hc.1 dst
-    rw [hfp] at hd
+  have hd := hc.1 dst
+  cases hg : a.get dst <;> simp only [AState.afterStore, hg]
+  all_goals first | exact ⟨hc.1, fun _ h => by cases h⟩ | skip
+  · -- input pointer
+    rename_i o
+    rw [hg] at hd
     simp only [AVal.denote] at hd
-    refine ⟨hc.1, fun hm x hx => ?_⟩
-    show (writeByWidth s.mem _ val w).read x = _
-    rw [writeByWidth_read_far _ _ _ _ _ (by
-      rw [hd]; unfold effectiveAddr STACK_TOP; simp only [STACK_START, INPUT_START] at hx ⊢
-      omega)]
-    exact hc.2 hm x hx
-  · exact ⟨hc.1, fun h => by cases h⟩
+    split
+    · rename_i hpos
+      refine ⟨hc.1, fun ws' hw x hx hu => ?_⟩
+      cases hwa : a.written with
+      | none => rw [hwa] at hw; cases hw
+      | some ws =>
+        rw [hwa] at hw
+        simp only [Option.map_some, Option.some.injEq] at hw
+        subst hw
+        have hu0 := hu _ (List.mem_cons_self ..)
+        show (writeByWidth s.mem _ val w).read x = _
+        rw [writeByWidth_read_outside _ _ _ _ _ (by
+          rw [hd, effectiveAddr_input o off hpos]; simp only at hu0; omega)]
+        exact hc.2 ws hwa x hx (fun r hr => hu r (List.mem_cons_of_mem _ hr))
+    · exact ⟨hc.1, fun _ h => by cases h⟩
+  · -- frame pointer
+    rw [hg] at hd
+    simp only [AVal.denote] at hd
+    split
+    · refine ⟨hc.1, fun ws hw x hx hu => ?_⟩
+      show (writeByWidth s.mem _ val w).read x = _
+      rw [writeByWidth_read_far _ _ _ _ _ (by
+        rw [hd]; unfold effectiveAddr STACK_TOP; simp only [STACK_START, INPUT_START] at hx ⊢
+        omega)]
+      exact hc.2 ws hw x hx hu
+    · exact ⟨hc.1, fun _ h => by cases h⟩
 
 /-- **One step is sound.** A top-level step other than a call either leaves the state in
     place with the same registers and memory (a fault, or the final `exit`), or moves to a
@@ -297,7 +354,7 @@ theorem absStep_sound (s0 : State) (a : AState) (s : State) (insn : Insn)
     exact ⟨by simp [step, hcs], concrete_regs_mem hc (by simp [step, hcs]) (by simp [step, hcs])⟩
   case call sc =>
     right
-    refine ⟨by simp [step, staticSucc], fun r => ?_, fun h => by cases h⟩
+    refine ⟨by simp [step, staticSucc], fun r => ?_, fun _ h => by cases h⟩
     cases r <;> simp only [absStep, AState.afterSyscall, AState.get, AVal.denote]
     show AVal.denote s0 a.r10 (execSyscall sc s).regs.r10
     rw [execSyscall_preserves_r10]
@@ -349,7 +406,9 @@ def AState.join (a b : AState) : AState :=
   { r0 := a.r0.join b.r0, r1 := a.r1.join b.r1, r2 := a.r2.join b.r2, r3 := a.r3.join b.r3,
     r4 := a.r4.join b.r4, r5 := a.r5.join b.r5, r6 := a.r6.join b.r6, r7 := a.r7.join b.r7,
     r8 := a.r8.join b.r8, r9 := a.r9.join b.r9, r10 := a.r10.join b.r10,
-    memSame := a.memSame && b.memSame }
+    written := match a.written, b.written with
+      | some x, some y => some (x ++ y.filter fun r => !x.contains r)
+      | _, _ => none }
 
 def allRegs : List Reg := [.r0, .r1, .r2, .r3, .r4, .r5, .r6, .r7, .r8, .r9, .r10]
 
@@ -357,21 +416,30 @@ theorem mem_allRegs (r : Reg) : r ∈ allRegs := by cases r <;> simp [allRegs]
 
 /-- `c` is implied by `b`: every register `c` pins, `b` pins the same way. -/
 def AState.le (b c : AState) : Bool :=
-  allRegs.all (fun r => c.get r == .top || c.get r == b.get r) && (!c.memSame || b.memSame)
+  allRegs.all (fun r => c.get r == .top || c.get r == b.get r) &&
+    match c.written, b.written with
+    | none, _ => true
+    | some cs, some bs => bs.all (cs.contains ·)
+    | some _, none => false
 
 theorem concrete_le {s0 t : State} {b c : AState} (h : Concrete s0 b t)
     (hle : b.le c = true) : Concrete s0 c t := by
-  simp only [AState.le, Bool.and_eq_true, Bool.or_eq_true, Bool.not_eq_true'] at hle
+  simp only [AState.le, Bool.and_eq_true] at hle
   obtain ⟨hregs, hmem⟩ := hle
-  refine ⟨fun r => ?_, fun hc => ?_⟩
+  refine ⟨fun r => ?_, ?_⟩
   · have := List.all_eq_true.mp hregs r (mem_allRegs r)
     simp only [Bool.or_eq_true, beq_iff_eq] at this
     rcases this with h1 | h1 <;> rw [h1]
     · trivial
     · exact h.1 r
-  · rcases hmem with h1 | h1
-    · rw [h1] at hc; cases hc
-    · exact h.2 h1
+  · intro ws hcw x hx hu
+    rw [hcw] at hmem
+    revert hmem
+    cases hbw : b.written with
+    | none => intro h; cases h
+    | some bs =>
+      intro hsub
+      exact h.2 bs hbw x hx (fun r hr => hu r (by simpa using List.all_eq_true.mp hsub r hr))
 
 /-- Worklist fixpoint over the static CFG from `entry` (unverified: only `absCheck` is
     trusted). -/
@@ -464,7 +532,7 @@ theorem abs_sound (fetch : Nat → Option Insn) (noret : Nat → Bool)
   · intro s t _ _ ⟨a, ha, hc⟩ hf hnr u _ hu2 hu6 hu7 hu8 hu9 hu10 _
     obtain ⟨_, hsucc⟩ := absCheck_at hchk ha hf
     obtain ⟨b, hb, hle⟩ := hsucc (s.pc + 1) (by simp [callSucc, hnr])
-    refine ⟨b, by rw [hu2]; exact hb, concrete_le ⟨fun r => ?_, fun h => by cases h⟩ hle⟩
+    refine ⟨b, by rw [hu2]; exact hb, concrete_le ⟨fun r => ?_, fun _ h => by cases h⟩ hle⟩
     cases r <;> simp only [absStep, AState.afterCall, AState.get, AVal.denote] <;>
       first
       | trivial
