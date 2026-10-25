@@ -5,6 +5,7 @@
 
 use solana_sbpf::ebpf;
 
+pub mod cfg;
 pub mod image;
 pub mod input_layout;
 pub mod instruction_layout;
