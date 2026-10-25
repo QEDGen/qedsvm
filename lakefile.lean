@@ -145,6 +145,8 @@ lean_lib Examples where
     `PToken.PanicChain,
     `PToken.PanicChainPins,
     `PToken.SuccessPaths,
+    `PToken.SuccessInputs,
+    `PToken.TransferSpec,
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     -- Logger: a real, non-Pinocchio Solana program (Rust/solana-program)

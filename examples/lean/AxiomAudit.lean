@@ -32,6 +32,7 @@ import PToken.ErrorConvert
 import PToken.ErrorTail
 import PToken.PanicChain
 import SVM.SBPF.PathCond
+import SVM.SBPF.InputGuards
 
 open Lean Elab Command
 
@@ -220,3 +221,7 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.guard_toward
 #assert_std_axioms SVM.SBPF.edge_path_condition
 #assert_std_axioms Examples.PTokenPanicChain.panic_helpers_noReturn
+-- Checked abstract interpretation: guard facts become facts about the input.
+#assert_std_axioms SVM.SBPF.inv_holds
+#assert_std_axioms SVM.SBPF.abs_sound
+#assert_std_axioms SVM.SBPF.edge_input_conditions
