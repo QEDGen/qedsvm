@@ -85,6 +85,7 @@ structure Guard where
   pc : Nat
   insn : Insn
   onSucc : Nat
+  deriving Repr, DecidableEq
 
 /-- A conditional jump goes to its target or falls through. -/
 def Insn.jumpTarget? : Insn → Option Nat
