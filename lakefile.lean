@@ -135,6 +135,11 @@ lean_lib Examples where
     -- (which carry native_decide decode pins), so the final result will sit
     -- OUTSIDE #assert_std_axioms like the lifts it builds on.
     `PToken.DispatchComplete,
+    -- Fail-closed half of Gap #1 (a): fn 116, the ProgramError -> u64 conversion every error
+    -- path calls before the single program exit, never yields 0. Generated from the decision
+    -- tree `qed_analysis::cfg` recovers.
+    `PToken.ErrorConvert,
+    `PToken.ErrorConvertPins,
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     -- Logger: a real, non-Pinocchio Solana program (Rust/solana-program)

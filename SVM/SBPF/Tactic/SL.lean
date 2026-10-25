@@ -46,6 +46,8 @@ syntax "sl_disjoint_codereq" : tactic
 macro_rules
   | `(tactic| sl_disjoint_codereq) => `(tactic|
       first
+      | exact CodeReq.Disjoint_empty_left _
+      | exact CodeReq.Disjoint_empty_right _
       | (refine CodeReq.singleton_disjoint_singleton _ _ ?_
          first | decide | omega)
       | (apply CodeReq.Disjoint_union_left

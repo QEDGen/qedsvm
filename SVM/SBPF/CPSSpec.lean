@@ -134,6 +134,14 @@ theorem Disjoint_union_right {cr1 cr2 cr3 : CodeReq}
     cr1.Disjoint (cr2.union cr3) :=
   Disjoint_comm (Disjoint_union_left (Disjoint_comm h1) (Disjoint_comm h2))
 
+/-- The empty requirement pins nothing, so it is disjoint from every requirement
+    (the code req of a zero-step `cuTripleWithin_refl` branch). -/
+theorem Disjoint_empty_left (cr : CodeReq) : empty.Disjoint cr :=
+  fun _ => Or.inl rfl
+
+theorem Disjoint_empty_right (cr : CodeReq) : cr.Disjoint empty :=
+  fun _ => Or.inr rfl
+
 /-- If a fetch satisfies a union of code requirements, it satisfies each
     requirement individually. -/
 theorem SatisfiedBy_of_union_left {cr1 cr2 : CodeReq} {fetch : Nat → Option Insn}
