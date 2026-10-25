@@ -2,7 +2,7 @@
   Input conditions for p_token's six loop-free success edges (GENERATED; regenerate rather
   than edit). `SuccessPaths` proves which guards a run reaching each edge passed; here the
   checked abstract interpretation (`AbsInterp`, from the entrypoint with `r1` the input
-  pointer, `r10` the frame pointer and the input unwritten) pins most guards' operands to
+  pointer, `r10` the frame pointer and no input written yet) pins most guards' operands to
   fixed input fields or constants, so each pinned guard becomes a fact about the input bytes
   the run started from (`IGuard.holds`).
 
@@ -18,12 +18,12 @@ namespace Examples.PTokenSuccessPaths
 open SVM.SBPF Examples.PTokenErrorTail
 
 /-- The entrypoint's initial abstract state: `r1` points at the input, `r10` is the frame
-    pointer, the input is unwritten. `initialState` satisfies it (`ptInit_initial`). -/
-def ptInit : AState := { r1 := .inPtr 0, r10 := .fp, memSame := true }
+    pointer, no input has been written. -/
+def ptInit : AState := { r1 := .inPtr 0, r10 := .fp, written := some [] }
 
 theorem ptInit_concrete (s0 : State) (h1 : s0.regs.r1 = Memory.INPUT_START)
     (h10 : s0.regs.r10 = STACK_TOP) : Concrete s0 ptInit s0 := by
-  refine ⟨fun r => ?_, fun _ _ _ => rfl⟩
+  refine ⟨fun r => ?_, fun _ _ _ _ _ => rfl⟩
   cases r
   case r1 => show s0.regs.r1 = Memory.INPUT_START + 0; rw [h1]; rfl
   case r10 => exact h10
@@ -212,7 +212,8 @@ def idom4832 : List IGuard := [
   ⟨{ pc := 4019, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4020 }, (.inLoad .dword 96), (.inLoad .dword 10600)⟩,  -- jne r0, r5, 4724
   ⟨{ pc := 4022, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4023 }, (.inLoad .dword 104), (.inLoad .dword 10608)⟩,  -- jne r0, r5, 4724
   ⟨{ pc := 4025, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4026 }, (.inLoad .dword 112), (.inLoad .dword 10616)⟩,  -- jne r0, r5, 4724
-  ⟨{ pc := 4028, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4029 }, (.inLoad .dword 120), (.inLoad .dword 10624)⟩  -- jne r0, r5, 4724
+  ⟨{ pc := 4028, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4029 }, (.inLoad .dword 120), (.inLoad .dword 10624)⟩,  -- jne r0, r5, 4724
+  ⟨{ pc := 4825, insn := .jne .r3 (.imm 1) 3542, onSucc := 4826 }, (.inLoad .byte 205), (.const 1)⟩  -- jne r3, 1, 3542
 ]
 
 def ipre4832_4816 : List IGuard := [
@@ -238,7 +239,8 @@ def ipre4832_4816 : List IGuard := [
 ]
 
 def ipost4832_4816 : List IGuard := [
-  ⟨{ pc := 4816, insn := .jeq .r4 (.imm 0) 5716, onSucc := 4817 }, (.inLoad .byte 21017), (.const 0)⟩  -- jeq r4, 0, 5716
+  ⟨{ pc := 4816, insn := .jeq .r4 (.imm 0) 5716, onSucc := 4817 }, (.inLoad .byte 21017), (.const 0)⟩,  -- jeq r4, 0, 5716
+  ⟨{ pc := 4825, insn := .jne .r3 (.imm 1) 3542, onSucc := 4826 }, (.inLoad .byte 205), (.const 1)⟩  -- jne r3, 1, 3542
 ]
 
 def ipre4832_5216 : List IGuard := [
@@ -265,6 +267,7 @@ def ipre4832_5216 : List IGuard := [
 ]
 
 def ipost4832_5216 : List IGuard := [
+  ⟨{ pc := 4825, insn := .jne .r3 (.imm 1) 3542, onSucc := 4826 }, (.inLoad .byte 205), (.const 1)⟩,  -- jne r3, 1, 3542
   ⟨{ pc := 5216, insn := .jeq .r4 (.imm 0) 5716, onSucc := 5217 }, (.inLoad .byte 21017), (.const 0)⟩  -- jeq r4, 0, 5716
 ]
 
@@ -293,6 +296,7 @@ def ipre4832_5715 : List IGuard := [
 ]
 
 def ipost4832_5715 : List IGuard := [
+  ⟨{ pc := 4825, insn := .jne .r3 (.imm 1) 3542, onSucc := 4826 }, (.inLoad .byte 205), (.const 1)⟩,  -- jne r3, 1, 3542
   ⟨{ pc := 5715, insn := .jeq .r4 (.imm 0) 4817, onSucc := 4817 }, (.inLoad .byte 21104), (.const 0)⟩  -- jeq r4, 0, 4817
 ]
 
@@ -322,6 +326,7 @@ def ipre4832_6233 : List IGuard := [
 ]
 
 def ipost4832_6233 : List IGuard := [
+  ⟨{ pc := 4825, insn := .jne .r3 (.imm 1) 3542, onSucc := 4826 }, (.inLoad .byte 205), (.const 1)⟩,  -- jne r3, 1, 3542
   ⟨{ pc := 6233, insn := .jeq .r4 (.imm 0) 5217, onSucc := 5217 }, (.inLoad .byte 21104), (.const 0)⟩  -- jeq r4, 0, 5217
 ]
 
@@ -370,7 +375,14 @@ def idom5250 : List IGuard := [
   ⟨{ pc := 4019, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4020 }, (.inLoad .dword 96), (.inLoad .dword 10600)⟩,  -- jne r0, r5, 4724
   ⟨{ pc := 4022, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4023 }, (.inLoad .dword 104), (.inLoad .dword 10608)⟩,  -- jne r0, r5, 4724
   ⟨{ pc := 4025, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4026 }, (.inLoad .dword 112), (.inLoad .dword 10616)⟩,  -- jne r0, r5, 4724
-  ⟨{ pc := 4028, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4029 }, (.inLoad .dword 120), (.inLoad .dword 10624)⟩  -- jne r0, r5, 4724
+  ⟨{ pc := 4028, insn := .jne .r0 (.reg .r5) 4724, onSucc := 4029 }, (.inLoad .dword 120), (.inLoad .dword 10624)⟩,  -- jne r0, r5, 4724
+  ⟨{ pc := 5228, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5229 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5231, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5232 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5234, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5235 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5237, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5238 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5240, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5241 }, (.inLoad .dword 10552), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5243, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5244 }, (.inLoad .dword 10560), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5246, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5247 }, (.inLoad .dword 10568), (.const 10463932726783620124)⟩  -- jne r2, r3, 5717
 ]
 
 def ipre5250_4816 : List IGuard := [
@@ -396,7 +408,14 @@ def ipre5250_4816 : List IGuard := [
 ]
 
 def ipost5250_4816 : List IGuard := [
-  ⟨{ pc := 4816, insn := .jeq .r4 (.imm 0) 5716, onSucc := 4817 }, (.inLoad .byte 21017), (.const 0)⟩  -- jeq r4, 0, 5716
+  ⟨{ pc := 4816, insn := .jeq .r4 (.imm 0) 5716, onSucc := 4817 }, (.inLoad .byte 21017), (.const 0)⟩,  -- jeq r4, 0, 5716
+  ⟨{ pc := 5228, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5229 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5231, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5232 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5234, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5235 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5237, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5238 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5240, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5241 }, (.inLoad .dword 10552), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5243, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5244 }, (.inLoad .dword 10560), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5246, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5247 }, (.inLoad .dword 10568), (.const 10463932726783620124)⟩  -- jne r2, r3, 5717
 ]
 
 def ipre5250_5216 : List IGuard := [
@@ -423,7 +442,14 @@ def ipre5250_5216 : List IGuard := [
 ]
 
 def ipost5250_5216 : List IGuard := [
-  ⟨{ pc := 5216, insn := .jeq .r4 (.imm 0) 5716, onSucc := 5217 }, (.inLoad .byte 21017), (.const 0)⟩  -- jeq r4, 0, 5716
+  ⟨{ pc := 5216, insn := .jeq .r4 (.imm 0) 5716, onSucc := 5217 }, (.inLoad .byte 21017), (.const 0)⟩,  -- jeq r4, 0, 5716
+  ⟨{ pc := 5228, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5229 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5231, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5232 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5234, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5235 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5237, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5238 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5240, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5241 }, (.inLoad .dword 10552), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5243, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5244 }, (.inLoad .dword 10560), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5246, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5247 }, (.inLoad .dword 10568), (.const 10463932726783620124)⟩  -- jne r2, r3, 5717
 ]
 
 def ipre5250_5715 : List IGuard := [
@@ -451,6 +477,13 @@ def ipre5250_5715 : List IGuard := [
 ]
 
 def ipost5250_5715 : List IGuard := [
+  ⟨{ pc := 5228, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5229 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5231, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5232 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5234, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5235 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5237, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5238 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5240, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5241 }, (.inLoad .dword 10552), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5243, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5244 }, (.inLoad .dword 10560), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5246, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5247 }, (.inLoad .dword 10568), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
   ⟨{ pc := 5715, insn := .jeq .r4 (.imm 0) 4817, onSucc := 4817 }, (.inLoad .byte 21104), (.const 0)⟩  -- jeq r4, 0, 4817
 ]
 
@@ -480,6 +513,13 @@ def ipre5250_6233 : List IGuard := [
 ]
 
 def ipost5250_6233 : List IGuard := [
+  ⟨{ pc := 5228, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5229 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5231, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5232 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5234, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5235 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5237, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5238 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5240, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5241 }, (.inLoad .dword 10552), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5243, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5244 }, (.inLoad .dword 10560), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5246, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5247 }, (.inLoad .dword 10568), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
   ⟨{ pc := 6233, insn := .jeq .r4 (.imm 0) 5217, onSucc := 5217 }, (.inLoad .byte 21104), (.const 0)⟩  -- jeq r4, 0, 5217
 ]
 
@@ -734,7 +774,8 @@ def idom5070 : List IGuard := [
   ⟨{ pc := 262, insn := .jne .r3 (.reg .r8) 5475, onSucc := 263 }, (.inLoad .dword 10528), (.inLoad .dword 104)⟩,  -- jne r3, r8, 5475
   ⟨{ pc := 264, insn := .jne .r3 (.reg .r6) 5475, onSucc := 265 }, (.inLoad .dword 10536), (.inLoad .dword 112)⟩,  -- jne r3, r6, 5475
   ⟨{ pc := 267, insn := .jne .r3 (.reg .r9) 4725, onSucc := 268 }, (.inLoad .dword 10544), (.inLoad .dword 120)⟩,  -- jne r3, r9, 4725
-  ⟨{ pc := 269, insn := .jne .r0 (.imm 1) 5078, onSucc := 270 }, (.inLoad .byte 10645), (.const 1)⟩  -- jne r0, 1, 5078
+  ⟨{ pc := 269, insn := .jne .r0 (.imm 1) 5078, onSucc := 270 }, (.inLoad .byte 10645), (.const 1)⟩,  -- jne r0, 1, 5078
+  ⟨{ pc := 5063, insn := .jne .r3 (.imm 1) 3542, onSucc := 5064 }, (.inLoad .byte 205), (.const 1)⟩  -- jne r3, 1, 3542
 ]
 
 def ipre5070_5053 : List IGuard := [
@@ -768,7 +809,8 @@ def ipre5070_5053 : List IGuard := [
 ]
 
 def ipost5070_5053 : List IGuard := [
-  ⟨{ pc := 5053, insn := .jeq .r3 (.imm 0) 5716, onSucc := 5054 }, (.inLoad .byte 31441), (.const 0)⟩  -- jeq r3, 0, 5716
+  ⟨{ pc := 5053, insn := .jeq .r3 (.imm 0) 5716, onSucc := 5054 }, (.inLoad .byte 31441), (.const 0)⟩,  -- jeq r3, 0, 5716
+  ⟨{ pc := 5063, insn := .jne .r3 (.imm 1) 3542, onSucc := 5064 }, (.inLoad .byte 205), (.const 1)⟩  -- jne r3, 1, 3542
 ]
 
 def ipre5070_5438 : List IGuard := [
@@ -803,6 +845,7 @@ def ipre5070_5438 : List IGuard := [
 ]
 
 def ipost5070_5438 : List IGuard := [
+  ⟨{ pc := 5063, insn := .jne .r3 (.imm 1) 3542, onSucc := 5064 }, (.inLoad .byte 205), (.const 1)⟩,  -- jne r3, 1, 3542
   ⟨{ pc := 5438, insn := .jeq .r3 (.imm 0) 5716, onSucc := 5439 }, (.inLoad .byte 31441), (.const 0)⟩  -- jeq r3, 0, 5716
 ]
 
@@ -839,6 +882,7 @@ def ipre5070_5995 : List IGuard := [
 ]
 
 def ipost5070_5995 : List IGuard := [
+  ⟨{ pc := 5063, insn := .jne .r3 (.imm 1) 3542, onSucc := 5064 }, (.inLoad .byte 205), (.const 1)⟩,  -- jne r3, 1, 3542
   ⟨{ pc := 5995, insn := .jeq .r3 (.imm 0) 5054, onSucc := 5054 }, (.inLoad .byte 31528), (.const 0)⟩  -- jeq r3, 0, 5054
 ]
 
@@ -876,6 +920,7 @@ def ipre5070_6432 : List IGuard := [
 ]
 
 def ipost5070_6432 : List IGuard := [
+  ⟨{ pc := 5063, insn := .jne .r3 (.imm 1) 3542, onSucc := 5064 }, (.inLoad .byte 205), (.const 1)⟩,  -- jne r3, 1, 3542
   ⟨{ pc := 6432, insn := .jeq .r3 (.imm 0) 5439, onSucc := 5439 }, (.inLoad .byte 31528), (.const 0)⟩  -- jeq r3, 0, 5439
 ]
 
@@ -932,7 +977,14 @@ def idom5473 : List IGuard := [
   ⟨{ pc := 262, insn := .jne .r3 (.reg .r8) 5475, onSucc := 263 }, (.inLoad .dword 10528), (.inLoad .dword 104)⟩,  -- jne r3, r8, 5475
   ⟨{ pc := 264, insn := .jne .r3 (.reg .r6) 5475, onSucc := 265 }, (.inLoad .dword 10536), (.inLoad .dword 112)⟩,  -- jne r3, r6, 5475
   ⟨{ pc := 267, insn := .jne .r3 (.reg .r9) 4725, onSucc := 268 }, (.inLoad .dword 10544), (.inLoad .dword 120)⟩,  -- jne r3, r9, 4725
-  ⟨{ pc := 269, insn := .jne .r0 (.imm 1) 5078, onSucc := 270 }, (.inLoad .byte 10645), (.const 1)⟩  -- jne r0, 1, 5078
+  ⟨{ pc := 269, insn := .jne .r0 (.imm 1) 5078, onSucc := 270 }, (.inLoad .byte 10645), (.const 1)⟩,  -- jne r0, 1, 5078
+  ⟨{ pc := 5451, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5452 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5454, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5455 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5457, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5458 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5460, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5461 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5463, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5464 }, (.inLoad .dword 20976), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5466, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5467 }, (.inLoad .dword 20984), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5469, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5470 }, (.inLoad .dword 20992), (.const 10463932726783620124)⟩  -- jne r2, r3, 5717
 ]
 
 def ipre5473_5053 : List IGuard := [
@@ -966,7 +1018,14 @@ def ipre5473_5053 : List IGuard := [
 ]
 
 def ipost5473_5053 : List IGuard := [
-  ⟨{ pc := 5053, insn := .jeq .r3 (.imm 0) 5716, onSucc := 5054 }, (.inLoad .byte 31441), (.const 0)⟩  -- jeq r3, 0, 5716
+  ⟨{ pc := 5053, insn := .jeq .r3 (.imm 0) 5716, onSucc := 5054 }, (.inLoad .byte 31441), (.const 0)⟩,  -- jeq r3, 0, 5716
+  ⟨{ pc := 5451, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5452 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5454, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5455 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5457, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5458 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5460, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5461 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5463, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5464 }, (.inLoad .dword 20976), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5466, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5467 }, (.inLoad .dword 20984), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5469, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5470 }, (.inLoad .dword 20992), (.const 10463932726783620124)⟩  -- jne r2, r3, 5717
 ]
 
 def ipre5473_5438 : List IGuard := [
@@ -1001,7 +1060,14 @@ def ipre5473_5438 : List IGuard := [
 ]
 
 def ipost5473_5438 : List IGuard := [
-  ⟨{ pc := 5438, insn := .jeq .r3 (.imm 0) 5716, onSucc := 5439 }, (.inLoad .byte 31441), (.const 0)⟩  -- jeq r3, 0, 5716
+  ⟨{ pc := 5438, insn := .jeq .r3 (.imm 0) 5716, onSucc := 5439 }, (.inLoad .byte 31441), (.const 0)⟩,  -- jeq r3, 0, 5716
+  ⟨{ pc := 5451, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5452 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5454, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5455 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5457, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5458 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5460, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5461 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5463, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5464 }, (.inLoad .dword 20976), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5466, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5467 }, (.inLoad .dword 20984), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5469, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5470 }, (.inLoad .dword 20992), (.const 10463932726783620124)⟩  -- jne r2, r3, 5717
 ]
 
 def ipre5473_5995 : List IGuard := [
@@ -1037,6 +1103,13 @@ def ipre5473_5995 : List IGuard := [
 ]
 
 def ipost5473_5995 : List IGuard := [
+  ⟨{ pc := 5451, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5452 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5454, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5455 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5457, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5458 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5460, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5461 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5463, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5464 }, (.inLoad .dword 20976), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5466, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5467 }, (.inLoad .dword 20984), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5469, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5470 }, (.inLoad .dword 20992), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
   ⟨{ pc := 5995, insn := .jeq .r3 (.imm 0) 5054, onSucc := 5054 }, (.inLoad .byte 31528), (.const 0)⟩  -- jeq r3, 0, 5054
 ]
 
@@ -1074,6 +1147,13 @@ def ipre5473_6432 : List IGuard := [
 ]
 
 def ipost5473_6432 : List IGuard := [
+  ⟨{ pc := 5451, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5452 }, (.inLoad .dword 48), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5454, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5455 }, (.inLoad .dword 56), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5457, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5458 }, (.inLoad .dword 64), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5460, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5461 }, (.inLoad .dword 72), (.const 12178014311288245306)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5463, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5464 }, (.inLoad .dword 20976), (.const 10637895772709248262)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5466, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5467 }, (.inLoad .dword 20984), (.const 12428223917890587609)⟩,  -- jne r2, r3, 5717
+  ⟨{ pc := 5469, insn := .jne .r2 (.reg .r3) 5717, onSucc := 5470 }, (.inLoad .dword 20992), (.const 10463932726783620124)⟩,  -- jne r2, r3, 5717
   ⟨{ pc := 6432, insn := .jeq .r3 (.imm 0) 5439, onSucc := 5439 }, (.inLoad .byte 31528), (.const 0)⟩  -- jeq r3, 0, 5439
 ]
 
