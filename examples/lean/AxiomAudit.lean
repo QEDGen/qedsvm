@@ -28,6 +28,7 @@ import Generated.GuardedOobTransition
 import VaultDepositTransitionWitness
 import AuthorizedVaultTransitionWitness
 import AuthorizedVaultCoverage
+import PToken.ErrorConvert
 
 open Lean Elab Command
 
@@ -198,3 +199,6 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_program_owner_2
 #assert_std_axioms Examples.AuthorizedVaultTransitionWitness.wrong_program_owner_3
 #assert_std_axioms Examples.AuthorizedVaultTransitionWitness.zero
+-- p_token fn 116 (ProgramError -> u64): computes `convVal`, which is never 0.
+#assert_std_axioms Examples.PTokenErrorConvert.error_convert_spec
+#assert_std_axioms Examples.PTokenErrorConvert.convVal_ne_zero
