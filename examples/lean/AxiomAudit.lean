@@ -31,6 +31,7 @@ import AuthorizedVaultCoverage
 import PToken.ErrorConvert
 import PToken.ErrorTail
 import PToken.PanicChain
+import SVM.SBPF.PathCond
 
 open Lean Elab Command
 
@@ -214,3 +215,8 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms Examples.PTokenErrorTail.error_tail_fails_closed
 #assert_std_axioms SVM.SBPF.failsClosed_straight
 #assert_std_axioms Examples.PTokenPanicChain.panic_sites_fail_closed
+-- Static reachability is sound for real runs; path conditions of success edges.
+#assert_std_axioms SVM.SBPF.reach_until
+#assert_std_axioms SVM.SBPF.guard_toward
+#assert_std_axioms SVM.SBPF.edge_path_condition
+#assert_std_axioms Examples.PTokenPanicChain.panic_helpers_noReturn

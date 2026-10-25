@@ -43,7 +43,7 @@ theorem failsClosed_inCallee (fetch : Nat → Option Insn) (v : State) (F0 : Cal
     FailsClosed fetch v := by
   intro n
   rcases callee_returns_or_faults fetch F0 outer n v [] h0 hcs with
-    ⟨_, _, hnc⟩ | ⟨j, u, _, hu1, hu2, _, _, _, _, _, hu8, hu9⟩
+    ⟨_, _, hnc⟩ | ⟨j, u, _, hu1, hu2, _, _, _, _, _, hu8, _, hu9⟩
   · intro hz
     rcases hnc with h | h
     · rw [h] at hz; cases hz
@@ -141,5 +141,85 @@ theorem failsClosed_enter (fetch : Nat → Option Insn) (s : State) (target : Na
 theorem failsClosed_panic (fetch : Nat → Option Insn) (s : State) (h0 : s.exitCode = none)
     (hf : fetch s.pc = some (.call .sol_panic_)) : FailsClosed fetch s :=
   failsClosed_step fetch s _ h0 hf (failsClosed_halted fetch _ ERR_ABORT rfl (fun _ => rfl))
+
+/-! ## Never returning to a caller -/
+
+/-- Every state of the run from `s` keeps `base` at the bottom of its call stack: the run
+    never pops below it. -/
+def StaysAbove (fetch : Nat → Option Insn) (base : List CallFrame) (s : State) : Prop :=
+  ∀ n, ∃ ys, (executeFn fetch s n).callStack = ys ++ base
+
+/-- A function that, once called, never returns to its caller's frame. -/
+def NoReturn (fetch : Nat → Option Insn) (t : Nat) : Prop :=
+  ∀ (s : State) (F0 : CallFrame) (outer : List CallFrame), s.pc = t →
+    s.callStack = F0 :: outer → s.exitCode = none → StaysAbove fetch (F0 :: outer) s
+
+theorem staysAbove_halted (fetch : Nat → Option Insn) (base : List CallFrame) (s : State)
+    (c : Nat) (hc : s.exitCode = some c) (hcs : ∃ ys, s.callStack = ys ++ base) :
+    StaysAbove fetch base s := by
+  intro n; rw [executeFn_halted fetch s n c hc]; exact hcs
+
+theorem staysAbove_step (fetch : Nat → Option Insn) (base : List CallFrame) (s : State)
+    (insn : Insn) (h0 : s.exitCode = none) (hf : fetch s.pc = some insn)
+    (hcs : ∃ ys, s.callStack = ys ++ base)
+    (h : StaysAbove fetch base (chargeCu (step insn s))) : StaysAbove fetch base s := by
+  intro n
+  cases n with
+  | zero => simpa using hcs
+  | succ n =>
+    by_cases hover : s.cuConsumed > s.cuBudget
+    · rw [executeFn_overBudget fetch s _ h0 hover]; exact hcs
+    · rw [executeFn_step fetch s n insn h0 (Nat.le_of_not_lt hover) hf]; exact h n
+
+theorem step_straight_callStack (insn : Insn) (s : State) (hs : insn.isStraight = true) :
+    (step insn s).callStack = s.callStack := by
+  cases insn <;> simp [Insn.isStraight] at hs <;> simp only [step] <;> (try split) <;> rfl
+
+theorem staysAbove_straight (fetch : Nat → Option Insn) (base : List CallFrame) :
+    ∀ (k : Nat) (s : State), s.exitCode = none → (∃ ys, s.callStack = ys ++ base) →
+      StraightRun fetch s.pc k →
+      (∀ u : State, u.pc = s.pc + k → u.exitCode = none → u.callStack = s.callStack →
+        StaysAbove fetch base u) →
+      StaysAbove fetch base s := by
+  intro k
+  induction k with
+  | zero => intro s h0 _ _ hk; exact hk s rfl h0 rfl
+  | succ k ih =>
+    intro s h0 hcs hrun hk
+    obtain ⟨insn, hf, hs⟩ := hrun 0 (by omega)
+    apply staysAbove_step fetch base s insn h0 hf hcs
+    have hcs1 : (chargeCu (step insn s)).callStack = s.callStack :=
+      step_straight_callStack insn s hs
+    rcases step_straight insn s hs h0 with ⟨h0', hpc', _⟩ | ⟨c, hc, _⟩
+    · refine ih (chargeCu (step insn s)) h0' (by rw [hcs1]; exact hcs) (fun i hi => ?_)
+        (fun u hu h0u hcsu => ?_)
+      · obtain ⟨insn', hf', hs'⟩ := hrun (i + 1) (by omega)
+        refine ⟨insn', ?_, hs'⟩
+        show fetch ((step insn s).pc + i) = _
+        rw [hpc', show s.pc + 1 + i = s.pc + (i + 1) by omega]
+        exact hf'
+      · exact hk u (by rw [hu]; show (step insn s).pc + k = _; rw [hpc']; omega) h0u
+          (by rw [hcsu, hcs1])
+    · exact staysAbove_halted fetch base _ c hc (by rw [hcs1]; exact hcs)
+
+theorem staysAbove_enter (fetch : Nat → Option Insn) (base : List CallFrame) (s : State)
+    (target : Nat) (h0 : s.exitCode = none) (hcs : ∃ ys, s.callStack = ys ++ base)
+    (hf : fetch s.pc = some (.call_local target))
+    (hk : ∀ u : State, u.pc = target → u.exitCode = none → (∃ ys, u.callStack = ys ++ base) →
+      StaysAbove fetch base u) :
+    StaysAbove fetch base s := by
+  apply staysAbove_step fetch base s _ h0 hf hcs
+  simp only [step]
+  split
+  · exact staysAbove_halted fetch base _ ERR_CALL_DEPTH_EXCEEDED rfl hcs
+  · obtain ⟨ys, hys⟩ := hcs
+    exact hk _ rfl h0 ⟨_ :: ys, congrArg (List.cons _) hys⟩
+
+theorem staysAbove_panic (fetch : Nat → Option Insn) (base : List CallFrame) (s : State)
+    (h0 : s.exitCode = none) (hcs : ∃ ys, s.callStack = ys ++ base)
+    (hf : fetch s.pc = some (.call .sol_panic_)) : StaysAbove fetch base s :=
+  staysAbove_step fetch base s _ h0 hf hcs
+    (staysAbove_halted fetch base _ ERR_ABORT rfl
+      (by obtain ⟨ys, hys⟩ := hcs; exact ⟨ys, (execSyscall_callStack _ s).trans hys⟩))
 
 end SVM.SBPF

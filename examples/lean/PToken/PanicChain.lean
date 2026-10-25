@@ -71,4 +71,49 @@ theorem panic_sites_fail_closed (fetch : Nat → Option Insn) (hc : PanicCode fe
   · exact failsClosed_enter fetch s 10881 h0 (by rw [hpc]; exact h) fun u hu h0u =>
       panic10881 fetch hc u hu h0u
 
+/-! ## The panic helpers never return -/
+
+theorem stays10823 (fetch : Nat → Option Insn) (hc : PanicCode fetch) (base : List CallFrame)
+    (s : State) (hpc : s.pc = 10823) (h0 : s.exitCode = none)
+    (hcs : ∃ ys, s.callStack = ys ++ base) : StaysAbove fetch base s :=
+  staysAbove_straight fetch base 6 s h0 hcs (by rw [hpc]; exact hc.r10823) fun u hu h0u hcsu =>
+    staysAbove_panic fetch base u h0u (by rw [hcsu]; exact hcs)
+      (by rw [hu, hpc]; exact hc.p10829)
+
+theorem stays10862 (fetch : Nat → Option Insn) (hc : PanicCode fetch) (base : List CallFrame)
+    (s : State) (hpc : s.pc = 10862) (h0 : s.exitCode = none)
+    (hcs : ∃ ys, s.callStack = ys ++ base) : StaysAbove fetch base s :=
+  staysAbove_straight fetch base 5 s h0 hcs (by rw [hpc]; exact hc.r10862) fun u hu h0u hcsu =>
+    staysAbove_enter fetch base u 10823 h0u (by rw [hcsu]; exact hcs)
+      (by rw [hu, hpc]; exact hc.c10867) fun v hv h0v hcsv =>
+        stays10823 fetch hc base v hv h0v hcsv
+
+theorem stays11177 (fetch : Nat → Option Insn) (hc : PanicCode fetch) (base : List CallFrame)
+    (s : State) (hpc : s.pc = 11177) (h0 : s.exitCode = none)
+    (hcs : ∃ ys, s.callStack = ys ++ base) : StaysAbove fetch base s :=
+  staysAbove_enter fetch base s 11618 h0 hcs (by rw [hpc]; exact hc.c11177) fun u hu h0u hcsu =>
+    staysAbove_straight fetch base 22 u h0u hcsu (by rw [hu]; exact hc.r11618)
+      fun v hv h0v hcsv =>
+        staysAbove_enter fetch base v 10862 h0v (by rw [hcsv]; exact hcsu)
+          (by rw [hv, hu]; exact hc.c11640) fun w hw h0w hcsw =>
+            stays10862 fetch hc base w hw h0w hcsw
+
+theorem stays10881 (fetch : Nat → Option Insn) (hc : PanicCode fetch) (base : List CallFrame)
+    (s : State) (hpc : s.pc = 10881) (h0 : s.exitCode = none)
+    (hcs : ∃ ys, s.callStack = ys ++ base) : StaysAbove fetch base s :=
+  staysAbove_straight fetch base 22 s h0 hcs (by rw [hpc]; exact hc.r10881) fun u hu h0u hcsu =>
+    staysAbove_enter fetch base u 10862 h0u (by rw [hcsu]; exact hcs)
+      (by rw [hu, hpc]; exact hc.c10903) fun v hv h0v hcsv =>
+        stays10862 fetch hc base v hv h0v hcsv
+
+/-- The entrypoint's two panic helpers never return to their caller. -/
+theorem panic_helpers_noReturn (fetch : Nat → Option Insn) (hc : PanicCode fetch) (t : Nat)
+    (ht : (t == 11177 || t == 10881) = true) : NoReturn fetch t := by
+  intro s F0 outer hpc hcs h0
+  have hbase : ∃ ys, s.callStack = ys ++ F0 :: outer := ⟨[], by simp [hcs]⟩
+  simp only [Bool.or_eq_true, beq_iff_eq] at ht
+  rcases ht with ht | ht <;> subst ht
+  · exact stays11177 fetch hc _ s hpc h0 hbase
+  · exact stays10881 fetch hc _ s hpc h0 hbase
+
 end Examples.PTokenPanicChain

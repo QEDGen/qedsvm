@@ -176,7 +176,8 @@ theorem step_callStack_above (insn : Insn) (s : State) (F0 : CallFrame) (outer :
     stack is `ys ++ F0 :: outer`, `F0` the caller's frame). Either the run is still above `F0`
     and has not halted cleanly, or it passed through a state `u`, reached after `j` steps, that
     is back at the caller's return PC with `F0`'s saved r6-r10, the caller's stack `outer`, and
-    no halt; the rest of the run continues from `u`. Nothing is assumed about the code. -/
+    no halt; `u` is the run's own state after `j` steps and the rest of the run continues
+    from it. Nothing is assumed about the code. -/
 theorem callee_returns_or_faults (fetch : Nat → Option Insn) (F0 : CallFrame)
     (outer : List CallFrame) :
     ∀ (k : Nat) (s : State) (ys : List CallFrame),
@@ -186,7 +187,7 @@ theorem callee_returns_or_faults (fetch : Nat → Option Insn) (F0 : CallFrame)
       (∃ j u, j ≤ k ∧ u.callStack = outer ∧ u.pc = F0.retPc ∧
           u.regs.r6 = F0.savedR6 ∧ u.regs.r7 = F0.savedR7 ∧ u.regs.r8 = F0.savedR8 ∧
           u.regs.r9 = F0.savedR9 ∧ u.regs.r10 = F0.savedR10 ∧ u.exitCode = none ∧
-          executeFn fetch s k = executeFn fetch u (k - j)) := by
+          u = executeFn fetch s j ∧ executeFn fetch s k = executeFn fetch u (k - j)) := by
   intro k
   induction k with
   | zero =>
@@ -210,8 +211,11 @@ theorem callee_returns_or_faults (fetch : Nat → Option Insn) (F0 : CallFrame)
       by_cases hr : insn = .exit ∧ ys = []
       · obtain ⟨rfl, rfl⟩ := hr
         right
-        refine ⟨1, chargeCu (step .exit s), by omega, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;>
-          simp [step, hcs, h0]
+        refine ⟨1, chargeCu (step .exit s), by omega, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+        all_goals first
+          | (show _ = executeFn fetch s (0 + 1)
+             rw [executeFn_step fetch s 0 _ h0 hle hf, executeFn_zero])
+          | simp [step, hcs, h0]
       · obtain ⟨ys', hcs'⟩ := step_callStack_above insn s F0 outer ys hcs hr
         have hne : s.callStack ≠ [] := by simp [hcs]
         have hnc := step_noCleanHalt insn s h0 hne
@@ -225,8 +229,9 @@ theorem callee_returns_or_faults (fetch : Nat → Option Insn) (F0 : CallFrame)
           rcases ih (chargeCu (step insn s)) ys' hex hcs'' with h | ⟨j, u, hj, hu⟩
           · exact Or.inl h
           · refine Or.inr ⟨j + 1, u, by omega, ?_⟩
-            obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8, h9⟩ := hu
+            obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8, hu', h9⟩ := hu
             exact ⟨h1, h2, h3, h4, h5, h6, h7, h8,
+              by rw [hu', executeFn_step fetch s j insn h0 hle hf],
               by rw [h9]; congr 1; omega⟩
 
 /-- Once a run halts, its exit code is fixed: every run from `u` either has not halted yet or
