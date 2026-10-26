@@ -184,7 +184,9 @@ fn lean_embedding_and_function_registry_match_the_bound_elf() {
     let hex: String = hex.chars().filter(|c| !c.is_whitespace()).collect();
     let bytes: Vec<u8> = hex
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect();
     assert_eq!(hex.len() % 2, 0);
@@ -204,7 +206,9 @@ fn lean_embedding_and_function_registry_match_the_bound_elf() {
         .collect();
     assert_eq!(numbers.len() % 2, 0);
     let expected: Vec<_> = numbers
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| (pair[0] as u32, pair[1]))
         .collect();
     let mut actual: Vec<_> = image
