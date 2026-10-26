@@ -55,7 +55,7 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
         executeFn_halted fetch s (fuel' + 1) code hex
       rw [hlhs, hrhs]
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · -- H5 budget halt: both steppers return `s` unchanged.
         have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 = s := by
           simp only [executeFnCpiWithFuel, hex, if_pos h_over]
@@ -85,7 +85,7 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
             | _ => rfl
           have hrhs : executeFn fetch s (fuel' + 1) =
               executeFn fetch (chargeCu (step insn s)) fuel' :=
-            executeFn_step fetch s fuel' insn hex (Nat.le_of_not_lt h_over) hf
+            executeFn_step fetch s fuel' insn hex (Nat.lt_of_not_le h_over) hf
           rw [hlhs, hrhs]
           exact ih (chargeCu (step insn s))
 
@@ -157,7 +157,7 @@ theorem executeFn_callStack_empty (fetch : Nat → Option Insn) (s : State) (k :
     cases hex : s.exitCode with
     | some _ => exact h_cs
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · rw [if_pos h_over]; exact h_cs
       · rw [if_neg h_over]
         cases hf : fetch s.pc with
@@ -256,7 +256,7 @@ private theorem run_terminates_after_witness
           some ((executeFn (fetchFromArray insns) (initialState cfg) k).regs.get Reg.r0) := by
       simp only [step, hcs]
     have h_wbud : (executeFn (fetchFromArray insns) (initialState cfg) k).cuConsumed
-        ≤ (executeFn (fetchFromArray insns) (initialState cfg) k).cuBudget := by
+        < (executeFn (fetchFromArray insns) (initialState cfg) k).cuBudget := by
       rw [executeFn_preserves_cuBudget]
       simp only [initialState_cuBudget]
       omega

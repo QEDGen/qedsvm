@@ -273,7 +273,7 @@ private theorem wp_exec_from_using_phase_lemma
   have hphase : executeFn phaseSplitProg (initState inputAddr mem rt) 1
       = chargeCu (step (.mov64 .r2 (.imm 7)) (initState inputAddr mem rt)) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step _ _ 0 _ rfl (Nat.zero_le _) rfl, executeFn_zero]
+        executeFn_step _ _ 0 _ rfl (by simp) rfl, executeFn_zero]
   wp_exec_from 1 3 using hphase
   wp_exec [phaseSplitProg, step] []
 

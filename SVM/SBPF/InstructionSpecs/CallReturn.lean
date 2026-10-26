@@ -8,7 +8,7 @@ open Memory
     a direct local call. The target is resolved through the loaded text region,
     never taken from an observed trace. -/
 theorem callx_v3_step_eq_local (reg : Reg) (target : Nat) (s : State)
-    (hDepth : s.callStack.length < MAX_CALL_DEPTH)
+    (hDepth : s.callStack.length + 1 < MAX_CALL_DEPTH)
     (hTarget : callxTarget s reg = some target) :
     step (.callx reg) s = step (.call_local target) s := by
   have hText : s.regions.textRegion?.isNone = false := by
@@ -16,14 +16,14 @@ theorem callx_v3_step_eq_local (reg : Reg) (target : Nat) (s : State)
     | none => simp [callxTarget, resolveCallx, h] at hTarget
     | some _ => rfl
   simp only [step, execCallx, hText, Bool.false_eq_true, if_false,
-    if_neg (by omega : ¬ s.callStack.length ≥ MAX_CALL_DEPTH), hTarget]
+    if_neg (by omega : ¬ s.callStack.length + 1 ≥ MAX_CALL_DEPTH), hTarget]
 
 /-- Register-level form: a callx whose register holds `addr`, resolved through
     the region table to `target`, steps exactly like `call_local target`. -/
 theorem callx_v3_step_spec (reg : Reg) (addr target : Nat) (s : State)
     (hAddr : s.regs.get reg = addr)
     (hResolve : resolveCallx s.regions addr = some target)
-    (hDepth : s.callStack.length < MAX_CALL_DEPTH) :
+    (hDepth : s.callStack.length + 1 < MAX_CALL_DEPTH) :
     step (.callx reg) s = step (.call_local target) s :=
   callx_v3_step_eq_local reg target s hDepth (by rw [callxTarget, hAddr]; exact hResolve)
 
@@ -38,7 +38,7 @@ theorem call_local_spec
     (r6V r7V r8V r9V r10V : Nat) (pc : Nat)
     -- Call-depth bound (H4): push only below MAX_CALL_DEPTH. autoParam so
     -- qedlift-emitted sites (concrete `cs`) discharge it automatically.
-    (hDepth : cs.length < MAX_CALL_DEPTH := by
+    (hDepth : cs.length + 1 < MAX_CALL_DEPTH := by
       simp only [List.length_cons, List.length_nil, MAX_CALL_DEPTH]; omega) :
     cuTripleWithin 1 0 pc target
       (CodeReq.singleton pc (.call_local target))
@@ -146,7 +146,7 @@ theorem call_local_spec
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call_local target) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
-  have hnotdepth : ¬ (s.callStack.length ≥ MAX_CALL_DEPTH) := by
+  have hnotdepth : ¬ (s.callStack.length + 1 ≥ MAX_CALL_DEPTH) := by
     rw [hs_cs]; omega
   have hexec : executeFn fetch s 1 = chargeCu
       { s with pc := target
@@ -538,7 +538,7 @@ witness rejects). -/
 theorem callx_v3_spec
     (reg : Reg) (addr target : Nat)
     (cs : List CallFrame) (r6V r7V r8V r9V r10V pc : Nat)
-    (hDepth : cs.length < MAX_CALL_DEPTH := by
+    (hDepth : cs.length + 1 < MAX_CALL_DEPTH := by
       simp only [List.length_cons, List.length_nil, MAX_CALL_DEPTH]; omega) :
     cuTripleWithinMem 1 0 pc target
       (CodeReq.singleton pc (.callx reg))
@@ -614,7 +614,7 @@ theorem callx_v3_spec
   have hFetchLocal : fetchLocal s.pc = some (.call_local target) := by
     rw [hpc]
     simp [fetchLocal]
-  have hBudget0 : s.cuConsumed ≤ s.cuBudget := by omega
+  have hBudget0 : s.cuConsumed < s.cuBudget := by omega
   have hExecEq : ∀ k, k ≤ 1 →
       executeFn fetch s k = executeFn fetchLocal s k := by
     intro k hk

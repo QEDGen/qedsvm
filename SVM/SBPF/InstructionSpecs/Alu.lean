@@ -142,7 +142,7 @@ theorem mov64_imm_spec (dst : Reg) (imm : Int) (vOld : Nat) (pc : Nat)
   have hfetch : fetch s.pc = some (.mov64 dst (.imm imm)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   -- in budget → the H5 halt doesn't fire
-  have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hexec : executeFn fetch s 1 =
       chargeCu { s with regs := s.regs.set dst (toU64 imm), pc := s.pc + 1 } := by
     simp [executeFn, step, hex, hfetch, hnb]
@@ -297,7 +297,7 @@ theorem mov64_reg_spec_manual (dst src : Reg) (vOld v : Nat) (pc : Nat)
   have hR_no_pc : hR.pc = none := hRfree _ hR_sat
   have hfetch : fetch s.pc = some (.mov64 dst (.reg src)) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hexec : executeFn fetch s 1 =
       chargeCu { s with regs := s.regs.set dst v, pc := s.pc + 1 } := by
     have h0 : executeFn fetch s 1 =

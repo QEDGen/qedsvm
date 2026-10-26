@@ -554,7 +554,7 @@ the realloc bound). -/
 
 /-- The callee runs to its exit: code 0, four CU, the store of 42. -/
 theorem callee_exec_ok (t : State) (n : Nat) (hpc : t.pc = 0) (hex : t.exitCode = none)
-    (hcu : t.cuConsumed = 0) (hbud : 3 ≤ t.cuBudget) (hcs : t.callStack = [])
+    (hcu : t.cuConsumed = 0) (hbud : 4 ≤ t.cuBudget) (hcs : t.callStack = [])
     (hr1 : t.regs.r1 = INPUT_START)
     (hreg : t.regions.containsWritable (INPUT_START + 96) 1 = true) :
     (executeFn (fetchFromArray calleeInsns) t (n + 4)).exitCode = some 0 ∧
@@ -1058,11 +1058,11 @@ theorem executeFnCpiWithFuel_halted (registry : Nat → Option ByteArray)
 /-- The runner's last step at a live, in-budget `exit` with an empty call
     stack halts with `r0` as the exit code and memory unchanged. -/
 theorem runner_exit (registry : Nat → Option ByteArray) (fetch : Nat → Option Insn)
-    (t : State) (k : Nat) (hex : t.exitCode = none) (hbud : t.cuConsumed ≤ t.cuBudget)
+    (t : State) (k : Nat) (hex : t.exitCode = none) (hbud : t.cuConsumed < t.cuBudget)
     (hf : fetch t.pc = some .exit) (hcs : t.callStack = []) :
     (executeFnCpiWithFuel registry fetch t (k + 1)).1.exitCode = some t.regs.r0 ∧
       (executeFnCpiWithFuel registry fetch t (k + 1)).1.mem = t.mem := by
-  rw [executeFnCpiWithFuel_succ_insn registry fetch t k _ hex (Nat.not_lt.mpr hbud) hf,
+  rw [executeFnCpiWithFuel_succ_insn registry fetch t k _ hex (Nat.not_le.mpr hbud) hf,
     Cpi.stepCpi_of_not_cpi _ _ _ _ _ rfl]
   have hx : (chargeCu (step .exit t)).exitCode = some t.regs.r0 := by simp [step, hcs]
   rw [executeFnCpiWithFuel_halted _ _ _ _ _ hx]
@@ -1095,7 +1095,7 @@ theorem writer_end_to_end
       oldMemD_12 oldMemD_13 oldMemD_14 vR7Old vR4Old vR5Old cpiRdOld cpiR0Old cpiFpOld0
       cpi_oldMemB_1 ** writerFrame baseAddr acct d1).holdsFor s)
     (hpc : s.pc = 0) (hex : s.exitCode = none)
-    (hbud : s.cuConsumed + 46 + Cpi.cu + 5 + 6 ≤ s.cuBudget)
+    (hbud : s.cuConsumed + 46 + Cpi.cu + 5 + 6 + 1 ≤ s.cuBudget)
     (hrr1 : writerRr1 baseAddr s.regions) (hrr2 : writerRr2 baseAddr s.regions)
     (hdepth : s.invokeDepth = 0)
     (hpriv : s.origPrivs.any
@@ -1149,7 +1149,7 @@ theorem writer_end_to_end
     simp only [chargeCu, Cpi.applyResult_r0] at this
     omega
   have hG : r.code = toU64 0 := by rw [hc]; rfl
-  have hbud2 : (Cpi.applyResult (executeFn fetch s k1) r).cuConsumed + 6 + 0 ≤
+  have hbud2 : (Cpi.applyResult (executeFn fetch s k1) r).cuConsumed + 6 + 0 <
       (Cpi.applyResult (executeFn fetch s k1) r).cuBudget := by
     rw [← hstep]
     simp only [chargeCu, Cpi.applyResult, executeFn_preserves_cuBudget]
@@ -1173,7 +1173,7 @@ theorem writer_end_to_end
   have hcsE : sE.callStack = [] := by
     unfold writerFrame at hPost
     exact callStack_of_holds (hr (hr (hr (hr hPost))))
-  have hbudE : sE.cuConsumed ≤ sE.cuBudget := by
+  have hbudE : sE.cuConsumed < sE.cuBudget := by
     have : sE.cuBudget = (Cpi.applyResult (executeFn fetch s k1) r).cuBudget := by
       rw [← hsE, executeFn_preserves_cuBudget]
     omega

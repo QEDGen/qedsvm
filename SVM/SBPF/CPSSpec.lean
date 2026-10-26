@@ -11,7 +11,7 @@
 
   The budget side-condition (`cuConsumed + nSteps + nCu ≤ cuBudget`) is
   what makes the triple sound against the VM's fail-closed budget halt:
-  `executeFn` stops (OutOfBudget) once `cuConsumed > cuBudget`, so
+  `executeFn` stops (OutOfBudget) once `cuConsumed ≥ cuBudget`, so
   "reaches exit still running" only holds when the window provably fits.
   `_seq` splits the budget via `executeFn_preserves_cuBudget`.
 

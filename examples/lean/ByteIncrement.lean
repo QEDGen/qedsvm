@@ -330,7 +330,7 @@ theorem byteIncrementSo_run_terminates
       (fetchFromArray_property_of_mem byteIncrementSo_noCallLocal)
   -- Witness stays within budget (needed for per-step unfolds).
   have h_wbud : (executeFn (fetchFromArray byteIncrementSoInsns)
-        (Runner.initialState cfg) k).cuConsumed ≤
+        (Runner.initialState cfg) k).cuConsumed <
       (executeFn (fetchFromArray byteIncrementSoInsns)
         (Runner.initialState cfg) k).cuBudget := by
     rw [executeFn_preserves_cuBudget]
@@ -350,10 +350,10 @@ theorem byteIncrementSo_run_terminates
       simp only [chargeCu, step, hpc]
     have hex_smov : (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).exitCode = none := by
       simp only [chargeCu, step, hex]
-    -- Charged mov still within budget (1 CU on top of witness ≤ 3, budget ≥ 5).
-    have h_bud_smov : (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).cuConsumed ≤
+    -- Charged mov still strictly within budget (1 CU on top of witness ≤ 3, budget ≥ 5).
+    have h_bud_smov : (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).cuConsumed <
         (chargeCu (step (.mov64 .r0 (.imm 0)) (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k))).cuBudget := by
-      show (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).cuConsumed + 1 ≤
+      show (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).cuConsumed + 1 <
         (executeFn (fetchFromArray byteIncrementSoInsns) (Runner.initialState cfg) k).cuBudget
       rw [executeFn_preserves_cuBudget]
       simp only [Runner.initialState_cuBudget]
