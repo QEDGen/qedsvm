@@ -40,7 +40,8 @@ theorem cuTripleWithin_syscall_writes_r0_only
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s nCu (h_step_cu s) (by omega)),
         executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 vNew := by
     rw [hstep_eq]; exact h_step_regs s
@@ -194,7 +195,8 @@ theorem cuTripleWithinMem_syscall_writes_r0_reads_fixed
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s nCu (h_step_cu s) (by omega)), executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 vNew := by
     rw [hstep_eq]; exact h_step_regs s hs_regs_rA h_region
   have hexec_mem : (executeFn fetch s 1).mem = s.mem := by
@@ -443,7 +445,8 @@ theorem cuTripleWithinMem_syscall_writes_r0_reads_var
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s nCu (h_step_cu s) (by omega)), executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 vNew := by
     rw [hstep_eq]; exact h_step_regs s hs_regs_rA hs_regs_rL h_region
   have hexec_mem : (executeFn fetch s 1).mem = s.mem := by
@@ -650,7 +653,8 @@ theorem cuTripleWithin_syscall_writes_r0_fn
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s nCu (h_step_cu s) (by omega)),
         executeFn_zero]
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 (f s) := by
     rw [hstep_eq]; exact h_step_regs s
@@ -771,7 +775,8 @@ private theorem call_cpi_syscall_aborts_spec (sc : Syscall)
   have hstep_eq : executeFn fetch s 1 =
       chargeCu (step (.call sc) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s nCu (hCu s) (by omega)), executeFn_zero]
   refine ⟨1, Nat.le_refl 1, ?_, ?_⟩
   · rw [hstep_eq]
     show (execSyscall sc s).exitCode = some ERR_UNSUPPORTED_INSTRUCTION

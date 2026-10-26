@@ -176,8 +176,12 @@ so facts about them at a program's entry hold at its invoke. -/
         cases hf : fetch s.pc with
         | none => rfl
         | some insn =>
-          rw [ih (chargeCu (step insn s))]
-          simpa using step_preserves_invokeDepth insn s
+          dsimp only
+          by_cases hch : chargeExceeds insn s = true
+          · rw [if_pos hch]; obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+            rw [hc]
+          · rw [if_neg hch, ih (chargeCu (step insn s))]
+            simpa using step_preserves_invokeDepth insn s
 
 @[simp] theorem executeFn_preserves_origPrivs
     (fetch : Nat → Option Insn) (s : State) (fuel : Nat) :
@@ -195,8 +199,12 @@ so facts about them at a program's entry hold at its invoke. -/
         cases hf : fetch s.pc with
         | none => rfl
         | some insn =>
-          rw [ih (chargeCu (step insn s))]
-          simpa using step_preserves_origPrivs insn s
+          dsimp only
+          by_cases hch : chargeExceeds insn s = true
+          · rw [if_pos hch]; obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+            rw [hc]
+          · rw [if_neg hch, ih (chargeCu (step insn s))]
+            simpa using step_preserves_origPrivs insn s
 
 namespace Cpi
 
@@ -309,13 +317,18 @@ theorem runner_prefix (registry : Nat → Option ByteArray) (fetch : Nat → Opt
         exact absurd hov hbud
       · cases hf : fetch s.pc with
         | none =>
-          simp only [executeFn, hs, if_neg hov, hf] at hex
+          simp only [executeFn, chargeExceeds, Bool.false_eq_true, hs, if_neg hov, hf] at hex
           cases hex
         | some insn =>
-          rw [executeFn_step fetch s k insn hs (Nat.lt_of_not_le hov) hf] at hex hbud ⊢
+          by_cases hch : chargeExceeds insn s = true
+          · -- a failed charge leaves the run over budget, contradicting `hbud`
+            rw [executeFn_chargeExceeds fetch s k insn hs (Nat.lt_of_not_le hov) hf hch] at hbud
+            exact absurd (chargeOnly_overBudget insn s hch) hbud
+          have hch : chargeExceeds insn s = false := by simpa using hch
+          rw [executeFn_step fetch s k insn hs (Nat.lt_of_not_le hov) hf hch] at hex hbud ⊢
           cases hc : Insn.isCpiCall insn
           · rw [show k + 1 + m = (k + m) + 1 by omega,
-              Runner.executeFnCpiWithFuel_succ_insn registry fetch s (k + m) insn hs hov hf,
+              Runner.executeFnCpiWithFuel_succ_insn registry fetch s (k + m) insn hs hov hf hch,
               stepCpi_of_not_cpi _ _ _ _ _ hc]
             exact runner_prefix registry fetch k _ m hex hbud
           · rw [executeFn_halted fetch _ k _ (chargeCu_step_invoke_exitCode insn s hc)] at hex
@@ -326,6 +339,7 @@ theorem runner_prefix (registry : Nat → Option ByteArray) (fetch : Nat → Opt
     successor, with the sub-run at the remaining fuel `m`. -/
 theorem runner_invoke (registry : Nat → Option ByteArray) (fetch : Nat → Option Insn)
     (sI : State) (sc : Syscall) (m : Nat)
+    (hsc : sc = .sol_invoke_signed ∨ sc = .sol_invoke_signed_c)
     (hex : sI.exitCode = none) (hbud : sI.cuConsumed < sI.cuBudget)
     (hf : fetch sI.pc = some (.call sc)) :
     Runner.executeFnCpiWithFuel registry fetch sI (m + 1) =
@@ -333,6 +347,7 @@ theorem runner_invoke (registry : Nat → Option ByteArray) (fetch : Nat → Opt
         (chargeCu (Runner.stepCpi registry (Runner.executeFnCpiWithFuel registry) sI m (.call sc)))
         m :=
   Runner.executeFnCpiWithFuel_succ_insn registry fetch sI m _ hex (Nat.not_le.mpr hbud) hf
+    (by rcases hsc with rfl | rfl <;> rfl)
 
 /-- From a live state at an invoke, `executeFn` either stays put (budget
     halt) or halts. -/
@@ -347,7 +362,8 @@ private theorem executeFn_from_invoke (fetch : Nat → Option Insn) (t : State) 
     · have hcpi : Insn.isCpiCall (.call sc) = true := by
         rcases hsc with rfl | rfl <;> rfl
       right
-      rw [executeFn_step fetch t d _ hex (Nat.lt_of_not_le hov) hf,
+      rw [executeFn_step fetch t d _ hex (Nat.lt_of_not_le hov) hf
+          (by rcases hsc with rfl | rfl <;> rfl),
         executeFn_halted fetch _ d _ (chargeCu_step_invoke_exitCode _ t hcpi),
         chargeCu_step_invoke_exitCode _ t hcpi]
       simp
@@ -472,7 +488,7 @@ theorem runner_cpiPath {N1 M1 entry invokePc N2 M2 exit_ : Nat} {cr1 cr2 : CodeR
         runner_prefix registry fetch k1 s _ hex1 (Nat.not_le.mpr hIbud)
     _ = Runner.executeFnCpiWithFuel registry fetch
           (applyResult (executeFn fetch s k1) r) (k2 + (F - k1 - 1 - k2)) := by
-        rw [runner_invoke registry fetch _ sc _ hex1 hIbud (hpc1 ▸ hfI), hr0, hs']
+        rw [runner_invoke registry fetch _ sc _ hsc hex1 hIbud (hpc1 ▸ hfI), hr0, hs']
         congr 1; omega
     _ = _ := runner_prefix registry fetch k2 _ _ hex2 hEbud
 
@@ -665,6 +681,7 @@ theorem cpiCallNextState_bpf (registry : Nat → Option ByteArray) (s : State)
     (sc : Syscall) (fuel' : Nat) (runCallee : ByteArray → Option (State × Memory.Mem × Nat))
     (hsc : sc = .sol_invoke_signed ∨ sc = .sol_invoke_signed_c)
     (p : Runner.ParsedAcct) (elf : ByteArray) (t : State) (m : Memory.Mem) (f : Nat)
+    (hcu : s.cuConsumed + 1 + cu ≤ s.cuBudget)
     (hdepth : s.invokeDepth + 1 ≤ 4) (hsingle : invokeAccts s sc = [p])
     (hN : invokeNativeNone s sc) (hreg : registry (invokePid s sc) = some elf)
     (hrun : runCallee elf = some (t, m, f)) :
@@ -679,7 +696,7 @@ theorem cpiCallNextState_bpf (registry : Nat → Option ByteArray) (s : State)
      have hal : aliased = false := by simp [aliased, parsedArr, hpa]
      have hnat : SVM.Native.dispatch pid ixData nativeAccts s.mem = none := hN
      have hrg : registry pid = some elf := hreg
-     rw [if_neg (by omega), hal]
+     rw [if_neg (by omega), if_neg (by omega), hal]
      simp only [Bool.false_eq_true, if_false, hnat, hrg, hrun])
 
 /-- Package the committed state and memory of a BPF sub-run as a CPI result. -/
@@ -706,6 +723,7 @@ theorem stepCpi_c_bpf (registry : Nat → Option ByteArray)
     (subRun : (Nat → Option Insn) → State → Nat → State × Nat) (s : State) (fuel' : Nat)
     (p : Runner.ParsedAcct) (elf : ByteArray) (insns : Array Insn) (subS : State)
     (slots : List Runner.AcctSlot)
+    (hcu : s.cuConsumed + 1 + cu ≤ s.cuBudget)
     (hdepth : s.invokeDepth + 1 ≤ 4) (hsingle : invokeAccts s .sol_invoke_signed_c = [p])
     (hN : invokeNativeNone s .sol_invoke_signed_c)
     (hreg : registry (invokePid s .sol_invoke_signed_c) = some elf)
@@ -723,7 +741,7 @@ theorem stepCpi_c_bpf (registry : Nat → Option ByteArray)
       some (insns, subS, slots) := hbuild
   refine cpiCallNextState_bpf registry s _ fuel' _ (Or.inr rfl) p elf _ _
     (Runner.commitCallee s.mem slots (subRun (Runner.fetchFromArray insns) subS fuel').1
-      (subRun (Runner.fetchFromArray insns) subS fuel').2).2.2 hdepth hsingle hN hreg ?_
+      (subRun (Runner.fetchFromArray insns) subS fuel').2).2.2 hcu hdepth hsingle hN hreg ?_
   simp only [runCallee, hb, bind, Option.bind_some]
 
 end Cpi

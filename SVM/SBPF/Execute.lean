@@ -420,6 +420,75 @@ abbrev Program := Array Insn
 @[simp] def chargeCu (s : State) : State :=
   { s with cuConsumed := s.cuConsumed + 1 }
 
+/-- Syscalls whose charge `executeFn` checks before running them. The two
+    invokes are excluded: the runner checks the invoke charge itself
+    (`Runner.cpiCallNextState`), and proof-side `step` runs the fail-closed
+    `Cpi.exec` stub for them. -/
+@[simp] def Syscall.chargesFirst : Syscall → Bool
+  | .sol_invoke_signed | .sol_invoke_signed_c => false
+  | _ => true
+
+/-- Charge-first check (#93): agave charges a syscall (`consume_checked`) before
+    running it, and fails with `ComputationalBudgetExceeded`, without the
+    syscall's effect, when the charge exceeds what remains of the budget.
+    Always `false` for other instructions: the per-step budget check already
+    covers their baseline 1 CU. -/
+@[simp] def chargeExceeds (insn : Insn) (s : State) : Bool :=
+  match insn with
+  | .call sc => sc.chargesFirst && decide (s.cuBudget < s.cuConsumed + 1 + syscallCu sc s)
+  | _ => false
+
+/-- The state after a failed charge: the instruction's CU is consumed, nothing
+    else changes. It is over budget, so execution halts there with
+    `exitCode = none` (`OutOfBudget` on the wire). -/
+@[simp] def chargeOnly (insn : Insn) (s : State) : State :=
+  match insn with
+  | .call sc => { s with cuConsumed := s.cuConsumed + 1 + syscallCu sc s }
+  | _ => chargeCu s
+
+/-- No syscall body touches the CU meter; `step` adds `syscallCu` after it. -/
+@[simp] theorem execTryFind_preserves_cuConsumed (s : State) :
+    (Pda.execTryFind s).cuConsumed = s.cuConsumed := by
+  simp only [Pda.execTryFind]
+  refine State.guardRead_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  split
+  · refine State.guardWrite_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+    refine State.guardWrite_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+    rfl
+  · rfl
+
+@[simp] theorem execSyscall_preserves_cuConsumed (sc : Syscall) (s : State) :
+    (execSyscall sc s).cuConsumed = s.cuConsumed := by
+  cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
+    (first | rfl | simp)
+
+/-- Charge-first side condition from a step's CU bound: if a step consumes at
+    most `nCu` beyond `cuConsumed` and the budget covers `1 + nCu`, the charge
+    fits. -/
+theorem chargeExceeds_false_of_cu (insn : Insn) (s : State) (nCu : Nat)
+    (h_cu : (step insn s).cuConsumed ≤ s.cuConsumed + nCu)
+    (h_bud : s.cuConsumed + 1 + nCu ≤ s.cuBudget) :
+    chargeExceeds insn s = false := by
+  cases insn with
+  | call sc =>
+    have : (step (.call sc) s).cuConsumed = (execSyscall sc s).cuConsumed + syscallCu sc s := rfl
+    have hpres := execSyscall_preserves_cuConsumed sc s
+    have hfit : ¬ s.cuBudget < s.cuConsumed + 1 + syscallCu sc s := by omega
+    simp [chargeExceeds, hfit]
+  | _ => rfl
+
+/-- Discharges `chargeExceeds insn s = false` at a call site: by `rfl` for
+    non-syscall instructions, otherwise from a CU bound on the step and the
+    budget hypothesis in scope (`chargeExceeds_false_of_cu`). -/
+syntax "charge_fits" : tactic
+macro_rules
+  | `(tactic| charge_fits) => `(tactic| first
+      | rfl
+      | exact chargeExceeds_false_of_cu _ _ _
+          (by apply_assumption <;> assumption) (by omega))
+
 /-- Execute using a function-based instruction fetch (O(1) per step).
 
     Fails closed on compute-budget overrun (H5): if `cuConsumed` has reached
@@ -435,7 +504,9 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
       if s.cuConsumed ≥ s.cuBudget then s
       else match fetch s.pc with
       | none => { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }
-      | some insn => executeFn fetch (chargeCu (step insn s)) fuel'
+      | some insn =>
+        if chargeExceeds insn s then chargeOnly insn s
+        else executeFn fetch (chargeCu (step insn s)) fuel'
 
 /-- Initial machine state, r1 → input buffer. `regions` is the memory map;
     `.ldx`/`.st`/`.stx` check against it and trap `ERR_ACCESS_VIOLATION` on miss. -/
@@ -484,9 +555,33 @@ theorem executeFn_overBudget (fetch : Nat → Option Insn) (s : State) (n : Nat)
 theorem executeFn_step (fetch : Nat → Option Insn) (s : State) (n : Nat) (insn : Insn)
     (h_running : s.exitCode = none)
     (h_budget : s.cuConsumed < s.cuBudget)
-    (h_fetch : fetch s.pc = some insn) :
+    (h_fetch : fetch s.pc = some insn)
+    (h_charge : chargeExceeds insn s = false := by charge_fits) :
     executeFn fetch s (n + 1) = executeFn fetch (chargeCu (step insn s)) n := by
-  simp [executeFn, h_running, h_fetch, Nat.not_le.mpr h_budget]
+  simp only [executeFn, h_running, h_fetch, Nat.not_le.mpr h_budget, if_false, h_charge,
+    Bool.false_eq_true]
+
+/-- A syscall whose charge exceeds the remaining budget is charged and not run
+    (#93): `executeFn` stops at `chargeOnly`, with no effect. -/
+theorem executeFn_chargeExceeds (fetch : Nat → Option Insn) (s : State) (n : Nat)
+    (insn : Insn) (h_running : s.exitCode = none) (h_budget : s.cuConsumed < s.cuBudget)
+    (h_fetch : fetch s.pc = some insn) (h_charge : chargeExceeds insn s = true) :
+    executeFn fetch s (n + 1) = chargeOnly insn s := by
+  simp only [executeFn, h_running, h_fetch, Nat.not_le.mpr h_budget, if_false, h_charge,
+    if_true]
+
+/-- `chargeOnly` changes nothing but the CU meter. -/
+theorem chargeOnly_eq (insn : Insn) (s : State) :
+    ∃ c, chargeOnly insn s = { s with cuConsumed := c } := by
+  cases insn <;> exact ⟨_, rfl⟩
+
+/-- `chargeOnly` leaves the state over budget. -/
+theorem chargeOnly_overBudget (insn : Insn) (s : State)
+    (h_charge : chargeExceeds insn s = true) :
+    (chargeOnly insn s).cuConsumed ≥ (chargeOnly insn s).cuBudget := by
+  cases insn <;> simp_all
+  omega
+
 
 /-- Composability of deterministic execution: running n+m steps is the same as
     running n steps then running m steps from the resulting state. -/
@@ -517,10 +612,19 @@ theorem executeFn_compose (fetch : Nat → Option Insn) (s : State) (n m : Nat) 
           rw [show n + 1 + m = (n + m) + 1 from by omega, hbad (n + m), hbad n,
               executeFn_halted fetch _ m ERR_INVALID_PC rfl]
         | some insn =>
-          rw [show n + 1 + m = (n + m) + 1 from by omega,
-              executeFn_step fetch s (n + m) insn h_ec h_le h_f,
-              executeFn_step fetch s n insn h_ec h_le h_f]
-          exact ih (chargeCu (step insn s))
+          cases h_ch : chargeExceeds insn s with
+          | true =>
+            -- failed charge: both sides stop at the over-budget `chargeOnly`
+            have hco : (chargeOnly insn s).exitCode = none := by cases insn <;> simp [h_ec]
+            rw [show n + 1 + m = (n + m) + 1 from by omega,
+                executeFn_chargeExceeds fetch s (n + m) insn h_ec h_le h_f h_ch,
+                executeFn_chargeExceeds fetch s n insn h_ec h_le h_f h_ch,
+                executeFn_overBudget fetch _ m hco (chargeOnly_overBudget insn s h_ch)]
+          | false =>
+            rw [show n + 1 + m = (n + m) + 1 from by omega,
+                executeFn_step fetch s (n + m) insn h_ec h_le h_f h_ch,
+                executeFn_step fetch s n insn h_ec h_le h_f h_ch]
+            exact ih (chargeCu (step insn s))
 
 /-! ## Frame pointer (r10) — user-write invariance
 
@@ -628,6 +732,10 @@ theorem executeFn_preserves_r10_of_no_push
         cases hf : fetch s.pc with
         | none => exact ⟨rfl, h_cs⟩
         | some insn =>
+          by_cases hch : chargeExceeds insn s = true
+          · dsimp only; rw [if_pos hch]; obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+            rw [hc]; exact ⟨rfl, h_cs⟩
+          dsimp only; rw [if_neg hch]
           have h_insn := h_nf _ _ hf
           have h_cs' := step_preserves_callStack_of_no_push insn s h_insn h_cs
           obtain ⟨h1, h2⟩ := ih (chargeCu (step insn s)) (by simpa using h_cs')
@@ -688,7 +796,11 @@ need a `split` or match-case to surface the record-update. -/
       · rw [if_neg h_over]
         cases hf : fetch s.pc with
         | none => rfl
-        | some insn => rw [ih (chargeCu (step insn s))]; simpa using step_preserves_regions insn s
+        | some insn =>
+          by_cases hch : chargeExceeds insn s = true
+          · dsimp only; rw [if_pos hch]; obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+            rw [hc]
+          · dsimp only; rw [if_neg hch, ih (chargeCu (step insn s))]; simpa using step_preserves_regions insn s
 
 /-! ## cuBudget invariance (H5)
 
@@ -714,6 +826,7 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
     (execSyscall sc s).cuBudget = s.cuBudget := by
   cases sc <;> simp [execSyscall, commitOptional] <;> (repeat' split) <;>
     (first | rfl | simp)
+
 
 @[simp] theorem execCallx_preserves_cuBudget (reg : Reg) (s : State) :
     (execCallx reg s).cuBudget = s.cuBudget := by
@@ -749,8 +862,11 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
         cases hf : fetch s.pc with
         | none => rfl
         | some insn =>
-          rw [ih (chargeCu (step insn s))]
-          simpa using step_preserves_cuBudget insn s
+          by_cases hch : chargeExceeds insn s = true
+          · dsimp only; rw [if_pos hch]; obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+            rw [hc]
+          · dsimp only; rw [if_neg hch, ih (chargeCu (step insn s))]
+            simpa using step_preserves_cuBudget insn s
 
 /-! ## Paired execution (for tactic automation)
 
@@ -955,6 +1071,8 @@ def execSegment (fetch : Nat → Option Insn) : Nat → Step
       else match fetch s.pc with
       | none => ((), { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc })
       | some insn =>
+        if chargeExceeds insn s then ((), chargeOnly insn s)
+        else
         let (_, s') := execInsn insn s
         execSegment fetch fuel (chargeCu s')
 
@@ -975,8 +1093,10 @@ theorem executeFn_eq_execSegment (fetch : Nat → Option Insn) (s : State) (fuel
         | none => rfl
         | some insn =>
           simp (config := { failIfUnchanged := false }) only []
-          have heq : step insn s = (execInsn insn s).2 := step_eq_execInsn insn s
-          rw [heq]
-          exact ih (chargeCu (execInsn insn s).2)
+          split
+          · rfl
+          · have heq : step insn s = (execInsn insn s).2 := step_eq_execInsn insn s
+            rw [heq]
+            exact ih (chargeCu (execInsn insn s).2)
 
 end SVM.SBPF

@@ -159,7 +159,8 @@ theorem cuTripleWithinMem_load_cell_via_reg_addr
   have hexec : executeFn fetch s 1 =
       chargeCu { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s 0 (by rw [h_step s hs_regs_dst hs_regs_src hs_mem h_region]; simp) (by omega)),
         executeFn_zero,
         h_step s hs_regs_dst hs_regs_src hs_mem h_region]
   have h_R_no_dst : h_R.regs dst = none := by
@@ -403,7 +404,8 @@ theorem cuTripleWithinMem_load_cell_same_reg
   have hexec : executeFn fetch s 1 =
       chargeCu { s with regs := s.regs.set r vNew, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s 0 (by rw [h_step s hs_regs_r hs_mem h_region]; simp) (by omega)),
         executeFn_zero,
         h_step s hs_regs_r hs_mem h_region]
   have h_R_no_r : h_R.regs r = none := by
@@ -616,7 +618,8 @@ theorem cuTripleWithinMem_store_cell_via_reg_addr
   have hexec : executeFn fetch s 1 =
       chargeCu { s with mem := wf s.mem, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s 0 (by rw [h_step s hs_regs_base hs_regs_val h_region]; simp) (by omega)),
         executeFn_zero,
         h_step s hs_regs_base hs_regs_val h_region]
   have h_R_no_base : h_R.regs baseReg = none := by
@@ -866,7 +869,8 @@ theorem cuTripleWithinMem_store_imm_cell_via_reg_addr
   have hexec : executeFn fetch s 1 =
       chargeCu { s with mem := wf s.mem, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s 0 (by rw [h_step s hs_regs_base h_region]; simp) (by omega)),
         executeFn_zero,
         h_step s hs_regs_base h_region]
   have h_R_no_base : h_R.regs baseReg = none := by

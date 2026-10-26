@@ -70,14 +70,20 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
           have hrhs : executeFn fetch s (fuel' + 1) =
               { s with exitCode := some ERR_INVALID_PC,
                        vmError := some .invalidPc } := by
-            simp only [executeFn, hex, if_neg h_over, hf]
+            simp only [executeFn, chargeExceeds, Bool.false_eq_true, hex, if_neg h_over, hf]
           rw [hlhs, hrhs]
         | some insn =>
           have hnc : Insn.isCpiCall insn = false := h s.pc insn hf
+          by_cases hch : chargeExceeds insn s = true
+          · -- failed charge: both runs stop at `chargeOnly`
+            have hl : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 = chargeOnly insn s := by
+              simp only [executeFnCpiWithFuel, hex, if_neg h_over, hf, hch, if_true]
+            rw [hl, executeFn_chargeExceeds fetch s fuel' insn hex (Nat.lt_of_not_le h_over) hf hch]
+          have hch : chargeExceeds insn s = false := by simpa using hch
           have hlhs : (executeFnCpiWithFuel registry fetch s (fuel' + 1)).1 =
                       (executeFnCpiWithFuel registry fetch
                         (chargeCu (step insn s)) fuel').1 := by
-            simp only [executeFnCpiWithFuel, hex, if_neg h_over, hf,
+            simp only [executeFnCpiWithFuel, hex, if_neg h_over, hf, hch,
                        Runner.traceStep, TRACE_STEPS, Bool.false_eq_true, if_false]
             congr 1
             cases insn with
@@ -85,7 +91,7 @@ theorem executeFnCpi_eq_executeFn_of_no_cpi
             | _ => rfl
           have hrhs : executeFn fetch s (fuel' + 1) =
               executeFn fetch (chargeCu (step insn s)) fuel' :=
-            executeFn_step fetch s fuel' insn hex (Nat.lt_of_not_le h_over) hf
+            executeFn_step fetch s fuel' insn hex (Nat.lt_of_not_le h_over) hf hch
           rw [hlhs, hrhs]
           exact ih (chargeCu (step insn s))
 
@@ -163,6 +169,11 @@ theorem executeFn_callStack_empty (fetch : Nat → Option Insn) (s : State) (k :
         cases hf : fetch s.pc with
         | none => exact h_cs
         | some insn =>
+          dsimp only
+          by_cases hch : chargeExceeds insn s = true
+          · rw [if_pos hch]; obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+            rw [hc]; exact h_cs
+          rw [if_neg hch]
           have hncl : Insn.isCallLocal insn = false := h_safe s.pc insn hf
           have h_step : (step insn s).callStack = [] :=
             step_callStack_empty_preserved insn s h_cs hncl

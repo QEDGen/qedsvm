@@ -207,7 +207,13 @@ theorem callee_returns_or_faults (fetch : Nat → Option Insn) (F0 : CallFrame)
       rw [hbad]
       exact Or.inl ⟨ys, hcs, Or.inr rfl⟩
     | some insn =>
-      rw [executeFn_step fetch s k insn h0 hle hf]
+      by_cases hch : chargeExceeds insn s = true
+      · -- failed syscall charge (#93): live, over budget, same call stack
+        rw [executeFn_chargeExceeds fetch s k insn h0 hle hf hch]
+        obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+        rw [hc]; exact Or.inl ⟨ys, hcs, Or.inl h0⟩
+      have hch : chargeExceeds insn s = false := by simpa using hch
+      rw [executeFn_step fetch s k insn h0 hle hf hch]
       by_cases hr : insn = .exit ∧ ys = []
       · obtain ⟨rfl, rfl⟩ := hr
         right
@@ -231,7 +237,7 @@ theorem callee_returns_or_faults (fetch : Nat → Option Insn) (F0 : CallFrame)
           · refine Or.inr ⟨j + 1, u, by omega, ?_⟩
             obtain ⟨h1, h2, h3, h4, h5, h6, h7, h8, hu', h9⟩ := hu
             exact ⟨h1, h2, h3, h4, h5, h6, h7, h8,
-              by rw [hu', executeFn_step fetch s j insn h0 hle hf],
+              by rw [hu', executeFn_step fetch s j insn h0 hle hf hch],
               by rw [h9]; congr 1; omega⟩
 
 /-- Once a run halts, its exit code is fixed: every run from `u` either has not halted yet or

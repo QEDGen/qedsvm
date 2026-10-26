@@ -34,7 +34,8 @@ theorem cuTripleWithin_1reg_write
       chargeCu { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
     have hstep := h_step s hs_regs_dst
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 insn hex (by omega) hfetch,
+        executeFn_step fetch s 0 insn hex (by omega) hfetch
+          (chargeExceeds_false_of_cu insn s 0 (by rw [hstep]; simp) (by omega)),
         executeFn_zero, hstep]
   have hR_no_dst : hR.regs dst = none := by
     rcases hd_regs dst with h | h
@@ -617,7 +618,8 @@ theorem cuTripleWithin_2reg_write
   have hexec : executeFn fetch s 1 =
       chargeCu { s with regs := s.regs.set dst vNew, pc := s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 insn hex (by omega) hfetch,
+        executeFn_step fetch s 0 insn hex (by omega) hfetch
+          (chargeExceeds_false_of_cu insn s 0 (by rw [h_step s hs_regs_dst hs_regs_src]; simp) (by omega)),
         executeFn_zero, h_step s hs_regs_dst hs_regs_src]
   have hp_mem : ∀ a, hp.mem a = hR.mem a := by
     intro a

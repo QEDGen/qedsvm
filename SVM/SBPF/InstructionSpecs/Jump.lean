@@ -37,7 +37,8 @@ theorem cuTripleWithin_1reg_cjump
   have hexec : executeFn fetch s 1 =
       chargeCu { s with pc := if cond then target else s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s 0 (by rw [h_step s hs_regs_dst]; simp) (by omega)),
         executeFn_zero, h_step s hs_regs_dst]
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]
@@ -145,7 +146,8 @@ theorem cuTripleWithin_2reg_cjump
   have hexec : executeFn fetch s 1 =
       chargeCu { s with pc := if cond then target else s.pc + 1 } := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
-        executeFn_step fetch s 0 _ hex (by omega) hfetch,
+        executeFn_step fetch s 0 _ hex (by omega) hfetch
+          (chargeExceeds_false_of_cu _ s 0 (by rw [h_step s hs_regs_dst hs_regs_src]; simp) (by omega)),
         executeFn_zero, h_step s hs_regs_dst hs_regs_src]
   refine ⟨1, Nat.le_refl 1, ?_, ?_, ?_, ?_⟩
   · rw [hexec]

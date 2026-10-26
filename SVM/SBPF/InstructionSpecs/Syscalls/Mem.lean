@@ -2661,8 +2661,8 @@ theorem call_sol_memcmp_spec
         rw [← hu_PR, PartialState.union_returnData_of_left_none h_P_rd]
         exact hva
       have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
-        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb,
-          hRd1, hRd2, hWr]
+        rw [hstep_eq]
+        simp [step, execSyscall, MemOps.execCmp, hRd1, hRd2, hWr]
       rw [hexec_rd]
       exact hcompat.returnData rd hp_rd
     · intro cs hva
@@ -2674,8 +2674,8 @@ theorem call_sol_memcmp_spec
         rw [← hu_PR, PartialState.union_callStack_of_left_none h_P_cs]
         exact hva
       have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
-        simp [executeFn, step, execSyscall, MemOps.execCmp, hex, hfetch, hnb,
-          hRd1, hRd2, hWr]
+        rw [hstep_eq]
+        simp [step, execSyscall, MemOps.execCmp, hRd1, hRd2, hWr]
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
 

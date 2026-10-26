@@ -31,7 +31,13 @@ theorem failsClosed_step (fetch : Nat → Option Insn) (s : State) (insn : Insn)
   | succ n =>
     by_cases hover : s.cuConsumed ≥ s.cuBudget
     · rw [executeFn_overBudget fetch s _ h0 hover, h0]; intro hz; cases hz
-    · rw [executeFn_step fetch s n insn h0 (Nat.lt_of_not_le hover) hf]
+    · by_cases hch : chargeExceeds insn s = true
+      · -- failed syscall charge (#93): halts live, never cleanly
+        rw [executeFn_chargeExceeds fetch s n insn h0 (Nat.lt_of_not_le hover) hf hch]
+        obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+        rw [hc]; simp [h0]
+      have hch : chargeExceeds insn s = false := by simpa using hch
+      rw [executeFn_step fetch s n insn h0 (Nat.lt_of_not_le hover) hf hch]
       exact h n
 
 /-- A state inside a callee (frame `F0` on top of `outer`) fails closed if every return to
@@ -169,7 +175,12 @@ theorem staysAbove_step (fetch : Nat → Option Insn) (base : List CallFrame) (s
   | succ n =>
     by_cases hover : s.cuConsumed ≥ s.cuBudget
     · rw [executeFn_overBudget fetch s _ h0 hover]; exact hcs
-    · rw [executeFn_step fetch s n insn h0 (Nat.lt_of_not_le hover) hf]; exact h n
+    · by_cases hch : chargeExceeds insn s = true
+      · rw [executeFn_chargeExceeds fetch s n insn h0 (Nat.lt_of_not_le hover) hf hch]
+        obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+        rw [hc]; exact hcs
+      have hch : chargeExceeds insn s = false := by simpa using hch
+      rw [executeFn_step fetch s n insn h0 (Nat.lt_of_not_le hover) hf hch]; exact h n
 
 theorem step_straight_callStack (insn : Insn) (s : State) (hs : insn.isStraight = true) :
     (step insn s).callStack = s.callStack := by

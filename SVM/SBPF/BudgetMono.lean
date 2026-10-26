@@ -168,8 +168,36 @@ theorem executeFn_withBudget (fetch : Nat → Option Insn) (hob : BudgetObliviou
     | none =>
       simp [executeFn, h0, hf, Nat.not_le.mpr hle, Nat.not_le.mpr hleB]
     | some insn =>
-      rw [executeFn_step fetch s n insn h0 hle hf] at hhalt ⊢
-      rw [executeFn_step fetch { s with cuBudget := B } n insn h0 hleB hf,
+      cases hch : chargeExceeds insn s with
+      | true =>
+        -- a failed charge halts with `exitCode = none`, contradicting `hhalt`
+        rw [executeFn_chargeExceeds fetch s n insn h0 hle hf hch] at hhalt
+        obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+        rw [hc] at hhalt; simp [h0] at hhalt
+      | false =>
+      -- a charge that fits the budget also fits any larger one
+      have hchB : chargeExceeds insn { s with cuBudget := B } = false := by
+        cases insn with
+        | call sc =>
+          -- the charge is read off `step`, which `step_withBudget` pins
+          have hsB := congrArg State.cuConsumed
+            (step_withBudget (.call sc) s B (fun sc' h => hob s.pc sc' (h ▸ hf)))
+          have e1 : (step (.call sc) { s with cuBudget := B }).cuConsumed
+              = s.cuConsumed + syscallCu sc { s with cuBudget := B } := by
+            show (execSyscall sc _).cuConsumed + _ = _
+            rw [execSyscall_preserves_cuConsumed]
+          have e2 : (step (.call sc) s).cuConsumed = s.cuConsumed + syscallCu sc s := by
+            show (execSyscall sc _).cuConsumed + _ = _
+            rw [execSyscall_preserves_cuConsumed]
+          simp only at hsB
+          simp only [chargeExceeds] at hch ⊢
+          cases hcf : sc.chargesFirst
+          · simp [hcf]
+          · simp only [hcf, Bool.true_and, decide_eq_false_iff_not] at hch ⊢
+            omega
+        | _ => rfl
+      rw [executeFn_step fetch s n insn h0 hle hf hch] at hhalt ⊢
+      rw [executeFn_step fetch { s with cuBudget := B } n insn h0 hleB hf hchB,
           step_withBudget insn s B (fun sc h => hob s.pc sc (h ▸ hf))]
       exact ih (chargeCu (step insn s)) B (by rw [chargeCu, step_preserves_cuBudget]; exact hB) hhalt
 

@@ -2376,6 +2376,16 @@ example : (Runner.run cuBoundaryProgram { cuBudget := 101 }).map
 example : (Runner.run cuBoundaryProgram { cuBudget := 102 }).map
     (fun s => (s.exitCode, s.cuConsumed)) = some (some 0, 102) := by native_decide
 
+/-! Charge before effect (#93): at budget 100 the 101-CU `sol_log_64_` charge
+does not fit, so agave fails in `consume_checked` before logging. The log
+stays empty; at budget 101 the charge fits and the line is logged. -/
+
+example : (Runner.run cuBoundaryProgram { cuBudget := 100 }).map
+    (fun s => s.log.size) = some 0 := by native_decide
+
+example : (Runner.run cuBoundaryProgram { cuBudget := 101 }).map
+    (fun s => s.log.size) = some 1 := by native_decide
+
 /-! ## Demo 40 — call depth: the 64th nested call faults (#90)
 
 Self-recursion through a relative call (`call` src=1, imm=-1). The top-level

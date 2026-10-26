@@ -585,7 +585,14 @@ theorem executeFnCpiWithFuel_bounded (registry : Nat → Option ByteArray) :
           obtain rfl : ERR_INVALID_PC = v := by simpa using hv
           decide
         | some insn =>
-          simp only [Runner.executeFnCpiWithFuel, Runner.stepCpi, hex, if_neg hover, hf,
+          by_cases hch : chargeExceeds insn s = true
+          · -- failed syscall charge (#93): only the CU meter moves
+            simp only [Runner.executeFnCpiWithFuel, hex, if_neg hover, hf, hch, if_true]
+            obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+            refine ⟨chargeOnly_bounded insn hb, ?_⟩
+            rw [hc]; exact he
+          have hch : chargeExceeds insn s = false := by simpa using hch
+          simp only [Runner.executeFnCpiWithFuel, Runner.stepCpi, hex, if_neg hover, hf, hch,
             Runner.traceStep, Runner.TRACE_STEPS, Bool.false_eq_true, if_false]
           -- The recursive-callee discharge (`hcallee`), uniform across both
           -- CPI ABIs: peel `buildCalleeVM` (bounded fresh sub-state), run the
