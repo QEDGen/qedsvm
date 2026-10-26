@@ -45,6 +45,8 @@ jobs:
               - 'qedsvm-rs/Cargo.toml'
               - 'qedsvm-rs/Cargo.lock'
               - 'qedsvm-rs/lean-bridge/**'
+              - 'qedsvm-rs/qed-analysis/**'
+              - 'qedsvm-rs/tests/fixtures/p_token.so'
 
   # Standalone Lean-free lifting-frontend crates: dispatcher recognition,
   # slot<->logical PC map, IDL account layout, PC symbolication, lift coverage.
@@ -84,6 +86,14 @@ jobs:
         # (`qedlift/tests/v3_opcode_matrix.rs`). These crates do not link the
         # Lean runtime and belong on the fast Rust path.
         run: cargo test -p qedrecover -p qedlift -p qed-artifacts -p qed-analysis
+
+      - name: Reproduce pinned p-token success proofs (reject generated drift)
+        run: >-
+          cargo run --locked --manifest-path qedsvm-rs/Cargo.toml
+          -p qed-analysis --bin qed-success-proofs --
+          qedsvm-rs/tests/fixtures/p_token.so
+          examples/lean/PToken/success-proof-inputs.json
+          examples/lean/PToken --check
 
   # Build the core SVM library ONCE and cache `.lake` for `lean` + `examples`.
   # Also carries the core soundness gates (no-sorry over the authoritative core

@@ -30,10 +30,11 @@
   to a fixed input field here.
 -/
 import PToken.SuccessInputs
+import PToken.ReadableFields
 
 namespace Examples.PTokenTransferSpec
 
-open SVM.SBPF Examples.PTokenErrorTail Examples.PTokenSuccessPaths
+open SVM.SBPF Examples.PTokenErrorTail Examples.PTokenSuccessPaths Examples.PTokenReadableFields
 
 /-- Byte at input offset `off` of the initial state. -/
 abbrev inByte (s0 : State) (off : Nat) : Nat :=
@@ -50,7 +51,7 @@ def keyEq (s0 : State) (a b : Nat) : Prop :=
 
 /-- The authority is a multisig with no required signers. -/
 def multisigNoSigners (s0 : State) : Prop :=
-  inU64 s0 21096 = 355 ∧ inByte s0 21106 = 1 ∧ inByte s0 21104 = 0
+  inU64 s0 field_authority_data_length = 355 ∧ inByte s0 field_authority_multisig_initialized = 1 ∧ inByte s0 field_authority_multisig_m = 0
 
 /-- A token-account state byte that is at most 2, not 0 and not 2 is 1 (Initialized). -/
 theorem state_one {x : Nat} (h1 : x ≤ 2) (h2 : ¬x = 0) (h3 : ¬x = 2) : x = 1 := by omega
@@ -62,17 +63,17 @@ theorem transfer_requires (insns : Array Insn) (hp : ptokenInsns = some insns) (
     (hend : (executeFn (Runner.fetchFromArray insns) s0 n).callStack = [] ∧
       (executeFn (Runner.fetchFromArray insns) s0 n).pc = 4825) :
     -- instruction and layout
-    inByte s0 0 = 3 ∧ inU64 s0 88 = 165 ∧ inByte s0 10512 = 255 ∧ inU64 s0 10592 = 165 ∧
-    inByte s0 21016 = 255 ∧
+    inByte s0 field_account_count = 3 ∧ inU64 s0 field_source_data_length = 165 ∧ inByte s0 field_destination_duplicate_marker = 255 ∧ inU64 s0 field_destination_data_length = 165 ∧
+    inByte s0 field_authority_duplicate_marker = 255 ∧
     -- both accounts Initialized
-    inByte s0 204 = 1 ∧ inByte s0 10708 = 1 ∧
+    inByte s0 field_source_state = 1 ∧ inByte s0 field_destination_state = 1 ∧
     -- same mint
-    keyEq s0 96 10600 ∧
+    keyEq s0 field_source_mint field_destination_mint ∧
     -- authority: owner or delegate, signed or a multisig with no required signers
-    ((keyEq s0 128 21024 ∧ inByte s0 21017 ≠ 0) ∨
-     (keyEq s0 128 21024 ∧ multisigNoSigners s0) ∨
-     (inByte s0 168 = 1 ∧ keyEq s0 172 21024 ∧ inByte s0 21017 ≠ 0) ∨
-     (inByte s0 168 = 1 ∧ keyEq s0 172 21024 ∧ multisigNoSigners s0)) := by
+    ((keyEq s0 field_source_owner field_authority_key ∧ inByte s0 field_authority_is_signer ≠ 0) ∨
+     (keyEq s0 field_source_owner field_authority_key ∧ multisigNoSigners s0) ∨
+     (inByte s0 field_source_delegate_tag = 1 ∧ keyEq s0 field_source_delegate field_authority_key ∧ inByte s0 field_authority_is_signer ≠ 0) ∨
+     (inByte s0 field_source_delegate_tag = 1 ∧ keyEq s0 field_source_delegate field_authority_key ∧ multisigNoSigners s0)) := by
   obtain ⟨hdom, c, ip, iq, hr, hip, hiq⟩ :=
     inputs4825 insns hp s0 hpc hcs (ptInit_concrete s0 h1 h10) n hend
   simp only [idom4825, List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp,
@@ -118,15 +119,15 @@ def ownerWords (s0 : State) (off k : Nat) : Prop :=
 /-- The conditions shared by every Transfer success edge: layout, both accounts Initialized,
     same mint. -/
 def TransferAccounts (s0 : State) : Prop :=
-  inByte s0 0 = 3 ∧ inU64 s0 88 = 165 ∧ inByte s0 10512 = 255 ∧ inU64 s0 10592 = 165 ∧
-  inByte s0 21016 = 255 ∧ inByte s0 204 = 1 ∧ inByte s0 10708 = 1 ∧ keyEq s0 96 10600
+  inByte s0 field_account_count = 3 ∧ inU64 s0 field_source_data_length = 165 ∧ inByte s0 field_destination_duplicate_marker = 255 ∧ inU64 s0 field_destination_data_length = 165 ∧
+  inByte s0 field_authority_duplicate_marker = 255 ∧ inByte s0 field_source_state = 1 ∧ inByte s0 field_destination_state = 1 ∧ keyEq s0 field_source_mint field_destination_mint
 
 /-- The authority requirement shared by every Transfer success edge. -/
 def TransferAuthority (s0 : State) : Prop :=
-  (keyEq s0 128 21024 ∧ inByte s0 21017 ≠ 0) ∨
-  (keyEq s0 128 21024 ∧ multisigNoSigners s0) ∨
-  (inByte s0 168 = 1 ∧ keyEq s0 172 21024 ∧ inByte s0 21017 ≠ 0) ∨
-  (inByte s0 168 = 1 ∧ keyEq s0 172 21024 ∧ multisigNoSigners s0)
+  (keyEq s0 field_source_owner field_authority_key ∧ inByte s0 field_authority_is_signer ≠ 0) ∨
+  (keyEq s0 field_source_owner field_authority_key ∧ multisigNoSigners s0) ∨
+  (inByte s0 field_source_delegate_tag = 1 ∧ keyEq s0 field_source_delegate field_authority_key ∧ inByte s0 field_authority_is_signer ≠ 0) ∨
+  (inByte s0 field_source_delegate_tag = 1 ∧ keyEq s0 field_source_delegate field_authority_key ∧ multisigNoSigners s0)
 
 theorem transfer_accounts_of_facts (s0 : State)
     (h0 : Memory.readByWidth s0.mem (Memory.INPUT_START + 0) .byte = 3)
@@ -165,7 +166,7 @@ theorem transfer_accounts_of_dom (s0 : State) (hdom : ∀ ig ∈ idom4825, ig.ho
 
 /-- The pre-checkpoint facts of the two owner routes and the two delegate routes. -/
 theorem owner_of_pre (s0 : State) (hip : ∀ ig ∈ ipre4825_4816, ig.holds s0) :
-    keyEq s0 128 21024 := by
+    keyEq s0 field_source_owner field_authority_key := by
   simp only [ipre4825_4816, List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp,
     forall_eq, IGuard.holds, Insn.jumpOps?, jumpCond, AVal.val] at hip
   simp at hip
@@ -173,7 +174,7 @@ theorem owner_of_pre (s0 : State) (hip : ∀ ig ∈ ipre4825_4816, ig.holds s0) 
   exact ⟨ho1, ho2, ho3, ho4⟩
 
 theorem delegate_of_pre (s0 : State) (hip : ∀ ig ∈ ipre4825_5216, ig.holds s0) :
-    inByte s0 168 = 1 ∧ keyEq s0 172 21024 := by
+    inByte s0 field_source_delegate_tag = 1 ∧ keyEq s0 field_source_delegate field_authority_key := by
   simp only [ipre4825_5216, List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp,
     forall_eq, IGuard.holds, Insn.jumpOps?, jumpCond, AVal.val] at hip
   simp at hip
@@ -181,7 +182,7 @@ theorem delegate_of_pre (s0 : State) (hip : ∀ ig ∈ ipre4825_5216, ig.holds s
   exact ⟨ht, hk1, hk2, hk3, hk4⟩
 
 theorem ownerMs_of_pre (s0 : State) (hip : ∀ ig ∈ ipre4825_5715, ig.holds s0) :
-    keyEq s0 128 21024 ∧ inU64 s0 21096 = 355 ∧ inByte s0 21106 = 1 := by
+    keyEq s0 field_source_owner field_authority_key ∧ inU64 s0 field_authority_data_length = 355 ∧ inByte s0 field_authority_multisig_initialized = 1 := by
   simp only [ipre4825_5715, List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp,
     forall_eq, IGuard.holds, Insn.jumpOps?, jumpCond, AVal.val] at hip
   simp at hip
@@ -189,7 +190,7 @@ theorem ownerMs_of_pre (s0 : State) (hip : ∀ ig ∈ ipre4825_5715, ig.holds s0
   exact ⟨⟨ho1, ho2, ho3, ho4⟩, hl, hi⟩
 
 theorem delegateMs_of_pre (s0 : State) (hip : ∀ ig ∈ ipre4825_6233, ig.holds s0) :
-    inByte s0 168 = 1 ∧ keyEq s0 172 21024 ∧ inU64 s0 21096 = 355 ∧ inByte s0 21106 = 1 := by
+    inByte s0 field_source_delegate_tag = 1 ∧ keyEq s0 field_source_delegate field_authority_key ∧ inU64 s0 field_authority_data_length = 355 ∧ inByte s0 field_authority_multisig_initialized = 1 := by
   simp only [ipre4825_6233, List.mem_cons, List.mem_nil_iff, or_false, forall_eq_or_imp,
     forall_eq, IGuard.holds, Insn.jumpOps?, jumpCond, AVal.val] at hip
   simp at hip
@@ -213,7 +214,7 @@ theorem transfer_native_requires (insns : Array Insn) (hp : ptokenInsns = some i
     (h1 : s0.regs.r1 = Memory.INPUT_START) (h10 : s0.regs.r10 = STACK_TOP) (n : Nat)
     (hend : (executeFn (Runner.fetchFromArray insns) s0 n).callStack = [] ∧
       (executeFn (Runner.fetchFromArray insns) s0 n).pc = 4832) :
-    TransferAccounts s0 ∧ TransferAuthority s0 ∧ inByte s0 205 = 1 := by
+    TransferAccounts s0 ∧ TransferAuthority s0 ∧ inByte s0 field_source_is_native = 1 := by
   obtain ⟨hdom, c, ip, iq, hr, hip, hiq⟩ :=
     inputs4832 insns hp s0 hpc hcs (ptInit_concrete s0 h1 h10) n hend
   obtain ⟨hp1, hp2, hp3, hp4, -⟩ := transfer_lists_shared
@@ -252,7 +253,7 @@ theorem transfer_zero_requires (insns : Array Insn) (hp : ptokenInsns = some ins
     (h1 : s0.regs.r1 = Memory.INPUT_START) (h10 : s0.regs.r10 = STACK_TOP) (n : Nat)
     (hend : (executeFn (Runner.fetchFromArray insns) s0 n).callStack = [] ∧
       (executeFn (Runner.fetchFromArray insns) s0 n).pc = 5250) :
-    TransferAccounts s0 ∧ TransferAuthority s0 ∧ ownerWords s0 48 4 ∧ ownerWords s0 10552 3 := by
+    TransferAccounts s0 ∧ TransferAuthority s0 ∧ ownerWords s0 field_source_program_owner 4 ∧ ownerWords s0 field_destination_program_owner 3 := by
   obtain ⟨hdom, c, ip, iq, hr, hip, hiq⟩ :=
     inputs5250 insns hp s0 hpc hcs (ptInit_concrete s0 h1 h10) n hend
   obtain ⟨-, -, -, -, hp1, hp2, hp3, hp4⟩ := transfer_lists_shared
