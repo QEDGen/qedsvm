@@ -128,6 +128,26 @@ lean_lib Examples where
     -- at the end of this list.
     `PToken.MintToRefinement,
     `PToken.BurnRefinement,
+    -- Gap #1, Milestone 1: whole-program dispatch-completeness (hand-written;
+    -- to be mechanized as a qedlift dispatch.rs emitter in Milestone 2). Built
+    -- bottom-up one dispatch level at a time. The entry-routing layer is
+    -- standard-axiom clean; the eventual full theorem composes the arm lifts
+    -- (which carry native_decide decode pins), so the final result will sit
+    -- OUTSIDE #assert_std_axioms like the lifts it builds on.
+    `PToken.DispatchComplete,
+    -- Fail-closed half of Gap #1 (a): fn 116, the ProgramError -> u64 conversion every error
+    -- path calls before the single program exit, never yields 0. Generated from the decision
+    -- tree `qed_analysis::cfg` recovers.
+    `PToken.ErrorConvert,
+    `PToken.ErrorConvertPins,
+    `PToken.ErrorTail,
+    `PToken.ErrorTailPins,
+    `PToken.PanicChain,
+    `PToken.PanicChainPins,
+    `PToken.SuccessPaths,
+    `PToken.SuccessInputs,
+    `PToken.ReadableFields,
+    `PToken.TransferSpec,
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
     -- Logger: a real, non-Pinocchio Solana program (Rust/solana-program)

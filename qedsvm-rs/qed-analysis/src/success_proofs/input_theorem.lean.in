@@ -1,0 +1,24 @@
+theorem pins@EDGE@ : ptokenInsns.all (fun insns =>
+    let m := ptAbsMap insns
+    (idom@EDGE@.all (iguardCheck m) &&
+      iroutes@EDGE@.all fun (_, ip, iq) => ip.all (iguardCheck m) && iq.all (iguardCheck m)) &&
+    iguardsMatch dom@EDGE@ routes@EDGE@ idom@EDGE@ iroutes@EDGE@) = true := by native_decide
+
+/-- **Input conditions for edge @EDGE@** (@DESC@). A run of p_token's decoded `.text` from
+    the entrypoint, on an input described by `ptInit`, that stands at the edge started from an
+    input satisfying its pinned dominating guards and one authority route's pinned guards. -/
+theorem inputs@EDGE@ (insns : Array Insn) (hp : ptokenInsns = some insns) (s0 : State)
+    (hpc : s0.pc = 198) (hcs : s0.callStack = []) (hinit : Concrete s0 ptInit s0) (n : Nat)
+    (hend : (executeFn (Runner.fetchFromArray insns) s0 n).callStack = [] ∧
+      (executeFn (Runner.fetchFromArray insns) s0 n).pc = @EDGE@) :
+    (∀ ig ∈ idom@EDGE@, ig.holds s0) ∧
+    ∃ c ip iq, (c, ip, iq) ∈ iroutes@EDGE@ ∧ (∀ ig ∈ ip, ig.holds s0) ∧ (∀ ig ∈ iq, ig.holds s0) := by
+  have hpath := check@EDGE@
+  rw [hp, Option.all_some] at hpath
+  have habs := absOk
+  rw [hp, Option.all_some] at habs
+  have hpins := pins@EDGE@
+  rw [hp, Option.all_some] at hpins
+  simp only [Bool.and_eq_true] at hpins
+  exact edge_input_conditions _ ptNoret (ptNoret_sound insns hp) _ 198 @EDGE@ _ _ _ _ _ _ hpath
+    habs (by simpa only [Bool.and_eq_true] using hpins.1) hpins.2 s0 hpc hcs hinit n hend

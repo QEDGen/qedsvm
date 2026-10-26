@@ -1,0 +1,38 @@
+/-
+  Input conditions for p_token's six loop-free success edges (GENERATED; regenerate rather
+  than edit). `SuccessPaths` proves which guards a run reaching each edge passed; here the
+  checked abstract interpretation (`AbsInterp`, from the entrypoint with `r1` the input
+  pointer, `r10` the frame pointer and no input written yet) pins most guards' operands to
+  fixed input fields or constants, so each pinned guard becomes a fact about the input bytes
+  the run started from (`IGuard.holds`).
+
+  Unpinned guards, which compare values read through pointers that depend on account data
+  lengths (the instruction data, so the amount and the instruction length), stay as
+  register facts in `SuccessPaths`.
+-/
+import PToken.SuccessPaths
+import SVM.SBPF.InputGuards
+
+namespace Examples.PTokenSuccessPaths
+
+open SVM.SBPF Examples.PTokenErrorTail
+
+/-- The entrypoint's initial abstract state: `r1` points at the input, `r10` is the frame
+    pointer, no input has been written. -/
+def ptInit : AState := { r1 := .inPtr 0, r10 := .fp, written := some [] }
+
+theorem ptInit_concrete (s0 : State) (h1 : s0.regs.r1 = Memory.INPUT_START)
+    (h10 : s0.regs.r10 = STACK_TOP) : Concrete s0 ptInit s0 := by
+  refine ⟨fun r => ?_, fun _ _ _ _ _ => rfl⟩
+  cases r
+  case r1 => show s0.regs.r1 = Memory.INPUT_START + 0; rw [h1]; rfl
+  case r10 => exact h10
+  all_goals trivial
+
+/-- The abstract map of p_token's entrypoint. -/
+def ptAbsMap (insns : Array Insn) : Array (Option AState) :=
+  absMap (Runner.fetchFromArray insns) ptNoret insns.size 198 ptInit
+
+theorem absOk : ptokenInsns.all (fun insns =>
+    absCheck (Runner.fetchFromArray insns) ptNoret (ptAbsMap insns) 198 ptInit) = true := by
+  native_decide

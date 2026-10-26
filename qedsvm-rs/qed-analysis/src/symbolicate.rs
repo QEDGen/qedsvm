@@ -30,13 +30,13 @@ use crate::PcMap;
 /// Bytes per sBPF instruction slot.
 const INSN_SIZE: u64 = 8;
 
-type DwarfReader = gimli::EndianReader<gimli::RunTimeEndian, Arc<[u8]>>;
+pub(crate) type DwarfReader = gimli::EndianReader<gimli::RunTimeEndian, Arc<[u8]>>;
 
 /// Undo SBF address splitting: virtual addresses come packed as
 /// `(section_index << 32) | offset`, which collapses to `section_base +
-/// offset` once the loader lays sections out contiguously. Every address read
-/// from DWARF passes through here.
-fn unmangle_addr(x: u64) -> u64 {
+/// offset` once the loader lays sections out contiguously. This is the legacy
+/// V0 encoding; V3's genuine virtual addresses must not pass through here.
+pub(crate) fn unmangle_addr(x: u64) -> u64 {
     (x >> 32).wrapping_add(x & 0xFFFF_FFFF)
 }
 
@@ -225,30 +225,37 @@ fn die_name(
     entry: &gimli::DebuggingInformationEntry<DwarfReader>,
     depth: u32,
 ) -> Option<String> {
-    let attr_str = |at: gimli::DwAt| -> Option<String> {
-        let value = entry.attr_value(at).ok().flatten()?;
-        let s = dwarf.attr_string(unit, value).ok()?;
-        Some(s.to_string_lossy().ok()?.into_owned())
-    };
-    if let Some(name) = attr_str(gimli::DW_AT_linkage_name) {
-        return Some(rustc_demangle::demangle(&name).to_string());
+    // SymbolIndex is best-effort for historical callers. The concept-map
+    // artifact contract uses the fallible helper directly.
+    try_die_name(dwarf, unit, entry, depth).ok().flatten()
+}
+
+pub(crate) fn try_die_name(
+    dwarf: &gimli::Dwarf<DwarfReader>,
+    unit: &gimli::Unit<DwarfReader>,
+    entry: &gimli::DebuggingInformationEntry<DwarfReader>,
+    depth: u32,
+) -> gimli::Result<Option<String>> {
+    for at in [gimli::DW_AT_linkage_name, gimli::DW_AT_name] {
+        if let Some(value) = entry.attr_value(at)? {
+            let name = dwarf.attr_string(unit, value)?;
+            return Ok(Some(
+                rustc_demangle::demangle(&name.to_string_lossy()?).to_string(),
+            ));
+        }
     }
-    if let Some(name) = attr_str(gimli::DW_AT_name) {
-        return Some(rustc_demangle::demangle(&name).to_string());
-    }
-    // Inlined/abstract DIEs point at the concrete definition; chase it (bounded).
+    // Inlined/abstract DIEs point at the definition; chase it (bounded).
     if depth < 8 {
         for at in [gimli::DW_AT_abstract_origin, gimli::DW_AT_specification] {
-            if let Some(gimli::AttributeValue::UnitRef(off)) = entry.attr_value(at).ok().flatten() {
-                if let Ok(referenced) = unit.entry(off) {
-                    if let Some(name) = die_name(dwarf, unit, &referenced, depth + 1) {
-                        return Some(name);
-                    }
+            if let Some(gimli::AttributeValue::UnitRef(off)) = entry.attr_value(at)? {
+                let referenced = unit.entry(off)?;
+                if let Some(name) = try_die_name(dwarf, unit, &referenced, depth + 1)? {
+                    return Ok(Some(name));
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
 
 fn build_dwarf_index(elf_bytes: &[u8], text_base: u64) -> Option<DwarfIndex> {

@@ -1,0 +1,37 @@
+/-
+  Path conditions for p_token's six loop-free success edges (GENERATED; regenerate rather
+  than edit). For each edge, every top-level run from the entrypoint that stands at it passed
+  the guards that dominate it, then one of four authority routes with that route's own
+  guards (`edge_path_condition`):
+
+    Transfer          4825 (amount moved), 4832 (native SOL), 5250 (amount 0)
+    TransferChecked   5063 (amount moved), 5070 (native SOL), 5473 (amount 0)
+
+  Dominating guards cover the discriminator, account layout and non-duplicate markers,
+  instruction length, source and destination state, `amount <= balance`, and mint equality
+  (TransferChecked adds the mint account and decimals). The four routes are owner or
+  delegate, each as a single signer or as a multisig. The multisig routes accept no signer
+  at all: with no extra signer accounts the check reduces to `m == 0`, so they rely on the
+  token program's own invariant that an initialized multisig has `m >= 1`.
+
+  Every guard is re-checked against the decoded program by `native_decide` (`check<edge>`):
+  the instruction at the guard, that its listed branch is the only one that can still reach
+  the target, that it dominates the target, that the checkpoints cut every path, and that
+  every set used is closed. Calls into the panic helpers have no static successor
+  (`ptNoret`), justified by `panic_helpers_noReturn`.
+-/
+import PToken.PanicChainPins
+import SVM.SBPF.PathCond
+
+namespace Examples.PTokenSuccessPaths
+
+open SVM.SBPF Examples.PTokenErrorTail Examples.PTokenPanicChain
+
+/-- Call targets that never return: the entrypoint's two panic helpers. -/
+def ptNoret (t : Nat) : Bool := t == 11177 || t == 10881
+
+theorem ptNoret_sound (insns : Array Insn) (hp : ptokenInsns = some insns) :
+    ∀ t, ptNoret t = true → NoReturn (Runner.fetchFromArray insns) t := by
+  have h := panicCheck_ok
+  rw [panicCheck, hp, Option.all_some] at h
+  exact fun t ht => panic_helpers_noReturn _ (panicCheckOn_sound insns h) t ht

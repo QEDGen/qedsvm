@@ -1,6 +1,6 @@
 [package]
 name = "qed-analysis"
-description = "Shared sBPF program-analysis substrate (slot<->logical PC map, IDL account layout) for the qedsvm lifting tools. Pure analysis; no Lean runtime."
+description = "Shared sBPF program-analysis substrate (logical PCs, account layouts, same-build DWARF concept maps) for the qedsvm lifting tools. Pure analysis; no Lean runtime."
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -10,6 +10,8 @@ license = "MIT"
 solana-sbpf = { version = "0.14.4", default-features = false }
 # Codama IDL account-layout parsing operates over `serde_json::Value`.
 serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.10.8"
 # PC->function symbolication from a `.debug` sidecar (ELF symtab + DWARF).
 # gimli is hand-driven rather than via addr2line because SBF virtual addresses
 # arrive split (see `symbolicate::unmangle_addr`), which addr2line can't undo.
