@@ -81,14 +81,14 @@ theorem reach_until (fetch : Nat → Option Insn) (noret : Nat → Bool)
   by_cases hG : G s.pc = true
   · exact Or.inr ⟨0, s, by omega, hcs, hG, h0, rfl, rfl⟩
   have hG' : G s.pc = false := by simpa using hG
-  by_cases hover : s.cuConsumed > s.cuBudget
+  by_cases hover : s.cuConsumed ≥ s.cuBudget
   · rw [executeFn_overBudget fetch s _ h0 hover]; exact Or.inl hRs
-  have hle : s.cuConsumed ≤ s.cuBudget := Nat.le_of_not_lt hover
+  have hle : s.cuConsumed < s.cuBudget := Nat.lt_of_not_le hover
   cases hf : fetch s.pc with
   | none =>
     have hbad : executeFn fetch s (n + 1)
         = { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc } := by
-      simp [executeFn, h0, hf, Nat.not_lt.mpr hle]
+      simp [executeFn, h0, hf, Nat.not_le.mpr hle]
     rw [hbad]; exact Or.inl hRs
   | some insn =>
   obtain ⟨hnx, hsucc⟩ := hR s.pc hRs hG' insn hf
@@ -108,7 +108,7 @@ theorem reach_until (fetch : Nat → Option Insn) (noret : Nat → Bool)
   rw [executeFn_step fetch s n insn h0 hle hf] at hend
   by_cases hcl : ∃ t, insn = .call_local t
   · obtain ⟨t, rfl⟩ := hcl
-    by_cases hdepth : s.callStack.length ≥ MAX_CALL_DEPTH
+    by_cases hdepth : s.callStack.length + 1 ≥ MAX_CALL_DEPTH
     · -- depth fault: halted where it stands
       have hstep : step (.call_local t) s =
           { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED,
@@ -177,9 +177,9 @@ theorem guard_toward (fetch : Nat → Option Insn) (noret : Nat → Bool)
   cases m with
   | zero => exact hne (by simpa using hend.2)
   | succ k =>
-  by_cases hover : w.cuConsumed > w.cuBudget
+  by_cases hover : w.cuConsumed ≥ w.cuBudget
   · rw [executeFn_overBudget fetch w _ h0 hover] at hend; exact hne hend.2
-  have hle := Nat.le_of_not_lt hover
+  have hle := Nat.lt_of_not_le hover
   rw [executeFn_step fetch w k insn h0 hle hf] at hend
   have hcs' := (step_static insn w hcs hnc hnx).1
   have := never_leaves fetch noret hNR N hN (chargeCu (step insn w)) hstep hcs' k hend.1

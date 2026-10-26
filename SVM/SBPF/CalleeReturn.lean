@@ -195,15 +195,15 @@ theorem callee_returns_or_faults (fetch : Nat → Option Insn) (F0 : CallFrame)
     exact Or.inl ⟨ys, by simpa using hcs, Or.inl (by simpa using h0)⟩
   | succ k ih =>
     intro s ys h0 hcs
-    by_cases hover : s.cuConsumed > s.cuBudget
+    by_cases hover : s.cuConsumed ≥ s.cuBudget
     · rw [executeFn_overBudget fetch s (k + 1) h0 hover]
       exact Or.inl ⟨ys, hcs, Or.inl h0⟩
-    have hle : s.cuConsumed ≤ s.cuBudget := Nat.le_of_not_lt hover
+    have hle : s.cuConsumed < s.cuBudget := Nat.lt_of_not_le hover
     cases hf : fetch s.pc with
     | none =>
       have hbad : executeFn fetch s (k + 1)
           = { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc } := by
-        simp [executeFn, h0, hf, Nat.not_lt.mpr hle]
+        simp [executeFn, h0, hf, Nat.not_le.mpr hle]
       rw [hbad]
       exact Or.inl ⟨ys, hcs, Or.inr rfl⟩
     | some insn =>
