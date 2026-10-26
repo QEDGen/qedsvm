@@ -350,7 +350,7 @@ build or modify them in this repo.
 
 p-token (the pinocchio-based SPL Token reimplementation by Anza /
 Solana Program Library team), release `p-token@v1.0.0-rc.1`
-(April 2025). Drop-in for `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`,
+(published 2026-04-01). Drop-in for `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA`,
 byte-for-byte compatible account layouts with the canonical SPL
 Token (`Mint` = 82 bytes, `TokenAccount` = 165 bytes), so our existing
 `build_token_account` helper applies unchanged.
@@ -359,6 +359,16 @@ Source: <https://github.com/solana-program/token/releases/tag/p-token%40v1.0.0-r
 (asset `spl_p_token.so`).
 
 SHA-256: `8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697`
+
+The release asset has this same SHA-256. This confirms the fixture matches
+the published binary, but the release date is not evidence of when or how it
+was built. The repository's visible workflows do not provide a build/upload
+recipe for this `.so`. Rebuilding the tag and seven earlier commits with the
+recorded Solana CLI 3.0.0 / platform-tools v1.51 toolchain produced binaries
+of about 11k instructions, roughly 18% similar to this fixture's 12,061
+instructions. Those attempts do not reproduce the fixture or establish its
+original build procedure. Its provenance beyond the matching release asset
+is unknown; a manual build and attachment is possible, but unconfirmed.
 
 V0 (`e_flags = 0`). First major recognizable mainnet-track program
 in the harness — exercises pinocchio's zero-copy account access
