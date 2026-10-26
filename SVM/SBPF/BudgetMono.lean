@@ -158,15 +158,15 @@ theorem executeFn_withBudget (fetch : Nat → Option Insn) (hob : BudgetObliviou
       cases h : s.exitCode with
       | none => rfl
       | some c => exact absurd ⟨c, h⟩ hsome
-    by_cases hover : s.cuConsumed > s.cuBudget
+    by_cases hover : s.cuConsumed ≥ s.cuBudget
     · rw [executeFn_overBudget fetch s _ h0 hover, h0] at hhalt
       exact absurd hhalt (by decide)
-    have hle : s.cuConsumed ≤ s.cuBudget := Nat.le_of_not_lt hover
+    have hle : s.cuConsumed < s.cuBudget := Nat.lt_of_not_le hover
     have hleB : ({ s with cuBudget := B } : State).cuConsumed
-        ≤ ({ s with cuBudget := B } : State).cuBudget := Nat.le_trans hle hB
+        < ({ s with cuBudget := B } : State).cuBudget := Nat.lt_of_lt_of_le hle hB
     cases hf : fetch s.pc with
     | none =>
-      simp [executeFn, h0, hf, Nat.not_lt.mpr hle, Nat.not_lt.mpr hleB]
+      simp [executeFn, h0, hf, Nat.not_le.mpr hle, Nat.not_le.mpr hleB]
     | some insn =>
       rw [executeFn_step fetch s n insn h0 hle hf] at hhalt ⊢
       rw [executeFn_step fetch { s with cuBudget := B } n insn h0 hleB hf,

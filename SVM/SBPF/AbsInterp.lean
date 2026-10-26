@@ -49,21 +49,21 @@ theorem inv_holds (fetch : Nat → Option Insn) (noret : Nat → Bool)
   cases h0 : s.exitCode with
   | some c => rw [executeFn_halted fetch s _ c h0]; exact hI
   | none =>
-  by_cases hover : s.cuConsumed > s.cuBudget
+  by_cases hover : s.cuConsumed ≥ s.cuBudget
   · rw [executeFn_overBudget fetch s _ h0 hover]; exact hI
-  have hle : s.cuConsumed ≤ s.cuBudget := Nat.le_of_not_lt hover
+  have hle : s.cuConsumed < s.cuBudget := Nat.lt_of_not_le hover
   cases hf : fetch s.pc with
   | none =>
     have hbad' : executeFn fetch s (n + 1)
         = { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc } := by
-      simp [executeFn, h0, hf, Nat.not_lt.mpr hle]
+      simp [executeFn, h0, hf, Nat.not_le.mpr hle]
     rw [hbad']; exact hbad s _ _ hI
   | some insn =>
   rw [executeFn_step fetch s n insn h0 hle hf] at hend ⊢
   have hnx : ∀ r, insn ≠ .callx r := fun r h => hnox s r hcs hI (h ▸ hf)
   by_cases hcl : ∃ t, insn = .call_local t
   · obtain ⟨t, rfl⟩ := hcl
-    have hdepth : ¬ s.callStack.length ≥ MAX_CALL_DEPTH := by
+    have hdepth : ¬ s.callStack.length + 1 ≥ MAX_CALL_DEPTH := by
       rw [hcs]; simp [MAX_CALL_DEPTH]
     let F0 : CallFrame :=
       { retPc := s.pc + 1, savedR6 := s.regs.r6, savedR7 := s.regs.r7,
