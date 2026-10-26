@@ -6,6 +6,8 @@
 use solana_sbpf::ebpf;
 
 pub mod cfg;
+/// Same-build DWARF labels with mandatory artifact matching; untrusted, Lean-free.
+pub mod concept_map;
 pub mod image;
 pub mod input_layout;
 pub mod instruction_layout;
