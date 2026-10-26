@@ -28,6 +28,7 @@ open Memory
 theorem inv_holds (fetch : Nat → Option Insn) (noret : Nat → Bool)
     (hNR : ∀ t, noret t = true → NoReturn fetch t) (Inv : State → Prop)
     (hbad : ∀ s e v, Inv s → Inv { s with exitCode := e, vmError := v })
+    (hcu : ∀ s c, Inv s → Inv { s with cuConsumed := c })
     (hstep : ∀ s insn, s.callStack = [] → s.exitCode = none → Inv s →
       fetch s.pc = some insn → (∀ t, insn ≠ .call_local t) → (∀ r, insn ≠ .callx r) →
       Inv (chargeCu (step insn s)))
@@ -59,7 +60,13 @@ theorem inv_holds (fetch : Nat → Option Insn) (noret : Nat → Bool)
       simp [executeFn, h0, hf, Nat.not_le.mpr hle]
     rw [hbad']; exact hbad s _ _ hI
   | some insn =>
-  rw [executeFn_step fetch s n insn h0 hle hf] at hend ⊢
+  by_cases hch : chargeExceeds insn s = true
+  · -- failed syscall charge (#93): only the CU meter moves
+    rw [executeFn_chargeExceeds fetch s n insn h0 hle hf hch]
+    obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+    rw [hc]; exact hcu s c hI
+  have hch : chargeExceeds insn s = false := by simpa using hch
+  rw [executeFn_step fetch s n insn h0 hle hf hch] at hend ⊢
   have hnx : ∀ r, insn ≠ .callx r := fun r h => hnox s r hcs hI (h ▸ hf)
   by_cases hcl : ∃ t, insn = .call_local t
   · obtain ⟨t, rfl⟩ := hcl
@@ -518,8 +525,9 @@ theorem abs_sound (fetch : Nat → Option Insn) (noret : Nat → Bool)
     (hend : (executeFn fetch s0 n).callStack = []) :
     ∃ a, m.getD (executeFn fetch s0 n).pc none = some a ∧ Concrete s0 a (executeFn fetch s0 n) := by
   refine inv_holds fetch noret hNR (fun s => ∃ a, m.getD s.pc none = some a ∧ Concrete s0 a s)
-    ?_ ?_ ?_ ?_ n s0 hcs ?_ hend
+    ?_ ?_ ?_ ?_ ?_ n s0 hcs ?_ hend
   · intro s e v ⟨a, ha, hc⟩; exact ⟨a, ha, concrete_regs_mem hc rfl rfl⟩
+  · intro s c ⟨a, ha, hc⟩; exact ⟨a, ha, concrete_regs_mem hc rfl rfl⟩
   · intro s insn hcs' _ ⟨a, ha, hc⟩ hf hnc hnx
     obtain ⟨_, hsucc⟩ := absCheck_at hchk ha hf
     rcases absStep_sound s0 a s insn hc hcs' hnc hnx with ⟨hp, hc'⟩ | ⟨hp, hc'⟩

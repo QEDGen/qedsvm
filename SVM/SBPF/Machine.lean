@@ -711,6 +711,13 @@ theorem State.hashWrite_faults_oob_exitCode (s : State)
   refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
   refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
   exact State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+@[simp] theorem State.hashWrite_cuConsumed (s : State)
+    (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
+    (s.hashWrite outPtr outLen inPtr inN digest).cuConsumed = s.cuConsumed := by
+  simp only [State.hashWrite]
+  refine State.guardWrite_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl rfl
 
 @[simp] theorem State.hashWrite_heapNext (s : State)
     (outPtr outLen inPtr inN : Nat) (digest : ByteArray) :
@@ -872,6 +879,14 @@ def commitOptional (s : State) (out outSize : Nat)
   refine State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
   refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
   refine State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
+  cases result <;> rfl
+@[simp] theorem State.guardedCommit_cuConsumed (s : State)
+    (outPtr outLen inPtr inN : Nat) (result : Option ByteArray) :
+    (s.guardedCommit outPtr outLen inPtr inN result).cuConsumed = s.cuConsumed := by
+  simp only [State.guardedCommit]
+  refine State.guardWrite_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  refine State.guardRead_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  refine State.guardSlices_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
   cases result <;> rfl
 
 @[simp] theorem State.guardedCommit_heapNext (s : State)

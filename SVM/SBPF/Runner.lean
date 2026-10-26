@@ -631,6 +631,15 @@ def cpiCallNextState (registry : Nat → Option ByteArray) (s : State)
       lamportsRefAddr := p.lamportsRefAddr,
       ownerPtr := p.ownerPtr, dataPtr := p.dataPtr,
       dataLenRefAddr := p.dataLenRefAddr })
+  -- #93: agave charges `invoke_units` before anything else; when the charge
+  -- exceeds the remaining budget no callee runs. Same rollback shape as the
+  -- failure arms below; the state is over budget, so the run halts next step
+  -- (`exitCode = none`, agave's `ComputationalBudgetExceeded`).
+  if s.cuBudget < s.cuConsumed + 1 + Cpi.cu then
+    { s with regs := s.regs.set .r0 1
+             pc   := s.pc + 1
+             cuConsumed := s.cuConsumed + Cpi.cu }
+  else
   -- M6 invoke-depth limit: agave caps stack height at 5 (top = 1, so ≤4
   -- nested CPIs); the 5th-level invoke fails `CallDepth` before dispatch.
   if s.invokeDepth + 1 > 4 then
@@ -928,6 +937,9 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
       match fetch s.pc with
       | none => ({ s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }, fuel')
       | some insn =>
+        -- #93: a syscall (including an invoke) is charged before it runs; if
+        -- the charge exceeds the budget it does not run. Mirrors `executeFn`.
+        if chargeExceeds insn s then (chargeOnly insn s, fuel') else
         -- The sub-run is pinned at `fuel'` (the only fuel `stepCpi` passes
         -- it) so the recursive call is fully applied at a structurally
         -- smaller fuel; `stepCpi_executeFnCpiWithFuel` restates it as
@@ -955,11 +967,11 @@ theorem stepCpi_executeFnCpiWithFuel (registry : Nat → Option ByteArray)
 theorem executeFnCpiWithFuel_succ_insn (registry : Nat → Option ByteArray)
     (fetch : Nat → Option Insn) (s : State) (fuel' : Nat) (insn : Insn)
     (hex : s.exitCode = none) (hbud : ¬ s.cuConsumed ≥ s.cuBudget)
-    (hf : fetch s.pc = some insn) :
+    (hf : fetch s.pc = some insn) (hch : chargeExceeds insn s = false := by charge_fits) :
     executeFnCpiWithFuel registry fetch s (fuel' + 1)
       = executeFnCpiWithFuel registry fetch
           (chargeCu (stepCpi registry (executeFnCpiWithFuel registry) s fuel' insn)) fuel' := by
-  simp only [executeFnCpiWithFuel, hex, if_neg hbud, hf, traceStep, TRACE_STEPS,
+  simp only [executeFnCpiWithFuel, hex, if_neg hbud, hf, hch, traceStep, TRACE_STEPS,
     Bool.false_eq_true, if_false]
   rfl
 

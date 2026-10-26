@@ -191,6 +191,9 @@ discharge the sweeps with the exec folded. -/
 @[simp] theorem execRent_cuBudget (s : State) :
     (execRent s).cuBudget = s.cuBudget := by
   simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+@[simp] theorem execRent_cuConsumed (s : State) :
+    (execRent s).cuConsumed = s.cuConsumed := by
+  simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl rfl
 @[simp] theorem execRent_heapNext (s : State) :
     (execRent s).heapNext = s.heapNext := by
   simp only [execRent]; exact State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl rfl
@@ -239,6 +242,9 @@ theorem execRent_faults_oob_exitCode (s : State)
 @[simp] theorem execEpochSchedule_cuBudget (s : State) :
     (execEpochSchedule s).cuBudget = s.cuBudget := by
   simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+@[simp] theorem execEpochSchedule_cuConsumed (s : State) :
+    (execEpochSchedule s).cuConsumed = s.cuConsumed := by
+  simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl rfl
 @[simp] theorem execEpochSchedule_heapNext (s : State) :
     (execEpochSchedule s).heapNext = s.heapNext := by
   simp only [execEpochSchedule]; exact State.guardWrite_proj_eq_of_k (·.heapNext) s _ _ _ rfl rfl

@@ -770,6 +770,16 @@ theorem chargeCu_bounded {s : State} (h : StateBounded s) :
     cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
     returnData_le := h.returnData_le, mem_lt := h.mem_lt }
 
+/-- A failed charge (#93) only moves the CU meter. -/
+theorem chargeOnly_bounded (insn : Insn) {s : State} (h : StateBounded s) :
+    StateBounded (chargeOnly insn s) := by
+  obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+  rw [hc]
+  exact { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
+          stack_depth := h.stack_depth, frames_lt := h.frames_lt
+          cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
+          returnData_le := h.returnData_le, mem_lt := h.mem_lt }
+
 /-- THE multi-step preservation theorem: the proof-side executor keeps
     every reachable state bounded, for any program and any fuel. -/
 theorem executeFn_bounded (fetch : Nat → Option Insn) {s : State}
@@ -785,7 +795,9 @@ theorem executeFn_bounded (fetch : Nat → Option Insn) {s : State}
       · exact h                       -- budget exhausted: halt as-is
       · split
         · exact h.with_abort _ _      -- invalid PC: fail closed
-        · exact ih (chargeCu_bounded (step_bounded _ h))
+        · split
+          · exact chargeOnly_bounded _ h  -- failed syscall charge (#93)
+          · exact ih (chargeCu_bounded (step_bounded _ h))
 
 /-! ## The L5 / L3 closes -/
 

@@ -53,7 +53,7 @@ theorem dup_pass (fetch : Nat → Option Insn) (s : State)
     s'.cuConsumed = s.cuConsumed + 2 ∧ s'.cuBudget = s.cuBudget := by
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     h_exit, h_f1, h_f2, h_b1, h_eq, hnb0, hnb1, if_true, if_false]
   refine ⟨trivial, by simp, trivial, fun r hr => ?_, by first | trivial | omega, trivial⟩
@@ -75,7 +75,7 @@ theorem dup_fail (fetch : Nat → Option Insn) (s : State)
     s'.cuConsumed = s.cuConsumed + 2 ∧ s'.cuBudget = s.cuBudget := by
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     h_exit, h_f1, h_f2, h_b1, hnb0, hnb1, if_true, if_false]
   refine ⟨trivial, if_pos h_ne, trivial, fun r hr => ?_, by first | trivial | omega, trivial⟩
@@ -110,7 +110,7 @@ theorem chunk_eq_mem (fetch : Nat → Option Insn) (s : State)
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
   have hnb2 : ¬ s.cuConsumed + 1 + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_srcB_ne_dstA,
@@ -143,7 +143,7 @@ theorem chunk_ne_mem (fetch : Nat → Option Insn) (s : State)
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
   have hnb2 : ¬ s.cuConsumed + 1 + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_srcB_ne_dstA,
@@ -181,7 +181,7 @@ theorem chunk_eq_imm (fetch : Nat → Option Insn) (s : State)
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
   have hnb2 : ¬ s.cuConsumed + 1 + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
@@ -210,7 +210,7 @@ theorem chunk_ne_imm (fetch : Nat → Option Insn) (s : State)
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
   have hnb2 : ¬ s.cuConsumed + 1 + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
@@ -243,7 +243,7 @@ theorem chunk_eq_imm32 (fetch : Nat → Option Insn) (s : State)
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
   have hnb2 : ¬ s.cuConsumed + 1 + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,
@@ -272,7 +272,7 @@ theorem chunk_ne_imm32 (fetch : Nat → Option Insn) (s : State)
   have hnb0 : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hnb1 : ¬ s.cuConsumed + 1 ≥ s.cuBudget := by omega
   have hnb2 : ¬ s.cuConsumed + 1 + 1 ≥ s.cuBudget := by omega
-  simp only [executeFn, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
+  simp only [executeFn, chargeExceeds, Bool.false_eq_true, step, chargeCu, Width.bytes, readByWidth, resolveSrc,
     RegFile.get_set_self _ _ _ h_dstA_ne_r10,
     RegFile.get_set_self _ _ _ h_dstB_ne_r10,
     RegFile.get_set_diff _ _ _ _ h_dstA_ne_dstB,

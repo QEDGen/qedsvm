@@ -199,6 +199,11 @@ theorem execLogData_mem (s : State) : (execLogData s).mem = s.mem := by
   simp only [execLogData]
   refine State.guardRead_proj_eq_of_k (·.cuBudget) s _ _ _ rfl ?_
   exact State.guardSlices_proj_eq_of_k (·.cuBudget) s _ _ _ rfl rfl
+@[simp] theorem execLogData_preserves_cuConsumed (s : State) :
+    (execLogData s).cuConsumed = s.cuConsumed := by
+  simp only [execLogData]
+  refine State.guardRead_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl ?_
+  exact State.guardSlices_proj_eq_of_k (·.cuConsumed) s _ _ _ rfl rfl
 
 @[simp] theorem execLogData_preserves_heapNext (s : State) :
     (execLogData s).heapNext = s.heapNext := by

@@ -105,7 +105,13 @@ theorem reach_until (fetch : Nat → Option Insn) (noret : Nat → Bool)
     · refine Or.inr ⟨(n + 1 - m) + j, w, by omega, h1, h2, h3, ?_, ?_⟩
       · rw [hw, hu, ← executeFn_compose]
       · rw [h4]; congr 1; omega
-  rw [executeFn_step fetch s n insn h0 hle hf] at hend
+  by_cases hch : chargeExceeds insn s = true
+  · -- failed syscall charge (#93): stops where it stands
+    rw [executeFn_chargeExceeds fetch s n insn h0 hle hf hch]
+    obtain ⟨c, hc⟩ := chargeOnly_eq insn s
+    rw [hc]; exact Or.inl hRs
+  have hch : chargeExceeds insn s = false := by simpa using hch
+  rw [executeFn_step fetch s n insn h0 hle hf hch] at hend
   by_cases hcl : ∃ t, insn = .call_local t
   · obtain ⟨t, rfl⟩ := hcl
     by_cases hdepth : s.callStack.length + 1 ≥ MAX_CALL_DEPTH
@@ -140,9 +146,9 @@ theorem reach_until (fetch : Nat → Option Insn) (noret : Nat → Bool)
   · have hnc : ∀ t, insn ≠ .call_local t := fun t h => hcl ⟨t, h⟩
     obtain ⟨hcs', hpc'⟩ := step_static insn s hcs hnc hnx
     refine hlift (chargeCu (step insn s)) ?_ hcs' n (by omega) ?_
-      (executeFn_step fetch s n insn h0 hle hf)
+      (executeFn_step fetch s n insn h0 hle hf hch)
     rotate_left
-    · rw [show n + 1 - n = 0 + 1 by omega, executeFn_step fetch s 0 insn h0 hle hf,
+    · rw [show n + 1 - n = 0 + 1 by omega, executeFn_step fetch s 0 insn h0 hle hf hch,
         executeFn_zero]
     rcases hpc' with h | h
     · show R (step insn s).pc = true; rw [h]; exact hRs
@@ -180,7 +186,12 @@ theorem guard_toward (fetch : Nat → Option Insn) (noret : Nat → Bool)
   by_cases hover : w.cuConsumed ≥ w.cuBudget
   · rw [executeFn_overBudget fetch w _ h0 hover] at hend; exact hne hend.2
   have hle := Nat.lt_of_not_le hover
-  rw [executeFn_step fetch w k insn h0 hle hf] at hend
+  by_cases hch : chargeExceeds insn w = true
+  · rw [executeFn_chargeExceeds fetch w k insn h0 hle hf hch] at hend
+    obtain ⟨c, hc⟩ := chargeOnly_eq insn w
+    rw [hc] at hend; exact hne hend.2
+  have hch : chargeExceeds insn w = false := by simpa using hch
+  rw [executeFn_step fetch w k insn h0 hle hf hch] at hend
   have hcs' := (step_static insn w hcs hnc hnx).1
   have := never_leaves fetch noret hNR N hN (chargeCu (step insn w)) hstep hcs' k hend.1
   rw [hend.2, he] at this

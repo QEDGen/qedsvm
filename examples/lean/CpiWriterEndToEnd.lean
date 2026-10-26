@@ -657,9 +657,10 @@ theorem writer_bpfResult_ok {base : Nat} {s : State} (h : writerInv base s)
   exact ⟨rfl, rfl⟩
 
 /-- The runner's invoke step at a `writerInv` state with at least four fuel
-    units commits a code-0 result of four CU. -/
+    units, whose budget covers the invoke charge (#93), commits a code-0
+    result of four CU. -/
 theorem writer_step_ok {base : Nat} {s : State} (h : writerInv base s) (fuel' : Nat)
-    (hf : 4 ≤ fuel') :
+    (hf : 4 ≤ fuel') (hcu : s.cuConsumed + 1 + Cpi.cu ≤ s.cuBudget) :
     ∃ r0 : Cpi.CalleeResult,
       stepCpi writerRegistry (executeFnCpiWithFuel writerRegistry) s fuel'
           (.call .sol_invoke_signed_c) = Cpi.applyResult s r0 ∧
@@ -667,7 +668,7 @@ theorem writer_step_ok {base : Nat} {s : State} (h : writerInv base s) (fuel' : 
   have hbuild := buildCalleeVM_callee s fuel'
     (readMemBytes s.mem (readU64 s.mem s.regs.r1) 32) (Cpi.invokeAccts s .sol_invoke_signed_c)
     (Cpi.invokeIxData s .sol_invoke_signed_c)
-  rw [Cpi.stepCpi_c_bpf writerRegistry _ s fuel' (writerAcct s) calleeElf _ _ _
+  rw [Cpi.stepCpi_c_bpf writerRegistry _ s fuel' (writerAcct s) calleeElf _ _ _ hcu
     (by rw [h.depth]; omega) (writer_accts h) (writer_nativeNone h) (writer_registry h) hbuild]
   generalize readMemBytes s.mem (readU64 s.mem s.regs.r1) 32 = pidB
   generalize Cpi.invokeIxData s .sol_invoke_signed_c = ix
@@ -1143,6 +1144,7 @@ theorem writer_end_to_end
   obtain ⟨hInvI, hcuI⟩ := hInv k1 hpc1 hex1
   -- The callee succeeds.
   obtain ⟨r0, hr0, hc0, hcu0'⟩ := writer_step_ok hInvI (F - k1 - 1) (by omega)
+    (by rw [executeFn_preserves_cuBudget]; omega)
   rw [hr0] at hstep
   have hc : r.code = 0 := by
     have := congrArg (fun t => t.regs.r0) hstep
