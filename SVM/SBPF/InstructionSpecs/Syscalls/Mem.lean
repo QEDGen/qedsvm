@@ -1854,7 +1854,7 @@ theorem call_sol_memcmp_spec
       s.mem (r2V + j) = (p2Bytes.get! j).toNat := hcm_mem _ _ (hp_mem_p2 j hj)
   have hfetch : fetch s.pc = some (.call .sol_memcmp) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
-  have hnb : ¬ s.cuConsumed > s.cuBudget := by omega
+  have hnb : ¬ s.cuConsumed ≥ s.cuBudget := by omega
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call .sol_memcmp) s) := by
     rw [show (1 : Nat) = 0 + 1 from rfl,
         executeFn_step fetch s 0 _ hex (by omega) hfetch, executeFn_zero]

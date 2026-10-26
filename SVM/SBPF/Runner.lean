@@ -923,7 +923,7 @@ def executeFnCpiWithFuel (registry : Nat → Option ByteArray)
       -- H5 budget halt — mirrors `executeFn` exactly so the RunnerBridge
       -- equality stays a structural induction. Over-budget halts with
       -- `exitCode = none` (OutOfBudget on the wire).
-      if s.cuConsumed > s.cuBudget then (s, fuel)
+      if s.cuConsumed ≥ s.cuBudget then (s, fuel)
       else
       match fetch s.pc with
       | none => ({ s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }, fuel')
@@ -954,7 +954,7 @@ theorem stepCpi_executeFnCpiWithFuel (registry : Nat → Option ByteArray)
     at `fuel'`. -/
 theorem executeFnCpiWithFuel_succ_insn (registry : Nat → Option ByteArray)
     (fetch : Nat → Option Insn) (s : State) (fuel' : Nat) (insn : Insn)
-    (hex : s.exitCode = none) (hbud : ¬ s.cuConsumed > s.cuBudget)
+    (hex : s.exitCode = none) (hbud : ¬ s.cuConsumed ≥ s.cuBudget)
     (hf : fetch s.pc = some insn) :
     executeFnCpiWithFuel registry fetch s (fuel' + 1)
       = executeFnCpiWithFuel registry fetch

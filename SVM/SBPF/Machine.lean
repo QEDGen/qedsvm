@@ -188,10 +188,11 @@ def ERR_ACCESS_VIOLATION : Nat := 0xFFFFFFFFFFFFFFFC
     Used by `.callx`, the proof-side CPI stub, unknown syscalls. Failing closed
     avoids proving an exit code false of the real VM on these paths. -/
 def ERR_UNSUPPORTED_INSTRUCTION : Nat := 0xFFFFFFFFFFFFFFFA
-/-- Call-depth limit exceeded (agave `CallDepthExceeded` at the 65th frame). -/
+/-- Call-depth limit exceeded (agave `CallDepthExceeded` on the 64th nested call). -/
 def ERR_CALL_DEPTH_EXCEEDED : Nat := 0xFFFFFFFFFFFFFFF9
 
-/-- Max sBPF call depth (`MAX_CALL_DEPTH`); the 65th nested call aborts. -/
+/-- Max sBPF call depth (`MAX_CALL_DEPTH`). The top-level frame counts, so
+    the 64th nested call aborts. -/
 def MAX_CALL_DEPTH : Nat := 64
 
 /-- `sol_set_return_data` with `len > MAX_RETURN_DATA` (agave `ReturnDataTooLarge`). -/

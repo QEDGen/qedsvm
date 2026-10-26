@@ -103,6 +103,10 @@ private def v3RecursiveCallxElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
 example : (Runner.runElf v3RecursiveCallxElf { cuBudget := 200 }).map (·.vmError) =
     some (some .callDepthExceeded) := by native_decide
 
+/-- `lddw` + 64 `callx`: the 64th faults with 63 frames pushed (#90). -/
+example : (Runner.runElf v3RecursiveCallxElf { cuBudget := 200 }).map
+    (fun s => (s.callStack.length, s.cuConsumed)) = some (63, 65) := by native_decide
+
 private def v3EndianElf (opcode width : UInt8) : ByteArray :=
   v3ElfWithText <| Decode.bytesOfHex
     "18000000887766550000000044332211d4000000100000009500000000000000"
@@ -2348,5 +2352,46 @@ example :
 example :
     BigModExp.modpow ⟨#[0x07]⟩ ⟨#[0x03]⟩ ⟨#[0x00, 0x00, 0x00]⟩
     = ⟨#[0x00, 0x00, 0x00]⟩ := by native_decide
+
+/-! ## Demo 39 — CU budget boundary after a syscall (#89)
+
+`call sol_log_64_ ; exit`: the call costs 1 + 100 CU. At budget 101 nothing
+remains for `exit`, so agave and Firedancer fail with
+`ExceededMaxInstructions` (`exitCode = none`); budget 102 is the first that
+succeeds. Before the fix, qedsvm ran `exit` at budget 101 and returned 0. -/
+
+def cuBoundaryProgram : ByteArray :=
+  let h := SyscallHash.sol_log_64_hash
+  ⟨#[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    -- exit
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example : (Runner.run cuBoundaryProgram { cuBudget := 100 }).map
+    (fun s => (s.exitCode, s.cuConsumed)) = some (none, 101) := by native_decide
+
+example : (Runner.run cuBoundaryProgram { cuBudget := 101 }).map
+    (fun s => (s.exitCode, s.cuConsumed)) = some (none, 101) := by native_decide
+
+example : (Runner.run cuBoundaryProgram { cuBudget := 102 }).map
+    (fun s => (s.exitCode, s.cuConsumed)) = some (some 0, 102) := by native_decide
+
+/-! ## Demo 40 — call depth: the 64th nested call faults (#90)
+
+Self-recursion through a relative call (`call` src=1, imm=-1). The top-level
+frame counts toward `max_call_depth = 64`, so 63 frames are pushed and the
+64th call faults with `CallDepthExceeded` after 64 CU, as in agave and
+Firedancer. The V3 `callx` recursion above checks the same limit through
+`execCallx`. -/
+
+def recursionProgram : ByteArray :=
+  ⟨#[0x85, 0x10, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+    -- exit (never reached)
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example : (Runner.run recursionProgram).map
+    (fun s => (s.vmError, s.callStack.length, s.cuConsumed)) =
+    some (some .callDepthExceeded, 63, 64) := by native_decide
 
 end SVM.SBPF.RunnerTests

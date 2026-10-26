@@ -215,7 +215,7 @@ def execCallx (reg : Reg) (s : State) : State :=
   if s.regions.textRegion?.isNone then
     { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION,
              vmError := some .unsupportedInstruction }
-  else if s.callStack.length ≥ MAX_CALL_DEPTH then
+  else if s.callStack.length + 1 ≥ MAX_CALL_DEPTH then
     { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED,
              vmError := some .callDepthExceeded }
   else match callxTarget s reg with
@@ -385,8 +385,9 @@ def execCallx (reg : Reg) (s : State) : State :=
     -- num_frames is 1 despite V0 reporting `stack_frame_gaps() = true`.
     -- r6–r9 are snapshotted for `.exit` to restore (LLVM callee-saved). r10 uses
     -- direct record syntax (not `RegFile.set`) so the r10-write no-op lemma holds.
-    -- Call-depth limit (H4): solana-sbpf aborts the 65th frame; fail closed at MAX_CALL_DEPTH.
-    if s.callStack.length ≥ MAX_CALL_DEPTH then
+    -- Call-depth limit (H4): the top-level frame counts toward solana-sbpf's
+    -- `max_call_depth` (64), so the 64th nested call aborts (63 pushes max).
+    if s.callStack.length + 1 ≥ MAX_CALL_DEPTH then
       { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED, vmError := some .callDepthExceeded }
     else
       let frame : CallFrame := {
@@ -421,7 +422,7 @@ abbrev Program := Array Insn
 
 /-- Execute using a function-based instruction fetch (O(1) per step).
 
-    Fails closed on compute-budget overrun (H5): if `cuConsumed` exceeds
+    Fails closed on compute-budget overrun (H5): if `cuConsumed` has reached
     `cuBudget` before an instruction, halt with `exitCode = none` (wire
     `OutOfBudget`, matching agave's `ComputeBudgetExceeded`). Idempotent. -/
 def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
@@ -431,7 +432,7 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
     match s.exitCode with
     | some _ => s
     | none =>
-      if s.cuConsumed > s.cuBudget then s
+      if s.cuConsumed ≥ s.cuBudget then s
       else match fetch s.pc with
       | none => { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }
       | some insn => executeFn fetch (chargeCu (step insn s)) fuel'
@@ -474,7 +475,7 @@ def executeFn (fetch : Nat → Option Insn) (s : State) (fuel : Nat) : State :=
 /-- An over-budget running state is a fixed point of `executeFn` (budget check
     halts for any fuel). Companion to `executeFn_halted` (`exitCode = some`). -/
 theorem executeFn_overBudget (fetch : Nat → Option Insn) (s : State) (n : Nat)
-    (h_run : s.exitCode = none) (h_over : s.cuConsumed > s.cuBudget) :
+    (h_run : s.exitCode = none) (h_over : s.cuConsumed ≥ s.cuBudget) :
     executeFn fetch s n = s := by
   cases n with
   | zero => simp [executeFn]
@@ -482,10 +483,10 @@ theorem executeFn_overBudget (fetch : Nat → Option Insn) (s : State) (n : Nat)
 
 theorem executeFn_step (fetch : Nat → Option Insn) (s : State) (n : Nat) (insn : Insn)
     (h_running : s.exitCode = none)
-    (h_budget : s.cuConsumed ≤ s.cuBudget)
+    (h_budget : s.cuConsumed < s.cuBudget)
     (h_fetch : fetch s.pc = some insn) :
     executeFn fetch s (n + 1) = executeFn fetch (chargeCu (step insn s)) n := by
-  simp [executeFn, h_running, h_fetch, Nat.not_lt.mpr h_budget]
+  simp [executeFn, h_running, h_fetch, Nat.not_le.mpr h_budget]
 
 /-- Composability of deterministic execution: running n+m steps is the same as
     running n steps then running m steps from the resulting state. -/
@@ -501,18 +502,18 @@ theorem executeFn_compose (fetch : Nat → Option Insn) (s : State) (n m : Nat) 
           executeFn_halted fetch s (n + 1) code h_ec,
           executeFn_halted fetch s m code h_ec]
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · -- over budget: both sides collapse to `s` (fixed point)
         rw [executeFn_overBudget fetch s (n + 1 + m) h_ec h_over,
             executeFn_overBudget fetch s (n + 1) h_ec h_over,
             executeFn_overBudget fetch s m h_ec h_over]
       · -- in budget: peel one step, then induction
-        have h_le : s.cuConsumed ≤ s.cuBudget := Nat.le_of_not_lt h_over
+        have h_le : s.cuConsumed < s.cuBudget := Nat.lt_of_not_le h_over
         cases h_f : fetch s.pc with
         | none =>
           -- invalid PC: first step sets exitCode, then both sides stay halted
           have hbad : ∀ k, executeFn fetch s (k + 1) = { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc } := by
-            intro k; simp [executeFn, h_ec, h_f, Nat.not_lt.mpr h_le]
+            intro k; simp [executeFn, h_ec, h_f, Nat.not_le.mpr h_le]
           rw [show n + 1 + m = (n + m) + 1 from by omega, hbad (n + m), hbad n,
               executeFn_halted fetch _ m ERR_INVALID_PC rfl]
         | some insn =>
@@ -621,7 +622,7 @@ theorem executeFn_preserves_r10_of_no_push
     cases h : s.exitCode with
     | some _ => exact ⟨rfl, h_cs⟩
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · rw [if_pos h_over]; exact ⟨rfl, h_cs⟩
       · rw [if_neg h_over]
         cases hf : fetch s.pc with
@@ -682,7 +683,7 @@ need a `split` or match-case to surface the record-update. -/
     cases h : s.exitCode with
     | some _ => rfl
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · rw [if_pos h_over]
       · rw [if_neg h_over]
         cases hf : fetch s.pc with
@@ -742,7 +743,7 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
     cases h : s.exitCode with
     | some _ => rfl
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · rw [if_pos h_over]
       · rw [if_neg h_over]
         cases hf : fetch s.pc with
@@ -913,7 +914,7 @@ abbrev Step := State → PUnit × State
   -- Internal call — see step's `.call_local` arm.
   | .call_local target =>
     -- Call-depth limit (H4) — mirror of step's `.call_local` guard.
-    if s.callStack.length ≥ MAX_CALL_DEPTH then
+    if s.callStack.length + 1 ≥ MAX_CALL_DEPTH then
       ((), { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED, vmError := some .callDepthExceeded })
     else
       let frame : CallFrame := {
@@ -950,7 +951,7 @@ def execSegment (fetch : Nat → Option Insn) : Nat → Step
     match s.exitCode with
     | some _ => ((), s)
     | none =>
-      if s.cuConsumed > s.cuBudget then ((), s)
+      if s.cuConsumed ≥ s.cuBudget then ((), s)
       else match fetch s.pc with
       | none => ((), { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc })
       | some insn =>
@@ -967,7 +968,7 @@ theorem executeFn_eq_execSegment (fetch : Nat → Option Insn) (s : State) (fuel
     cases h_exit : s.exitCode with
     | some _ => rfl
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · simp only [if_pos h_over]
       · simp only [if_neg h_over]
         cases h_fetch : fetch s.pc with

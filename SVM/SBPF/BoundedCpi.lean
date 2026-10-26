@@ -574,7 +574,7 @@ theorem executeFnCpiWithFuel_bounded (registry : Nat → Option ByteArray) :
       simp only [Runner.executeFnCpiWithFuel, hex]
       exact ⟨hb, he⟩
     | none =>
-      by_cases hover : s.cuConsumed > s.cuBudget
+      by_cases hover : s.cuConsumed ≥ s.cuBudget
       · simp only [Runner.executeFnCpiWithFuel, hex, if_pos hover]
         exact ⟨hb, he⟩
       · cases hf : fetch s.pc with

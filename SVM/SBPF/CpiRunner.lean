@@ -170,7 +170,7 @@ so facts about them at a program's entry hold at its invoke. -/
     cases h : s.exitCode with
     | some _ => rfl
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · rw [if_pos h_over]
       · rw [if_neg h_over]
         cases hf : fetch s.pc with
@@ -189,7 +189,7 @@ so facts about them at a program's entry hold at its invoke. -/
     cases h : s.exitCode with
     | some _ => rfl
     | none =>
-      by_cases h_over : s.cuConsumed > s.cuBudget
+      by_cases h_over : s.cuConsumed ≥ s.cuBudget
       · rw [if_pos h_over]
       · rw [if_neg h_over]
         cases hf : fetch s.pc with
@@ -294,7 +294,7 @@ theorem chargeCu_step_invoke_exitCode (insn : Insn) (s : State)
 theorem runner_prefix (registry : Nat → Option ByteArray) (fetch : Nat → Option Insn) :
     ∀ (k : Nat) (s : State) (m : Nat),
       (executeFn fetch s k).exitCode = none →
-      ¬ (executeFn fetch s k).cuConsumed > (executeFn fetch s k).cuBudget →
+      ¬ (executeFn fetch s k).cuConsumed ≥ (executeFn fetch s k).cuBudget →
       Runner.executeFnCpiWithFuel registry fetch s (k + m) =
         Runner.executeFnCpiWithFuel registry fetch (executeFn fetch s k) m
   | 0, s, m, _, _ => by rw [Nat.zero_add, executeFn_zero]
@@ -304,7 +304,7 @@ theorem runner_prefix (registry : Nat → Option ByteArray) (fetch : Nat → Opt
       rw [executeFn_halted fetch s _ c hs, hs] at hex
       cases hex
     | none =>
-      by_cases hov : s.cuConsumed > s.cuBudget
+      by_cases hov : s.cuConsumed ≥ s.cuBudget
       · rw [executeFn_overBudget fetch s _ hs hov] at hbud
         exact absurd hov hbud
       · cases hf : fetch s.pc with
@@ -312,7 +312,7 @@ theorem runner_prefix (registry : Nat → Option ByteArray) (fetch : Nat → Opt
           simp only [executeFn, hs, if_neg hov, hf] at hex
           cases hex
         | some insn =>
-          rw [executeFn_step fetch s k insn hs (Nat.le_of_not_lt hov) hf] at hex hbud ⊢
+          rw [executeFn_step fetch s k insn hs (Nat.lt_of_not_le hov) hf] at hex hbud ⊢
           cases hc : Insn.isCpiCall insn
           · rw [show k + 1 + m = (k + m) + 1 by omega,
               Runner.executeFnCpiWithFuel_succ_insn registry fetch s (k + m) insn hs hov hf,
@@ -326,13 +326,13 @@ theorem runner_prefix (registry : Nat → Option ByteArray) (fetch : Nat → Opt
     successor, with the sub-run at the remaining fuel `m`. -/
 theorem runner_invoke (registry : Nat → Option ByteArray) (fetch : Nat → Option Insn)
     (sI : State) (sc : Syscall) (m : Nat)
-    (hex : sI.exitCode = none) (hbud : sI.cuConsumed ≤ sI.cuBudget)
+    (hex : sI.exitCode = none) (hbud : sI.cuConsumed < sI.cuBudget)
     (hf : fetch sI.pc = some (.call sc)) :
     Runner.executeFnCpiWithFuel registry fetch sI (m + 1) =
       Runner.executeFnCpiWithFuel registry fetch
         (chargeCu (Runner.stepCpi registry (Runner.executeFnCpiWithFuel registry) sI m (.call sc)))
         m :=
-  Runner.executeFnCpiWithFuel_succ_insn registry fetch sI m _ hex (Nat.not_lt.mpr hbud) hf
+  Runner.executeFnCpiWithFuel_succ_insn registry fetch sI m _ hex (Nat.not_le.mpr hbud) hf
 
 /-- From a live state at an invoke, `executeFn` either stays put (budget
     halt) or halts. -/
@@ -342,12 +342,12 @@ private theorem executeFn_from_invoke (fetch : Nat → Option Insn) (t : State) 
     ∀ d, executeFn fetch t d = t ∨ (executeFn fetch t d).exitCode ≠ none
   | 0 => Or.inl (executeFn_zero fetch t)
   | d + 1 => by
-    by_cases hov : t.cuConsumed > t.cuBudget
+    by_cases hov : t.cuConsumed ≥ t.cuBudget
     · exact Or.inl (executeFn_overBudget fetch t _ hex hov)
     · have hcpi : Insn.isCpiCall (.call sc) = true := by
         rcases hsc with rfl | rfl <;> rfl
       right
-      rw [executeFn_step fetch t d _ hex (Nat.le_of_not_lt hov) hf,
+      rw [executeFn_step fetch t d _ hex (Nat.lt_of_not_le hov) hf,
         executeFn_halted fetch _ d _ (chargeCu_step_invoke_exitCode _ t hcpi),
         chargeCu_step_invoke_exitCode _ t hcpi]
       simp
@@ -425,7 +425,7 @@ def runnerCpiPath (registry : Nat → Option ByteArray) (N1 M1 entry invokePc N2
             (executeFn fetch s k1) (F - k1 - 1) (.call sc))
           = applyResult (executeFn fetch s k1) r ∧
         (G r →
-          (applyResult (executeFn fetch s k1) r).cuConsumed + N2 + M2 ≤
+          (applyResult (executeFn fetch s k1) r).cuConsumed + N2 + M2 <
             (applyResult (executeFn fetch s k1) r).cuBudget →
           ∃ k2, k2 ≤ N2 ∧
             (executeFn fetch (applyResult (executeFn fetch s k1) r) k2).pc = exit_ ∧
@@ -458,18 +458,18 @@ theorem runner_cpiPath {N1 M1 entry invokePc N2 M2 exit_ : Nat} {cr1 cr2 : CodeR
   obtain ⟨r, hr, hs', hSuf⟩ := hT _ hTr
   rw [hs'] at hSuf
   refine ⟨k1, hk1, hpc1, hex1, r, hr, hr0.trans hs', fun hG hbud2 => ?_⟩
-  obtain ⟨k2, hk2, hpc2, hex2, hcu2, hPost⟩ := hSuf hG hbud2
+  obtain ⟨k2, hk2, hpc2, hex2, hcu2, hPost⟩ := hSuf hG (Nat.le_of_lt hbud2)
   refine ⟨k2, hk2, hpc2, hex2, hcu2, hPost, ?_⟩
-  have hIbud : (executeFn fetch s k1).cuConsumed ≤ (executeFn fetch s k1).cuBudget := by
-    simp only [applyResult] at hbud2; omega
-  have hEbud : ¬ (executeFn fetch (applyResult (executeFn fetch s k1) r) k2).cuConsumed >
+  have hIbud : (executeFn fetch s k1).cuConsumed < (executeFn fetch s k1).cuBudget := by
+    simp only [applyResult, cu] at hbud2; omega
+  have hEbud : ¬ (executeFn fetch (applyResult (executeFn fetch s k1) r) k2).cuConsumed ≥
       (executeFn fetch (applyResult (executeFn fetch s k1) r) k2).cuBudget := by
     rw [executeFn_preserves_cuBudget]; omega
   calc Runner.executeFnCpiWithFuel registry fetch s F
       = Runner.executeFnCpiWithFuel registry fetch s (k1 + ((F - k1 - 1) + 1)) := by
         congr 1; omega
     _ = Runner.executeFnCpiWithFuel registry fetch (executeFn fetch s k1) ((F - k1 - 1) + 1) :=
-        runner_prefix registry fetch k1 s _ hex1 (Nat.not_lt.mpr hIbud)
+        runner_prefix registry fetch k1 s _ hex1 (Nat.not_le.mpr hIbud)
     _ = Runner.executeFnCpiWithFuel registry fetch
           (applyResult (executeFn fetch s k1) r) (k2 + (F - k1 - 1 - k2)) := by
         rw [runner_invoke registry fetch _ sc _ hex1 hIbud (hpc1 ▸ hfI), hr0, hs']
