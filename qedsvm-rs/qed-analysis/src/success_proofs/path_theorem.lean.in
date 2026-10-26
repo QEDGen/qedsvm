@@ -1,0 +1,18 @@
+theorem check@EDGE@ : ptokenInsns.all (fun insns =>
+    edgeCheck (Runner.fetchFromArray insns) ptNoret insns.size 198 @EDGE@ dom@EDGE@ routes@EDGE@) = true := by
+  native_decide
+
+/-- Path condition for edge @EDGE@ (@DESC@). -/
+theorem path@EDGE@ (insns : Array Insn) (hp : ptokenInsns = some insns) (s : State)
+    (hpc : s.pc = 198) (hcs : s.callStack = []) (n : Nat)
+    (hend : (executeFn (Runner.fetchFromArray insns) s n).callStack = [] ∧
+      (executeFn (Runner.fetchFromArray insns) s n).pc = @EDGE@) :
+    let f := Runner.fetchFromArray insns
+    PassedGuards f s n dom@EDGE@ ∧
+    ∃ c pre post, (c, pre, post) ∈ routes@EDGE@ ∧ ∃ j, j ≤ n ∧
+      (executeFn f s j).callStack = [] ∧ (executeFn f s j).exitCode = none ∧
+      (executeFn f s j).pc = c ∧ PassedGuards f s j pre ∧
+      PassedGuards f (executeFn f s j) (n - j) post := by
+  have h := check@EDGE@
+  rw [hp, Option.all_some] at h
+  exact edge_path_condition _ ptNoret (ptNoret_sound insns hp) _ 198 @EDGE@ _ _ h s hpc hcs n hend

@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "artifact_sha256": "8190d3f7ceb6cb7a7a8d8924bff89f9f611e15ce1f806f2b6237f3311a98f697",
+  "entry": 198,
+  "noreturn": [
+    11177,
+    10881
+  ],
+  "guard_pins": [
+    {
+      "pc": 199,
+      "on_success": 304,
+      "edge": 4825
+    }
+  ],
+  "edges": [
+    {
+      "pc": 4825,
+      "description": "Transfer, amount moved (the edge's `jne r3, 1` skips the native-SOL lamport move)",
+      "input_description": "Transfer, amount moved",
+      "checkpoints": [
+        4816,
+        5216,
+        5715,
+        6233
+      ]
+    },
+    {
+      "pc": 4832,
+      "description": "Transfer, native SOL account (also moves lamports)",
+      "input_description": "Transfer, native SOL",
+      "checkpoints": [
+        4816,
+        5216,
+        5715,
+        6233
+      ]
+    },
+    {
+      "pc": 5250,
+      "description": "Transfer of 0: both accounts owned by the token program",
+      "input_description": "Transfer of 0",
+      "checkpoints": [
+        4816,
+        5216,
+        5715,
+        6233
+      ]
+    },
+    {
+      "pc": 5063,
+      "description": "TransferChecked, amount moved",
+      "input_description": "TransferChecked, amount moved",
+      "checkpoints": [
+        5053,
+        5438,
+        5995,
+        6432
+      ]
+    },
+    {
+      "pc": 5070,
+      "description": "TransferChecked, native SOL account",
+      "input_description": "TransferChecked, native SOL",
+      "checkpoints": [
+        5053,
+        5438,
+        5995,
+        6432
+      ]
+    },
+    {
+      "pc": 5473,
+      "description": "TransferChecked of 0: both accounts owned by the token program",
+      "input_description": "TransferChecked of 0",
+      "checkpoints": [
+        5053,
+        5438,
+        5995,
+        6432
+      ]
+    }
+  ],
+  "readable_fields": [
+    {
+      "name": "account_count",
+      "offset": 0,
+      "width": 1
+    },
+    {
+      "name": "source.data_length",
+      "offset": 88,
+      "width": 8
+    },
+    {
+      "name": "source.mint",
+      "offset": 96,
+      "width": 32
+    },
+    {
+      "name": "source.owner",
+      "offset": 128,
+      "width": 32
+    },
+    {
+      "name": "source.delegate_tag",
+      "offset": 168,
+      "width": 1
+    },
+    {
+      "name": "source.delegate",
+      "offset": 172,
+      "width": 32
+    },
+    {
+      "name": "source.state",
+      "offset": 204,
+      "width": 1
+    },
+    {
+      "name": "source.is_native",
+      "offset": 205,
+      "width": 1
+    },
+    {
+      "name": "destination.duplicate_marker",
+      "offset": 10512,
+      "width": 1
+    },
+    {
+      "name": "destination.data_length",
+      "offset": 10592,
+      "width": 8
+    },
+    {
+      "name": "destination.mint",
+      "offset": 10600,
+      "width": 32
+    },
+    {
+      "name": "destination.state",
+      "offset": 10708,
+      "width": 1
+    },
+    {
+      "name": "authority.duplicate_marker",
+      "offset": 21016,
+      "width": 1
+    },
+    {
+      "name": "authority.is_signer",
+      "offset": 21017,
+      "width": 1
+    },
+    {
+      "name": "authority.key",
+      "offset": 21024,
+      "width": 32
+    },
+    {
+      "name": "authority.data_length",
+      "offset": 21096,
+      "width": 8
+    },
+    {
+      "name": "authority.multisig_m",
+      "offset": 21104,
+      "width": 1
+    },
+    {
+      "name": "authority.multisig_initialized",
+      "offset": 21106,
+      "width": 1
+    },
+    {
+      "name": "source.program_owner",
+      "offset": 48,
+      "width": 32
+    },
+    {
+      "name": "destination.program_owner",
+      "offset": 10552,
+      "width": 32
+    }
+  ]
+}

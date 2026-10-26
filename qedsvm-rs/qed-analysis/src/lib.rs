@@ -13,6 +13,8 @@ pub mod input_layout;
 pub mod instruction_layout;
 pub mod layout;
 pub mod profile;
+/// Deterministic untrusted emitters for the pinned success-proof baseline.
+pub mod success_proofs;
 pub mod symbolicate;
 
 /// Static-analysis `ContextObject`: the lifting tools load executables for analysis only and

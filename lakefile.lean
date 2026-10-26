@@ -146,6 +146,7 @@ lean_lib Examples where
     `PToken.PanicChainPins,
     `PToken.SuccessPaths,
     `PToken.SuccessInputs,
+    `PToken.ReadableFields,
     `PToken.TransferSpec,
     `Multisig.MultisigGeneralization,
     -- Generated end-to-end lift demos (qedlift): .so → Lean module.
