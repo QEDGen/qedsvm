@@ -175,10 +175,12 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
     ([0x72, 0x6a, 0x62, 0x7a, 0x73, 0x6b, 0x63, 0x7b] : List Nat).contains opcode
   let zeroDivisorOpcode : Bool :=
     ([0x34, 0x37, 0x94, 0x97] : List Nat).contains opcode
+  -- C3 (#91): agave's `check_registers` runs on EVERY instruction in every
+  -- version, used field or not: `src ≤ 10`, `dst ≤ 9` (`dst = 10` only for
+  -- stores). `check_imm_nonzero` rejects div/mod by immediate 0 at load.
   if writesDstReg && dstN == 10 then none else
-  if version == .v3 &&
-      (srcN > 10 || (dstN > 9 && !storeOpcode) ||
-       (zeroDivisorOpcode && imm == 0)) then none else
+  if srcN > 10 || (dstN > 9 && !storeOpcode) ||
+      (zeroDivisorOpcode && imm == 0) then none else
   if version == .v3 && opcode &&& 0x07 == 0x06 then
     let cond? : Option Jump32Cond := match opcode &&& 0xf7 with
       | 0x16 => some .eq | 0x26 => some .gt | 0x36 => some .ge
@@ -249,9 +251,10 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
   | 0xac => match dst?, src? with | some d, some s => some (.xor32  d (.reg s), 8) | _, _ => none
   | 0xbc => match dst?, src? with | some d, some s => some (.mov32  d (.reg s), 8) | _, _ => none
   | 0xcc => match dst?, src? with | some d, some s => some (.arsh32 d (.reg s), 8) | _, _ => none
-  | 0xd4 => if version == .v3 && (imm == 16 || imm == 32 || imm == 64) then
+  -- `le`/`be` are valid in V0 and V3 (agave disables `le` only in V2).
+  | 0xd4 => if imm == 16 || imm == 32 || imm == 64 then
       dst?.map fun d => (.endian d imm.toNat false, 8) else none
-  | 0xdc => if version == .v3 && (imm == 16 || imm == 32 || imm == 64) then
+  | 0xdc => if imm == 16 || imm == 32 || imm == 64 then
       dst?.map fun d => (.endian d imm.toNat true, 8) else none
   -- Jumps (class = 5, immediate source). An out-of-code target makes the
   -- whole decode fail (`targetPc? = none`); see resolveTarget above.
@@ -307,9 +310,12 @@ def decodeInsn (bytes : ByteArray) (slotMap : Array Nat) (off : Nat)
         else none
       | none => some (.call (.unknown immU), 8)
     | sc => some (.call sc, 8)
-  -- Indirect call `callx <reg>`: target = runtime src-register value.
+  -- Indirect call `callx <reg>`. V3 names the register in `dst`; V0 names it
+  -- in `imm` (agave `reg[insn.imm]`, which is what V0 toolchains emit, with
+  -- `src = 0`). `check_callx_register` rejects a register outside r0..r9.
   | 0x8d => if version == .v3 then dst?.map fun d => (.callx d, 8)
-            else src?.map fun s => (.callx s, 8)
+            else if 0 ≤ imm ∧ imm < 10 then (decodeReg imm.toNat).map fun r => (.callx r, 8)
+            else none
   -- Exit
   | 0x95 => some (.exit, 8)
   -- Load/store (memory operations)
