@@ -56,9 +56,35 @@ example : Decode.decodeInsn (Decode.bytesOfHex "720a000001000000") #[0] 0 [] .v3
 example : Decode.decodeInsn (Decode.bytesOfHex "0600000000000000") #[0] 0 [] .v3 =
     none := by native_decide
 
--- The V0 CALL_REG source-nibble interpretation remains a legacy path.
-example : Decode.decodeInsn (Decode.bytesOfHex "8d21000000000000") #[0] 0 [] .v0 =
+-- V0 CALL_REG names its register in imm (agave `reg[insn.imm]`), r0..r9 only.
+example : Decode.decodeInsn (Decode.bytesOfHex "8d00000002000000") #[0] 0 [] .v0 =
     some (.callx .r2, 8) := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "8d21000000000000") #[0] 0 [] .v0 =
+    some (.callx .r0, 8) := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "8d9900000a000000") #[0] 0 [] .v0 =
+    none := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "8d990000ffffffff") #[0] 0 [] .v0 =
+    none := by native_decide
+
+-- V0 runs the same load-time verifier checks as V3 (#91): unused register
+-- fields, div/mod by immediate 0. Vectors from Firedancer's V0 instr_test.
+example : Decode.decodeInsn (Decode.bytesOfHex "44b9000000000000") #[0] 0 [] .v0 =
+    none := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "051a000000000000") #[0, 1] 0 [] .v0 =
+    none := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "18b00000a0a1a2a300000000a4a5a6a7")
+    #[0, 0] 0 [] .v0 = none := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "3400000000000000") #[0] 0 [] .v0 =
+    none := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "9700000000000000") #[0] 0 [] .v0 =
+    none := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "720a000001000000") #[0] 0 [] .v0 =
+    some (.st .byte .r10 0 1, 8) := by native_decide
+-- `le`/`be` are V0-valid too.
+example : Decode.decodeInsn (Decode.bytesOfHex "d400000010000000") #[0] 0 [] .v0 =
+    some (.endian .r0 16 false, 8) := by native_decide
+example : Decode.decodeInsn (Decode.bytesOfHex "dc00000010000000") #[0] 0 [] .v0 =
+    some (.endian .r0 16 true, 8) := by native_decide
 
 -- Exact V3 verifier opcode pins: arithmetic, jumps, memory, endian.
 example : Decode.decodeInsn (Decode.bytesOfHex "0400000001000000") #[0] 0 [] .v3 =
