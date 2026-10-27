@@ -1,0 +1,4 @@
+# Known qedsvm/fd_vm/vector disagreements, one per line:
+#   <file>:<line> <tracking issue>
+# diffcase.py --strict fails on any disagreement not listed here. Empty: every
+# case agrees.
