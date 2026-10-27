@@ -2404,4 +2404,32 @@ example : (Runner.run recursionProgram).map
     (fun s => (s.vmError, s.callStack.length, s.cuConsumed)) =
     some (some .callDepthExceeded, 63, 64) := by native_decide
 
+/-! ## Demo 41 — V0 `le`/`be` byte swaps (#92)
+
+`lddw r0, 0x1122334455667788; le|be r0, width; exit` decoded as V0. agave
+and Firedancer accept the byte-swap opcodes in V0 (only V2 disables `le`);
+the expected r0 values are Firedancer fd_vm's on rv64. -/
+
+/-- Decode raw text as V0 and run it from the standard initial state. -/
+private def runV0 (bytes : ByteArray) (cfg : Runner.RunConfig := {}) : Option State := do
+  let insns ← Decode.decodeProgramV0 bytes [(Elf.entrypointHash, 0)]
+  return Runner.executeFnCpi cfg.programRegistry (Runner.fetchFromArray insns) (Runner.initialState cfg)
+    cfg.cuBudget
+
+/-- r0 after `lddw r0, 0x1122334455667788; <op> r0, width; exit` under V0. -/
+private def byteSwapV0 (op width : UInt8) : Option Nat :=
+  (runV0 ⟨#[0x18, 0x00, 0x00, 0x00, 0x88, 0x77, 0x66, 0x55,
+            0x00, 0x00, 0x00, 0x00, 0x44, 0x33, 0x22, 0x11,
+            op, 0x00, 0x00, 0x00, width, 0x00, 0x00, 0x00,
+            0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]⟩).map (·.regs.r0)
+
+example : byteSwapV0 0xd4 16 = some 0x7788 := by native_decide
+example : byteSwapV0 0xd4 32 = some 0x55667788 := by native_decide
+example : byteSwapV0 0xd4 64 = some 0x1122334455667788 := by native_decide
+example : byteSwapV0 0xdc 16 = some 0x8877 := by native_decide
+example : byteSwapV0 0xdc 32 = some 0x88776655 := by native_decide
+example : byteSwapV0 0xdc 64 = some 0x8877665544332211 := by native_decide
+-- A width outside {16, 32, 64} is a load-time reject.
+example : byteSwapV0 0xdc 8 = none := by native_decide
+
 end SVM.SBPF.RunnerTests
