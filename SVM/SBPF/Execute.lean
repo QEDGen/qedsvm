@@ -90,8 +90,10 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_alloc_free_
   | .sol_remaining_compute_units
   | .sol_get_stack_height
-  | .sol_get_processed_sibling_instruction
-  | .unknown _                                   => Misc.cu
+  | .sol_get_processed_sibling_instruction       => Misc.cu
+  -- An unresolved call is not a syscall: agave and fd_vm charge only the
+  -- instruction's 1 CU, then fault with `UnsupportedInstruction`.
+  | .unknown _                                   => 0
 
 /-! ## Syscall execution -/
 

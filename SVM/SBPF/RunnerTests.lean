@@ -2432,4 +2432,15 @@ example : byteSwapV0 0xdc 64 = some 0x8877665544332211 := by native_decide
 -- A width outside {16, 32, 64} is a load-time reject.
 example : byteSwapV0 0xdc 8 = none := by native_decide
 
+/-! ## Demo 42 — an unresolved call costs 1 CU (#96)
+
+V0 `call imm=0` with nothing registered under key 0 is not a syscall: agave
+and fd_vm charge the instruction's 1 CU and fault with `UnsupportedInstruction`.
+qedsvm used to charge the 100-CU syscall base cost, which turned this fault
+into an out-of-budget at budget 100. Found by `tools/fdvm-diff`. -/
+
+example : (runV0 (Decode.bytesOfHex "85000000000000009500000000000000")
+    { cuBudget := 100 }).map (fun s => (s.vmError, s.cuConsumed)) =
+    some (some .unsupportedInstruction, 1) := by native_decide
+
 end SVM.SBPF.RunnerTests
