@@ -16,3 +16,4 @@ rust-bridge/target/
 # Local research spikes (e.g. solanalib-diff-oracle) — not tracked.
 spike/
 docs/DYLIB_SEGFAULT_REPRO.md
+__pycache__/
