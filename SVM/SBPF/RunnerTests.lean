@@ -2413,8 +2413,8 @@ the expected r0 values are Firedancer fd_vm's on rv64. -/
 /-- Decode raw text as V0 and run it from the standard initial state. -/
 private def runV0 (bytes : ByteArray) (cfg : Runner.RunConfig := {}) : Option State := do
   let insns ← Decode.decodeProgramV0 bytes [(Elf.entrypointHash, 0)]
-  return Runner.executeFnCpi cfg.programRegistry (Runner.fetchFromArray insns) (Runner.initialState cfg)
-    cfg.cuBudget
+  return Runner.executeFnCpi cfg.programRegistry (Runner.fetchFromArray insns)
+    (Runner.initialState cfg) cfg.cuBudget
 
 /-- r0 after `lddw r0, 0x1122334455667788; <op> r0, width; exit` under V0. -/
 private def byteSwapV0 (op width : UInt8) : Option Nat :=
