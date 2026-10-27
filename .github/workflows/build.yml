@@ -8,10 +8,11 @@ on:
 
 # Jobs, split by what each needs:
 #   rust     — standalone Lean-free crates; no toolchain, seconds to run.
-#   core     — the core `lake build`, once; caches `.lake` for the two jobs
+#   core     — the core `lake build`, once; caches `.lake` for the jobs
 #              below (keyed on the run SHA so they restore this exact build).
 #   lean     — restores core's `.lake`, then the checks that link the Lean
 #              runtime (diff-mollusk, qedlift pins) + the soundness gates.
+#   fdvm-diff — restores core's `.lake`, then fd_vm (QEMU) vs qedsvm (#96).
 #   examples — restores core's `.lake`, then the flagship proofs (the long
 #              pole) + axiom-audit gate.
 # `lean`/`examples` no longer rebuild the core library: `needs: core` runs
@@ -208,6 +209,57 @@ jobs:
         # against mollusk on the fixture corpus, linking the restored Lean lib.
         working-directory: qedsvm-rs
         run: cargo test --features diff-mollusk
+
+  # Differential run against Firedancer's interpreter (#96): fd_vm, unmodified,
+  # on bare-metal rv64 under QEMU, vs qedsvm on Firedancer's instruction
+  # vectors, hand-written seeds and a CU-boundary sweep. Fails on any
+  # disagreement not allow-listed in tools/fdvm-diff/allow.txt.
+  fdvm-diff:
+    needs: core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan
+        run: |
+          curl -sSf https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
+            | sh -s -- -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: qedsvm-rs
+
+      - name: Restore .lake (core build)
+        uses: actions/cache@v4
+        with:
+          path: .lake
+          key: lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-${{ github.sha }}
+          restore-keys: |
+            lake-${{ hashFiles('lean-toolchain', 'lakefile.lean') }}-
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: rv64 toolchain image (gcc + newlib + QEMU, cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: tools/fdvm-diff/docker
+          tags: qedsvm-rv64-newlib
+          load: true
+          cache-from: type=gha,scope=rv64-newlib
+          cache-to: type=gha,mode=max,scope=rv64-newlib
+
+      - name: fd_vm vs qedsvm
+        run: tools/fdvm-diff/run.sh
+
+      - name: Upload outcomes on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdvm-diff
+          path: |
+            build/fdvm-diff/*.txt
+            build/fdvm-diff/*.jsonl
 
   # Flagship proofs demonstrating the verification chain + the axiom-audit gate.
   # AxiomAudit.lean is the first Examples root and fails the build on any

@@ -55,6 +55,13 @@ lean_lib SVM where
   roots := #[`SVM, `SVM.Syscalls.CpiTests]
   precompileModules := true
 
+-- Differential harness runner (#96): runs a batch of post-load sBPF images
+-- through qedsvm and prints one outcome line per case for
+-- `tools/fdvm-diff/diffcase.py`. See tools/fdvm-diff/README.md.
+lean_exe qedcase where
+  srcDir := "tools/fdvm-diff"
+  root := `QedCase
+
 -- #40 gap 4: the per-call-site CPI envelope pair — the walk terminates at
 -- the invoke (fail-closed proof-side CPI), the prefix post owns the
 -- StableInstruction cells, and CpiEnvelopeDemo reshapes them into
