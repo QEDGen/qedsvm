@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Differential run: Firedancer's fd_vm (unmodified, bare-metal rv64 on QEMU)
-# against qedsvm, on Firedancer's instruction vectors, hand-written seeds and
-# a CU-boundary sweep of both. Fails on any disagreement not in allow.txt.
+# Differential run: Firedancer's fd_vm (unmodified, bare-metal rv64 on QEMU),
+# agave's interpreter (solana-sbpf, native) and qedsvm, on Firedancer's
+# instruction vectors, hand-written seeds and a CU-boundary sweep of both.
+# Fails on any disagreement not in allow.txt.
 #
 #   tools/fdvm-diff/run.sh [--no-fdvm]
 #
 # Env: FD   a Firedancer checkout at $FD_COMMIT (cloned sparse into $WORK if unset)
 #      WORK scratch directory (default: build/fdvm-diff)
-# --no-fdvm skips QEMU and checks qedsvm against the vector expectations only.
+# --no-fdvm skips QEMU: qedsvm against agave and the vector expectations.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
@@ -30,6 +31,8 @@ vec=$FD/src/flamenco/vm/instr_test
 
 (cd "$root" && lake build qedcase >/dev/null)
 qedcase=$root/.lake/build/bin/qedcase
+(cd "$here/agave" && cargo build -q --release --locked)  # rust-toolchain.toml pins 1.97.1
+agvcase=$here/agave/target/release/agvcase
 
 # Base batches: the vectors (with expectations) and the seeds (without).
 py "$here/instr2batch.py" "$vec"/v0/*.instr --version 0 -o "$WORK/v0.bin" --expect "$WORK/v0.expect.jsonl"
@@ -46,7 +49,8 @@ done
 status=0
 for b in v0 v3 synth v0-sweep v3-sweep synth-sweep; do
   [[ -f $WORK/$b.qed.txt ]] || "$qedcase" "$WORK/$b.bin" > "$WORK/$b.qed.txt"
-  args=(--qed "$WORK/$b.qed.txt")
+  "$agvcase" "$WORK/$b.bin" > "$WORK/$b.agv.txt"
+  args=(--qed "$WORK/$b.qed.txt" --agv "$WORK/$b.agv.txt")
   if (( fdvm )); then
     OUT=$WORK/out-$b FD=$FD "$here/harness/build.sh" "$WORK/$b.bin" --run \
       | grep '^FDVM' > "$WORK/$b.fdvm.txt"
