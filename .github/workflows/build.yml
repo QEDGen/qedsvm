@@ -12,7 +12,7 @@ on:
 #              below (keyed on the run SHA so they restore this exact build).
 #   lean     — restores core's `.lake`, then the checks that link the Lean
 #              runtime (diff-mollusk, qedlift pins) + the soundness gates.
-#   fdvm-diff — restores core's `.lake`, then fd_vm (QEMU) vs qedsvm (#96).
+#   fdvm-diff — restores core's `.lake`, then fd_vm (QEMU) vs agave vs qedsvm (#96).
 #   examples — restores core's `.lake`, then the flagship proofs (the long
 #              pole) + axiom-audit gate.
 # `lean`/`examples` no longer rebuild the core library: `needs: core` runs
@@ -210,10 +210,11 @@ jobs:
         working-directory: qedsvm-rs
         run: cargo test --features diff-mollusk
 
-  # Differential run against Firedancer's interpreter (#96): fd_vm, unmodified,
-  # on bare-metal rv64 under QEMU, vs qedsvm on Firedancer's instruction
-  # vectors, hand-written seeds and a CU-boundary sweep. Fails on any
-  # disagreement not allow-listed in tools/fdvm-diff/allow.txt.
+  # Three-way differential run (#96): Firedancer's fd_vm, unmodified, on
+  # bare-metal rv64 under QEMU; agave's interpreter (solana-sbpf, native); and
+  # qedsvm, on Firedancer's instruction vectors, hand-written seeds and a
+  # CU-boundary sweep. Fails on any disagreement not allow-listed in
+  # tools/fdvm-diff/allow.txt.
   fdvm-diff:
     needs: core
     runs-on: ubuntu-latest
@@ -228,7 +229,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: qedsvm-rs
+          workspaces: |
+            qedsvm-rs
+            tools/fdvm-diff/agave
 
       - name: Restore .lake (core build)
         uses: actions/cache@v4
@@ -249,7 +252,7 @@ jobs:
           cache-from: type=gha,scope=rv64-newlib
           cache-to: type=gha,mode=max,scope=rv64-newlib
 
-      - name: fd_vm vs qedsvm
+      - name: fd_vm vs agave vs qedsvm
         run: tools/fdvm-diff/run.sh
 
       - name: Upload outcomes on failure

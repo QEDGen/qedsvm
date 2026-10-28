@@ -1,0 +1,14 @@
+[package]
+name = "agvcase"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Runs fd_vm-harness case batches through agave's solana-sbpf interpreter"
+
+[dependencies]
+# The interpreter agave 4.3 runs, pinned to the version the verifier
+# vectors were checked against (#91).
+solana-sbpf = { version = "=0.23.0", default-features = false }
+
+# Standalone: not part of the qedsvm-rs workspace.
+[workspace]
