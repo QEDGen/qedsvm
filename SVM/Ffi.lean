@@ -17,6 +17,7 @@
 -/
 
 import SVM.SBPF.Runner
+import SVM.SBPF.Outcome
 import SVM.Native.Precompiles
 
 namespace SVM.Ffi
@@ -72,25 +73,21 @@ def appendLP (acc bs : ByteArray) : ByteArray :=
 def encodeElfError : ByteArray :=
   ByteArray.empty.push 0
 
-/-- Encode the post-execution `State` along with the original input
-    length (so the caller knows how many bytes of memory at
-    `INPUT_START` represent the modified input region) and the
-    compute units consumed during execution. -/
-def encodeRun (s : State) (inputLen : Nat) (cuConsumed : UInt64) : ByteArray := Id.run do
+/-- Encode the post-execution `State`. The status fields come from
+    `Outcome.ofState`; the input region (`inputLen` bytes at `INPUT_START`),
+    logs and return data are read from the state on every outcome. -/
+def encodeRun (s : State) (inputLen budget : Nat) : ByteArray := Id.run do
+  let o := Outcome.ofState s inputLen budget
   let mut out := ByteArray.empty
   out := out.push 1  -- status: executed
-  match s.exitCode with
-  | none =>
-    out := out.push 0
-  | some n =>
-    -- L1: exit_kind 1 = CLEAN exit, 2 = VM FAULT (`State.vmError`
-    -- set). Same u64 sentinel payload either way, so every downstream
-    -- observable is unchanged until the M14 error-code mapping
-    -- consumes the distinction — but a clean exit whose r0 happens to
-    -- equal a fault sentinel is no longer conflated with the fault.
-    out := out.push (if s.vmError.isSome then 2 else 1)
-    out := out ++ encodeU64 (UInt64.ofNat n)
-  out := out ++ encodeU64 cuConsumed
+  -- exit_kind 1 = clean exit, 2 = VM fault (L1). A fault carries its
+  -- `exitCode` sentinel, so a clean exit whose r0 equals a sentinel is not
+  -- conflated with the fault.
+  match o with
+  | .cuExceeded => out := out.push 0
+  | .ok r0 .. => out := (out.push 1) ++ encodeU64 (UInt64.ofNat r0)
+  | .fault e _ => out := (out.push 2) ++ encodeU64 (UInt64.ofNat e.toSentinel)
+  out := out ++ encodeU64 (UInt64.ofNat (o.cuUsed budget))
   -- Modified input region.
   let inputBytes := readBytes s.mem INPUT_START inputLen
   out := appendLP out inputBytes
@@ -114,16 +111,11 @@ def runElfBuffer (elf input : ByteArray) (cuBudget : UInt64) : ByteArray :=
   match Runner.runElfWithFuel elf cfg with
   | none => encodeElfError
   | some (s, _fuelRemaining) =>
-    -- H5 total metering: `s.cuConsumed` IS the total CU (baseline
-    -- 1/instruction charged by `chargeCu` in the execution loop +
-    -- syscall surcharges from `step`'s `.call` arm). The old
-    -- `(cuBudget - fuelRemaining) + s.cuConsumed` would now
-    -- double-count the baselines. Clamped to the budget: on a
-    -- surcharge overrun the in-model meter can exceed the budget by
-    -- the final instruction's cost, whereas agave drains the meter to
-    -- exactly `budget` (`ComputeBudgetExceeded`); `min` reproduces the
-    -- drained reading and is the identity on every in-budget run.
-    encodeRun s input.size (UInt64.ofNat (min s.cuConsumed cuBudget.toNat))
+    -- H5 total metering: `s.cuConsumed` is the total CU (baseline
+    -- 1/instruction + syscall surcharges), clamped to the budget by
+    -- `Outcome` (agave drains the meter to exactly `budget` on
+    -- `ComputeBudgetExceeded`).
+    encodeRun s input.size cuBudget.toNat
 
 /-! ## Multi-program registry (for CPI)
 
@@ -201,7 +193,7 @@ def runWithRegistry (elf input registry : ByteArray) (cuBudget : UInt64)
   | none => encodeElfError
   | some (s, _fuelRemaining) =>
     -- H5 total metering, clamped to the budget (see runElfBuffer).
-    encodeRun s input.size (UInt64.ofNat (min s.cuConsumed cuBudget.toNat))
+    encodeRun s input.size cuBudget.toNat
 
 /-- Variant of `runWithRegistry` that additionally threads the
     top-level program-id into `State.progIdBytes`. Needed for
@@ -221,7 +213,7 @@ def runWithRegistryAndPid
   | none => encodeElfError
   | some (s, _fuelRemaining) =>
     -- H5 total metering, clamped to the budget (see runElfBuffer).
-    encodeRun s input.size (UInt64.ofNat (min s.cuConsumed cuBudget.toNat))
+    encodeRun s input.size cuBudget.toNat
 
 /-! ## Top-level precompile dispatch
 
