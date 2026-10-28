@@ -8,6 +8,7 @@
 #
 # Env: FD   a Firedancer checkout at $FD_COMMIT (cloned sparse into $WORK if unset)
 #      WORK scratch directory (default: build/fdvm-diff)
+#      FUZZ_SEED, FUZZ_COUNT  the random batch (default: seed 1, 500 programs)
 # --no-fdvm skips QEMU: qedsvm against agave and the vector expectations.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -38,17 +39,20 @@ agvcase=$here/agave/target/release/agvcase
 py "$here/instr2batch.py" "$vec"/v0/*.instr --version 0 -o "$WORK/v0.bin" --expect "$WORK/v0.expect.jsonl"
 py "$here/instr2batch.py" "$vec"/v3/*.instr --version 3 -o "$WORK/v3.bin" --expect "$WORK/v3.expect.jsonl"
 py "$here/synth.py" -o "$WORK/synth.bin" --expect "$WORK/synth.expect.jsonl"
+py "$here/fuzz.py" --seed "${FUZZ_SEED:-1}" --count "${FUZZ_COUNT:-500}" \
+  -o "$WORK/fuzz.bin" --expect "$WORK/fuzz.expect.jsonl"
 
 # Sweeps: every completed base case at cost-1, cost, cost+1.
-for b in v0 v3 synth; do
+for b in v0 v3 synth fuzz; do
   "$qedcase" "$WORK/$b.bin" > "$WORK/$b.qed.txt"
   py "$here/sweep.py" "$WORK/$b.bin" "$WORK/$b.expect.jsonl" "$WORK/$b.qed.txt" \
     -o "$WORK/$b-sweep.bin" --expect "$WORK/$b-sweep.expect.jsonl"
 done
 
 status=0
-for b in v0 v3 synth v0-sweep v3-sweep synth-sweep; do
-  [[ -f $WORK/$b.qed.txt ]] || "$qedcase" "$WORK/$b.bin" > "$WORK/$b.qed.txt"
+for b in v0 v3 synth fuzz v0-sweep v3-sweep synth-sweep fuzz-sweep; do
+  # Base batches already ran above (the sweep needs their costs).
+  [[ $b == *-sweep ]] && "$qedcase" "$WORK/$b.bin" > "$WORK/$b.qed.txt"
   "$agvcase" "$WORK/$b.bin" > "$WORK/$b.agv.txt"
   args=(--qed "$WORK/$b.qed.txt" --agv "$WORK/$b.agv.txt")
   if (( fdvm )); then
