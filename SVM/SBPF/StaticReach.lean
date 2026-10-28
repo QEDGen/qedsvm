@@ -55,7 +55,7 @@ theorem step_static (insn : Insn) (s : State) (hcs : s.callStack = [])
   case call_local t => exact absurd rfl (hnc t)
   case callx reg => exact absurd rfl (hnx reg)
   case exit => simp [step, hcs]
-  all_goals simp only [step, staticSucc] <;> (try split) <;> simp [hcs]
+  all_goals simp only [step, staticSucc] <;> (repeat' split) <;> simp [hcs]
 
 /-- **Static reachability is sound at top level.** From a top-level state at a PC in `R`
     (closed except at `G`), every later top-level state is at a PC in `R`, unless the run

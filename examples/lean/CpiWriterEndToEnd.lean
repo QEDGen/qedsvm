@@ -523,8 +523,7 @@ theorem writer_result {base : Nat} {s : State} {r : Cpi.CalleeResult}
   rw [← hm]
   exact writer_step hinv fuel' h0 a
 
-theorem effectiveAddr_96 (base : Nat) : effectiveAddr base 96 = base + 96 := by
-  unfold effectiveAddr; omega
+theorem effectiveAddr_96 (base : Nat) : effectiveAddr base 96 = base + 96 := rfl
 
 /-- The writer callee, as the runner runs it from the writer's invoke, changes
     caller memory only at the account's first data byte. -/

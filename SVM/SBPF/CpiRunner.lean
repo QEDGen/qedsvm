@@ -144,7 +144,7 @@ so facts about them at a program's entry hold at its invoke. -/
     first
     | rfl
     | (simp only [step]; rfl)
-    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; (repeat' split) <;> rfl)
     | (simp only [step]; cases s.callStack <;> rfl)
     | (simp only [step]; exact execCallx_preserves_invokeDepth _ _)
     | (simp only [step]; exact execSyscall_preserves_invokeDepth _ _)
@@ -155,7 +155,7 @@ so facts about them at a program's entry hold at its invoke. -/
     first
     | rfl
     | (simp only [step]; rfl)
-    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; (repeat' split) <;> rfl)
     | (simp only [step]; cases s.callStack <;> rfl)
     | (simp only [step]; exact execCallx_preserves_origPrivs _ _)
     | (simp only [step]; exact execSyscall_preserves_origPrivs _ _)

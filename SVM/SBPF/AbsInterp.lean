@@ -179,9 +179,9 @@ def AState.afterCall (a : AState) : AState :=
     input pointer records the 8 bytes it may write; any other store forgets the input. -/
 def AState.afterStore (a : AState) (dst : Reg) (off : Int) : AState :=
   match a.get dst with
-  | .fp => if off ≤ 0x1000 then a else { a with written := none }
+  | .fp => if -0x100000000 ≤ off ∧ off ≤ 0x1000 then a else { a with written := none }
   | .inPtr o =>
-    if 0 ≤ (o : Int) + off then
+    if 0 ≤ (o : Int) + off ∧ (o : Int) + off < 0x100000000 then
       { a with written := a.written.map (((((o : Int) + off).toNat, 8)) :: ·) }
     else { a with written := none }
   | _ => { a with written := none }
@@ -193,7 +193,8 @@ def absStep (a : AState) : Insn → AState
   | .ldx w dst src off =>
     a.set dst (match a.get src, a.written with
       | .inPtr o, some ws =>
-        if 0 ≤ (o : Int) + off ∧ rangeFree ws ((o : Int) + off).toNat = true then
+        if 0 ≤ (o : Int) + off ∧ (o : Int) + off < 0x100000000 ∧
+            rangeFree ws ((o : Int) + off).toNat = true then
           .inLoad w ((o : Int) + off).toNat
         else .top
       | _, _ => .top)
@@ -275,13 +276,14 @@ theorem readByWidth_congr (m1 m2 : Memory.Mem) (addr : Nat) (w : Width)
 
 theorem effectiveAddr_input (o : Nat) (off : Int) (h : 0 ≤ (o : Int) + off) :
     effectiveAddr (INPUT_START + o) off = INPUT_START + ((o : Int) + off).toNat := by
-  unfold effectiveAddr; omega
+  rw [effectiveAddr_of_nonneg _ _ (by omega)]; omega
 
 theorem ldx_value_sound (s0 s : State) (a : AState) (hc : Concrete s0 a s) (w : Width)
     (src : Reg) (off : Int) :
     (match a.get src, a.written with
       | .inPtr o, some ws =>
-        if 0 ≤ (o : Int) + off ∧ rangeFree ws ((o : Int) + off).toNat = true then
+        if 0 ≤ (o : Int) + off ∧ (o : Int) + off < 0x100000000 ∧
+            rangeFree ws ((o : Int) + off).toNat = true then
           AVal.inLoad w ((o : Int) + off).toNat
         else .top
       | _, _ => .top).denote s0 (readByWidth s.mem (effectiveAddr (s.regs.get src) off) w) := by
@@ -291,11 +293,12 @@ theorem ldx_value_sound (s0 s : State) (a : AState) (hc : Concrete s0 a s) (w : 
   rename_i o ws
   rw [hg] at hsrc
   simp only [AVal.denote] at hsrc
-  show (if 0 ≤ (o : Int) + off ∧ rangeFree ws ((o : Int) + off).toNat = true then
+  show (if 0 ≤ (o : Int) + off ∧ (o : Int) + off < 0x100000000 ∧
+            rangeFree ws ((o : Int) + off).toNat = true then
       AVal.inLoad w ((o : Int) + off).toNat else AVal.top).denote s0 _
   split
   · rename_i h
-    obtain ⟨hpos, hfree⟩ := h
+    obtain ⟨hpos, _, hfree⟩ := h
     show _ = _
     rw [hsrc, effectiveAddr_input o off hpos]
     apply readByWidth_congr
@@ -330,7 +333,7 @@ theorem store_keeps (s0 s : State) (a : AState) (hc : Concrete s0 a s) (dst : Re
         have hu0 := hu _ (List.mem_cons_self ..)
         show (writeByWidth s.mem _ val w).read x = _
         rw [writeByWidth_read_outside _ _ _ _ _ (by
-          rw [hd, effectiveAddr_input o off hpos]; simp only at hu0; omega)]
+          rw [hd, effectiveAddr_input o off hpos.1]; simp only at hu0; omega)]
         exact hc.2 ws hwa x hx (fun r hr => hu r (List.mem_cons_of_mem _ hr))
     · exact ⟨hc.1, fun _ h => by cases h⟩
   · -- frame pointer
@@ -340,9 +343,63 @@ theorem store_keeps (s0 s : State) (a : AState) (hc : Concrete s0 a s) (dst : Re
     · refine ⟨hc.1, fun ws hw x hx hu => ?_⟩
       show (writeByWidth s.mem _ val w).read x = _
       rw [writeByWidth_read_far _ _ _ _ _ (by
-        rw [hd]; unfold effectiveAddr STACK_TOP; simp only [STACK_START, INPUT_START] at hx ⊢
+        rename_i hoff
+        rw [hd, effectiveAddr_of_nonneg _ _ (by unfold STACK_TOP; simp only [STACK_START]; omega)]
+        unfold STACK_TOP; simp only [STACK_START, INPUT_START] at hx ⊢
         omega)]
       exact hc.2 ws hw x hx hu
+    · exact ⟨hc.1, fun _ h => by cases h⟩
+
+/-- A load whose address wrapped past 2^64 (#135) never comes through a tracked input
+    pointer: the abstract value it yields is `.top`, true of anything. -/
+theorem ldx_value_wrapped (s0 s : State) (a : AState) (hc : Concrete s0 a s) (w : Width)
+    (src : Reg) (off : Int) (h : 2 ^ 64 ≤ effectiveAddr (s.regs.get src) off) (v : Nat) :
+    (match a.get src, a.written with
+      | .inPtr o, some ws =>
+        if 0 ≤ (o : Int) + off ∧ (o : Int) + off < 0x100000000 ∧
+            rangeFree ws ((o : Int) + off).toNat = true then
+          AVal.inLoad w ((o : Int) + off).toNat
+        else .top
+      | _, _ => .top).denote s0 v := by
+  have hsrc := hc.1 src
+  cases hg : a.get src <;> cases hm : a.written
+  all_goals first | exact trivial | skip
+  rename_i o ws
+  rw [hg] at hsrc
+  simp only [AVal.denote] at hsrc
+  show (if 0 ≤ (o : Int) + off ∧ (o : Int) + off < 0x100000000 ∧
+      rangeFree ws ((o : Int) + off).toNat = true then
+      AVal.inLoad w ((o : Int) + off).toNat else AVal.top).denote s0 _
+  split
+  · rename_i hb
+    rw [hsrc, effectiveAddr_input o off hb.1] at h
+    unfold INPUT_START at h; omega
+  · trivial
+
+/-- A store whose address wrapped past 2^64 (#135) never goes through the frame pointer or a
+    tracked input pointer, so `afterStore` has already forgotten the input. -/
+theorem store_keeps_wrapped (s0 s : State) (a : AState) (hc : Concrete s0 a s) (dst : Reg)
+    (off : Int) (addr val : Nat) (w : Width) (h : 2 ^ 64 ≤ effectiveAddr (s.regs.get dst) off) :
+    Concrete s0 (a.afterStore dst off)
+      { s with mem := writeByWidth s.mem addr val w, pc := s.pc + 1 } := by
+  have hd := hc.1 dst
+  cases hg : a.get dst <;> simp only [AState.afterStore, hg]
+  all_goals first | exact ⟨hc.1, fun _ h => by cases h⟩ | skip
+  · rename_i o
+    rw [hg] at hd
+    simp only [AVal.denote] at hd
+    split
+    · rename_i hb
+      rw [hd, effectiveAddr_input o off hb.1] at h
+      unfold INPUT_START at h; omega
+    · exact ⟨hc.1, fun _ h => by cases h⟩
+  · rw [hg] at hd
+    simp only [AVal.denote] at hd
+    split
+    · rename_i hb
+      rw [hd, effectiveAddr_of_nonneg _ _
+        (by unfold STACK_TOP; simp only [STACK_START]; omega)] at h
+      unfold STACK_TOP at h; simp only [STACK_START] at h; omega
     · exact ⟨hc.1, fun _ h => by cases h⟩
 
 /-- **One step is sound.** A top-level step other than a call either leaves the state in
@@ -380,17 +437,28 @@ theorem absStep_sound (s0 : State) (a : AState) (s : State) (insn : Insn)
     · right
       exact ⟨by simp [staticSucc], concrete_set hc dst _ _
         (fun _ => ldx_value_sound s0 s a hc w src off) rfl rfl⟩
-    · left; exact ⟨rfl, concrete_regs_mem hc rfl rfl⟩
+    · split
+      · rename_i hw
+        right
+        exact ⟨by simp [staticSucc], concrete_set hc dst _ _
+          (fun _ => ldx_value_wrapped s0 s a hc w src off hw.1 _) rfl rfl⟩
+      · left; exact ⟨rfl, concrete_regs_mem hc rfl rfl⟩
   case st w dst off imm =>
     simp only [step]
     split
     · right; exact ⟨by simp [staticSucc], store_keeps s0 s a hc dst off _ w⟩
-    · left; exact ⟨rfl, concrete_regs_mem hc rfl rfl⟩
+    · split
+      · rename_i hw
+        right; exact ⟨by simp [staticSucc], store_keeps_wrapped s0 s a hc dst off _ _ w hw.1⟩
+      · left; exact ⟨rfl, concrete_regs_mem hc rfl rfl⟩
   case stx w dst off src =>
     simp only [step]
     split
     · right; exact ⟨by simp [staticSucc], store_keeps s0 s a hc dst off _ w⟩
-    · left; exact ⟨rfl, concrete_regs_mem hc rfl rfl⟩
+    · split
+      · rename_i hw
+        right; exact ⟨by simp [staticSucc], store_keeps_wrapped s0 s a hc dst off _ _ w hw.1⟩
+      · left; exact ⟨rfl, concrete_regs_mem hc rfl rfl⟩
   case ja t =>
     right; exact ⟨by simp [step, staticSucc], concrete_regs_mem hc rfl rfl⟩
   all_goals first

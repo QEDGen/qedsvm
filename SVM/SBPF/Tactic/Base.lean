@@ -11,8 +11,7 @@ open Memory
 /-- effectiveAddr with non-negative offset reduces to Nat addition (avoids the
     Int.toNat roundtrip). -/
 @[simp] theorem effectiveAddr_nat (base off : Nat) :
-    effectiveAddr base (↑off) = base + off := by
-  unfold effectiveAddr; omega
+    effectiveAddr base (↑off) = base + off := rfl
 
 attribute [simp] Memory.readByWidth
 
