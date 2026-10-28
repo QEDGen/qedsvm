@@ -12,6 +12,7 @@ flat writable input region; register overrides after init; no CPI registry.
 qedsvm has no fd_vm feature flags: it always models the gap-free stack.
 -/
 import SVM.SBPF.Runner
+import SVM.SBPF.Outcome
 
 open SVM.SBPF SVM.SBPF.Memory
 
@@ -72,14 +73,14 @@ def runCase (b : ByteArray) (idx h : Nat) : String := Id.run do
   let s₀ : State :=
     { regs, mem, regions, pc := slotMap.getD entryPc 0, cuBudget := budget }
   let s := Runner.executeFnCpi (fun _ => none) (Runner.fetchFromArray insns) s₀ budget
-  let outcome := match s.exitCode, s.vmError with
-    | none, _ => "cu_exhausted"
-    | some _, some e => s!"fault:{repr e}"
-    | some c, none => s!"exit:{hex c}"
+  let outcome := match Outcome.ofState s inputSz budget with
+    | .cuExceeded => "cu_exhausted"
+    | .fault e _ => s!"fault:{repr e}"
+    | .ok c .. => s!"exit:{hex c}"
   let rf := s.regs
   let regStr := String.intercalate " " <| (List.range 11).map fun i =>
     s!"r{i}={hex (rf.get ([Reg.r0, .r1, .r2, .r3, .r4, .r5, .r6, .r7, .r8, .r9, .r10].getD i .r0))}"
-  return s!"{pre} outcome={outcome} {regStr} pc_logical={s.pc} cu_used={hex (min s.cuConsumed budget)} cu_consumed_raw={s.cuConsumed} frames={s.callStack.length} input_fnv={hex (fnv (Runner.readMemBytes s.mem INPUT_START inputSz))}"
+  return s!"{pre} outcome={outcome} {regStr} pc_logical={s.pc} cu_used={hex (s.cuUsed budget)} cu_consumed_raw={s.cuConsumed} frames={s.callStack.length} input_fnv={hex (fnv (Runner.readMemBytes s.mem INPUT_START inputSz))}"
 
 def main (args : List String) : IO UInt32 := do
   let some path := args.head? | IO.eprintln "usage: QedCase <batch.bin>"; return 2

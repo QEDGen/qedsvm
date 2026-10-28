@@ -2,6 +2,7 @@ import SVM.SBPF.ISA
 import SVM.SBPF.Memory
 import SVM.SBPF.Execute
 import SVM.SBPF.SyscallSem
+import SVM.SBPF.Outcome
 import SVM.SBPF.Tactic
 import SVM.SBPF.Tactic.WP
 import SVM.SBPF.Pubkey
