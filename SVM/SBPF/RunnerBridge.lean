@@ -148,7 +148,7 @@ theorem step_callStack_empty_preserved (insn : Insn) (s : State)
     first
     | exact h_cs
     | (simp only [step]; exact h_cs)
-    | (simp only [step]; split <;> exact h_cs)
+    | (simp only [step]; (repeat' split) <;> exact h_cs)
 
 /-- Trace invariant: from `callStack = []` under no-`.call_local` fetch,
     `executeFn` keeps `callStack` empty for any fuel. -/

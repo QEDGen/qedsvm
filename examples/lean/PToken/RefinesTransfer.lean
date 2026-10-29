@@ -75,9 +75,9 @@ theorem refines_TokenTransfer_minimal_flat
     exact Nat.mod_eq_of_lt h_noOverflow'
   -- effectiveAddr → Nat for AMOUNT_OFF.
   have h_ea_src : effectiveAddr srcAddr amountOff = srcAddr + AMOUNT_OFF := by
-    unfold effectiveAddr amountOff AMOUNT_OFF; omega
+    rfl
   have h_ea_dst : effectiveAddr dstAddr amountOff = dstAddr + AMOUNT_OFF := by
-    unfold effectiveAddr amountOff AMOUNT_OFF; omega
+    rfl
   have h0 := ldxdw_spec .r3 .r1 amountOff vR3Old srcAddr tSrc.amount 0
               (by decide) h_srcBal
   have h1 := sub64_reg_spec .r3 .r4 tSrc.amount amount 1 (by decide)

@@ -202,7 +202,7 @@ jobs:
 
       - name: Lean V3 loader, decoder, runner, and boundedness tests
         # These modules are outside the production SVM aggregator.
-        run: lake build SVM.SBPF.V3DecodeTests SVM.SBPF.VerifierVectors SVM.SBPF.ElfTests SVM.SBPF.RunnerTests SVM.SBPF.SyscallSemTests SVM.SBPF.OutcomeTests SVM.SBPF.BoundedCpi
+        run: lake build SVM.SBPF.V3DecodeTests SVM.SBPF.VerifierVectors SVM.SBPF.ElfTests SVM.SBPF.RunnerTests SVM.SBPF.SyscallSemTests SVM.SBPF.OutcomeTests SVM.SBPF.AddrWrapTests SVM.SBPF.BoundedCpi
 
       - name: Differential conformance vs mollusk/agave
         # Empirical soundness backstop: runs the compiled Lean interpreter

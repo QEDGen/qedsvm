@@ -137,9 +137,7 @@ theorem step_noCleanHalt (insn : Insn) (s : State) (h0 : s.exitCode = none)
     simp only [step]
     first
     | exact Or.inl h0
-    | (split
-       · first | exact Or.inl h0 | exact Or.inr rfl
-       · first | exact Or.inl h0 | exact Or.inr rfl)
+    | ((repeat' split) <;> first | exact Or.inl h0 | exact Or.inr rfl)
 
 /-- A step changes the call stack only by pushing or popping its top frame, so a stack of the
     form `ys ++ F0 :: outer` keeps that form unless the step is the `exit` that pops `F0`. -/
@@ -170,7 +168,7 @@ theorem step_callStack_above (insn : Insn) (s : State) (F0 : CallFrame) (outer :
     simp only [step]
     first
     | exact ⟨ys, hcs⟩
-    | (split <;> exact ⟨ys, hcs⟩)
+    | ((repeat' split) <;> exact ⟨ys, hcs⟩)
 
 /-- **Callee-agnostic return.** Run any number of steps from a state inside a callee (its
     stack is `ys ++ F0 :: outer`, `F0` the caller's frame). Either the run is still above `F0`

@@ -98,7 +98,7 @@ theorem step_straight (insn : Insn) (s : State) (hs : insn.isStraight = true)
     ((step insn s).exitCode = none ∧ (step insn s).pc = s.pc + 1 ∧
         (step insn s).callStack = s.callStack) ∨
       (∃ c, (step insn s).exitCode = some c ∧ (step insn s).vmError.isSome) := by
-  cases insn <;> simp [Insn.isStraight] at hs <;> simp only [step] <;> (try split) <;>
+  cases insn <;> simp [Insn.isStraight] at hs <;> simp only [step] <;> (repeat' split) <;>
     simp [h0]
 
 /-- Straight-line code from `s.pc` for `k` instructions. -/
@@ -184,7 +184,7 @@ theorem staysAbove_step (fetch : Nat → Option Insn) (base : List CallFrame) (s
 
 theorem step_straight_callStack (insn : Insn) (s : State) (hs : insn.isStraight = true) :
     (step insn s).callStack = s.callStack := by
-  cases insn <;> simp [Insn.isStraight] at hs <;> simp only [step] <;> (try split) <;> rfl
+  cases insn <;> simp [Insn.isStraight] at hs <;> simp only [step] <;> (repeat' split) <;> rfl
 
 theorem staysAbove_straight (fetch : Nat → Option Insn) (base : List CallFrame) :
     ∀ (k : Nat) (s : State), s.exitCode = none → (∃ ys, s.callStack = ys ++ base) →

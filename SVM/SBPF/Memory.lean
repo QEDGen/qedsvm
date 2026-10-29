@@ -1,13 +1,14 @@
 -- Flat byte-addressable memory model for sBPF verification.
 --
--- Mapped regions (NOTHING below 0x100000000):
---   0x100000000 : Program region (.text + .rodata + .data.rel.ro)
+-- Mapped regions:
+--   0x000000000 : V3 rodata (V0 maps nothing below 0x100000000)
+--   0x100000000 : Program region (V0: .text + .rodata + .data.rel.ro; V3: .text)
 --   0x200000000 : Stack
 --   0x300000000 : Heap
 --   0x400000000 : Input buffer (serialized accounts + instruction data)
 --
--- "No low region" is load-bearing: `effectiveAddr` clamps a negative address
--- to 0, so the fault there is only sound while address 0 is unmapped (M3).
+-- Load and store addresses wrap mod 2^64, as agave's `wrapping_add` does
+-- (`effectiveAddr`, and `step`'s retry at `addr - 2^64`; #135).
 -- Programs receive the input buffer pointer in r1 at entry.
 
 import SVM.SBPF.ISA
@@ -97,13 +98,28 @@ def MM_REGION_SIZE : Nat := 0x100000000
 
 /-! ## Effective address computation -/
 
-/-- Effective address from base register and signed offset.
+/-- Effective address from base register and signed offset, as agave computes
+    it (`reg.wrapping_add(off as i64 as u64)`) for a negative sum: `base + off`
+    below 0 wraps to `2^64 + (base + off)`. A sum of 2^64 or more is left as is
+    here; `step`'s load and store arms retry it at `addr - 2^64` (#135).
 
-    NOTE: `Int.toNat` clamps negative results to 0; real sBPF would trap them on
-    the region bounds check. Unreachable in practice (verified programs use
-    non-negative offsets); sound because address 0 is unmapped (M3). -/
+    A `match` on the sum, not `%`, so that for a non-negative offset
+    `effectiveAddr base ↑k` stays definitionally `base + k`: the SL tactics
+    rely on that to match address atoms. -/
 def effectiveAddr (base : Nat) (off : Int) : Nat :=
-  Int.toNat ((↑base : Int) + off)
+  match (↑base : Int) + off with
+  | .ofNat n => n
+  | .negSucc n => 2 ^ 64 - (n + 1)
+
+theorem effectiveAddr_of_nonneg (base : Nat) (off : Int) (h : 0 ≤ (↑base : Int) + off) :
+    effectiveAddr base off = ((↑base : Int) + off).toNat := by
+  unfold effectiveAddr
+  split <;> rename_i n hn <;> (try simp only [Int.negSucc_eq, Int.ofNat_eq_coe] at hn) <;> omega
+
+theorem effectiveAddr_of_neg (base : Nat) (off : Int) (h : (↑base : Int) + off < 0) :
+    effectiveAddr base off = (2 ^ 64 + ((↑base : Int) + off)).toNat := by
+  unfold effectiveAddr
+  split <;> rename_i n hn <;> (try simp only [Int.negSucc_eq, Int.ofNat_eq_coe] at hn) <;> omega
 
 /-! ## Read operations (little-endian) -/
 

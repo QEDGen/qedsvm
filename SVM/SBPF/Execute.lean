@@ -246,6 +246,10 @@ def execCallx (reg : Reg) (s : State) : State :=
     if s.regions.containsRange addr w.bytes then
       let val := readByWidth mem addr w
       { s with regs := rf.set dst val, pc := pc' }
+    else if 2 ^ 64 ≤ addr ∧ s.regions.containsRange (addr - 2 ^ 64) w.bytes then
+      -- A sum past 2^64 wraps, as agave's `wrapping_add` does (#135).
+      let val := readByWidth mem (addr - 2 ^ 64) w
+      { s with regs := rf.set dst val, pc := pc' }
     else
       { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
 
@@ -254,6 +258,9 @@ def execCallx (reg : Reg) (s : State) : State :=
     if s.regions.containsWritable addr w.bytes then
       let val := (toU64 imm) % (2 ^ (w.bytes * 8))
       { s with mem := writeByWidth mem addr val w, pc := pc' }
+    else if 2 ^ 64 ≤ addr ∧ s.regions.containsWritable (addr - 2 ^ 64) w.bytes then
+      let val := (toU64 imm) % (2 ^ (w.bytes * 8))
+      { s with mem := writeByWidth mem (addr - 2 ^ 64) val w, pc := pc' }
     else
       { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
 
@@ -262,6 +269,9 @@ def execCallx (reg : Reg) (s : State) : State :=
     if s.regions.containsWritable addr w.bytes then
       let val := rf.get src % (2 ^ (w.bytes * 8))
       { s with mem := writeByWidth mem addr val w, pc := pc' }
+    else if 2 ^ 64 ≤ addr ∧ s.regions.containsWritable (addr - 2 ^ 64) w.bytes then
+      let val := rf.get src % (2 ^ (w.bytes * 8))
+      { s with mem := writeByWidth mem (addr - 2 ^ 64) val w, pc := pc' }
     else
       { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation }
 
@@ -689,7 +699,7 @@ theorem step_preserves_r10_of_no_push (insn : Insn) (s : State)
     first
     | (simp [Insn.isCallLocal] at h_nf; done)
     | (simp only [step] <;> simp [h_cs, -RegFile.set]; done)
-    | (simp only [step] <;> split <;> simp [h_cs, -RegFile.set]; done)
+    | (simp only [step] <;> (repeat' split) <;> simp [h_cs, -RegFile.set]; done)
     | (simp only [step];
        first
        | exact execSyscall_preserves_r10 _ _
@@ -706,7 +716,7 @@ theorem step_preserves_callStack_of_no_push (insn : Insn) (s : State)
     first
     | (simp [Insn.isCallLocal] at h_nf; done)
     | (simp only [step] <;> simp [h_cs, -RegFile.set]; done)
-    | (simp only [step] <;> split <;> simp [h_cs, -RegFile.set]; done)
+    | (simp only [step] <;> (repeat' split) <;> simp [h_cs, -RegFile.set]; done)
     | (simp only [step];
        first
        | exact execSyscall_preserves_r10 _ _
@@ -778,7 +788,7 @@ need a `split` or match-case to surface the record-update. -/
     first
     | rfl
     | (simp only [step]; rfl)
-    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; (repeat' split) <;> rfl)
     | (simp only [step]; cases s.callStack <;> rfl)
     | (simp only [step]; exact execCallx_preserves_regions _ _)
     | (simp only [step]; exact execSyscall_preserves_regions _ _)
@@ -843,7 +853,7 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
     first
     | rfl
     | (simp only [step]; rfl)
-    | (simp only [step]; split <;> rfl)
+    | (simp only [step]; (repeat' split) <;> rfl)
     | (simp only [step]; cases s.callStack <;> rfl)
     | (simp only [step]; exact execCallx_preserves_cuBudget _ _)
     | (simp only [step]; exact execSyscall_preserves_cuBudget _ _)
@@ -895,6 +905,10 @@ abbrev Step := State → PUnit × State
     if s.regions.containsRange addr w.bytes then
       let val := readByWidth mem addr w
       ((), { s with regs := rf.set dst val, pc := pc' })
+    else if 2 ^ 64 ≤ addr ∧ s.regions.containsRange (addr - 2 ^ 64) w.bytes then
+      -- A sum past 2^64 wraps, as agave's `wrapping_add` does (#135).
+      let val := readByWidth mem (addr - 2 ^ 64) w
+      ((), { s with regs := rf.set dst val, pc := pc' })
     else
       ((), { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation })
 
@@ -903,6 +917,9 @@ abbrev Step := State → PUnit × State
     if s.regions.containsWritable addr w.bytes then
       let val := (toU64 imm) % (2 ^ (w.bytes * 8))
       ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
+    else if 2 ^ 64 ≤ addr ∧ s.regions.containsWritable (addr - 2 ^ 64) w.bytes then
+      let val := (toU64 imm) % (2 ^ (w.bytes * 8))
+      ((), { s with mem := writeByWidth mem (addr - 2 ^ 64) val w, pc := pc' })
     else
       ((), { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation })
 
@@ -911,6 +928,9 @@ abbrev Step := State → PUnit × State
     if s.regions.containsWritable addr w.bytes then
       let val := rf.get src % (2 ^ (w.bytes * 8))
       ((), { s with mem := writeByWidth mem addr val w, pc := pc' })
+    else if 2 ^ 64 ≤ addr ∧ s.regions.containsWritable (addr - 2 ^ 64) w.bytes then
+      let val := rf.get src % (2 ^ (w.bytes * 8))
+      ((), { s with mem := writeByWidth mem (addr - 2 ^ 64) val w, pc := pc' })
     else
       ((), { s with exitCode := some ERR_ACCESS_VIOLATION, vmError := some .accessViolation })
 
@@ -1060,7 +1080,7 @@ abbrev Step := State → PUnit × State
 /-- execInsn produces the same state as step (just wrapped in a PUnit pair). -/
 theorem step_eq_execInsn (insn : Insn) (s : State) :
     step insn s = (execInsn insn s).2 := by
-  cases insn <;> simp only [step, execInsn] <;> split <;> rfl
+  cases insn <;> simp only [step, execInsn] <;> (repeat' split) <;> rfl
 
 /-- Multi-step paired execution using function-based fetch. -/
 def execSegment (fetch : Nat → Option Insn) : Nat → Step
