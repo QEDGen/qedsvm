@@ -140,3 +140,47 @@ cargo test --manifest-path qedsvm-rs/Cargo.toml -p qed-analysis
 cargo clippy --manifest-path qedsvm-rs/Cargo.toml -p qed-analysis --all-targets -- -D warnings
 cargo fmt --manifest-path qedsvm-rs/Cargo.toml --all -- --check
 ```
+
+## Binary-derived bindings: the label-vault fixture
+
+[solana-skills#450](https://github.com/QEDGen/solana-skills/issues/450) replaces the
+manual inputs above with bindings that `qed-discover` finds in a same-build binary pair
+(see `docs/BINDINGS.md`). The fixture is a small Pinocchio program built with
+`qedgen build --arch v0 --tools-version v1.57` and `debug = 2`. Its source lives in
+solana-skills (`crates/qedgen/tests/fixtures/pinocchio-fixtures/label-vault`). The pair is
+`qedsvm-rs/tests/fixtures/label_vault{,.debug}.so`.
+
+From `qedsvm-rs/`:
+
+```sh
+cargo run -p qed-analysis --bin qed-concept-map -- tests/fixtures/label_vault.so tests/fixtures/label_vault.debug.so > lv.concepts.json
+cargo run -p qed-analysis --bin qed-discover -- tests/fixtures/label_vault.so tests/fixtures/label_vault.debug.so lv.concepts.json > tests/fixtures/label_vault.bindings.json
+cargo run -p qed-analysis --bin qed-success-proofs -- --bindings tests/fixtures/label_vault.bindings.json \
+  --names LabelVault tests/fixtures/label_vault.so ../examples/lean/LabelVault
+cd .. && lake build LabelVault.Success AxiomAudit
+```
+
+`examples/lean/LabelVault/Success.lean` proves `readable53`: a run that reaches the one
+success edge started from an input that meets the edge's checks and one instruction's
+checks. For `increment` that includes discriminator 1, `initialized == 1`, account 1
+signed, and account 1's key equal to the stored `authority`. Nothing in the module was
+entered by hand. `decodes` checks that the text decodes, so the `insns?.all` checks
+cannot hold vacuously. Guards whose operands are not pinned (for `increment`, the
+instruction-length and overflow checks) are listed in the route's doc comment and in
+`coverage.json`, not stated.
+
+What changes against the p_token baseline:
+
+| p_token manual input | label-vault source |
+| --- | --- |
+| `noreturn` | `noRetCheck` witness (`SVM/SBPF/NoReturnCheck.lean`), proved generically |
+| `edges[].pc` | success edges reached through a dispatch arm |
+| `edges[].checkpoints` | dispatch arms (one route per instruction) |
+| `guard_pins` | none needed |
+| `readable_fields` | Solana input-layout names and DWARF field labels |
+| fixed offsets | `absStepA` with assumed account lengths (`lengths53` hypothesis) |
+
+Known gaps: the bytecode checks still use `native_decide` (`AxiomAudit` allows only those
+per-use axioms through `#assert_native_decide_axioms`; qedsvm#98). The authority
+account's data length is not checked by the program, so the theorem assumes it is 0.
+Handlers must be inlined into the entrypoint.

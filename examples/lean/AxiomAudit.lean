@@ -6,6 +6,7 @@ legitimately belongs — add it to the per-theorem allow-list with justification
 -/
 import Lean
 import SVM.SBPF.Bounded
+import SVM.SBPF.NoReturnCheck
 import SVM.SBPF.BoundedCpi
 import SVM.SBPF.CodecRead
 import SVM.Solana.InputLayout
@@ -33,6 +34,7 @@ import PToken.ErrorTail
 import PToken.PanicChain
 import SVM.SBPF.PathCond
 import SVM.SBPF.InputGuards
+import LabelVault.Success
 
 open Lean Elab Command
 
@@ -47,6 +49,18 @@ elab "#assert_std_axioms " id:ident : command => do
   let bad := axs.filter (fun a => !stdAxioms.contains a)
   unless bad.isEmpty do
     throwError "AXIOM AUDIT FAILED: '{cName}' depends on non-standard axioms: {bad.toList}"
+
+/-- `#assert_native_decide_axioms foo`: as `#assert_std_axioms`, but also allows the
+    per-use axioms that `native_decide` adds (`<decl>._native.native_decide.ax_<i>_<j>`).
+    For generated binary-lift theorems whose bytecode checks still use `native_decide`
+    (qedsvm#98 tracks replacing them). Any other axiom, `sorryAx` included, still fails. -/
+elab "#assert_native_decide_axioms " id:ident : command => do
+  let cName ← liftCoreM <| realizeGlobalConstNoOverloadWithInfo id
+  let axs ← liftCoreM <| collectAxioms cName
+  let native (a : Name) : Bool := (a.toString.splitOn "._native.native_decide.ax_").length > 1
+  let bad := axs.filter (fun a => !stdAxioms.contains a && !native a)
+  unless bad.isEmpty do
+    throwError "AXIOM AUDIT FAILED: '{cName}' depends on disallowed axioms: {bad.toList}"
 
 #assert_std_axioms Examples.Lifted.PTokenTransfer.PTokenTransfer_lifted_spec
 #assert_std_axioms Examples.Lifted.PTokenTransfer.PTokenTransfer_balance_correct
@@ -221,7 +235,14 @@ elab "#assert_std_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.guard_toward
 #assert_std_axioms SVM.SBPF.edge_path_condition
 #assert_std_axioms Examples.PTokenPanicChain.panic_helpers_noReturn
+#assert_std_axioms SVM.SBPF.noRetCheck_sound
+#assert_std_axioms SVM.SBPF.abs_soundWith
+#assert_std_axioms SVM.SBPF.edge_input_conditionsA
 -- Checked abstract interpretation: guard facts become facts about the input.
 #assert_std_axioms SVM.SBPF.inv_holds
 #assert_std_axioms SVM.SBPF.abs_sound
 #assert_std_axioms SVM.SBPF.edge_input_conditions
+
+-- Binary-derived success proofs for the label-vault fixture (solana-skills#450). The
+-- bytecode checks use `native_decide`; nothing else may appear.
+#assert_native_decide_axioms Examples.LabelVault.readable53

@@ -24,14 +24,18 @@ pub struct ProgramImage {
 
 impl ProgramImage {
     pub fn load(path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        let elf_bytes = std::fs::read(path)?;
+        Ok(Self::from_elf_bytes(&std::fs::read(path)?)?)
+    }
+
+    pub fn from_elf_bytes(elf: &[u8]) -> Result<Self, String> {
+        let elf_bytes = elf.to_vec();
         let loader = Arc::new(BuiltinProgram::new_mock());
-        let executable = Executable::load(&elf_bytes, loader)?;
+        let executable = Executable::load(&elf_bytes, loader).map_err(|e| e.to_string())?;
         let version = executable.get_sbpf_version();
         // Only V0 and V3 have modeled semantics; V1/V2/V4 are rejected at
         // load rather than analyzed with another version's rules.
         if !matches!(version, SBPFVersion::V0 | SBPFVersion::V3) {
-            return Err(format!("unsupported sBPF version {version:?}").into());
+            return Err(format!("unsupported sBPF version {version:?}"));
         }
         let (text_offset, text) = executable.get_text_bytes();
         let text_bytes = text.to_vec();
