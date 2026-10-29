@@ -169,6 +169,7 @@ macro_rules
   | `(tactic| region_covers) => `(tactic| (
       simp only [Memory.RegionTable.containsRange,
         Memory.RegionTable.containsWritable, Memory.Region.contains,
+        Memory.Region.isData, Array.isEmpty_empty,
         List.any_cons, List.any_nil, Bool.or_eq_true, Bool.and_eq_true,
         Bool.or_false, Bool.false_or, Bool.true_and, Bool.false_and,
         decide_eq_true_eq];

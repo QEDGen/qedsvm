@@ -189,7 +189,8 @@ theorem callee_exec (t : State) (F : Nat) (hpc : t.pc = 0) (hex : t.exitCode = n
 theorem calleeRegions_writable (n : Nat) (hn : 97 ≤ n) :
     (v3Regions calleeProgram n).containsWritable (INPUT_START + 96) 1 = true := by
   have he : calleeProgram.rodata.isEmpty = true := by decide
-  simp [v3Regions, he, runtimeRegions, RegionTable.containsWritable, Region.contains]
+  simp [v3Regions, he, runtimeRegions, RegionTable.containsWritable, Region.contains,
+    Region.isData]
   omega
 
 /-- The runner's sub-run of the callee: exit code 0 means the store of 42 at

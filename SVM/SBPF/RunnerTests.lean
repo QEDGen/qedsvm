@@ -107,6 +107,23 @@ example : (Runner.runElf v3RecursiveCallxElf { cuBudget := 200 }).map (·.vmErro
 example : (Runner.runElf v3RecursiveCallxElf { cuBudget := 200 }).map
     (fun s => (s.callStack.length, s.cuConsumed)) = some (63, 65) := by native_decide
 
+/-- The V3 text region serves `callx` only: agave does not map V3 bytecode as
+    data, so `lddw r1, 0x100000000; ldxdw r2, [r1]` faults (#137). The `callx`
+    tests above resolve through the same region. -/
+private def v3TextLoadElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
+  "1801000000000000000000000100000079120000000000009500000000000000")
+
+example : (Runner.runElf v3TextLoadElf).map (fun s =>
+    (s.vmError, s.regs.r1, s.regions.textRegion?.map (fun r => (r.start, r.size)))) =
+    some (some .accessViolation, 0x100000000, some (0x100000000, 32)) := by native_decide
+
+/-- A store into the text region faults the same way. -/
+private def v3TextStoreElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
+  "1801000000000000000000000100000072010000000000009500000000000000")
+
+example : (Runner.runElf v3TextStoreElf).map (·.vmError) = some (some .accessViolation) := by
+  native_decide
+
 private def v3EndianElf (opcode width : UInt8) : ByteArray :=
   v3ElfWithText <| Decode.bytesOfHex
     "18000000887766550000000044332211d4000000100000009500000000000000"
