@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "trust": "untrusted_discovered_bindings",
+  "artifact_sha256": "18468b2e4e4f20e98ccf7b170a4af6e624941a6cae8dd9f75f656841c6c8b325",
+  "debug_sha256": "386ba3ebfdd03ad56135e99968411ceb59af0f7205a89dd5b5964030fd06a6fe",
+  "entry": 6,
+  "noreturn": {
+    "heads": [
+      0,
+      310,
+      499
+    ],
+    "steps": [
+      {
+        "kind": "panic_call",
+        "pc": 5
+      },
+      {
+        "kind": "straight",
+        "pc": 0,
+        "len": 5
+      },
+      {
+        "kind": "call_local",
+        "pc": 319,
+        "target": 0
+      },
+      {
+        "kind": "straight",
+        "pc": 310,
+        "len": 9
+      },
+      {
+        "kind": "call_local",
+        "pc": 549,
+        "target": 310
+      },
+      {
+        "kind": "straight",
+        "pc": 534,
+        "len": 15
+      },
+      {
+        "kind": "call_local",
+        "pc": 533,
+        "target": 310
+      },
+      {
+        "kind": "straight",
+        "pc": 518,
+        "len": 15
+      },
+      {
+        "kind": "branch",
+        "pc": 517,
+        "target": 534
+      },
+      {
+        "kind": "branch",
+        "pc": 516,
+        "target": 534
+      },
+      {
+        "kind": "call_local",
+        "pc": 515,
+        "target": 310
+      },
+      {
+        "kind": "straight",
+        "pc": 500,
+        "len": 15
+      },
+      {
+        "kind": "branch",
+        "pc": 499,
+        "target": 516
+      }
+    ],
+    "skipped": []
+  },
+  "instructions": [
+    {
+      "discriminator": 0,
+      "handler": "label_vault[8112fa9e0e0e36d1]::initialize",
+      "routes": [
+        35
+      ],
+      "success_edges": [
+        53
+      ]
+    },
+    {
+      "discriminator": 1,
+      "handler": "label_vault[8112fa9e0e0e36d1]::increment",
+      "routes": [
+        54
+      ],
+      "success_edges": [
+        53
+      ]
+    },
+    {
+      "discriminator": 2,
+      "handler": "label_vault[8112fa9e0e0e36d1]::reset",
+      "routes": [
+        87
+      ],
+      "success_edges": [
+        53
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "pc": 53,
+      "accounts": 2,
+      "assumed": [
+        {
+          "offset": 88,
+          "value": 48,
+          "checked": true,
+          "guard_pcs": [
+            36,
+            55,
+            88
+          ]
+        },
+        {
+          "offset": 10472,
+          "value": 0,
+          "checked": false,
+          "guard_pcs": []
+        }
+      ],
+      "instruction_data": 20736,
+      "non_duplicate": [
+        0,
+        1
+      ],
+      "routes": [
+        {
+          "pc": 35,
+          "discriminator": 0,
+          "signers": [
+            1
+          ],
+          "key_compares": []
+        },
+        {
+          "pc": 54,
+          "discriminator": 1,
+          "signers": [
+            1
+          ],
+          "key_compares": [
+            {
+              "account": 1,
+              "against_account": 0,
+              "against_data_offset": 8
+            }
+          ]
+        },
+        {
+          "pc": 87,
+          "discriminator": 2,
+          "signers": [
+            1
+          ],
+          "key_compares": [
+            {
+              "account": 1,
+              "against_account": 0,
+              "against_data_offset": 8
+            }
+          ]
+        }
+      ],
+      "fields": [
+        {
+          "account": 0,
+          "data_offset": 0,
+          "width": 1,
+          "name": "initialized",
+          "structure": "die:475",
+          "refused": null
+        },
+        {
+          "account": 0,
+          "data_offset": 8,
+          "width": 8,
+          "name": "authority",
+          "structure": "die:475",
+          "refused": null
+        },
+        {
+          "account": 0,
+          "data_offset": 16,
+          "width": 8,
+          "name": "authority",
+          "structure": "die:475",
+          "refused": null
+        },
+        {
+          "account": 0,
+          "data_offset": 24,
+          "width": 8,
+          "name": "authority",
+          "structure": "die:475",
+          "refused": null
+        },
+        {
+          "account": 0,
+          "data_offset": 32,
+          "width": 8,
+          "name": "authority",
+          "structure": "die:475",
+          "refused": null
+        }
+      ]
+    }
+  ],
+  "unsupported": [],
+  "diagnostics": []
+}

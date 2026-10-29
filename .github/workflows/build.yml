@@ -101,14 +101,19 @@ jobs:
         working-directory: qedsvm-rs
         run: |
           set -euo pipefail
-          so=tests/fixtures/label_vault.so
-          dbg=tests/fixtures/label_vault.debug.so
-          cargo run --locked -q -p qed-analysis --bin qed-concept-map -- "$so" "$dbg" > "$RUNNER_TEMP/lv.concepts.json"
-          cargo run --locked -q -p qed-analysis --bin qed-discover -- "$so" "$dbg" "$RUNNER_TEMP/lv.concepts.json" \
-            | diff - tests/fixtures/label_vault.bindings.json
-          cargo run --locked -q -p qed-analysis --bin qed-success-proofs -- \
-            --bindings tests/fixtures/label_vault.bindings.json --names LabelVault "$so" \
-            ../examples/lean/LabelVault --check
+          # The same program built for V0 and for v3.
+          for pair in label_vault:LabelVault label_vault_v3:LabelVaultV3; do
+            stem=${pair%%:*}
+            names=${pair##*:}
+            so=tests/fixtures/$stem.so
+            dbg=tests/fixtures/$stem.debug.so
+            cargo run --locked -q -p qed-analysis --bin qed-concept-map -- "$so" "$dbg" > "$RUNNER_TEMP/$stem.concepts.json"
+            cargo run --locked -q -p qed-analysis --bin qed-discover -- "$so" "$dbg" "$RUNNER_TEMP/$stem.concepts.json" \
+              | diff - "tests/fixtures/$stem.bindings.json"
+            cargo run --locked -q -p qed-analysis --bin qed-success-proofs -- \
+              --bindings "tests/fixtures/$stem.bindings.json" --names "$names" "$so" \
+              "../examples/lean/$names" --check
+          done
 
   # Build the core SVM library ONCE and cache `.lake` for `lean` + `examples`.
   # Also carries the core soundness gates (no-sorry over the authoritative core

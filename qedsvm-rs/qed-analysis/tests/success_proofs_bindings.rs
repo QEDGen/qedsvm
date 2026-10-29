@@ -136,3 +136,57 @@ fn q6_doc_comments_escape_labels() {
     let g = generate_from_bindings(&image(), &b, &names()).unwrap();
     assert!(!g.success.contains("evil -/"));
 }
+
+fn v3_image() -> ProgramImage {
+    ProgramImage::load(Path::new("../tests/fixtures/label_vault_v3.so")).unwrap()
+}
+
+fn v3_bindings() -> Bindings {
+    Bindings::from_json(include_str!(
+        "../../tests/fixtures/label_vault_v3.bindings.json"
+    ))
+    .unwrap()
+}
+
+fn v3_names() -> ProgramNames {
+    ProgramNames {
+        prefix: "LabelVaultV3".into(),
+    }
+}
+
+#[test]
+fn v3_decodes_as_v3_without_a_registry() {
+    let g = generate_from_bindings(&v3_image(), &v3_bindings(), &v3_names()).unwrap();
+    assert!(g
+        .success
+        .contains("def insns? : Option (Array Insn) := Decode.decodeProgram text [] .v3"));
+    assert!(!g.success.contains("fnRegistry"));
+    assert!(!g.text.contains("fnRegistry"));
+}
+
+#[test]
+fn v3_coverage_matches_v0() {
+    let v0 = generate_from_bindings(&image(), &bindings(), &names())
+        .unwrap()
+        .coverage;
+    let v3 = generate_from_bindings(&v3_image(), &v3_bindings(), &v3_names())
+        .unwrap()
+        .coverage;
+    assert_eq!(
+        serde_json::to_value(&v3).unwrap(),
+        serde_json::to_value(&v0).unwrap()
+    );
+}
+
+#[test]
+fn v3_label_vault_modules_golden() {
+    let g = generate_from_bindings(&v3_image(), &v3_bindings(), &v3_names()).unwrap();
+    assert_eq!(
+        g.success,
+        include_str!("../../../examples/lean/LabelVaultV3/Success.lean")
+    );
+    assert_eq!(
+        g.text,
+        include_str!("../../../examples/lean/LabelVaultV3/Text.lean")
+    );
+}

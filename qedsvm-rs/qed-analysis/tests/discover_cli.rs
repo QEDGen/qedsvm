@@ -103,3 +103,19 @@ fn q5_unchecked_length_is_visible() {
     assert_eq!((w[0].value, w[0].checked), (48, true));
     assert_eq!((w[1].value, w[1].checked), (0, false));
 }
+
+#[test]
+fn v3_label_vault_bindings_golden() {
+    let so = std::fs::read("../tests/fixtures/label_vault_v3.so").unwrap();
+    let debug = std::fs::read("../tests/fixtures/label_vault_v3.debug.so").unwrap();
+    let map = ConceptMap::from_elf_bytes(&so, &debug).unwrap();
+    let b = discover(&so, &map).unwrap();
+    let golden = include_str!("../../tests/fixtures/label_vault_v3.bindings.json");
+    assert_eq!(
+        format!("{}\n", b.to_json().unwrap()),
+        golden,
+        "regenerate label_vault_v3.bindings.json"
+    );
+    assert_eq!(b.instructions.len(), 3);
+    assert!(b.unsupported.is_empty());
+}
