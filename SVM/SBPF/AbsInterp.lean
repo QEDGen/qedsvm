@@ -473,6 +473,110 @@ theorem absStep_sound (s0 : State) (a : AState) (s : State) (insn : Insn)
        · right
          exact ⟨by simp [staticSucc], concrete_set hc _ _ .top (fun _ => trivial) rfl rfl⟩)
 
+/-! ## Assumed input words and constant folding
+
+`absStepA asm` extends `absStep` for programs whose input offsets depend on account data
+lengths (Pinocchio's lazy entrypoint computes `align8(ptr + data_len + c)`). The input
+words in `asm` are assumed to hold their values in the initial state; theorems that use
+`absStepA` state that as a hypothesis (`AssumedHolds`). An `add64` or `and64` whose two
+operands have known values is computed exactly and re-expressed: as an input pointer when
+an operand was one, else as a constant. `absStep` is unchanged, so existing maps and their
+generated checks are unaffected. -/
+
+/-- Input words assumed to hold initially: `(offset, width, value)`. -/
+abbrev Assumed := List (Nat × Width × Nat)
+
+def AssumedHolds (s0 : State) (asm : Assumed) : Prop :=
+  ∀ x ∈ asm, readByWidth s0.mem (INPUT_START + x.1) x.2.1 = x.2.2
+
+/-- The value an abstract value stands for, when it is fixed. -/
+def AVal.known (asm : Assumed) : AVal → Option Nat
+  | .const n => some n
+  | .inPtr o => some (INPUT_START + o)
+  | .inLoad w off => (asm.find? fun x => x.1 == off && decide (x.2.1 = w)).map (·.2.2)
+  | _ => none
+
+theorem AVal.known_sound {s0 : State} {asm : Assumed} (hasm : AssumedHolds s0 asm)
+    {X : AVal} {v n : Nat} (hX : X.denote s0 v) (hk : X.known asm = some n) : v = n := by
+  cases X with
+  | top => cases hk
+  | fp => cases hk
+  | const c => simp only [AVal.known, Option.some.injEq] at hk; subst hk; exact hX
+  | inPtr o => simp only [AVal.known, Option.some.injEq] at hk; subst hk; exact hX
+  | inLoad w off =>
+    simp only [AVal.known, Option.map_eq_some_iff] at hk
+    obtain ⟨x, hx, rfl⟩ := hk
+    have hmem := List.mem_of_find?_eq_some hx
+    have hp := List.find?_some hx
+    simp only [Bool.and_eq_true, beq_iff_eq, decide_eq_true_eq] at hp
+    rw [← hasm x hmem, hp.1, hp.2]
+    exact hX
+
+def AVal.isPtr : AVal → Bool
+  | .inPtr _ => true
+  | _ => false
+
+/-- A known value, as an input pointer when `ptr` and it lies in the input region. -/
+def AVal.ofKnown (ptr : Bool) (r : Nat) : AVal :=
+  if ptr && decide (INPUT_START ≤ r) then .inPtr (r - INPUT_START) else .const r
+
+theorem AVal.ofKnown_denote (s0 : State) (ptr : Bool) (r : Nat) :
+    (AVal.ofKnown ptr r).denote s0 r := by
+  unfold AVal.ofKnown
+  split
+  · rename_i h
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at h
+    show r = INPUT_START + (r - INPUT_START)
+    omega
+  · rfl
+
+def AState.srcVal (a : AState) : Src → AVal
+  | .imm i => .const (toU64 i)
+  | .reg r => a.get r
+
+/-- Fold a binary operation when both operands are known. -/
+def foldBin (asm : Assumed) (op : Nat → Nat → Nat) (a : AState) (d : Reg) (src : Src) : AVal :=
+  match (a.get d).known asm, (a.srcVal src).known asm with
+  | some x, some y => .ofKnown ((a.get d).isPtr || (a.srcVal src).isPtr) (op x y)
+  | _, _ => .top
+
+theorem foldBin_sound {s0 : State} {asm : Assumed} (hasm : AssumedHolds s0 asm) {a : AState}
+    {s : State} (hc : Concrete s0 a s) (op : Nat → Nat → Nat) (d : Reg) (src : Src) :
+    (foldBin asm op a d src).denote s0 (op (s.regs.get d) (resolveSrc s.regs src)) := by
+  unfold foldBin
+  split
+  · rename_i x y hx hy
+    have hsrc : (a.srcVal src).denote s0 (resolveSrc s.regs src) := by
+      cases src with
+      | imm i => rfl
+      | reg r => exact hc.1 r
+    rw [AVal.known_sound hasm (hc.1 d) hx, AVal.known_sound hasm hsrc hy]
+    exact AVal.ofKnown_denote s0 _ _
+  · trivial
+
+def absStepA (asm : Assumed) (a : AState) : Insn → AState
+  | .add64 d src => a.set d (foldBin asm wrapAdd a d src)
+  | .and64 d src => a.set d (foldBin asm (fun x y => (x &&& y) % U64_MODULUS) a d src)
+  | insn => absStep a insn
+
+/-- **One `absStepA` step is sound**, given the assumed words. -/
+theorem absStepA_sound (s0 : State) (asm : Assumed) (hasm : AssumedHolds s0 asm) (a : AState)
+    (s : State) (insn : Insn) (hc : Concrete s0 a s) (hcs : s.callStack = [])
+    (hnc : ∀ t, insn ≠ .call_local t) (hnx : ∀ r, insn ≠ .callx r) :
+    ((step insn s).pc = s.pc ∧ Concrete s0 a (step insn s)) ∨
+      ((step insn s).pc ∈ staticSucc s.pc insn ∧
+        Concrete s0 (absStepA asm a insn) (step insn s)) := by
+  cases insn
+  case add64 d src =>
+    right
+    exact ⟨by simp [step, staticSucc],
+      concrete_set hc d _ _ (fun _ => foldBin_sound hasm hc wrapAdd d src) rfl rfl⟩
+  case and64 d src =>
+    right
+    exact ⟨by simp [step, staticSucc],
+      concrete_set hc d _ _ (fun _ => foldBin_sound hasm hc _ d src) rfl rfl⟩
+  all_goals exact absStep_sound s0 a s _ hc hcs hnc hnx
+
 /-! ## The abstract map and its check -/
 
 def AVal.join (x y : AVal) : AVal := if x = y then x else .top
@@ -516,10 +620,10 @@ theorem concrete_le {s0 t : State} {b c : AState} (h : Concrete s0 b t)
       intro hsub
       exact h.2 bs hbw x hx (fun r hr => hu r (by simpa using List.all_eq_true.mp hsub r hr))
 
-/-- Worklist fixpoint over the static CFG from `entry` (unverified: only `absCheck` is
-    trusted). -/
-def absMap (fetch : Nat → Option Insn) (noret : Nat → Bool) (size entry : Nat)
-    (init : AState) : Array (Option AState) :=
+/-- Worklist fixpoint over the static CFG from `entry` for the transfer function `stepF`
+    (unverified: only `absCheckWith` is trusted). -/
+def absMapWith (stepF : AState → Insn → AState) (fetch : Nat → Option Insn)
+    (noret : Nat → Bool) (size entry : Nat) (init : AState) : Array (Option AState) :=
   go ((Array.replicate size none).setIfInBounds entry (some init)) [entry] (size * 40)
 where
   go (m : Array (Option AState)) (work : List Nat) : Nat → Array (Option AState)
@@ -530,7 +634,7 @@ where
       | p :: rest =>
         match m.getD p none, fetch p with
         | some a, some insn =>
-          let out := absStep a insn
+          let out := stepF a insn
           let step := fun (acc : Array (Option AState) × List Nat) (q : Nat) =>
             if q < size then
               match acc.1.getD q none with
@@ -543,10 +647,10 @@ where
           go r.1 (r.2 ++ rest) fuel
         | _, _ => go m rest fuel
 
-/-- The map is a post-fixpoint: the entry covers `init`, no reachable `callx`, and every
-    static edge's transferred state is covered at its target. -/
-def absCheck (fetch : Nat → Option Insn) (noret : Nat → Bool) (m : Array (Option AState))
-    (entry : Nat) (init : AState) : Bool :=
+/-- The map is a post-fixpoint of `stepF`: the entry covers `init`, no reachable `callx`, and
+    every static edge's transferred state is covered at its target. -/
+def absCheckWith (stepF : AState → Insn → AState) (fetch : Nat → Option Insn)
+    (noret : Nat → Bool) (m : Array (Option AState)) (entry : Nat) (init : AState) : Bool :=
   (match m.getD entry none with | some e => init.le e | none => false) &&
   (List.range m.size).all fun pc =>
     match m.getD pc none with
@@ -557,16 +661,16 @@ def absCheck (fetch : Nat → Option Insn) (noret : Nat → Bool) (m : Array (Op
       | some (.callx _) => false
       | some insn => (callSucc noret pc insn).all fun q =>
           match m.getD q none with
-          | some b => (absStep a insn).le b
+          | some b => (stepF a insn).le b
           | none => false
 
-theorem absCheck_at {fetch : Nat → Option Insn} {noret : Nat → Bool}
-    {m : Array (Option AState)} {entry : Nat} {init : AState}
-    (h : absCheck fetch noret m entry init = true) {pc : Nat} {a : AState}
+theorem absCheckWith_at {stepF : AState → Insn → AState} {fetch : Nat → Option Insn}
+    {noret : Nat → Bool} {m : Array (Option AState)} {entry : Nat} {init : AState}
+    (h : absCheckWith stepF fetch noret m entry init = true) {pc : Nat} {a : AState}
     (ha : m.getD pc none = some a) {insn : Insn} (hf : fetch pc = some insn) :
     (∀ r, insn ≠ .callx r) ∧ ∀ q ∈ callSucc noret pc insn,
-      ∃ b, m.getD q none = some b ∧ (absStep a insn).le b = true := by
-  simp only [absCheck, Bool.and_eq_true] at h
+      ∃ b, m.getD q none = some b ∧ (stepF a insn).le b = true := by
+  simp only [absCheckWith, Bool.and_eq_true] at h
   have hlt : pc < m.size := by
     cases Nat.lt_or_ge pc m.size with
     | inl h => exact h
@@ -583,12 +687,30 @@ theorem absCheck_at {fetch : Nat → Option Insn} {noret : Nat → Bool}
     | none => intro h; cases h
     | some b => intro h; exact ⟨b, rfl, h⟩
 
-/-- **Abstract interpretation is sound.** If the check passes, every top-level state of a run
-    from `s0` (at `entry`, empty stack, described by `init`) has an abstract state at its PC
-    that describes it. -/
-theorem abs_sound (fetch : Nat → Option Insn) (noret : Nat → Bool)
-    (hNR : ∀ t, noret t = true → NoReturn fetch t) (m : Array (Option AState)) (entry : Nat)
-    (init : AState) (hchk : absCheck fetch noret m entry init = true) (s0 : State)
+/-- One step of `stepF` is sound for runs from `s0`, and calls use `afterCall`. -/
+structure StepSound (stepF : AState → Insn → AState) (s0 : State) : Prop where
+  step : ∀ (a : AState) (s : State) (insn : Insn), Concrete s0 a s → s.callStack = [] →
+    (∀ t, insn ≠ .call_local t) → (∀ r, insn ≠ .callx r) →
+    ((step insn s).pc = s.pc ∧ Concrete s0 a (step insn s)) ∨
+      ((step insn s).pc ∈ staticSucc s.pc insn ∧ Concrete s0 (stepF a insn) (step insn s))
+  call : ∀ (a : AState) (t : Nat), stepF a (.call_local t) = a.afterCall
+
+theorem absStep_stepSound (s0 : State) : StepSound absStep s0 :=
+  ⟨fun a s insn hc hcs hnc hnx => absStep_sound s0 a s insn hc hcs hnc hnx, fun _ _ => rfl⟩
+
+theorem absStepA_stepSound (s0 : State) (asm : Assumed) (hasm : AssumedHolds s0 asm) :
+    StepSound (absStepA asm) s0 :=
+  ⟨fun a s insn hc hcs hnc hnx => absStepA_sound s0 asm hasm a s insn hc hcs hnc hnx,
+    fun _ _ => rfl⟩
+
+/-- **Abstract interpretation is sound**, for any sound transfer function. If the check
+    passes, every top-level state of a run from `s0` (at `entry`, empty stack, described by
+    `init`) has an abstract state at its PC that describes it. -/
+theorem abs_soundWith (stepF : AState → Insn → AState) (fetch : Nat → Option Insn)
+    (noret : Nat → Bool) (hNR : ∀ t, noret t = true → NoReturn fetch t)
+    (m : Array (Option AState)) (entry : Nat) (init : AState)
+    (hchk : absCheckWith stepF fetch noret m entry init = true) (s0 : State)
+    (hS : StepSound stepF s0)
     (hpc : s0.pc = entry) (hcs : s0.callStack = []) (hinit : Concrete s0 init s0) (n : Nat)
     (hend : (executeFn fetch s0 n).callStack = []) :
     ∃ a, m.getD (executeFn fetch s0 n).pc none = some a ∧ Concrete s0 a (executeFn fetch s0 n) := by
@@ -597,19 +719,20 @@ theorem abs_sound (fetch : Nat → Option Insn) (noret : Nat → Bool)
   · intro s e v ⟨a, ha, hc⟩; exact ⟨a, ha, concrete_regs_mem hc rfl rfl⟩
   · intro s c ⟨a, ha, hc⟩; exact ⟨a, ha, concrete_regs_mem hc rfl rfl⟩
   · intro s insn hcs' _ ⟨a, ha, hc⟩ hf hnc hnx
-    obtain ⟨_, hsucc⟩ := absCheck_at hchk ha hf
-    rcases absStep_sound s0 a s insn hc hcs' hnc hnx with ⟨hp, hc'⟩ | ⟨hp, hc'⟩
+    obtain ⟨_, hsucc⟩ := absCheckWith_at hchk ha hf
+    rcases hS.step a s insn hc hcs' hnc hnx with ⟨hp, hc'⟩ | ⟨hp, hc'⟩
     · exact ⟨a, by show m.getD (step insn s).pc none = _; rw [hp]; exact ha,
         concrete_regs_mem hc' rfl rfl⟩
     · obtain ⟨b, hb, hle⟩ := hsucc _ (by rw [callSucc_of_not_call noret _ insn hnc]; exact hp)
       exact ⟨b, hb, concrete_regs_mem (concrete_le hc' hle) rfl rfl⟩
   · intro s r _ ⟨a, ha, _⟩ hf
-    exact (absCheck_at hchk ha hf).1 r rfl
+    exact (absCheckWith_at hchk ha hf).1 r rfl
   · intro s t _ _ ⟨a, ha, hc⟩ hf hnr u _ hu2 hu6 hu7 hu8 hu9 hu10 _
-    obtain ⟨_, hsucc⟩ := absCheck_at hchk ha hf
+    obtain ⟨_, hsucc⟩ := absCheckWith_at hchk ha hf
     obtain ⟨b, hb, hle⟩ := hsucc (s.pc + 1) (by simp [callSucc, hnr])
+    rw [hS.call] at hle
     refine ⟨b, by rw [hu2]; exact hb, concrete_le ⟨fun r => ?_, fun _ h => by cases h⟩ hle⟩
-    cases r <;> simp only [absStep, AState.afterCall, AState.get, AVal.denote] <;>
+    cases r <;> simp only [AState.afterCall, AState.get, AVal.denote] <;>
       first
       | trivial
       | (show AVal.denote s0 a.r6 u.regs.r6; rw [hu6]; exact hc.1 .r6)
@@ -617,11 +740,30 @@ theorem abs_sound (fetch : Nat → Option Insn) (noret : Nat → Bool)
       | (show AVal.denote s0 a.r8 u.regs.r8; rw [hu8]; exact hc.1 .r8)
       | (show AVal.denote s0 a.r9 u.regs.r9; rw [hu9]; exact hc.1 .r9)
       | (show AVal.denote s0 a.r10 u.regs.r10; rw [hu10]; exact hc.1 .r10)
-  · simp only [absCheck, Bool.and_eq_true] at hchk
+  · simp only [absCheckWith, Bool.and_eq_true] at hchk
     have h1 := hchk.1
     revert h1
     cases he : m.getD entry none with
     | none => intro h; cases h
     | some e => intro h; exact ⟨e, by rw [hpc]; exact he, concrete_le hinit h⟩
+
+/-! ## The `absStep` instance (p_token's generated checks use these names) -/
+
+def absMap (fetch : Nat → Option Insn) (noret : Nat → Bool) (size entry : Nat)
+    (init : AState) : Array (Option AState) :=
+  absMapWith absStep fetch noret size entry init
+
+def absCheck (fetch : Nat → Option Insn) (noret : Nat → Bool) (m : Array (Option AState))
+    (entry : Nat) (init : AState) : Bool :=
+  absCheckWith absStep fetch noret m entry init
+
+theorem abs_sound (fetch : Nat → Option Insn) (noret : Nat → Bool)
+    (hNR : ∀ t, noret t = true → NoReturn fetch t) (m : Array (Option AState)) (entry : Nat)
+    (init : AState) (hchk : absCheck fetch noret m entry init = true) (s0 : State)
+    (hpc : s0.pc = entry) (hcs : s0.callStack = []) (hinit : Concrete s0 init s0) (n : Nat)
+    (hend : (executeFn fetch s0 n).callStack = []) :
+    ∃ a, m.getD (executeFn fetch s0 n).pc none = some a ∧ Concrete s0 a (executeFn fetch s0 n) :=
+  abs_soundWith absStep fetch noret hNR m entry init hchk s0 (absStep_stepSound s0) hpc hcs
+    hinit n hend
 
 end SVM.SBPF

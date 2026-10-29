@@ -8,6 +8,8 @@ use solana_sbpf::ebpf;
 pub mod cfg;
 /// Same-build DWARF labels with mandatory artifact matching; untrusted, Lean-free.
 pub mod concept_map;
+/// Binary-derived success-proof bindings (solana-skills#450); untrusted, Lean re-checks.
+pub mod discover;
 pub mod image;
 pub mod input_layout;
 pub mod instruction_layout;

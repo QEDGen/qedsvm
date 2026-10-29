@@ -48,6 +48,7 @@ jobs:
               - 'qedsvm-rs/lean-bridge/**'
               - 'qedsvm-rs/qed-analysis/**'
               - 'qedsvm-rs/tests/fixtures/p_token.so'
+              - 'qedsvm-rs/tests/fixtures/label_vault*'
 
   # Standalone Lean-free lifting-frontend crates: dispatcher recognition,
   # slot<->logical PC map, IDL account layout, PC symbolication, lift coverage.
@@ -95,6 +96,19 @@ jobs:
           qedsvm-rs/tests/fixtures/p_token.so
           examples/lean/PToken/success-proof-inputs.json
           examples/lean/PToken --check
+
+      - name: Reproduce label-vault bindings and success proofs (reject drift)
+        working-directory: qedsvm-rs
+        run: |
+          set -euo pipefail
+          so=tests/fixtures/label_vault.so
+          dbg=tests/fixtures/label_vault.debug.so
+          cargo run --locked -q -p qed-analysis --bin qed-concept-map -- "$so" "$dbg" > "$RUNNER_TEMP/lv.concepts.json"
+          cargo run --locked -q -p qed-analysis --bin qed-discover -- "$so" "$dbg" "$RUNNER_TEMP/lv.concepts.json" \
+            | diff - tests/fixtures/label_vault.bindings.json
+          cargo run --locked -q -p qed-analysis --bin qed-success-proofs -- \
+            --bindings tests/fixtures/label_vault.bindings.json --names LabelVault "$so" \
+            ../examples/lean/LabelVault --check
 
   # Build the core SVM library ONCE and cache `.lake` for `lean` + `examples`.
   # Also carries the core soundness gates (no-sorry over the authoritative core

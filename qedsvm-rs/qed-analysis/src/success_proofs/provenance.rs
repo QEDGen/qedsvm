@@ -1,5 +1,6 @@
-//! Rust producer corresponding to AbsInterp.absMap/absStep. This is not a verifier:
-//! SuccessInputs still computes its own Lean map and checks every emitted operand pin.
+//! Rust producer corresponding to AbsInterp.absMap/absStep, and to `absStepA` when
+//! assumed input words are given. This is not a verifier: the generated Lean computes its
+//! own map and checks every emitted operand pin.
 use std::collections::VecDeque;
 use std::fmt;
 
@@ -11,7 +12,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum AVal {
+pub enum AVal {
     Top,
     Const(u64),
     InPtr(u64),
@@ -32,9 +33,60 @@ impl fmt::Display for AVal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct AState {
+pub struct AState {
     pub regs: [AVal; 11],
     written: Option<Vec<(u64, u64)>>,
+}
+
+/// Lean `Width`, for assumed input words.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Width {
+    Byte,
+    Half,
+    Word,
+    Dword,
+}
+
+impl Width {
+    pub fn lean_name(self) -> &'static str {
+        match self {
+            Width::Byte => "byte",
+            Width::Half => "half",
+            Width::Word => "word",
+            Width::Dword => "dword",
+        }
+    }
+}
+
+/// Lean `Assumed`: input words `(offset, width, value)` assumed to hold initially.
+pub type Assumed = Vec<(u64, Width, u64)>;
+
+/// `Memory.INPUT_START`.
+pub const INPUT_START: u128 = 0x4_0000_0000;
+const U64_MODULUS: u128 = 1 << 64;
+
+impl AVal {
+    /// Lean `AVal.known`.
+    fn known(&self, asm: &[(u64, Width, u64)]) -> Option<u128> {
+        match self {
+            AVal::Const(n) => Some(u128::from(*n)),
+            AVal::InPtr(o) => Some(INPUT_START + u128::from(*o)),
+            AVal::InLoad(w, off) => asm
+                .iter()
+                .find(|(o, width, _)| o == off && width.lean_name() == *w)
+                .map(|(_, _, v)| u128::from(*v)),
+            _ => None,
+        }
+    }
+
+    /// Lean `AVal.ofKnown`. Values stay below 2^64, so they fit the Rust payloads.
+    fn of_known(ptr: bool, r: u128) -> AVal {
+        if ptr && r >= INPUT_START {
+            AVal::InPtr((r - INPUT_START) as u64)
+        } else {
+            AVal::Const(r as u64)
+        }
+    }
 }
 
 impl AState {
@@ -86,7 +138,32 @@ impl AState {
             }
     }
 
-    fn step(&self, i: &ebpf::Insn, flow: &Flow) -> Self {
+    fn step(&self, i: &ebpf::Insn, flow: &Flow, asm: Option<&[(u64, Width, u64)]>) -> Self {
+        if let Some(asm) = asm {
+            let op: Option<fn(u128, u128) -> u128> = match i.opc {
+                ebpf::ADD64_IMM | ebpf::ADD64_REG => Some(|x, y| (x + y) % U64_MODULUS),
+                ebpf::AND64_IMM | ebpf::AND64_REG => Some(|x, y| (x & y) % U64_MODULUS),
+                _ => None,
+            };
+            if let Some(op) = op {
+                let dst = &self.regs[i.dst as usize];
+                let src = if matches!(i.opc, ebpf::ADD64_IMM | ebpf::AND64_IMM) {
+                    AVal::Const(i.imm as u64)
+                } else {
+                    self.regs[i.src as usize].clone()
+                };
+                let value = match (dst.known(asm), src.known(asm)) {
+                    (Some(x), Some(y)) => AVal::of_known(
+                        matches!(dst, AVal::InPtr(_)) || matches!(src, AVal::InPtr(_)),
+                        op(x, y),
+                    ),
+                    _ => AVal::Top,
+                };
+                let mut out = self.clone();
+                out.set(i.dst, value);
+                return out;
+            }
+        }
         let mut out = self.clone();
         match flow {
             Flow::Call(_) | Flow::Syscall { .. } => {
@@ -165,6 +242,27 @@ pub(super) fn abstract_map(
     succ: &[Vec<usize>],
     entry: usize,
 ) -> Result<Vec<Option<AState>>, String> {
+    map_with(image, cfg, succ, entry, None)
+}
+
+/// The map for `absStepA asm` (Lean `absMapWith (absStepA asm)`).
+pub fn abstract_map_with(
+    image: &ProgramImage,
+    cfg: &Cfg,
+    succ: &[Vec<usize>],
+    entry: usize,
+    asm: &[(u64, Width, u64)],
+) -> Result<Vec<Option<AState>>, String> {
+    map_with(image, cfg, succ, entry, Some(asm))
+}
+
+fn map_with(
+    image: &ProgramImage,
+    cfg: &Cfg,
+    succ: &[Vec<usize>],
+    entry: usize,
+    asm: Option<&[(u64, Width, u64)]>,
+) -> Result<Vec<Option<AState>>, String> {
     let mut map = vec![None; image.insns.len()];
     map[entry] = Some(AState::initial());
     let mut work = VecDeque::from([entry]);
@@ -178,7 +276,7 @@ pub(super) fn abstract_map(
         let out = map[pc]
             .as_ref()
             .unwrap()
-            .step(&image.insns[pc], &cfg.flow[pc]);
+            .step(&image.insns[pc], &cfg.flow[pc], asm);
         let mut next = Vec::new();
         for &q in &succ[pc] {
             let joined = map[q]
@@ -198,7 +296,7 @@ pub(super) fn abstract_map(
     }
     for (pc, state) in map.iter().enumerate() {
         if let Some(state) = state {
-            let out = state.step(&image.insns[pc], &cfg.flow[pc]);
+            let out = state.step(&image.insns[pc], &cfg.flow[pc], asm);
             if succ[pc]
                 .iter()
                 .any(|&q| !map[q].as_ref().is_some_and(|other| out.le(other)))

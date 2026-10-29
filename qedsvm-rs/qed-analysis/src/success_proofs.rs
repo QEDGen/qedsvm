@@ -4,7 +4,10 @@
 //! obligations still check the decoded instructions, route cuts, guard directions,
 //! abstract post-fixpoint and input pins using the generic Lean checkers.
 
-mod provenance;
+/// Success proofs from discovered bindings (`qed-success-proofs --bindings`).
+pub mod bindings_gen;
+/// The abstract interpreter mirror (`AbsInterp.absMap`, `absStepA`).
+pub mod provenance;
 
 use std::collections::BTreeSet;
 use std::fmt::Write;
@@ -68,13 +71,14 @@ pub struct GeneratedProofs {
     pub input_guard_count: usize,
 }
 
-struct Graph {
-    succ: Vec<Vec<usize>>,
-    pred: Vec<Vec<usize>>,
+/// Static successor graph mirroring Lean `callSucc`.
+pub(crate) struct Graph {
+    pub(crate) succ: Vec<Vec<usize>>,
+    pub(crate) pred: Vec<Vec<usize>>,
 }
 
 impl Graph {
-    fn new(cfg: &Cfg, noret: &[usize]) -> Result<Self, String> {
+    pub(crate) fn new(cfg: &Cfg, noret: &[usize]) -> Result<Self, String> {
         let mut succ = Vec::with_capacity(cfg.flow.len());
         for (pc, flow) in cfg.flow.iter().enumerate() {
             // Mirror Lean callSucc, not Cfg::successors: syscall terminal status is
@@ -100,7 +104,7 @@ impl Graph {
         Ok(Self { succ, pred })
     }
 
-    fn reach(&self, start: usize, stops: &[usize], backward: bool) -> Vec<bool> {
+    pub(crate) fn reach(&self, start: usize, stops: &[usize], backward: bool) -> Vec<bool> {
         let mut seen = vec![false; self.succ.len()];
         let mut work = vec![start];
         while let Some(pc) = work.pop() {
@@ -120,7 +124,7 @@ impl Graph {
         seen
     }
 
-    fn guards(&self, cfg: &Cfg, start: usize, edge: usize) -> Vec<Guard> {
+    pub(crate) fn guards(&self, cfg: &Cfg, start: usize, edge: usize) -> Vec<Guard> {
         let back = self.reach(edge, &[], true);
         let forward = self.reach(start, &[], false);
         (0..self.succ.len())
@@ -140,9 +144,9 @@ impl Graph {
     }
 }
 
-struct Guard {
-    pc: usize,
-    on: usize,
+pub(crate) struct Guard {
+    pub(crate) pc: usize,
+    pub(crate) on: usize,
 }
 
 fn jump(image: &ProgramImage, cfg: &Cfg, guard: &Guard) -> Result<(String, String), String> {

@@ -94,16 +94,16 @@ theorem PassedGuards.sub {fetch : Nat → Option Insn} {s : State} {n : Nat}
 /-- **Guards about the input.** If a run from `s0` passed the guards of `igs` and the
     abstract map (checked by `absCheck`) pins their operands, each guard's condition holds of
     `s0`'s input. -/
-theorem input_guards (fetch : Nat → Option Insn) (noret : Nat → Bool)
-    (hNR : ∀ t, noret t = true → NoReturn fetch t) (m : Array (Option AState)) (entry : Nat)
-    (init : AState) (habs : absCheck fetch noret m entry init = true) (s0 : State)
-    (hpc : s0.pc = entry) (hcs : s0.callStack = []) (hinit : Concrete s0 init s0) (n : Nat)
+theorem input_guards_of (fetch : Nat → Option Insn) (m : Array (Option AState)) (s0 : State)
+    (hsound : ∀ j, (executeFn fetch s0 j).callStack = [] →
+      ∃ a, m.getD (executeFn fetch s0 j).pc none = some a ∧
+        Concrete s0 a (executeFn fetch s0 j)) (n : Nat)
     (igs : List IGuard) (hpass : PassedGuards fetch s0 n (igs.map (·.g)))
     (hig : igs.all (iguardCheck m) = true) :
     ∀ ig ∈ igs, ig.holds s0 := by
   intro ig hmem
   obtain ⟨j, _, hcsj, hpcj, _, hstep⟩ := hpass ig.g (List.mem_map_of_mem hmem)
-  obtain ⟨a, ha, hc⟩ := abs_sound fetch noret hNR m entry init habs s0 hpc hcs hinit j hcsj
+  obtain ⟨a, ha, hc⟩ := hsound j hcsj
   have hchk := List.all_eq_true.mp hig ig hmem
   unfold iguardCheck at hchk
   unfold IGuard.holds
@@ -132,6 +132,16 @@ theorem input_guards (fetch : Nat → Option Insn) (noret : Nat → Bool)
   · rw [hpcj] at hp
     exact ⟨fun h => absurd h hcond, fun h => absurd (h.symm.trans hp) ht⟩
 
+theorem input_guards (fetch : Nat → Option Insn) (noret : Nat → Bool)
+    (hNR : ∀ t, noret t = true → NoReturn fetch t) (m : Array (Option AState)) (entry : Nat)
+    (init : AState) (habs : absCheck fetch noret m entry init = true) (s0 : State)
+    (hpc : s0.pc = entry) (hcs : s0.callStack = []) (hinit : Concrete s0 init s0) (n : Nat)
+    (igs : List IGuard) (hpass : PassedGuards fetch s0 n (igs.map (·.g)))
+    (hig : igs.all (iguardCheck m) = true) :
+    ∀ ig ∈ igs, ig.holds s0 :=
+  input_guards_of fetch m s0 (abs_sound fetch noret hNR m entry init habs s0 hpc hcs hinit) n
+    igs hpass hig
+
 /-- An edge's routes, with the input-pinned subset of each route's guards. -/
 abbrev IRoute := Nat × List IGuard × List IGuard
 
@@ -151,6 +161,40 @@ theorem sub_of_all_contains {gs : List Guard} {igs : List IGuard}
 /-- **Input conditions of an edge.** If the path and abstract-map checks pass, every
     top-level run from `s0` (at `entry`, described by `init`) that stands at `e` started from
     an input satisfying the edge's pinned dominating guards and one route's pinned guards. -/
+theorem edge_input_conditions_of (fetch : Nat → Option Insn) (noret : Nat → Bool)
+    (hNR : ∀ t, noret t = true → NoReturn fetch t) (size entry e : Nat)
+    (dom : List Guard) (routes : List Route) (idom : List IGuard) (iroutes : List IRoute)
+    (m : Array (Option AState))
+    (hpath : edgeCheck fetch noret size entry e dom routes = true)
+    (hpin : (idom.all (iguardCheck m) &&
+      iroutes.all fun (_, ip, iq) => ip.all (iguardCheck m) && iq.all (iguardCheck m)) = true)
+    (hmatch : iguardsMatch dom routes idom iroutes = true)
+    (s0 : State) (hpc : s0.pc = entry) (hcs : s0.callStack = [])
+    (hsound : ∀ j, (executeFn fetch s0 j).callStack = [] →
+      ∃ a, m.getD (executeFn fetch s0 j).pc none = some a ∧
+        Concrete s0 a (executeFn fetch s0 j))
+    (n : Nat) (hend : (executeFn fetch s0 n).callStack = [] ∧ (executeFn fetch s0 n).pc = e) :
+    (∀ ig ∈ idom, ig.holds s0) ∧
+    ∃ c ip iq, (c, ip, iq) ∈ iroutes ∧ (∀ ig ∈ ip, ig.holds s0) ∧ (∀ ig ∈ iq, ig.holds s0) := by
+  simp only [Bool.and_eq_true] at hpin
+  obtain ⟨hpdom, hproutes⟩ := hpin
+  simp only [iguardsMatch, Bool.and_eq_true] at hmatch
+  obtain ⟨hmdom, hmroutes⟩ := hmatch
+  obtain ⟨hdom, c, pre, post, hr, j, hj, hcsj, h0j, hpcj, hpre, hpost⟩ :=
+    edge_path_condition fetch noret hNR size entry e dom routes hpath s0 hpc hcs n hend
+  have ig := input_guards_of fetch m s0 hsound
+  refine ⟨ig n idom (hdom.sub (sub_of_all_contains hmdom)) hpdom, ?_⟩
+  have hany := List.any_eq_true.mp (List.all_eq_true.mp hmroutes _ hr)
+  obtain ⟨⟨c', ip, iq⟩, hir, hm⟩ := hany
+  simp only [Bool.and_eq_true, beq_iff_eq] at hm
+  obtain ⟨⟨_, hip⟩, hiq⟩ := hm
+  have hpi := List.all_eq_true.mp hproutes _ hir
+  simp only [Bool.and_eq_true] at hpi
+  refine ⟨c', ip, iq, hir, ig j ip (hpre.sub (sub_of_all_contains hip)) hpi.1, ?_⟩
+  have hq : PassedGuards fetch s0 (j + (n - j)) (iq.map (·.g)) :=
+    PassedGuards.shift (hpost.sub (sub_of_all_contains hiq))
+  exact ig (j + (n - j)) iq hq hpi.2
+
 theorem edge_input_conditions (fetch : Nat → Option Insn) (noret : Nat → Bool)
     (hNR : ∀ t, noret t = true → NoReturn fetch t) (size entry e : Nat)
     (dom : List Guard) (routes : List Route) (idom : List IGuard) (iroutes : List IRoute)
@@ -163,24 +207,29 @@ theorem edge_input_conditions (fetch : Nat → Option Insn) (noret : Nat → Boo
     (s0 : State) (hpc : s0.pc = entry) (hcs : s0.callStack = []) (hinit : Concrete s0 init s0)
     (n : Nat) (hend : (executeFn fetch s0 n).callStack = [] ∧ (executeFn fetch s0 n).pc = e) :
     (∀ ig ∈ idom, ig.holds s0) ∧
-    ∃ c ip iq, (c, ip, iq) ∈ iroutes ∧ (∀ ig ∈ ip, ig.holds s0) ∧ (∀ ig ∈ iq, ig.holds s0) := by
-  simp only [Bool.and_eq_true] at hpin
-  obtain ⟨hpdom, hproutes⟩ := hpin
-  simp only [iguardsMatch, Bool.and_eq_true] at hmatch
-  obtain ⟨hmdom, hmroutes⟩ := hmatch
-  obtain ⟨hdom, c, pre, post, hr, j, hj, hcsj, h0j, hpcj, hpre, hpost⟩ :=
-    edge_path_condition fetch noret hNR size entry e dom routes hpath s0 hpc hcs n hend
-  have ig := input_guards fetch noret hNR m entry init habs s0 hpc hcs hinit
-  refine ⟨ig n idom (hdom.sub (sub_of_all_contains hmdom)) hpdom, ?_⟩
-  have hany := List.any_eq_true.mp (List.all_eq_true.mp hmroutes _ hr)
-  obtain ⟨⟨c', ip, iq⟩, hir, hm⟩ := hany
-  simp only [Bool.and_eq_true, beq_iff_eq] at hm
-  obtain ⟨⟨_, hip⟩, hiq⟩ := hm
-  have hpi := List.all_eq_true.mp hproutes _ hir
-  simp only [Bool.and_eq_true] at hpi
-  refine ⟨c', ip, iq, hir, ig j ip (hpre.sub (sub_of_all_contains hip)) hpi.1, ?_⟩
-  have hq : PassedGuards fetch s0 (j + (n - j)) (iq.map (·.g)) :=
-    PassedGuards.shift (hpost.sub (sub_of_all_contains hiq))
-  exact ig (j + (n - j)) iq hq hpi.2
+    ∃ c ip iq, (c, ip, iq) ∈ iroutes ∧ (∀ ig ∈ ip, ig.holds s0) ∧ (∀ ig ∈ iq, ig.holds s0) :=
+  edge_input_conditions_of fetch noret hNR size entry e dom routes idom iroutes m hpath hpin
+    hmatch s0 hpc hcs (abs_sound fetch noret hNR m entry init habs s0 hpc hcs hinit) n hend
+
+/-- **Input conditions of an edge, under assumed input words.** As
+    `edge_input_conditions`, for a map checked against `absStepA asm`, on an input whose
+    assumed words hold. -/
+theorem edge_input_conditionsA (fetch : Nat → Option Insn) (noret : Nat → Bool)
+    (hNR : ∀ t, noret t = true → NoReturn fetch t) (size entry e : Nat)
+    (dom : List Guard) (routes : List Route) (idom : List IGuard) (iroutes : List IRoute)
+    (asm : Assumed) (m : Array (Option AState)) (init : AState)
+    (hpath : edgeCheck fetch noret size entry e dom routes = true)
+    (habs : absCheckWith (absStepA asm) fetch noret m entry init = true)
+    (hpin : (idom.all (iguardCheck m) &&
+      iroutes.all fun (_, ip, iq) => ip.all (iguardCheck m) && iq.all (iguardCheck m)) = true)
+    (hmatch : iguardsMatch dom routes idom iroutes = true)
+    (s0 : State) (hasm : AssumedHolds s0 asm) (hpc : s0.pc = entry) (hcs : s0.callStack = [])
+    (hinit : Concrete s0 init s0)
+    (n : Nat) (hend : (executeFn fetch s0 n).callStack = [] ∧ (executeFn fetch s0 n).pc = e) :
+    (∀ ig ∈ idom, ig.holds s0) ∧
+    ∃ c ip iq, (c, ip, iq) ∈ iroutes ∧ (∀ ig ∈ ip, ig.holds s0) ∧ (∀ ig ∈ iq, ig.holds s0) :=
+  edge_input_conditions_of fetch noret hNR size entry e dom routes idom iroutes m hpath hpin
+    hmatch s0 hpc hcs (abs_soundWith (absStepA asm) fetch noret hNR m entry init habs s0
+      (absStepA_stepSound s0 asm hasm) hpc hcs hinit) n hend
 
 end SVM.SBPF
