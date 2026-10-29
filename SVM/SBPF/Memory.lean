@@ -687,13 +687,18 @@ def RegionTable.textRegion? (rt : RegionTable) : Option Region :=
 def Region.contains (r : Region) (addr len : Nat) : Bool :=
   decide (r.start ≤ addr ∧ addr + len ≤ r.start + r.size)
 
-/-- Is `[addr, addr + len)` covered by *some* region in the table? -/
-def RegionTable.containsRange (rt : RegionTable) (addr len : Nat) : Bool :=
-  rt.any (·.contains addr len)
+/-- Can loads and stores reach this region? The V3 text region (non-empty
+    `textSlots`) is mapped for `callx` resolution only: agave does not map V3
+    bytecode as data, so a load from it faults (#137). -/
+def Region.isData (r : Region) : Bool := r.textSlots.isEmpty
 
-/-- Is `[addr, addr + len)` covered by a *writable* region? -/
+/-- Is `[addr, addr + len)` covered by *some* data region in the table? -/
+def RegionTable.containsRange (rt : RegionTable) (addr len : Nat) : Bool :=
+  rt.any (fun r => r.isData && r.contains addr len)
+
+/-- Is `[addr, addr + len)` covered by a *writable* data region? -/
 def RegionTable.containsWritable (rt : RegionTable) (addr len : Nat) : Bool :=
-  rt.any (fun r => r.writable && r.contains addr len)
+  rt.any (fun r => r.isData && r.writable && r.contains addr len)
 
 /-! ## Input buffer layout helpers
 
