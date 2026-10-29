@@ -6174,3 +6174,74 @@ mod system_cpi {
         );
     }
 }
+
+/// #109: the same fixture executes at heights 1, 2 and 3, then observes
+/// caller heights again on unwind. A constant-height syscall fails at CPI.
+#[test]
+fn stack_height_nested_calls_and_guard_match_mollusk() {
+    let elf = include_bytes!("fixtures/stack_height.so");
+    for (depth, guard) in [(0, false), (1, false), (2, false), (0, true), (1, true)] {
+        let ids = [pid(1090), pid(1091), pid(1092)];
+        let programs: Vec<_> = ids.iter().map(|id| (*id, elf.as_slice())).collect();
+        let mut fs_accounts = Vec::new();
+        let mut ml_accounts = Vec::new();
+        for id in &ids[1..depth + 1] {
+            let (fs, ml) = dual_program();
+            fs_accounts.push((*id, fs));
+            ml_accounts.push((*id, ml));
+        }
+        let ix = Instruction {
+            program_id: ids[0],
+            accounts: ids[1..depth + 1]
+                .iter()
+                .map(|id| AccountMeta::new_readonly(*id, false))
+                .collect(),
+            data: vec![1, u8::from(guard)],
+        };
+        let fs = svm_with(&programs)
+            .process_instruction(&ix, &fs_accounts)
+            .unwrap();
+        let ml = mollusk_with(&programs).process_instruction(&ix, &ml_accounts);
+        if guard && depth > 0 {
+            assert_eq!(
+                ml.program_result,
+                MlProgramResult::Failure(solana_program_error::ProgramError::Custom(109))
+            );
+            // qedsvm retains raw custom exit codes; Mollusk decodes ProgramError.
+            assert!(matches!(
+                fs.program_result,
+                FsProgramResult::Failure { exit_code: 109 }
+            ));
+        } else {
+            assert_eq!(ml.program_result, MlProgramResult::Success);
+            assert!(
+                matches!(fs.program_result, FsProgramResult::Success),
+                "height chain {depth}: {:?}",
+                fs.program_result
+            );
+            assert_eq!(
+                fs.compute_units_consumed, ml.compute_units_consumed,
+                "height chain {depth} CU"
+            );
+            let heights: &[u64] = match depth {
+                0 => &[1, 1],
+                1 => &[1, 2, 2, 1],
+                2 => &[1, 2, 3, 3, 2, 1],
+                _ => unreachable!(),
+            };
+            let logs: Vec<_> = fs
+                .logs
+                .iter()
+                .map(|b| String::from_utf8_lossy(b).into_owned())
+                .collect();
+            for (line, height) in logs.iter().zip(heights) {
+                assert!(
+                    line.contains(&format!("0x{height:x}, 0x0, 0x0, 0x0, 0x0")),
+                    "{line}"
+                );
+            }
+            assert_eq!(logs.len(), heights.len());
+        }
+        assert_resulting_accounts_match(&fs, &ml, true, true, true);
+    }
+}

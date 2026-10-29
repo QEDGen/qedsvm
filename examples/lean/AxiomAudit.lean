@@ -249,3 +249,9 @@ elab "#assert_native_decide_axioms " id:ident : command => do
 #assert_native_decide_axioms Examples.LabelVault.readable53
 -- The same program built for sBPF v3 (qedsvm#149).
 #assert_native_decide_axioms Examples.LabelVaultV3.readable53
+
+-- #109: invocation height and its framed syscall contract remain kernel checked.
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_state
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_value
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_top_level_iff
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_spec

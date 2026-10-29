@@ -168,7 +168,8 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | `sol_set_return_data` | Mechanical | One `↦Bytes` input (`[r1, r1+r2)` readable, `r2 ≤ MAX_RETURN_DATA`) copied into the framed `↦ReturnData` atom; `r0 := 0` (`call_sol_set_return_data_spec`). |
 | `sol_get_return_data` | Unsupported | Only the fault direction (`execGet_faults_oob`) is modeled; no success triple. |
 | Dedicated sysvar getters | Unsupported (success) | Only the generic `sol_get_sysvar` success path is modeled. The OOB fault direction of `sol_get_clock_sysvar` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
-| Introspection syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
+| `sol_get_stack_height` | Manual | Executes as one-based CPI height. Exact state/value and top-level guard contracts are kernel checked; the framed SL post is existential because `PartialState` does not own invocation depth. Nested V3 calls and caller restoration are differential-tested. Not emitted by `qedlift`. |
+| Other introspection syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
 | `sol_alloc_free_` | Unsupported | Heap proofs use ordinary memory predicates instead. |
 
 Unsupported here means "not verified by the lift", not "cannot execute". Diff tests can still run programs that use unverified runtime behavior.

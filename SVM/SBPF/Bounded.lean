@@ -492,6 +492,8 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
     (first
       | exact hb.regs_lt r
       | exact RegFile.set_get_lt hb.regs_lt (by decide) _ r
+      -- Stack height returns a u64 even for unreachable unbounded Nat depths.
+      | exact RegFile.set_get_lt hb.regs_lt (Nat.mod_lt _ (by decide)) _ r
       | exact RegFile.set_get_lt hb.regs_lt
           (by simp only [U64_MODULUS] at h1 h2 h3 ⊢; omega) _ r
       -- `sol_log_data` stays folded (recursive `guardSlices` won't unfold):
