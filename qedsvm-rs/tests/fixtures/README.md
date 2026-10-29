@@ -409,3 +409,23 @@ end-to-end. The synthetic `system_create_account_cpi_matches_mollusk`
 covers the simpler Rust-ABI / hard-signer case; this fixture
 specifically exercises the C-ABI `CpiAccount` parsing path that
 issue #10 was about.
+
+## `stack_height.so`
+
+Regression for #109. `stack_height_src` uses `solana-program = 2.3.0` and
+observes the invocation height before and after each nested call. Instruction
+data is `[expected_height, top_level_only_guard]`; the readonly accounts are
+successive program IDs in the chain. The differential test registers the same
+ELF under three IDs and checks heights `1,2,3,3,2,1`, exact successful-path CU,
+and custom error 109 when the top-level-only guard is reached through CPI.
+Every invocation checks its expected height itself, so both engines must
+observe the expected values to succeed.
+
+Built with `cargo-build-sbf 4.5.0`, platform-tools v1.57 (Rust 1.95.0), sBPF V3 architecture:
+
+```sh
+cargo build-sbf --manifest-path qedsvm-rs/tests/fixtures/stack_height_src/Cargo.toml --arch v3 --sbf-out-dir /tmp/qedsvm-stack-height-build
+cp /tmp/qedsvm-stack-height-build/qedsvm_stack_height.so qedsvm-rs/tests/fixtures/stack_height.so
+```
+
+SHA-256: `a35e3298ed435838b45371aaabf23b0c23aba93371f9cd52b125cc6f405a1313`.

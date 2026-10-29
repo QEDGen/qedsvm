@@ -39,9 +39,11 @@ def cu : Nat := 100
 @[simp] def execRemainingComputeUnits (s : State) : State :=
   { s with regs := s.regs.set .r0 (s.cuBudget - (s.cuConsumed + 1 + cu)) }
 
-/-- `sol_get_stack_height`: top-level invocation depth = 1. -/
+/-- `sol_get_stack_height`: CPI invocation height, independent of the sBPF
+    function-call stack. The runner uses zero-based `invokeDepth` (at most 4).
+    Normalize the u64 syscall result even for unreachable, unbounded Nat states. -/
 @[simp] def execGetStackHeight (s : State) : State :=
-  { s with regs := s.regs.set .r0 1 }
+  { s with regs := s.regs.set .r0 ((s.invokeDepth + 1) % U64_MODULUS) }
 
 /-- `sol_get_processed_sibling_instruction`: we don't track siblings, return 0. -/
 @[simp] def execProcessedSibling (s : State) : State :=
