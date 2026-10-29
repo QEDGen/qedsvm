@@ -193,7 +193,10 @@ theorem endianValue_lt (value width : Nat) (bigEndian : Bool) :
   unfold endianValue
   exact Nat.mod_lt _ (by decide)
 
-/-- Resolve a V3 virtual address against one loaded text segment and slot map. -/
+/-- Resolve a callx virtual address against one loaded text segment and slot
+    map, as agave's `CALL_REG` does: slot `(addr - textAddr) / 8`, which must lie
+    in the text. `none` also for the second slot of an `lddw`, which has no
+    logical PC (see `callxLandsInLddw`). -/
 def resolveCallxTarget (textAddr : Nat) (slotMap : Array Nat) (addr : Nat) : Option Nat := do
   if textAddr = 0 || addr < textAddr then none else
   let slot := (addr - textAddr) / 8
@@ -201,18 +204,32 @@ def resolveCallxTarget (textAddr : Nat) (slotMap : Array Nat) (addr : Nat) : Opt
   if slot > 0 && slotMap[slot - 1]? == some pc then none
   else some pc
 
-/-- Resolve a V3 indirect call's virtual address through the loaded text
-    region. `none` when there is no V3 text region or the address is invalid. -/
+/-- Resolve an indirect call's virtual address through the loaded text region
+    (V0 and V3 both carry one). `none` when there is no text region or the
+    address is invalid. -/
 def resolveCallx (rt : Memory.RegionTable) (addr : Nat) : Option Nat := do
   let text ← rt.textRegion?
   resolveCallxTarget text.start text.textSlots addr
 
-/-- Translate a V3 indirect call's register value to a logical PC. -/
+/-- Does `addr` name the second slot of an `lddw`? Agave's `CALL_REG` jumps
+    there like to any text slot, and the next step faults on its zero opcode. -/
+def callxLandsInLddw (rt : Memory.RegionTable) (addr : Nat) : Bool :=
+  match rt.textRegion? with
+  | none => false
+  | some text =>
+    let slot := (addr - text.start) / 8
+    text.start ≤ addr && slot > 0 && slot < text.textSlots.size &&
+      text.textSlots[slot - 1]? == text.textSlots[slot]?
+
+/-- Translate an indirect call's register value to a logical PC. -/
 def callxTarget (s : State) (reg : Reg) : Option Nat :=
   resolveCallx s.regions (s.regs.get reg)
 
-/-- Indirect V3 call, sharing the direct-call frame shape. Raw V0 state has
-    no V3 text region and therefore retains its fail-closed indirect-call path. -/
+/-- Indirect call, sharing the direct-call frame shape. The loaders give V0 and
+    V3 images a text region; a state without one (raw bytecode) fails closed.
+    As in agave, the call depth is checked before the target. A target in the
+    second slot of an `lddw` costs that slot's CU too: agave jumps there and
+    faults on the next step. -/
 def execCallx (reg : Reg) (s : State) : State :=
   if s.regions.textRegion?.isNone then
     { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION,
@@ -221,7 +238,11 @@ def execCallx (reg : Reg) (s : State) : State :=
     { s with exitCode := some ERR_CALL_DEPTH_EXCEEDED,
              vmError := some .callDepthExceeded }
   else match callxTarget s reg with
-    | none => { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }
+    | none =>
+      if callxLandsInLddw s.regions (s.regs.get reg) then
+        { s with exitCode := some ERR_UNSUPPORTED_INSTRUCTION,
+                 vmError := some .unsupportedInstruction, cuConsumed := s.cuConsumed + 1 }
+      else { s with exitCode := some ERR_INVALID_PC, vmError := some .invalidPc }
     | some target =>
       let rf := s.regs
       let frame : CallFrame := {
@@ -778,9 +799,7 @@ need a `split` or match-case to surface the record-update. -/
 @[simp] theorem execCallx_preserves_regions (reg : Reg) (s : State) :
     (execCallx reg s).regions = s.regions := by
   unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
+  (repeat' split) <;> rfl
 
 @[simp] theorem step_preserves_regions (insn : Insn) (s : State) :
     (step insn s).regions = s.regions := by
@@ -843,9 +862,7 @@ or `chargeCu` (bumps only `cuConsumed`). This is why the budget side-condition i
 @[simp] theorem execCallx_preserves_cuBudget (reg : Reg) (s : State) :
     (execCallx reg s).cuBudget = s.cuBudget := by
   unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
+  (repeat' split) <;> rfl
 
 @[simp] theorem step_preserves_cuBudget (insn : Insn) (s : State) :
     (step insn s).cuBudget = s.cuBudget := by

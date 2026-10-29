@@ -381,6 +381,15 @@ theorem StateBounded.with_abort {s : State} (h : StateBounded s)
     cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
     returnData_le := h.returnData_le, mem_lt := h.mem_lt }
 
+/-- An abort that also charges CU (a `callx` into an `lddw`'s second slot). -/
+theorem StateBounded.with_abort_cu {s : State} (h : StateBounded s)
+    (e : Option Nat) (v : Option VmError) (c : Nat) :
+    StateBounded { s with exitCode := e, vmError := v, cuConsumed := c } :=
+  { regs_lt := h.regs_lt, stack_r10 := h.stack_r10
+    stack_depth := h.stack_depth, frames_lt := h.frames_lt
+    cuBudget_lt := h.cuBudget_lt, heapNext_le := h.heapNext_le
+    returnData_le := h.returnData_le, mem_lt := h.mem_lt }
+
 /-- Arms `{ s with mem := m', pc := pc' }` (stores), given the new
     memory is byte-bounded. -/
 theorem StateBounded.with_mem {s : State} (h : StateBounded s)
@@ -659,7 +668,9 @@ theorem step_bounded (insn : Insn) {s : State} (h : StateBounded s) :
     split
     · exact h.with_abort _ _
     split
-    · exact h.with_abort _ _
+    · split
+      · exact h.with_abort_cu _ _ _
+      · exact h.with_abort _ _
     · next target htarget =>
       have hdepth : s.callStack.length < MAX_CALL_DEPTH := by omega
       have hr10 := h.r10_eq

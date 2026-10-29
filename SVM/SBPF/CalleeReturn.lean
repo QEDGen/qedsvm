@@ -109,7 +109,7 @@ theorem execCallx_noCleanHalt (reg : Reg) (s : State) (h0 : s.exitCode = none) :
   · split
     · exact Or.inr rfl
     · split
-      · exact Or.inr rfl
+      · split <;> exact Or.inr rfl
       · exact Or.inl h0
 
 /-- One step from a running state with a non-empty call stack never halts cleanly (`exit`
@@ -158,7 +158,7 @@ theorem step_callStack_above (insn : Insn) (s : State) (F0 : CallFrame) (outer :
     · split
       · exact ⟨ys, hcs⟩
       · split
-        · exact ⟨ys, hcs⟩
+        · split <;> exact ⟨ys, hcs⟩
         · exact ⟨_ :: ys, congrArg (List.cons _) hcs⟩
   | exit =>
     cases ys with

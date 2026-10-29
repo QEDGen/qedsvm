@@ -5,7 +5,7 @@ any disagreement: Firedancer's, **unmodified** and compiled for bare-metal
 RISC-V (rv64); agave's (`solana-sbpf`, native); and qedsvm. With three, a
 disagreement shows which engine is the odd one out. It found #89, #90, #91,
 #92 and #93, the call to an unknown syscall being charged 100 CU, and (through
-the fuzzer) #134 and #135. Tracking issue: #96.
+the fuzzer) #134, #135 and #137. Tracking issue: #96.
 
 ```sh
 tools/fdvm-diff/run.sh            # fd_vm on QEMU vs agave vs qedsvm (needs docker)
@@ -62,5 +62,3 @@ is out of scope here: all three engines start from the same post-load image.
 From #96: ELF fixtures through qedsvm's loader, and a nightly run with bigger
 fuzz batches and the Lean Sail RV64 model (build with `TARGET=sail
 MARCH=rv64i`; the executable Sail model has no M extension).
-
-The fuzzer emits V0 `callx` only with `--v0-callx` until #134 is fixed.
