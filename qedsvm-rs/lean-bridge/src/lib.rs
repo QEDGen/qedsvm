@@ -690,7 +690,7 @@ fn trace_out() -> &'static Option<std::sync::Mutex<std::fs::File>> {
 }
 
 #[no_mangle]
-pub extern "C" fn lean_qedsvm_trace_step(pc: usize, depth: usize, f: lean_obj_arg) -> lean_obj_res {
+pub extern "C" fn lean_qedsvm_trace_step(pc: usize, depth: usize, s: lean_obj_arg) -> lean_obj_res {
     static ALL_DEPTHS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let all_depths =
         *ALL_DEPTHS.get_or_init(|| std::env::var_os("QEDSVM_TRACE_ALL_DEPTHS").is_some());
@@ -700,5 +700,6 @@ pub extern "C" fn lean_qedsvm_trace_step(pc: usize, depth: usize, f: lean_obj_ar
             let _ = writeln!(g, "{}", pc);
         }
     }
-    unsafe { lean_ffi::lean_apply_unit(f) }
+    // Identity: ownership of `s` passes straight back to the run loop.
+    s
 }

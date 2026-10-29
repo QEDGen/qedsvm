@@ -34,16 +34,6 @@ extern "C" {
     fn leanrt_box(v: usize) -> lean_obj_res;
 }
 
-extern "C" {
-    // Real exported Lean runtime symbol — no glue wrapper needed.
-    fn lean_apply_1(f: lean_obj_arg, a: lean_obj_arg) -> lean_obj_res;
-}
-
-/// Apply a Lean thunk `f : Unit → α` to `()`.
-pub unsafe fn lean_apply_unit(f: lean_obj_arg) -> lean_obj_res {
-    unsafe { lean_apply_1(f, leanrt_box(0)) }
-}
-
 // Re-export under canonical lean_* names.
 pub unsafe fn lean_alloc_sarray(elem_size: u32, size: usize, capacity: usize) -> lean_obj_res {
     unsafe { leanrt_alloc_sarray(elem_size, size, capacity) }
