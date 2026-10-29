@@ -41,7 +41,7 @@ def runCase (b : ByteArray) (idx h : Nat) : String := Id.run do
   let w (i : Nat) := u64At b (h + 8 * i)
   let ver := w 0; let entryPc := w 1; let budget := w 2; let heapMax := w 3
   let textCnt := w 4; let rodataSz := w 5; let inputSz := w 6; let cdCnt := w 7
-  let r2 := w 8; let regMask := w 11
+  let r2 := w 8; let textOff := w 9; let regMask := w 11
   let textAt   := h + 8 * 24
   let text     := slice b textAt (8 * textCnt)
   let rodataAt := textAt + 8 * textCnt
@@ -59,10 +59,11 @@ def runCase (b : ByteArray) (idx h : Nat) : String := Id.run do
   let progBase := if version == .v3 then 0 else MM_REGION_SIZE
   let mem₀ := Runner.loadBytesAt (Runner.loadInput Runner.emptyMem input) rodata progBase
   let mem := if version == .v3 then Runner.loadBytesAt mem₀ text MM_REGION_SIZE else mem₀
-  let textRegion : List Region := if version == .v3 then
-      [{ start := MM_REGION_SIZE, size := text.size, writable := false, textSlots := slotMap }]
-    else []
-  let regions := textRegion ++
+  -- callx resolves through the text's slot map: V3 text at MM_REGION_SIZE, V0
+  -- text inside the program image (`rodata`) at `text_off`.
+  let textAddr := MM_REGION_SIZE + (if version == .v3 then 0 else textOff)
+  let regions :=
+    { start := textAddr, size := text.size, writable := false, textSlots := slotMap } ::
     [ { start := progBase,    size := rodataSz,          writable := false }
     , { start := STACK_START, size := Runner.STACK_SIZE, writable := true }
     , { start := HEAP_START,  size := heapMax,           writable := true }

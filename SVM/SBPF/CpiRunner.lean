@@ -127,16 +127,12 @@ so facts about them at a program's entry hold at its invoke. -/
 @[simp] theorem execCallx_preserves_invokeDepth (reg : Reg) (s : State) :
     (execCallx reg s).invokeDepth = s.invokeDepth := by
   unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
+  (repeat' split) <;> rfl
 
 @[simp] theorem execCallx_preserves_origPrivs (reg : Reg) (s : State) :
     (execCallx reg s).origPrivs = s.origPrivs := by
   unfold execCallx
-  split <;> try rfl
-  split <;> try rfl
-  split <;> rfl
+  (repeat' split) <;> rfl
 
 @[simp] theorem step_preserves_invokeDepth (insn : Insn) (s : State) :
     (step insn s).invokeDepth = s.invokeDepth := by

@@ -124,6 +124,56 @@ private def v3TextStoreElf : ByteArray := v3ElfWithText (Decode.bytesOfHex
 example : (Runner.runElf v3TextStoreElf).map (·.vmError) = some (some .accessViolation) := by
   native_decide
 
+/-! ### V0 `callx` (#134)
+
+A V0 image mapped the way `Runner.elfRegions` maps one: the text section
+(here at file offset 0, address `MM_REGION_SIZE`) as a `callx`-only region
+carrying its slot map, the program region as data, and the stack. -/
+
+private def v0Run (text : ByteArray) : Option State := do
+  let insns ← Decode.decodeProgramV0 text
+  let sec : Elf.SectionHeader := { nameOff := 0, type := 1, addr := 0, offset := 0,
+                                   size := text.size }
+  let regions := [Runner.textRegionElf text sec,
+    { start := Memory.MM_REGION_SIZE, size := text.size, writable := false },
+    { start := Memory.STACK_START, size := Runner.STACK_SIZE, writable := true }]
+  let s₀ : State := { regs := { r10 := Memory.STACK_START + 0x1000 },
+                      mem := Runner.loadBytesAt Runner.emptyMem text Memory.MM_REGION_SIZE,
+                      regions, pc := 0, cuBudget := 200 }
+  return executeFn (Runner.fetchFromArray insns) s₀ 200
+
+/-- `lddw r2, MM_REGION_SIZE + lo; callx r2; exit; mov r0, 42; exit`. -/
+private def v0CallxText (lo : Nat) : ByteArray := Elf.writeU32LE (Decode.bytesOfHex
+  "180200002000000000000000010000008d000000020000009500000000000000b70000002a0000009500000000000000")
+  4 lo
+
+/-- Slot 4 is `mov r0, 42`: the call runs it and returns to the `exit`. -/
+example : (v0Run (v0CallxText 0x20)).map (fun s => (s.exitCode, s.callStack.length)) =
+    some (some 42, 0) := by native_decide
+
+/-- A misaligned address rounds down to its slot, as agave's `/ 8` does. -/
+example : (v0Run (v0CallxText 0x23)).map (·.exitCode) = some (some 42) := by native_decide
+
+/-- Slot 6 is past the text: agave's `CallOutsideTextSegment`. -/
+example : (v0Run (v0CallxText 0x30)).map (·.vmError) = some (some .invalidPc) := by
+  native_decide
+
+/-- Slot 1 is the `lddw`'s second half: agave jumps there and faults on its zero
+    opcode, so the run is charged lddw, callx and that slot. -/
+example : (v0Run (v0CallxText 0x8)).map (fun s => (s.vmError, s.cuConsumed)) =
+    some (some .unsupportedInstruction, 3) := by native_decide
+
+/-- Slot 2 is the `callx` itself: it recurses until the 64th call faults with
+    63 frames pushed (#90). -/
+example : (v0Run (v0CallxText 0x10)).map (fun s => (s.vmError, s.callStack.length)) =
+    some (some .callDepthExceeded, 63) := by native_decide
+
+/-- V0 loads still read the text through the program region:
+    `lddw r2, MM_REGION_SIZE; ldxdw r0, [r2]; exit` returns the `lddw`'s first word. -/
+example : (v0Run (Decode.bytesOfHex
+    "1802000000000000000000000100000079200000000000009500000000000000")).map
+    (·.exitCode) = some (some 0x0000000000000218) := by native_decide
+
 private def v3EndianElf (opcode width : UInt8) : ByteArray :=
   v3ElfWithText <| Decode.bytesOfHex
     "18000000887766550000000044332211d4000000100000009500000000000000"

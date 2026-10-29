@@ -6,9 +6,9 @@ random instruction run ending in `exit`. The mix covers ALU64/ALU32 (immediate
 and register, every operator, out-of-range shifts and zero divisors), loads and
 stores against the input region and the stack (in and just out of bounds),
 forward and backward conditional jumps (backward ones loop until the CU budget
-runs out), calls to later functions (and, rarely, recursion), `callx` through a
-computed text address or a junk register (V3 only until #134, unless
-`--v0-callx`), `sol_log_64_`, and, rarely, an
+runs out), calls to later functions (and, rarely, recursion), `callx` to a
+function, to any text slot (an `lddw`'s second half included, sometimes at a
+misaligned address) or through a junk register, `sol_log_64_`, and, rarely, an
 instruction the verifier should reject. Cases set
 `virtual_address_space_adjustments` (no stack frame gaps), the configuration
 qedsvm models (all features on, as mollusk runs). No expectation is recorded
@@ -39,8 +39,8 @@ class Gen:
     """One program. Items are (kind, payload); jumps and calls are resolved to
     slot offsets once every block's layout is known."""
 
-    def __init__(self, rng, version, v0_callx):
-        self.r, self.v, self.v0_callx = rng, version, v0_callx
+    def __init__(self, rng, version):
+        self.r, self.v = rng, version
         self.nfun = rng.choice([0, 0, 1, 2, 3])
 
     def reg(self):  # a destination: never r10
@@ -104,8 +104,8 @@ class Gen:
                 hi = range(idx + 1, self.nfun + 1)
                 tgt = r.choice(list(hi)) if hi and r.random() < 0.95 else idx or 1
                 items.append(("call", tgt))
-            elif p < 0.96 and (self.v >= 3 or self.v0_callx):
-                items.append(("callx", r.choice([None] + list(range(self.nfun + 1)))))
+            elif p < 0.96:
+                items.append(("callx", r.choice([None, "slot"] + list(range(self.nfun + 1)))))
             elif p < 0.98 and self.v == 0:
                 items.append(("raw", insn(r.choice([0xd4, 0xdc]), dst=self.reg(),
                                           imm=r.choice([16, 32, 64]))))
@@ -126,6 +126,7 @@ class Gen:
         for b in blocks:
             starts.append(slot)
             slot += sum(size[k] for k, _ in b)
+        total = slot
         out, slot = b"", 0
         for bi, b in enumerate(blocks):
             pos, s = [], starts[bi]
@@ -153,8 +154,13 @@ class Gen:
                         out += insn(0x85, imm=fn_key(starts[payload]))
                 elif k == "callx":
                     rx = r.choice([2, 3, 4, 5, 6, 7, 8, 9])
-                    addr = TEXT_VADDR + 8 * starts[payload] if payload is not None \
-                        else r.getrandbits(32)
+                    if payload is None:
+                        addr = r.getrandbits(32)
+                    elif payload == "slot":                       # one past the end too
+                        addr = TEXT_VADDR + 8 * r.randrange(total + 1) \
+                            + (r.randrange(1, 8) if r.random() < 0.25 else 0)
+                    else:
+                        addr = TEXT_VADDR + 8 * starts[payload]
                     out += insn(0xb7, dst=rx, imm=addr >> 32 or 0)       # rx = hi
                     out += insn(0x67, dst=rx, imm=32)                     # rx <<= 32
                     out += insn(0x07, dst=rx, imm=addr & 0x7fffffff)     # rx += lo
@@ -175,15 +181,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, required=True)
     ap.add_argument("--count", type=int, default=500)
-    ap.add_argument("--v0-callx", action="store_true",
-                    help="emit V0 callx, which qedsvm fails closed on (#134)")
     ap.add_argument("-o", required=True); ap.add_argument("--expect", required=True)
     a = ap.parse_args()
     rng = random.Random(a.seed)
     cases, meta = [], []
     for i in range(a.count):
         version = rng.choice([0, 0, 3])
-        text, fns = Gen(rng, version, a.v0_callx).build()
+        text, fns = Gen(rng, version).build()
         regs = {i: rng.getrandbits(64) for i in range(2, 10) if rng.random() < 0.5}
         input_ = bytes(rng.getrandbits(8) for _ in range(INPUT_LEN))
         cases.append(pack_case(text, version=version, budget=rng.choice([300, 2_000]),

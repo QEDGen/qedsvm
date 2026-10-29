@@ -126,6 +126,16 @@ def programRegionElf (elfBytes : ByteArray) (header : Elf.Header)
   let programSize := programEnd - MM_REGION_SIZE
   { start := MM_REGION_SIZE, size := programSize, writable := false }
 
+/-- The V0 text section as a `callx`-only region (#134): its slot map resolves
+    indirect calls at the section's virtual address, as agave's `CALL_REG`
+    does. Loads still read the text through `programRegionElf`, which covers
+    it, since agave maps the whole V0 program region as data. Relocations
+    patch immediates only, so the raw section gives the same slot map. -/
+def textRegionElf (elfBytes : ByteArray) (textSec : Elf.SectionHeader) : Memory.Region :=
+  let text := elfBytes.extract textSec.offset (textSec.offset + textSec.size)
+  { start := Elf.relocateSecAddr textSec.addr, size := text.size, writable := false,
+    textSlots := Decode.buildSlotMap text }
+
 /-- Full region table for an ELF-loaded run. One big writable input
     region; per-account write boundaries (Tier-2 #9) and read-only
     detection are *post-instruction* validation in the Rust harness, not
@@ -134,7 +144,8 @@ def programRegionElf (elfBytes : ByteArray) (header : Elf.Header)
     exit (data_len ≤ pre + 10240, read-only unchanged, etc.). -/
 def elfRegions (elfBytes : ByteArray) (header : Elf.Header)
     (textSec : Elf.SectionHeader) (inputLen : Nat) : Memory.RegionTable :=
-  programRegionElf elfBytes header textSec :: runtimeRegions inputLen
+  textRegionElf elfBytes textSec :: programRegionElf elfBytes header textSec
+    :: runtimeRegions inputLen
 
 /-! ## CPI sub-input construction
 
