@@ -429,3 +429,28 @@ cp /tmp/qedsvm-stack-height-build/qedsvm_stack_height.so qedsvm-rs/tests/fixture
 ```
 
 SHA-256: `a35e3298ed435838b45371aaabf23b0c23aba93371f9cd52b125cc6f405a1313`.
+
+## `memops_probe.so`
+
+Regression for #103. `memops_probe_src` (no accounts) reads instruction data
+`[op, 0 x7, a, b, c, d]` (u64 little-endian, absolute addresses) and calls
+`sol_memcpy_` (op 0), `sol_memmove_` (1), `sol_memset_` (2) or `sol_memcmp_`
+(3) on them. It first fills the heap window `[0x3_0000_0000, +8192)` with
+`(7i + 3) mod 251` through volatile stores, and after a successful call returns
+the window's sha256, so the differential test compares every byte written.
+`memops_probe_matches_mollusk` runs 44 cases: each op at `n = 0` (with unmapped
+pointers), small, at the 2749/2750-byte CU step and past it; memcpy overlap in
+both directions and with `src = dst` (faults), memmove overlap in both
+directions (succeeds); memcmp equal, positive, negative, `±250`, a difference at
+the last of 3000 bytes, and an aligned result overlapping an input; and one
+unmapped, straddling or text-region pointer per argument, plus an unaligned
+memcmp result. Outcome class, exact CU and the window hash must match.
+
+Built with `cargo-build-sbf 4.5.0`, platform-tools v1.57 (Rust 1.95.0), sBPF V3 architecture:
+
+```sh
+cargo build-sbf --manifest-path qedsvm-rs/tests/fixtures/memops_probe_src/Cargo.toml --arch v3 --sbf-out-dir /tmp/qedsvm-memops-build
+cp /tmp/qedsvm-memops-build/qedsvm_memops_probe.so qedsvm-rs/tests/fixtures/memops_probe.so
+```
+
+SHA-256: `fe30b750e835c276431f0499c3c27fcc900ab0db0ef1f5177cc0d22c60a25301`.

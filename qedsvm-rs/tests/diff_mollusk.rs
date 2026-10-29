@@ -6245,3 +6245,103 @@ fn stack_height_nested_calls_and_guard_match_mollusk() {
         assert_resulting_accounts_match(&fs, &ml, true, true, true);
     }
 }
+
+/// #103: every memop at n = 0, small, past the 2750-byte CU step, aliased and
+/// out of region per pointer argument. `memops_probe` fills an 8 KiB heap
+/// window with `p(i) = (7i + 3) mod 251` (period 251, `p(107) = 250`,
+/// `p(143) = 0`), runs one call on absolute addresses, and returns the
+/// window's sha256, so success compares every written byte and fault compares
+/// outcome and CU.
+#[test]
+fn memops_probe_matches_mollusk() {
+    const H: u64 = 0x3_0000_0000;
+    const HEAP_END: u64 = H + 0x8000;
+    const BAD: u64 = 0x3_1000_0000;
+    const TEXT: u64 = 0x1_0000_0000;
+    const OUT: u64 = H + 0x1800;
+    let elf = include_bytes!("fixtures/memops_probe.so");
+    #[rustfmt::skip]
+    let cases: &[(&str, u8, [u64; 4], bool)] = &[
+        ("cpy_zero",          0, [H, H + 0x100, 0, 0], true),
+        ("cpy_zero_unmapped", 0, [BAD, BAD, 0, 0], true),
+        ("cpy_small",         0, [H, H + 0x100, 16, 0], true),
+        ("cpy_cu_edge",       0, [H, H + 0x1000, 2749, 0], true),
+        ("cpy_cu_step",       0, [H, H + 0x1000, 2750, 0], true),
+        ("cpy_big",           0, [H, H + 0x1000, 3000, 0], true),
+        ("cpy_adjacent",      0, [H + 16, H, 16, 0], true),
+        ("cpy_overlap_fwd",   0, [H + 4, H, 16, 0], false),
+        ("cpy_overlap_bwd",   0, [H, H + 4, 16, 0], false),
+        ("cpy_same",          0, [H, H, 16, 0], false),
+        ("cpy_dst_unmapped",  0, [BAD, H, 16, 0], false),
+        ("cpy_src_unmapped",  0, [H, BAD, 16, 0], false),
+        ("cpy_dst_straddle",  0, [HEAP_END - 8, H, 16, 0], false),
+        ("cpy_dst_text",      0, [TEXT, H, 16, 0], false),
+        ("mv_zero",           1, [BAD, BAD, 0, 0], true),
+        ("mv_small",          1, [H, H + 0x100, 16, 0], true),
+        ("mv_same",           1, [H, H, 16, 0], true),
+        ("mv_overlap_fwd",    1, [H + 100, H, 3000, 0], true),
+        ("mv_overlap_bwd",    1, [H, H + 100, 3000, 0], true),
+        ("mv_dst_unmapped",   1, [BAD, H, 16, 0], false),
+        ("mv_src_unmapped",   1, [H, BAD, 16, 0], false),
+        ("mv_src_straddle",   1, [H, HEAP_END - 8, 16, 0], false),
+        ("set_zero",          2, [BAD, 0xaa, 0, 0], true),
+        ("set_small",         2, [H + 5, 0xaa, 16, 0], true),
+        ("set_big",           2, [H, 0x5a, 3000, 0], true),
+        ("set_dst_unmapped",  2, [BAD, 0xaa, 16, 0], false),
+        ("set_dst_straddle",  2, [HEAP_END - 8, 0xaa, 16, 0], false),
+        ("set_dst_text",      2, [TEXT, 0xaa, 16, 0], false),
+        ("cmp_zero",          3, [BAD, BAD, 0, OUT], true),
+        ("cmp_equal",         3, [H, H, 64, OUT], true),
+        ("cmp_pos",           3, [H + 1, H, 16, OUT], true),
+        ("cmp_neg",           3, [H, H + 1, 16, OUT], true),
+        ("cmp_max",           3, [H + 107, H + 143, 1, OUT], true),
+        ("cmp_min",           3, [H + 143, H + 107, 1, OUT], true),
+        ("cmp_big_equal",     3, [H, H + 251, 3000, OUT], true),
+        ("cmp_big_last_byte", 3, [H + 5193, H + 4942, 3000, OUT], true),
+        ("cmp_out_overlaps",  3, [H, H + 1, 16, H + 4], true),
+        ("cmp_zero_out_bad",  3, [H, H, 0, BAD], false),
+        ("cmp_p1_unmapped",   3, [BAD, H, 16, OUT], false),
+        ("cmp_p2_unmapped",   3, [H, BAD, 16, OUT], false),
+        ("cmp_out_unmapped",  3, [H, H, 16, BAD], false),
+        ("cmp_out_straddle",  3, [H, H, 16, HEAP_END - 2], false),
+        ("cmp_out_text",      3, [H, H, 16, TEXT], false),
+        ("cmp_out_unaligned", 3, [H, H, 16, OUT + 1], false),
+    ];
+    let id = pid(1030);
+    let fs_vm = svm_with(&[(id, elf.as_slice())]);
+    let ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    let mut failures = Vec::new();
+    for (name, op, args, ok) in cases {
+        let mut data = vec![*op, 0, 0, 0, 0, 0, 0, 0];
+        for a in args {
+            data.extend_from_slice(&a.to_le_bytes());
+        }
+        let ix = Instruction {
+            program_id: id,
+            accounts: vec![],
+            data,
+        };
+        let fs = fs_vm.process_instruction(&ix, &[]).unwrap();
+        let ml = ml_vm.process_instruction(&ix, &[]);
+        let mut why = Vec::new();
+        if let Err(e) = outcome_matches(&fs.program_result, &ml.program_result) {
+            why.push(e);
+        }
+        if matches!(ml.program_result, MlProgramResult::Success) != *ok {
+            why.push(format!("mollusk {:?}, expected ok={ok}", ml.program_result));
+        }
+        if fs.compute_units_consumed != ml.compute_units_consumed {
+            why.push(format!(
+                "CU ours={} mollusk={}",
+                fs.compute_units_consumed, ml.compute_units_consumed
+            ));
+        }
+        if fs.return_data != ml.return_data {
+            why.push("return data (window hash) diverged".into());
+        }
+        if !why.is_empty() {
+            failures.push(format!("{name}: {}", why.join("; ")));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}

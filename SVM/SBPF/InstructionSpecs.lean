@@ -14,7 +14,9 @@ import SVM.SBPF.InstructionSpecs.Syscalls.Helper
 import SVM.SBPF.InstructionSpecs.Syscalls.Log
 import SVM.SBPF.InstructionSpecs.Syscalls.ReturnData
 import SVM.SBPF.InstructionSpecs.Syscalls.Pda
+import SVM.SBPF.InstructionSpecs.Syscalls.MemOpsSpec
 import SVM.SBPF.InstructionSpecs.Syscalls.Mem
+import SVM.SBPF.InstructionSpecs.Syscalls.MemOpsGeneral
 import SVM.SBPF.InstructionSpecs.Syscalls.Sysvar
 import SVM.SBPF.InstructionSpecs.Syscalls.Hash
 import SVM.SBPF.InstructionSpecs.Terminating

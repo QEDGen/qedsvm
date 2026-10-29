@@ -54,5 +54,7 @@ theorem toSentinel_invalidAttribute : VmError.invalidAttribute.toSentinel = ERR_
 theorem toSentinel_badSeeds : VmError.badSeeds.toSentinel = ERR_BAD_SEEDS := rfl
 theorem toSentinel_readonlyModified : VmError.readonlyModified.toSentinel = ERR_READONLY_MODIFIED := rfl
 theorem toSentinel_invalidRealloc : VmError.invalidRealloc.toSentinel = ERR_INVALID_REALLOC := rfl
+theorem toSentinel_copyOverlapping : VmError.copyOverlapping.toSentinel = ERR_COPY_OVERLAPPING := rfl
+theorem toSentinel_unalignedPointer : VmError.unalignedPointer.toSentinel = ERR_UNALIGNED_POINTER := rfl
 
 end Examples.L1Pin

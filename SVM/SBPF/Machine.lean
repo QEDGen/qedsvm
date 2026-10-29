@@ -97,6 +97,8 @@ inductive VmError
   | badSeeds
   | readonlyModified
   | invalidRealloc
+  | copyOverlapping
+  | unalignedPointer
   deriving Repr, DecidableEq, Inhabited
 
 /-- sBPF machine state -/
@@ -223,6 +225,14 @@ def ERR_READONLY_MODIFIED : Nat := 0xFFFFFFFFFFFFFFF4
     unchanged, this code in r0). M6r. -/
 def ERR_INVALID_REALLOC : Nat := 0xFFFFFFFFFFFFFFF3
 
+/-- `SyscallError::CopyOverlapping`: `sol_memcpy` with overlapping source and
+    destination (`is_nonoverlapping` fails). Checked before translation. -/
+def ERR_COPY_OVERLAPPING : Nat := 0xFFFFFFFFFFFFFFF2
+
+/-- `SyscallError::UnalignedPointer`: a typed syscall argument (e.g. memcmp's
+    `i32` result) that is not aligned for its type under `check_aligned`. -/
+def ERR_UNALIGNED_POINTER : Nat := 0xFFFFFFFFFFFFFFF1
+
 /-- The `exitCode` sentinel each fault writes (wire keeps reporting it, so the
     diff-suite observables are unchanged). -/
 def VmError.toSentinel : VmError → Nat
@@ -238,6 +248,8 @@ def VmError.toSentinel : VmError → Nat
   | .badSeeds               => ERR_BAD_SEEDS
   | .readonlyModified       => ERR_READONLY_MODIFIED
   | .invalidRealloc         => ERR_INVALID_REALLOC
+  | .copyOverlapping        => ERR_COPY_OVERLAPPING
+  | .unalignedPointer       => ERR_UNALIGNED_POINTER
 
 /-- `MAX_RETURN_DATA` (agave): a `sol_set_return_data` over 1024 bytes aborts. -/
 def MAX_RETURN_DATA : Nat := 1024
