@@ -89,6 +89,36 @@ theorem Pda.execTryFind_withBudget (s : State) (B : Nat) :
   dsimp only
   split <;> budget_comm
 
+theorem MemOps.execMove_withBudget (s : State) (B : Nat) :
+    MemOps.execMove { s with cuBudget := B } = { MemOps.execMove s with cuBudget := B } := by
+  simp only [MemOps.execMove]
+  refine State.guardRead_withBudget _ _ _ _ _ ?_
+  dsimp only
+  exact State.guardWrite_withBudget _ _ _ _ _ rfl
+
+theorem MemOps.execCopy_withBudget (s : State) (B : Nat) :
+    MemOps.execCopy { s with cuBudget := B } = { MemOps.execCopy s with cuBudget := B } := by
+  simp only [MemOps.execCopy]
+  split
+  · exact MemOps.execMove_withBudget s B
+  · rfl
+
+theorem MemOps.execSet_withBudget (s : State) (B : Nat) :
+    MemOps.execSet { s with cuBudget := B } = { MemOps.execSet s with cuBudget := B } := by
+  simp only [MemOps.execSet]
+  exact State.guardWrite_withBudget _ _ _ _ _ rfl
+
+theorem MemOps.execCmp_withBudget (s : State) (B : Nat) :
+    MemOps.execCmp { s with cuBudget := B } = { MemOps.execCmp s with cuBudget := B } := by
+  simp only [MemOps.execCmp]
+  refine State.guardRead_withBudget _ _ _ _ _ ?_
+  dsimp only
+  refine State.guardRead_withBudget _ _ _ _ _ ?_
+  dsimp only
+  refine State.guardWrite_withBudget _ _ _ _ _ ?_
+  dsimp only
+  split <;> rfl
+
 /-- Every syscall that doesn't read the budget commutes with changing it. -/
 theorem execSyscall_withBudget (sc : Syscall) (s : State) (B : Nat)
     (h : sc.readsBudget = false) :
@@ -109,6 +139,10 @@ theorem execSyscall_withBudget (sc : Syscall) (s : State) (B : Nat)
   case sol_get_rent_sysvar => exact Sysvar.execRent_withBudget s B
   case sol_get_epoch_schedule_sysvar => exact Sysvar.execEpochSchedule_withBudget s B
   case sol_log_data => exact Logging.execLogData_withBudget s B
+  case sol_memcpy => exact MemOps.execCopy_withBudget s B
+  case sol_memmove => exact MemOps.execMove_withBudget s B
+  case sol_memset => exact MemOps.execSet_withBudget s B
+  case sol_memcmp => exact MemOps.execCmp_withBudget s B
   all_goals simp [Syscall.readsBudget] at h
   all_goals simp [execSyscall, commitOptional] <;> (repeat' split) <;> simp_all
 

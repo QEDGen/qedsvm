@@ -119,7 +119,8 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_blake3                                  => Blake3.exec s
   | .sol_poseidon                                => Poseidon.exec s
   -- Memory ops
-  | .sol_memcpy | .sol_memmove                   => MemOps.execCopy s
+  | .sol_memcpy                                  => MemOps.execCopy s
+  | .sol_memmove                                 => MemOps.execMove s
   | .sol_memset                                  => MemOps.execSet s
   | .sol_memcmp                                  => MemOps.execCmp s
   -- Curve / crypto

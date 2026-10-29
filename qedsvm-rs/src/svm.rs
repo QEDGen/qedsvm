@@ -50,6 +50,8 @@ pub const fn vm_fault_name(sentinel: u64) -> &'static str {
         0xFFFFFFFFFFFFFFF5 => "badSeeds",
         0xFFFFFFFFFFFFFFF4 => "readonlyModified",
         0xFFFFFFFFFFFFFFF3 => "invalidRealloc",
+        0xFFFFFFFFFFFFFFF2 => "copyOverlapping",
+        0xFFFFFFFFFFFFFFF1 => "unalignedPointer",
         _ => "unknownFault",
     }
 }

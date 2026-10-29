@@ -1,4 +1,5 @@
 import SVM.SBPF.InstructionSpecs.Syscalls.Pda
+import SVM.SBPF.InstructionSpecs.Syscalls.MemOpsSpec
 
 namespace SVM.SBPF
 
@@ -800,12 +801,10 @@ theorem call_sol_memset_spec
     .sol_memset (replicateByte (r2V % 256).toUInt8 r3V) pc nCu r2V r3V
     ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld ?_
   · intro s hreg
-    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
-    rw [if_pos (Or.inr hreg)]
+    simp only [step, execSyscall, MemOps.execSet_ok s (Or.inr hreg)]
   · intro s hr2 hr3 hreg i hi
     rw [replicateByte_size] at hi
-    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
-    rw [if_pos (Or.inr hreg)]
+    simp only [step, execSyscall, MemOps.execSet_ok s (Or.inr hreg)]
     rw [Mem_read_default]
     rw [if_pos ⟨Nat.le_add_right _ _, by rw [hr3]; omega⟩]
     rw [replicateByte_get! _ _ _ hi]
@@ -815,8 +814,7 @@ theorem call_sol_memset_spec
     simp
   · intro s hr3 hreg a ha
     rw [replicateByte_size] at ha
-    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
-    rw [if_pos (Or.inr hreg)]
+    simp only [step, execSyscall, MemOps.execSet_ok s (Or.inr hreg)]
     rw [Mem_read_default]
     have hneg : ¬(a ≥ s.regs.r1 ∧ a - s.regs.r1 < s.regs.r3) := by
       rintro ⟨h1, h2⟩
@@ -828,8 +826,7 @@ theorem call_sol_memset_spec
   · intro s
     simp only [step, execSyscall, MemOps.execSet]
   · intro s hex hreg
-    simp only [step, execSyscall, MemOps.execSet, State.guardWrite]
-    rw [if_pos (Or.inr hreg)]
+    simp only [step, execSyscall, MemOps.execSet_ok s (Or.inr hreg)]
     exact hex
   · intro s
     simp only [step, execSyscall, MemOps.execSet, State.guardWrite, State.accessFault]
@@ -845,8 +842,25 @@ Generalizes the 5-atom helper for syscalls copying `[r2, r2+r3)` → `[r1, r1+r3
 (`sol_memcpy_`, `sol_memmove_`). Adds a read-only source-bytes atom at `r2V`; the
 post keeps it and rewrites the dst-bytes atom to `srcBytes`. `execCopy`'s `% 256`
 is a no-op on bytes (`UInt8.toNat _ < 256`), so the post matches `srcBytes`.
-Separation logic forces source/dest disjoint (memcpy overlap is UB; overlapping
-memmove would need a different spec). -/
+Separation logic forces source/dest disjoint, which also discharges memcpy's
+overlap check; aliasing ranges use the window triples in `MemOpsGeneral.lean`. -/
+
+/-- Two disjoint `n`-byte atoms are `MemOps.nonoverlapping`, so the separate
+    source and destination atoms of a copy triple discharge memcpy's overlap
+    check: an overlap would put one address in both. -/
+theorem singletonMemBytes_disjoint_nonoverlapping {a b n : Nat} {x y : ByteArray}
+    (hx : x.size = n) (hy : y.size = n)
+    (hd : (PartialState.singletonMemBytes a x).Disjoint (PartialState.singletonMemBytes b y)) :
+    MemOps.nonoverlapping a b n = true := by
+  unfold MemOps.nonoverlapping
+  -- The later start lies in both ranges unless the distance is at least `n`.
+  have key : ∀ i j, i < n → j < n → a + i = b + j → False := fun i j hi hj he => by
+    rcases hd.mem (a + i) with h | h
+    · rw [PartialState.singletonMemBytes_mem_at a x i (by omega)] at h; nomatch h
+    · rw [he, PartialState.singletonMemBytes_mem_at b y j (by omega)] at h; nomatch h
+  split
+  · exact decide_eq_true (Nat.le_of_not_lt fun h => key 0 (a - b) (by omega) h (by omega))
+  · exact decide_eq_true (Nat.le_of_not_lt fun h => key (b - a) 0 h (by omega) (by omega))
 
 theorem cuTripleWithin_syscall_copiesR2ToR1
     (sc : Syscall) (pc : Nat) (nCu : Nat) (r2V r3V : Nat) (srcBytes : ByteArray)
@@ -854,10 +868,12 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     (h_step_regs : ∀ s : State,
         s.regions.containsRange s.regs.r2 s.regs.r3 = true →
         s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
+        MemOps.nonoverlapping s.regs.r2 s.regs.r1 s.regs.r3 = true →
         (step (.call sc) s).regs = s.regs.set .r0 0)
     (h_step_mem_in  : ∀ s : State, s.regs.r2 = r2V → s.regs.r3 = r3V →
         s.regions.containsRange s.regs.r2 s.regs.r3 = true →
         s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
+        MemOps.nonoverlapping s.regs.r2 s.regs.r1 s.regs.r3 = true →
         ∀ i, i < r3V →
         (step (.call sc) s).mem (s.regs.r1 + i) = s.mem (s.regs.r2 + i) % 256)
     (h_step_mem_out : ∀ s : State, s.regs.r3 = r3V →
@@ -869,6 +885,7 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     (h_step_exit : ∀ s : State, s.exitCode = none →
         s.regions.containsRange s.regs.r2 s.regs.r3 = true →
         s.regions.containsWritable s.regs.r1 s.regs.r3 = true →
+        MemOps.nonoverlapping s.regs.r2 s.regs.r1 s.regs.r3 = true →
         (step (.call sc) s).exitCode = none)
     (h_step_returnData :
       ∀ s : State, (step (.call sc) s).returnData = s.returnData)
@@ -1023,6 +1040,9 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
     rw [hs_r2_field, hs_r3_field]; exact h_region.1
   have hWr : s.regions.containsWritable s.regs.r1 s.regs.r3 = true := by
     rw [hs_r1_field, hs_r3_field]; exact h_region.2
+  have hNo : MemOps.nonoverlapping s.regs.r2 s.regs.r1 s.regs.r3 = true := by
+    rw [hs_r1_field, hs_r2_field, hs_r3_field]
+    exact singletonMemBytes_disjoint_nonoverlapping hsrcSize hbsSize hd_src_b
   have hfetch : fetch s.pc = some (.call sc) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 = chargeCu (step (.call sc) s) := by
@@ -1031,19 +1051,19 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
   have hexec_pc : (executeFn fetch s 1).pc = s.pc + 1 := by
     rw [hstep_eq]; exact h_step_pc s
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
-    rw [hstep_eq]; exact h_step_exit s hex hRd hWr
+    rw [hstep_eq]; exact h_step_exit s hex hRd hWr hNo
   have hexec_cu : (executeFn fetch s 1).cuConsumed ≤ s.cuConsumed + 1 + nCu := by
     rw [hstep_eq]
     show (step (.call sc) s).cuConsumed + 1 ≤ s.cuConsumed + 1 + nCu
     have := h_step_cu s; omega
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
-    rw [hstep_eq]; exact h_step_regs s hRd hWr
+    rw [hstep_eq]; exact h_step_regs s hRd hWr hNo
   -- Compose the in-range mem fact with the source-bytes value.
   have hexec_mem_in (i : Nat) (hi : i < r3V) :
       (executeFn fetch s 1).mem (r1V + i) = (srcBytes.get! i).toNat := by
     rw [hstep_eq, ← hs_r1_field]
     show (step (.call sc) s).mem (s.regs.r1 + i) = (srcBytes.get! i).toNat
-    have h1 := h_step_mem_in s hs_r2_field hs_r3_field hRd hWr i hi
+    have h1 := h_step_mem_in s hs_r2_field hs_r3_field hRd hWr hNo i hi
     rw [hs_r2_field] at h1
     rw [h1, hs_mem_src i hi]
     -- (UInt8.toNat _) < 256, so % 256 is a no-op.
@@ -1474,16 +1494,18 @@ theorem cuTripleWithin_syscall_copiesR2ToR1
       exact hcompat.callStack cs hp_cs
 /-! ## Syscall: `sol_memcpy` / `sol_memmove`
 
-Both share `MemOps.execCopy` semantics (no overlap-handling distinction): copy
-`n = r3` bytes from `src = r2` to `dst = r1`, set `r0 := 0`. The two `↦Bytes`
-atoms force src/dest disjoint, so memcpy's UB-on-overlap and memmove's
-overlap support are both off the SL spec. -/
+Copy `n = r3` bytes from `src = r2` to `dst = r1`, set `r0 := 0`. memmove is
+`MemOps.execMove`; memcpy is `MemOps.execCopy`, which faults `copyOverlapping`
+on overlapping ranges first. The two `↦Bytes` atoms here are disjoint, which
+discharges that check (`singletonMemBytes_disjoint_nonoverlapping`); the
+alias-capable forms are in `MemOpsGeneral.lean`. -/
 
-/-- Shared proof for `sol_memcpy` / `sol_memmove`: any syscall dispatching to
-    `MemOps.execCopy` (witnessed by `hexec`) satisfies the 6-atom copy triple.
-    The two public specs below instantiate this with `hexec := fun _ => rfl`. -/
+/-- Shared proof for `sol_memcpy` / `sol_memmove`: a syscall dispatching to
+    `execMove` (`isMove`) or `execCopy` satisfies the 6-atom copy triple. -/
 private theorem call_copy_syscall_spec
-    (sc : Syscall) (hexec : ∀ s, execSyscall sc s = MemOps.execCopy s)
+    (sc : Syscall) (isMove : Bool)
+    (hexec : ∀ s, execSyscall sc s =
+      if isMove then MemOps.execMove s else MemOps.execCopy s)
     (r0Old r1V r2V r3V pc nCu : Nat) (srcBytes bsOld : ByteArray)
     (hsrc : srcBytes.size = r3V) (hbs : bsOld.size = r3V)
     (hCu : ∀ s : State,
@@ -1496,44 +1518,57 @@ private theorem call_copy_syscall_spec
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes))
       (fun rt => rt.containsRange r2V r3V = true ∧
                  rt.containsWritable r1V r3V = true) := by
+  have hmove : ∀ s, MemOps.nonoverlapping s.regs.r2 s.regs.r1 s.regs.r3 = true →
+      execSyscall sc s = MemOps.execMove s := by
+    intro s hNo
+    rw [hexec]
+    cases isMove
+    · show MemOps.execCopy s = _
+      unfold MemOps.execCopy
+      rw [if_pos hNo]
+    · rfl
   refine cuTripleWithin_syscall_copiesR2ToR1
     sc pc nCu r2V r3V srcBytes hsrc
     ?_ ?_ ?_ ?_ ?_ ?_ ?_ hCu r0Old r1V bsOld hbs
-  · intro s hRd hWr
-    simp only [step, hexec, MemOps.execCopy, State.guardRead, State.guardWrite]
-    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
-  · intro s hr2 hr3 hRd hWr i hi
-    simp only [step, hexec, MemOps.execCopy, State.guardRead, State.guardWrite]
-    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
-    rw [Mem_read_default]
-    rw [if_pos ⟨Nat.le_add_right _ _, by rw [hr3]; omega⟩]
-    have : s.regs.r1 + i - s.regs.r1 = i := by omega
-    rw [this]
+  · intro s hRd hWr hNo
+    simp only [step, hmove s hNo, MemOps.execMove_ok s (Or.inr hRd) (Or.inr hWr)]
+  · intro s hr2 hr3 hRd hWr hNo i hi
+    simp only [step, hmove s hNo, MemOps.execMove_ok s (Or.inr hRd) (Or.inr hWr)]
+    exact MemOps.moveMem_in _ _ _ _ _ (by rw [hr3]; exact hi)
   · intro s hr3 hRd hWr a ha
-    simp only [step, hexec, MemOps.execCopy, State.guardRead, State.guardWrite]
-    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
-    rw [Mem_read_default]
-    have hneg : ¬(a ≥ s.regs.r1 ∧ a - s.regs.r1 < s.regs.r3) := by
-      rintro ⟨h1, h2⟩
-      rw [hr3] at h2
-      rcases ha with hl | hr
-      · omega
-      · omega
-    rw [if_neg hneg]
+    simp only [step, hexec]
+    cases isMove <;>
+      simp only [Bool.false_eq_true, if_false, if_true, MemOps.execCopy, MemOps.execMove,
+        MemOps.moveMem, State.guardRead, State.guardWrite] <;>
+      (repeat' split) <;>
+      first
+        | rfl
+        | (rw [Mem_read_default]
+           have hneg : ¬(a ≥ s.regs.r1 ∧ a - s.regs.r1 < s.regs.r3) := by
+             rintro ⟨h1, h2⟩
+             rw [hr3] at h2
+             rcases ha with hl | hr
+             · omega
+             · omega
+           rw [if_neg hneg])
+        | (simp only [State.accessFault])
   · intro s
-    simp only [step, hexec, MemOps.execCopy]
-  · intro s hex hRd hWr
-    simp only [step, hexec, MemOps.execCopy, State.guardRead, State.guardWrite]
-    rw [if_pos (Or.inr hRd), if_pos (Or.inr hWr)]
+    simp only [step]
+  · intro s hex hRd hWr hNo
+    simp only [step, hmove s hNo, MemOps.execMove_ok s (Or.inr hRd) (Or.inr hWr)]
     exact hex
   · intro s
-    simp only [step, hexec, MemOps.execCopy, State.guardRead, State.guardWrite,
-      State.accessFault]
-    (repeat' split) <;> rfl
+    simp only [step, hexec]
+    cases isMove <;>
+      simp only [Bool.false_eq_true, if_false, if_true, MemOps.execCopy, MemOps.execMove,
+        State.guardRead, State.guardWrite, State.accessFault] <;>
+      (repeat' split) <;> rfl
   · intro s
-    simp only [step, hexec, MemOps.execCopy, State.guardRead, State.guardWrite,
-      State.accessFault]
-    (repeat' split) <;> rfl
+    simp only [step, hexec]
+    cases isMove <;>
+      simp only [Bool.false_eq_true, if_false, if_true, MemOps.execCopy, MemOps.execMove,
+        State.guardRead, State.guardWrite, State.accessFault] <;>
+      (repeat' split) <;> rfl
 
 theorem call_sol_memcpy_spec
     (r0Old r1V r2V r3V pc nCu : Nat) (srcBytes bsOld : ByteArray)
@@ -1549,7 +1584,7 @@ theorem call_sol_memcpy_spec
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes))
       (fun rt => rt.containsRange r2V r3V = true ∧
                  rt.containsWritable r1V r3V = true) :=
-  call_copy_syscall_spec .sol_memcpy (fun _ => rfl)
+  call_copy_syscall_spec .sol_memcpy false (fun _ => rfl)
     r0Old r1V r2V r3V pc nCu srcBytes bsOld hsrc hbs hCu
 
 theorem call_sol_memmove_spec
@@ -1566,7 +1601,7 @@ theorem call_sol_memmove_spec
        ** (r2V ↦Bytes srcBytes) ** (r1V ↦Bytes srcBytes))
       (fun rt => rt.containsRange r2V r3V = true ∧
                  rt.containsWritable r1V r3V = true) :=
-  call_copy_syscall_spec .sol_memmove (fun _ => rfl)
+  call_copy_syscall_spec .sol_memmove true (fun _ => rfl)
     r0Old r1V r2V r3V pc nCu srcBytes bsOld hsrc hbs hCu
 
 /-! ## Syscall: `sol_memcmp`
@@ -1634,7 +1669,10 @@ theorem call_sol_memcmp_spec
     (p1Bytes p2Bytes : ByteArray)
     (hsz1 : p1Bytes.size = r3V) (hsz2 : p2Bytes.size = r3V)
     (hCu : ∀ s : State,
-        (step (.call .sol_memcmp) s).cuConsumed ≤ s.cuConsumed + nCu) :
+        (step (.call .sol_memcmp) s).cuConsumed ≤ s.cuConsumed + nCu)
+    -- The `i32` result must be 4-aligned (`check_aligned`); lifted addresses
+    -- are literals, so the default closes it.
+    (halign : r4V % 4 = 0 := by decide) :
     -- H6: `[r1V, r1V+r3V)` and `[r2V, r2V+r3V)` (inputs) readable, and the
     -- fixed 4-byte `[r4V, r4V+4)` result must be in a writable region.
     cuTripleWithinMem 1 nCu pc (pc + 1)
@@ -1867,28 +1905,27 @@ theorem call_sol_memcmp_spec
     rw [hstep_eq]; simp only [step, execSyscall, MemOps.execCmp, chargeCu]
   have hexec_exit : (executeFn fetch s 1).exitCode = none := by
     rw [hstep_eq]
-    simp only [step, execSyscall, MemOps.execCmp, chargeCu, State.guardRead, State.guardWrite]
-    rw [if_pos (Or.inr hRd1), if_pos (Or.inr hRd2), if_pos (Or.inr hWr)]
+    simp only [step, execSyscall, chargeCu,
+      MemOps.execCmp_ok s (Or.inr hRd1) (Or.inr hRd2) hWr (by rw [hs_r4_field]; exact halign)]
     exact hex
   have hexec_regs : (executeFn fetch s 1).regs = s.regs.set .r0 0 := by
     rw [hstep_eq]
-    simp only [step, execSyscall, MemOps.execCmp, chargeCu, State.guardRead, State.guardWrite]
-    rw [if_pos (Or.inr hRd1), if_pos (Or.inr hRd2), if_pos (Or.inr hWr)]
+    simp only [step, execSyscall, chargeCu,
+      MemOps.execCmp_ok s (Or.inr hRd1) (Or.inr hRd2) hWr (by rw [hs_r4_field]; exact halign)]
   -- execCmp_fold_eq converts the s.mem-based fold to memcmpFold under coherence,
   -- yielding memcmpResultU32.
   have hexec_mem_eq :
       (executeFn fetch s 1).mem =
         Memory.writeU32 s.mem r4V cmpResult := by
     rw [hstep_eq]
-    simp only [step, execSyscall, MemOps.execCmp, chargeCu, State.guardRead, State.guardWrite]
-    rw [if_pos (Or.inr hRd1), if_pos (Or.inr hRd2), if_pos (Or.inr hWr)]
-    -- Convert all s.regs.{r1, r2, r3, r4} → fixed parameter values
+    simp only [step, execSyscall, chargeCu,
+      MemOps.execCmp_ok s (Or.inr hRd1) (Or.inr hRd2) hWr (by rw [hs_r4_field]; exact halign)]
     rw [hs_r4_field, hs_r1_field, hs_r2_field, hs_r3_field]
-    show Memory.writeU32 s.mem r4V _ = Memory.writeU32 s.mem r4V cmpResult
     congr 1
-    show _ = memcmpResultU32 p1Bytes p2Bytes r3V
-    unfold memcmpResultU32
+    show MemOps.cmpU32 (MemOps.firstDiff _ _ r3V) = memcmpResultU32 p1Bytes p2Bytes r3V
+    unfold MemOps.firstDiff
     rw [execCmp_fold_eq s r1V r2V r3V p1Bytes p2Bytes hs_mem_p1 hs_mem_p2]
+    rfl
   -- Per-byte mem values after the U32 write at r4V (4 LE bytes of cmpResult).
   have hexec_mem_u32_0 : (executeFn fetch s 1).mem r4V = cmpResult % 256 := by
     rw [hexec_mem_eq]
@@ -2662,7 +2699,7 @@ theorem call_sol_memcmp_spec
         exact hva
       have hexec_rd : (executeFn fetch s 1).returnData = s.returnData := by
         rw [hstep_eq]
-        simp [step, execSyscall, MemOps.execCmp, hRd1, hRd2, hWr]
+        simp [step, execSyscall, MemOps.execCmp, hRd1, hRd2, hWr, hs_r4_field, halign, h_region.2]
       rw [hexec_rd]
       exact hcompat.returnData rd hp_rd
     · intro cs hva
@@ -2675,7 +2712,7 @@ theorem call_sol_memcmp_spec
         exact hva
       have hexec_cs : (executeFn fetch s 1).callStack = s.callStack := by
         rw [hstep_eq]
-        simp [step, execSyscall, MemOps.execCmp, hRd1, hRd2, hWr]
+        simp [step, execSyscall, MemOps.execCmp, hRd1, hRd2, hWr, hs_r4_field, halign, h_region.2]
       rw [hexec_cs]
       exact hcompat.callStack cs hp_cs
 

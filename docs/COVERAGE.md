@@ -154,7 +154,7 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | Syscall | Lift status | Notes |
 | --- | --- | --- |
 | `sol_log_` | Mechanical | Models the log call shape and CU bound used by generated lifts. |
-| `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. |
+| `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. General functional spec (`MemOps.execSet_ok`) and OOB fault triple (`call_sol_memset_oob_faults_spec`) in `MemOpsSpec.lean` / `MemOpsGeneral.lean`. |
 | `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. The output slice must be writable and the 32-byte id readable (`rr`), else `.accessViolation` (`sbpfv3_oob_get_sysvar_{out,id}.so`). |
 | `sol_invoke_signed_rust` | Terminal (V0), bridged/composed (V3) | The proof-facing CPI in `step` is the fail-closed `Cpi.exec` stub (audit C5), so an invoke ends the walk (`.unsupportedInstruction` typed-fault terminal); the lifted prefix's post owns the caller-side envelope cells (`cpiEnvelope`, see below). V3 lifts extend across it via `<M>_cpi_bridge` and `lift_cpi_paths` (see "V3 caller paths across a CPI"). |
 | `sol_invoke_signed_c` | Terminal (V0), bridged/composed (V3) | Same as the Rust ABI (`cpiEnvelopeC` is the C-ABI envelope encoding); `sbpfv3_cpi_writer.so` is the C-ABI V3 fixture. |
@@ -163,8 +163,8 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | Curve/precompile syscalls | Unsupported (success) | No success triple. The OOB fault direction of `sol_secp256k1_recover` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
 | `sol_create_program_address` | Mechanical | Single-seed success path (`call_sol_create_program_address_spec`); the off-curve case is a surfaced honest-conditional hypothesis, not a hidden assumption. |
 | Other PDA syscalls (`sol_try_find_program_address`, multi-seed) | Unsupported | Same boundary. |
-| `memcpy`, `memmove` | Mechanical | Two `↦Bytes` atoms (src readable, dst writable, disjoint); dst blob ← src, `r0 := 0` (`call_sol_mem{cpy,move}_spec`). |
-| `memcmp` | Mechanical | Two `↦Bytes` inputs + a 4-byte `↦U32` output; result `memcmpResultU32 p1 p2 n` (`call_sol_memcmp_spec`). |
+| `memcpy`, `memmove` | Mechanical | Lifts: two disjoint `↦Bytes` atoms (src readable, dst writable); dst blob ← src, `r0 := 0` (`call_sol_mem{cpy,move}_spec`). Manual, general: one window atom that src and dst may alias (`call_sol_mem{move,cpy}_window_spec`); memcpy's overlap check faults `copyOverlapping` before translation (`call_sol_memcpy_overlap_faults_spec`); per-pointer OOB fault triples; functional specs `MemOps.exec{Move,Copy}_ok`. |
+| `memcmp` | Mechanical | Two `↦Bytes` inputs + a 4-byte `↦U32` output at a 4-aligned `r4`; result `memcmpResultU32 p1 p2 n` (`call_sol_memcmp_spec`), the byte difference at the first mismatch (`memcmpResultU32_of_first`, `_of_eq`). An unaligned result faults `unalignedPointer` after the region checks; OOB inputs or result fault `accessViolation`. |
 | `sol_set_return_data` | Mechanical | One `↦Bytes` input (`[r1, r1+r2)` readable, `r2 ≤ MAX_RETURN_DATA`) copied into the framed `↦ReturnData` atom; `r0 := 0` (`call_sol_set_return_data_spec`). |
 | `sol_get_return_data` | Unsupported | Only the fault direction (`execGet_faults_oob`) is modeled; no success triple. |
 | Dedicated sysvar getters | Unsupported (success) | Only the generic `sol_get_sysvar` success path is modeled. The OOB fault direction of `sol_get_clock_sysvar` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |

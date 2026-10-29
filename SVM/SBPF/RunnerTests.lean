@@ -791,7 +791,7 @@ example : Runner.runForExit memsetDemo
   mov64 r2, r1          ; r2 = INPUT_START
   add64 r2, 3           ; r2 = INPUT_START + 3 (second range)
   mov64 r4, r1
-  add64 r4, 6           ; r4 = INPUT_START + 6 (result address)
+  add64 r4, 8           ; r4 = INPUT_START + 8 (4-aligned result address)
   mov64 r3, 3           ; n = 3
   call sol_memcmp_      ; writes i32 to *r4
   ldxb r0, [r4 + 0]     ; low byte of the LE u32 result
@@ -802,7 +802,7 @@ Exit with the low byte of the result: 0 if equal, 0xFF if the first
 range is less. The byte pattern Anchor's `PubKey::eq` + discriminator
 checks rely on. -/
 
-def memcmpDemo : ByteArray :=
+def memcmpDemoAt (out : UInt8) : ByteArray :=
   let h := SyscallHash.sol_memcmp_hash
   ⟨#[
     -- mov64 r2, r1
@@ -811,8 +811,8 @@ def memcmpDemo : ByteArray :=
     0x07, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00,
     -- mov64 r4, r1
     0xbf, 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    -- add64 r4, 6
-    0x07, 0x04, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00,
+    -- add64 r4, out
+    0x07, 0x04, 0x00, 0x00, out, 0x00, 0x00, 0x00,
     -- mov64 r3, 3
     0xb7, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x00
   ] ++ #[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
@@ -822,19 +822,28 @@ def memcmpDemo : ByteArray :=
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   ]⟩
 
+def memcmpDemo : ByteArray := memcmpDemoAt 8
+
 /-- Equal bytes (`AAA` vs `AAA`) → result 0, low byte 0. -/
 example : Runner.runForExit memcmpDemo
-    { input := padInput ⟨#[0x41, 0x41, 0x41, 0x41, 0x41, 0x41]⟩ 10 } = some 0 := by
+    { input := padInput ⟨#[0x41, 0x41, 0x41, 0x41, 0x41, 0x41]⟩ 12 } = some 0 := by
   native_decide
 
 /-- Less-than (`AAA` vs `BBB`) → result -1 = 0xFFFFFFFF, low byte 0xFF. -/
 example : Runner.runForExit memcmpDemo
-    { input := padInput ⟨#[0x41, 0x41, 0x41, 0x42, 0x42, 0x42]⟩ 10 } = some 0xFF := by
+    { input := padInput ⟨#[0x41, 0x41, 0x41, 0x42, 0x42, 0x42]⟩ 12 } = some 0xFF := by
   native_decide
 
 /-- Greater-than (`BBB` vs `AAA`) → result 1, low byte 1. -/
 example : Runner.runForExit memcmpDemo
-    { input := padInput ⟨#[0x42, 0x42, 0x42, 0x41, 0x41, 0x41]⟩ 10 } = some 1 := by
+    { input := padInput ⟨#[0x42, 0x42, 0x42, 0x41, 0x41, 0x41]⟩ 12 } = some 1 := by
+  native_decide
+
+/-- The `i32` result must be 4-aligned (#103): at `INPUT_START + 6` agave
+    faults `UnalignedPointer`, and so does the model. -/
+example : Runner.runForExit (memcmpDemoAt 6)
+    { input := padInput ⟨#[0x41, 0x41, 0x41, 0x41, 0x41, 0x41]⟩ 12 } =
+      some ERR_UNALIGNED_POINTER := by
   native_decide
 
 /-! ## Demo 15 — `sol_log_` writes a message to `state.log`
