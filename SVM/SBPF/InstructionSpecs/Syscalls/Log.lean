@@ -104,8 +104,32 @@ macro "r0_writer_obligations" head:term:max execFn:ident : term =>
 
 /-! ## Syscall: `sol_get_stack_height`
 
-Returns CPI depth in `r0`; our model fixes it to `1` (top-level) regardless of
-`State.callStack` (`Misc.execGetStackHeight`). -/
+Returns the one-based CPI invocation height, not the sBPF function-call
+stack depth. `PartialState` does not own `invokeDepth`, so the framed SL
+triple exposes an existential result. The exact state-level contract below
+retains the height relationship and all preserved fields. -/
+
+/-- Exact syscall step, including its CU surcharge and frame. -/
+theorem call_sol_get_stack_height_state (s : State) :
+    step (.call .sol_get_stack_height) s =
+      { s with regs := s.regs.set .r0 ((s.invokeDepth + 1) % U64_MODULUS)
+               pc := s.pc + 1
+               cuConsumed := s.cuConsumed + Misc.cu } := by
+  rfl
+
+/-- The returned value is the invocation height when it fits in a u64;
+    in particular at every runtime-reachable depth (0 through 4). -/
+theorem call_sol_get_stack_height_value (s : State)
+    (hdepth : s.invokeDepth + 1 < U64_MODULUS) :
+    (step (.call .sol_get_stack_height) s).regs.r0 = s.invokeDepth + 1 := by
+  exact Nat.mod_eq_of_lt hdepth
+
+/-- Top-level-only guards accept precisely zero-based invocation depth zero. -/
+theorem call_sol_get_stack_height_top_level_iff (s : State)
+    (hdepth : s.invokeDepth + 1 < U64_MODULUS) :
+    (step (.call .sol_get_stack_height) s).regs.r0 = 1 ↔ s.invokeDepth = 0 := by
+  rw [call_sol_get_stack_height_value s hdepth]
+  omega
 
 theorem call_sol_get_stack_height_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
     (h_step_cu : ∀ s : State,
@@ -113,9 +137,10 @@ theorem call_sol_get_stack_height_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
     cuTripleWithin 1 nCu pc (pc + 1)
       (CodeReq.singleton pc (.call .sol_get_stack_height))
       (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 1) :=
+      (fun h => ∃ v, h = PartialState.singletonReg .r0 v) :=
   (r0_writer_obligations
-    (cuTripleWithin_syscall_writes_r0_only .sol_get_stack_height 1 pc nCu)
+    (cuTripleWithin_syscall_writes_r0_fn .sol_get_stack_height
+      (fun s => (s.invokeDepth + 1) % U64_MODULUS) pc nCu)
     Misc.execGetStackHeight)
     (fun s => h_step_cu s)
     r0Old

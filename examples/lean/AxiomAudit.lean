@@ -246,3 +246,9 @@ elab "#assert_native_decide_axioms " id:ident : command => do
 -- Binary-derived success proofs for the label-vault fixture (solana-skills#450). The
 -- bytecode checks use `native_decide`; nothing else may appear.
 #assert_native_decide_axioms Examples.LabelVault.readable53
+
+-- #109: invocation height and its framed syscall contract remain kernel checked.
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_state
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_value
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_top_level_iff
+#assert_std_axioms SVM.SBPF.call_sol_get_stack_height_spec
