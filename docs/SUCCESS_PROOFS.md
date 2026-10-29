@@ -169,6 +169,14 @@ cannot hold vacuously. Guards whose operands are not pinned (for `increment`, th
 instruction-length and overflow checks) are listed in the route's doc comment and in
 `coverage.json`, not stated.
 
+The same program built with `qedgen build --arch v3` is
+`qedsvm-rs/tests/fixtures/label_vault_v3{,.debug}.so`, with modules in
+`examples/lean/LabelVaultV3/` (prefix `LabelVaultV3`). The emitter decodes v3 text with
+`Decode.decodeProgram text [] .v3`, as `Runner.runElfV3WithFuel` does: v3 calls are
+relative, so there is no function registry. The frame model, the abstract interpreter and
+the checkers are the same for both versions. Discovery and coverage match V0 exactly: the
+same instructions, success edge, pinned guards and authority facts.
+
 What changes against the p_token baseline:
 
 | p_token manual input | label-vault source |

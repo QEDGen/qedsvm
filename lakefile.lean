@@ -156,6 +156,8 @@ lean_lib Examples where
     `AbsAssumedTests,
     `LabelVault.Text,
     `LabelVault.Success,
+    `LabelVaultV3.Text,
+    `LabelVaultV3.Success,
     `PToken.SuccessInputs,
     `PToken.ReadableFields,
     `PToken.TransferSpec,
