@@ -139,7 +139,7 @@ private def v0Run (text : ByteArray) : Option State := do
     { start := Memory.STACK_START, size := Runner.STACK_SIZE, writable := true }]
   let s₀ : State := { regs := { r10 := Memory.STACK_START + 0x1000 },
                       mem := Runner.loadBytesAt Runner.emptyMem text Memory.MM_REGION_SIZE,
-                      regions, pc := 0, cuBudget := 200 }
+                      regions := { regions }, pc := 0, cuBudget := 200 }
   return executeFn (Runner.fetchFromArray insns) s₀ 200
 
 /-- `lddw r2, MM_REGION_SIZE + lo; callx r2; exit; mov r0, 42; exit`. -/
@@ -952,6 +952,21 @@ example :
       { input := padInput ⟨#[0xff]⟩ 40 } = some ERR_ACCESS_VIOLATION := by
   native_decide
 
+/-! ## Sysvars come from the environment (#105)
+
+`clockSlotProgram` returns the slot's low byte. It reads 77 under a warped
+environment and the default's 1 otherwise, directly and through a CPI. -/
+
+def clockSlotProgram : ByteArray := clockSysvarByteDemo 0
+
+def warpedSysvars : SysvarEnv :=
+  { SysvarEnv.molluskDefaults with clock := ⟨77, 0, 0, 0, 0⟩ }
+
+example : Runner.runForExit clockSlotProgram { sysvars := warpedSysvars } = some 77 := by
+  native_decide
+
+example : Runner.runForExit clockSlotProgram = some 1 := by native_decide
+
 /-! ## Demo 22 — `sol_sha256` hashes "abc" and writes the 32-byte digest
 
 The Solana ABI for `sol_sha256`:
@@ -1299,7 +1314,7 @@ private def v3FailingAccountElf : ByteArray :=
 private def v3CpiRollbackBytes : Option (Nat × Nat) := do
   let dataPtr := Memory.INPUT_START + 0x2000
   let callerMem := Runner.loadBytesAt Runner.emptyMem (Decode.bytesOfHex "11") dataPtr
-  let caller : State := { regs := default, mem := callerMem, regions := [], pc := 0 }
+  let caller : State := { regs := default, mem := callerMem, regions := default, pc := 0 }
   let acct : Runner.ParsedAcct :=
     { key := ⟨Array.replicate 32 0⟩
       owner := ⟨Array.replicate 32 0⟩
@@ -1332,6 +1347,19 @@ example : v3CpiRollbackBytes = some (0x99, 0x11) := by native_decide
 
 example :
     Runner.runForExit cpiCallerBytes { programRegistry := cpiRegistry } = some 0x77 := by
+  native_decide
+
+/-- A callee reads its caller's sysvars (#105). -/
+def cpiClockRegistry : Nat → Option ByteArray := fun n =>
+  if n = 0x42 then some clockSlotProgram else none
+
+example :
+    Runner.runForExit cpiCallerBytes
+      { programRegistry := cpiClockRegistry, sysvars := warpedSysvars } = some 77 := by
+  native_decide
+
+example :
+    Runner.runForExit cpiCallerBytes { programRegistry := cpiClockRegistry } = some 1 := by
   native_decide
 
 /-- Unknown program-id → CPI fails, caller's `r0` becomes 1, then the

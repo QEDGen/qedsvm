@@ -197,6 +197,49 @@ pub struct Svm {
     /// the transaction layer; mollusk bypasses it too, so enabling here causes false diff divergences.
     /// Enable only when using qedsvm as a transaction-level oracle (not in diff-mollusk mode).
     enforce_rent_state: bool,
+    /// Encoded [`SysvarWire`]. `None` runs under the Mollusk defaults.
+    sysvars: Option<Vec<u8>>,
+}
+
+/// The sysvars and epoch stake a run reads, as bincode buffers. Same order as
+/// `SysvarEnv.ofWire` in `SVM/Syscalls/SysvarEnv.lean`.
+#[derive(Clone, Debug, Default)]
+pub struct SysvarWire {
+    pub clock: Vec<u8>,
+    pub rent: Vec<u8>,
+    pub epoch_schedule: Vec<u8>,
+    pub epoch_rewards: Vec<u8>,
+    pub last_restart_slot: Vec<u8>,
+    pub slot_hashes: Vec<u8>,
+    pub stake_history: Vec<u8>,
+    pub total_stake: u64,
+    pub vote_stake: Vec<([u8; 32], u64)>,
+}
+
+impl SysvarWire {
+    /// The bytes `qedsvm_run_with_sysvars` parses.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for chunk in [
+            &self.clock,
+            &self.rent,
+            &self.epoch_schedule,
+            &self.epoch_rewards,
+            &self.last_restart_slot,
+            &self.slot_hashes,
+            &self.stake_history,
+        ] {
+            out.extend_from_slice(&(chunk.len() as u32).to_le_bytes());
+            out.extend_from_slice(chunk);
+        }
+        out.extend_from_slice(&self.total_stake.to_le_bytes());
+        out.extend_from_slice(&(self.vote_stake.len() as u32).to_le_bytes());
+        for (key, stake) in &self.vote_stake {
+            out.extend_from_slice(key);
+            out.extend_from_slice(&stake.to_le_bytes());
+        }
+        out
+    }
 }
 
 impl Default for Svm {
@@ -211,7 +254,14 @@ impl Svm {
             programs: HashMap::new(),
             cu_budget: DEFAULT_CU_BUDGET,
             enforce_rent_state: false,
+            sysvars: None,
         }
+    }
+
+    /// Run under these sysvars instead of the Mollusk defaults.
+    pub fn with_sysvars(mut self, sysvars: SysvarWire) -> Self {
+        self.sysvars = Some(sysvars.encode());
+        self
     }
 
     /// Set the per-instruction CU budget (default: `DEFAULT_CU_BUDGET = 200_000`).
@@ -321,13 +371,23 @@ impl Svm {
         } else {
             crate::encode_registry(&registry_entries)
         };
-        let raw = crate::run_buffer_with_registry_and_pid(
-            elf,
-            &input,
-            &registry_blob,
-            instruction.program_id.as_array(),
-            self.cu_budget,
-        )
+        let raw = match &self.sysvars {
+            Some(sysvars) => crate::run_buffer_with_sysvars(
+                elf,
+                &input,
+                &registry_blob,
+                instruction.program_id.as_array(),
+                sysvars,
+                self.cu_budget,
+            ),
+            None => crate::run_buffer_with_registry_and_pid(
+                elf,
+                &input,
+                &registry_blob,
+                instruction.program_id.as_array(),
+                self.cu_budget,
+            ),
+        }
         .map_err(|e| match e {
             crate::DecodeError::ElfDecodeFailed => SvmError::ElfDecodeFailed,
             other => SvmError::InternalWireFormat(other),

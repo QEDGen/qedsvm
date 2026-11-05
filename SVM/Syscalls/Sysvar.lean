@@ -1,12 +1,8 @@
--- Sysvar-getter syscalls: write the mollusk-default (agave 4.3) sysvar contents
--- at `*r1`. Clock carries mollusk's `DEFAULT_CLOCK_SLOT = 1`. Rent is real: SPL
--- Token feeds its fields (SIMD-0194: lamports_per_byte=6960,
--- exemption_threshold=1.0, burn_percent=50) into `is_exempt`, which executes a
--- different instruction count per threshold value, so the cross-engine CU diff
--- against mollusk depends on matching it. All getters charge base 100.
+-- Sysvar-getter syscalls: write the environment's sysvar contents at `*r1`
+-- (`s.regions.sysvars`, defaulting to Mollusk's, see `SysvarEnv`). All getters
+-- charge base 100.
 
 import SVM.SBPF.Machine
-import SVM.Syscalls.SysvarData
 
 namespace SVM.SBPF
 namespace Sysvar
@@ -52,23 +48,16 @@ def cu : Nat := 100
       if a ≥ outA ∧ a - outA < size then (bytes.get! (a - outA)).toNat else s.mem a
     { s with regs := s.regs.set .r0 0, mem := mem' }
 
-/-- Mollusk default `Clock`, `repr(C)`: same layout as its bincode. -/
-def clockBytes : ByteArray := SysvarData.clockBuf
-/-- Mollusk default `Rent`, `repr(C)`: the 17 field bytes, then 7 zeroed padding. -/
-def rentBytes : ByteArray := SysvarData.rentBuf ++ SysvarData.zeros 7
-/-- `EpochSchedule::without_warmup()`, `repr(C)`, with the `warmup` bool's padding
-    (bincode has none). 432_000 = 0x69780 LE `[0x80, 0x97, 0x06, ..]`. -/
-def epochScheduleBytes : ByteArray :=
-  ⟨#[0x80, 0x97, 0x06, 0, 0, 0, 0, 0, 0x80, 0x97, 0x06, 0, 0, 0, 0, 0] ++ Array.replicate 24 0⟩
-
-@[simp] def execClock (s : State) : State := execTyped 8 40 clockBytes s
-@[simp] def execRent (s : State) : State := execTyped 8 24 rentBytes s
-@[simp] def execEpochSchedule (s : State) : State := execTyped 8 40 epochScheduleBytes s
+@[simp] def execClock (s : State) : State := execTyped 8 40 s.regions.sysvars.clock.reprC s
+@[simp] def execRent (s : State) : State := execTyped 8 24 s.regions.sysvars.rent.reprC s
+@[simp] def execEpochSchedule (s : State) : State :=
+  execTyped 8 40 s.regions.sysvars.epochSchedule.reprC s
 /-- `sol_get_last_restart_slot`: u64. -/
-@[simp] def execLastRestartSlot (s : State) : State := execTyped 8 8 (SysvarData.zeros 8) s
-/-- `sol_get_epoch_rewards_sysvar`: `repr(C, align(16))`, so 96 bytes aligned to 16
-    (active = false: all zero). -/
-@[simp] def execEpochRewards (s : State) : State := execTyped 16 96 (SysvarData.zeros 96) s
+@[simp] def execLastRestartSlot (s : State) : State :=
+  execTyped 8 8 s.regions.sysvars.lastRestartBytes s
+/-- `sol_get_epoch_rewards_sysvar`: `repr(C, align(16))`, so 96 bytes aligned to 16. -/
+@[simp] def execEpochRewards (s : State) : State :=
+  execTyped 16 96 s.regions.sysvars.epochRewards.reprC s
 
 /-- A typed getter's output outside a writable region faults, whichever check
     catches it. Complements the cross-engine `oob_*_sysvar.so`. -/
@@ -86,11 +75,14 @@ theorem execTyped_faults_oob (align size : Nat) (bytes : ByteArray) (s : State) 
     exact ⟨rfl, rfl⟩
 
 /-- `sol_get_epoch_stake`, r1 = `*const Pubkey` vote account. Null returns the
-    total stake, else the account's stake once the key is readable. No stake is
-    modeled, so both are 0. -/
+    total stake, else the account's stake once the key is readable. -/
 @[simp] def execEpochStake (s : State) : State :=
-  if s.regs.r1 = 0 then { s with regs := s.regs.set .r0 0 }
-  else s.guardRead s.regs.r1 32 fun s => { s with regs := s.regs.set .r0 0 }
+  if s.regs.r1 = 0 then
+    let stake := s.regions.sysvars.totalStake % U64_MODULUS
+    { s with regs := s.regs.set .r0 stake }
+  else s.guardRead s.regs.r1 32 fun s =>
+    let stake := s.regions.sysvars.stakeOf (readBytes s.mem s.regs.r1 32) % U64_MODULUS
+    { s with regs := s.regs.set .r0 stake }
 
 end Sysvar
 end SVM.SBPF

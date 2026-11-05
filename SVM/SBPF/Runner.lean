@@ -88,19 +88,21 @@ def DEFAULT_HEAP_SIZE : Nat := 0x8000
     write boundaries + read-only as post-instruction validation in the
     Rust harness instead. -/
 def runtimeRegions (inputLen : Nat) : Memory.RegionTable :=
-  [ { start := STACK_START, size := STACK_SIZE,        writable := true }
-  , { start := HEAP_START,  size := DEFAULT_HEAP_SIZE, writable := true }
-  , { start := INPUT_START, size := inputLen,          writable := true } ]
+  { regions :=
+      [ { start := STACK_START, size := STACK_SIZE,        writable := true }
+      , { start := HEAP_START,  size := DEFAULT_HEAP_SIZE, writable := true }
+      , { start := INPUT_START, size := inputLen,          writable := true } ] }
 
 /-- Regions of a strict-header V3 image: read-only text carrying its slot map
     (the callx address-to-PC table), optional read-only rodata at 0, then the
     runtime stack/heap/input regions. -/
 def v3Regions (program : Elf.V3Program) (inputLen : Nat) : Memory.RegionTable :=
-  { start := program.textAddr, size := program.textBytes.size, writable := false,
-    textSlots := Decode.buildSlotMap program.textBytes }
-    :: (if program.rodata.isEmpty then []
-        else [{ start := 0, size := program.rodata.size, writable := false }])
-    ++ runtimeRegions inputLen
+  { regions :=
+      { start := program.textAddr, size := program.textBytes.size, writable := false,
+        textSlots := Decode.buildSlotMap program.textBytes }
+        :: (if program.rodata.isEmpty then []
+            else [{ start := 0, size := program.rodata.size, writable := false }])
+        ++ (runtimeRegions inputLen).regions }
 
 /-- callx resolution over a loaded V3 image depends only on its text, not on
     the input length: only the text region carries a slot map. Lets a lifted
@@ -146,8 +148,8 @@ def textRegionElf (elfBytes : ByteArray) (textSec : Elf.SectionHeader) : Memory.
     exit (data_len ≤ pre + 10240, read-only unchanged, etc.). -/
 def elfRegions (elfBytes : ByteArray) (header : Elf.Header)
     (textSec : Elf.SectionHeader) (inputLen : Nat) : Memory.RegionTable :=
-  textRegionElf elfBytes textSec :: programRegionElf elfBytes header textSec
-    :: runtimeRegions inputLen
+  { regions := textRegionElf elfBytes textSec :: programRegionElf elfBytes header textSec
+      :: (runtimeRegions inputLen).regions }
 
 /-! ## CPI sub-input construction
 
@@ -475,6 +477,8 @@ structure RunConfig where
       PDAs from caller-supplied signer seeds. Default empty — programs
       that don't use `invoke_signed` with seeds are unaffected. -/
   progIdBytes : ByteArray := ByteArray.empty
+  /-- What the sysvar getters read, for the whole run including CPI callees. -/
+  sysvars : SysvarEnv := .molluskDefaults
 
 /-! ## CPI-aware execution
 
@@ -785,12 +789,14 @@ def buildCalleeVM (s : State) (fuel' : Nat) (pidBytesIn : ByteArray)
         let slot := byteOff / 8
         if hbnd : slot < slotMap.size then slotMap[slot]'hbnd else 0
         | _, _ => 0
+    -- Sysvars are transaction-wide: the callee reads the caller's environment.
     let subRegions : Memory.RegionTable :=
-      match v3ProgramOpt with
-      | some program => v3Regions program subInput.size
-      | none => match headerOpt, textSecOpt with
-        | some h, some textSec => elfRegions calleeBytes h textSec subInput.size
-        | _, _ => runtimeRegions subInput.size
+      { (match v3ProgramOpt with
+         | some program => v3Regions program subInput.size
+         | none => match headerOpt, textSecOpt with
+           | some h, some textSec => elfRegions calleeBytes h textSec subInput.size
+           | _, _ => runtimeRegions subInput.size)
+        with sysvars := s.regions.sysvars }
     let subS : State :=
       { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
         mem         := subMem
@@ -1002,7 +1008,7 @@ def executeFnCpi (registry : Nat → Option ByteArray)
 def initialState (cfg : RunConfig) : State :=
   { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
     mem         := loadInput emptyMem cfg.input
-    regions     := runtimeRegions cfg.input.size
+    regions     := { runtimeRegions cfg.input.size with sysvars := cfg.sysvars }
     pc          := 0
     exitCode    := none
     cuBudget    := cfg.cuBudget
@@ -1052,7 +1058,7 @@ def runElfV3WithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
   let baseMem := loadInput emptyMem cfg.input
   let memText := loadBytesAt baseMem program.textBytes program.textAddr
   let mem := loadBytesAt memText program.rodata 0
-  let regions := v3Regions program cfg.input.size
+  let regions := { v3Regions program cfg.input.size with sysvars := cfg.sysvars }
   let s : State :=
     { regs := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
       mem := mem
@@ -1120,7 +1126,7 @@ def runElf (elfBytes : ByteArray) (cfg : RunConfig := {}) : Option State :=
         let s : State :=
           { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
             mem         := mem
-            regions     := elfRegions elfBytes header textSec cfg.input.size
+            regions     := { elfRegions elfBytes header textSec cfg.input.size with sysvars := cfg.sysvars }
             pc          := entryPc
             exitCode    := none
             cuBudget    := cfg.cuBudget
@@ -1197,7 +1203,7 @@ def runElfWithFuel (elfBytes : ByteArray) (cfg : RunConfig := {}) :
         let s : State :=
           { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
             mem         := mem
-            regions     := elfRegions elfBytes header textSec cfg.input.size
+            regions     := { elfRegions elfBytes header textSec cfg.input.size with sysvars := cfg.sysvars }
             pc          := entryPc
             exitCode    := none
             cuBudget    := cfg.cuBudget

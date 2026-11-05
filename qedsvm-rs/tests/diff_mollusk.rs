@@ -6474,7 +6474,11 @@ fn sysvar_getters_probe_matches_mollusk() {
     }
     cases.push(("stake_total".into(), 7, [0, 0, 0, 0]));
     cases.push(("stake_vote".into(), 7, [SYSVAR_PROBE_VOTE_KEY, 0, 0, 0]));
-    cases.push(("stake_unaligned".into(), 7, [SYSVAR_PROBE_VOTE_KEY + 1, 0, 0, 0]));
+    cases.push((
+        "stake_unaligned".into(),
+        7,
+        [SYSVAR_PROBE_VOTE_KEY + 1, 0, 0, 0],
+    ));
     cases.push(("stake_unmapped".into(), 7, [BAD, 0, 0, 0]));
     let mut failures = Vec::new();
     for (name, op, args) in &cases {
@@ -6492,7 +6496,9 @@ fn sysvar_getters_probe_matches_mollusk() {
             d
         },
     };
-    let pre = ml_vm.process_instruction(&pre_ix, &[]).compute_units_consumed;
+    let pre = ml_vm
+        .process_instruction(&pre_ix, &[])
+        .compute_units_consumed;
     for op in [0u8, 1, 3] {
         for budget in pre..pre + 220 {
             let fs_b = svm_with(&[(id, elf.as_slice())]).with_cu_budget(budget);
@@ -6510,4 +6516,147 @@ fn sysvar_getters_probe_matches_mollusk() {
         cases.len(),
         failures.join("\n")
     );
+}
+
+/// The wire form of mollusk's sysvars, for qedsvm's matching run.
+fn sysvar_wire(m: &Mollusk) -> qedsvm::SysvarWire {
+    let s = &m.sysvars;
+    qedsvm::SysvarWire {
+        clock: bincode::serialize(&s.clock).unwrap(),
+        rent: bincode::serialize(&s.rent).unwrap(),
+        epoch_schedule: bincode::serialize(&s.epoch_schedule).unwrap(),
+        epoch_rewards: bincode::serialize(&s.epoch_rewards).unwrap(),
+        last_restart_slot: bincode::serialize(&s.last_restart_slot).unwrap(),
+        slot_hashes: bincode::serialize(&s.slot_hashes).unwrap(),
+        stake_history: bincode::serialize(&s.stake_history).unwrap(),
+        total_stake: m.epoch_stake.values().sum(),
+        vote_stake: m
+            .epoch_stake
+            .iter()
+            .map(|(k, v)| (k.to_bytes(), *v))
+            .collect(),
+    }
+}
+
+/// #105: a warped clock, including a negative timestamp, reads the same through
+/// the typed getter and `sol_get_sysvar`.
+#[test]
+fn sysvar_getters_warped_matches_mollusk() {
+    const H: u64 = SYSVAR_PROBE_H;
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1051);
+    #[rustfmt::skip]
+    let cases: &[(&str, u8, [u64; 4])] = &[
+        ("clock_typed",  0, [H, 0, 0, 0]),
+        ("clock_all",    6, [SYSVAR_PROBE_CLOCK_ID, H, 0, 40]),
+        ("clock_ts",     6, [SYSVAR_PROBE_CLOCK_ID, H, 32, 8]),
+        ("clock_mid",    6, [SYSVAR_PROBE_CLOCK_ID, H, 4, 8]),
+        ("slot_hashes",  6, [SYSVAR_PROBE_SLOT_HASHES_ID, H, 0, 48]),
+        ("schedule",     2, [H, 0, 0, 0]),
+        ("rewards",      3, [H, 0, 0, 0]),
+        ("rent",         1, [H, 0, 0, 0]),
+        ("restart",      4, [H, 0, 0, 0]),
+    ];
+    let mut failures = Vec::new();
+    for timestamp in [1_700_000_000i64, -5] {
+        let mut ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+        ml_vm.warp_to_slot(1_000_000);
+        ml_vm.sysvars.clock.unix_timestamp = timestamp;
+        ml_vm.sysvars.clock.epoch_start_timestamp = timestamp - 1;
+        ml_vm.sysvars.rent.lamports_per_byte = 7000;
+        ml_vm.sysvars.last_restart_slot.last_restart_slot = 999;
+        ml_vm.sysvars.epoch_rewards.active = true;
+        ml_vm.sysvars.epoch_rewards.total_points = (1u128 << 100) + 3;
+        let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(sysvar_wire(&ml_vm));
+        for (name, op, args) in cases {
+            if let Err(why) = run_sysvar_probe(&fs_vm, &ml_vm, id, *op, args) {
+                failures.push(format!("{name} ts={timestamp}: {why}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// #105: `sol_get_epoch_stake` returns the environment's total and per-vote stake.
+#[test]
+fn epoch_stake_env_matches_mollusk() {
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1052);
+    let mut ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    ml_vm
+        .epoch_stake
+        .insert(Pubkey::new_from_array([7; 32]), 5000);
+    ml_vm
+        .epoch_stake
+        .insert(Pubkey::new_from_array([8; 32]), 2000);
+    let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(sysvar_wire(&ml_vm));
+    let mut failures = Vec::new();
+    for (name, a) in [
+        ("total", 0),
+        ("known", SYSVAR_PROBE_VOTE_KEY),
+        ("unknown", SYSVAR_PROBE_UNKNOWN_ID),
+    ] {
+        if let Err(why) = run_sysvar_probe(&fs_vm, &ml_vm, id, 7, &[a, 0, 0, 0]) {
+            failures.push(format!("{name}: {why}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// #105: Mollusk's default sysvars sent over the wire run like the built-in default.
+#[test]
+fn default_sysvar_wire_matches_mollusk() {
+    const H: u64 = SYSVAR_PROBE_H;
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1053);
+    let ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(sysvar_wire(&ml_vm));
+    #[rustfmt::skip]
+    let cases: &[(u8, [u64; 4])] = &[
+        (0, [H, 0, 0, 0]),
+        (1, [H, 0, 0, 0]),
+        (2, [H, 0, 0, 0]),
+        (3, [H, 0, 0, 0]),
+        (4, [H, 0, 0, 0]),
+        (6, [SYSVAR_PROBE_SCHEDULE_ID, H, 0, 33]),
+        (6, [SYSVAR_PROBE_SLOT_HASHES_ID, H, 0, 48]),
+    ];
+    for (op, args) in cases {
+        run_sysvar_probe(&fs_vm, &ml_vm, id, *op, args).unwrap();
+    }
+}
+
+/// #105: a malformed sysvar blob refuses to run rather than using a default.
+#[test]
+fn malformed_sysvar_wire_fails_closed() {
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1054);
+    let ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    let good = sysvar_wire(&ml_vm);
+    let ix = Instruction {
+        program_id: id,
+        accounts: vec![],
+        data: vec![0; 40],
+    };
+    for bad in [
+        qedsvm::SysvarWire {
+            clock: vec![0; 39],
+            ..good.clone()
+        },
+        qedsvm::SysvarWire {
+            rent: vec![0; 24],
+            ..good.clone()
+        },
+        qedsvm::SysvarWire {
+            epoch_schedule: {
+                let mut b = good.epoch_schedule.clone();
+                b[16] = 2;
+                b
+            },
+            ..good.clone()
+        },
+    ] {
+        let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(bad);
+        assert!(fs_vm.process_instruction(&ix, &[]).is_err());
+    }
 }

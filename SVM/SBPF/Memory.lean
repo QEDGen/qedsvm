@@ -12,6 +12,7 @@
 -- Programs receive the input buffer pointer in r1 at entry.
 
 import SVM.SBPF.ISA
+import SVM.Syscalls.SysvarEnv
 import Std.Data.HashMap
 
 namespace SVM.SBPF.Memory
@@ -677,11 +678,17 @@ structure Region where
   deriving Inhabited, Repr
 
 /-- List of mapped regions; order irrelevant, the check folds over the list. -/
-abbrev RegionTable := List Region
+structure RegionTable where
+  regions : List Region
+  /-- What the sysvar getters read. It lives here, not on `State`, for the reason
+      `Region.textSlots` does: a proof's assumption about it composes as an
+      ordinary `cuTripleWithinMem` side condition (#105). -/
+  sysvars : SysvarEnv := .molluskDefaults
+  deriving Inhabited
 
 /-- The V3 executable text region, if the loaded image has one. -/
 def RegionTable.textRegion? (rt : RegionTable) : Option Region :=
-  rt.find? fun r => !r.textSlots.isEmpty
+  rt.regions.find? fun r => !r.textSlots.isEmpty
 
 /-- Does `[addr, addr + len)` lie entirely within this region? -/
 def Region.contains (r : Region) (addr len : Nat) : Bool :=
@@ -694,11 +701,11 @@ def Region.isData (r : Region) : Bool := r.textSlots.isEmpty
 
 /-- Is `[addr, addr + len)` covered by *some* data region in the table? -/
 def RegionTable.containsRange (rt : RegionTable) (addr len : Nat) : Bool :=
-  rt.any (fun r => r.isData && r.contains addr len)
+  rt.regions.any (fun r => r.isData && r.contains addr len)
 
 /-- Is `[addr, addr + len)` covered by a *writable* data region? -/
 def RegionTable.containsWritable (rt : RegionTable) (addr len : Nat) : Bool :=
-  rt.any (fun r => r.isData && r.writable && r.contains addr len)
+  rt.regions.any (fun r => r.isData && r.writable && r.contains addr len)
 
 /-! ## Input buffer layout helpers
 

@@ -61,7 +61,7 @@ def cu : Nat := 100
     5. `offset+length > buf.size` → r0 := 1 (`OFFSET_LENGTH_EXCEEDS_SYSVAR`).
     6. else copy `buf[offset..offset+length)` to `*var_addr`, r0 := 0.
 
-    Buffers are the Rust-pinned mollusk defaults in `SysvarData.lean`.
+    Buffers are the environment's bincode (`SysvarEnv.bincode`).
     H7: pre-fix this returned r0 := 0 WITHOUT writing the buffer (false on chain). -/
 @[simp] def execGetSysvar (s : State) : State :=
   let idA  := s.regs.r1
@@ -75,7 +75,7 @@ def cu : Nat := 100
   if off + len ≥ U64_MODULUS ∨ outA + len ≥ U64_MODULUS then
     { s with exitCode := some ERR_INVALID_LENGTH, vmError := some .invalidLength }
   else
-    match SysvarData.sysvarBuffer (readBytes s.mem idA 32) with
+    match s.regions.sysvars.bincode (readBytes s.mem idA 32) with
     | none => { s with regs := s.regs.set .r0 2 }
     | some buf =>
       if off + len > buf.size then

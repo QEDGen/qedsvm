@@ -223,11 +223,11 @@ discharge in agave's check order: `var_addr < MM_INPUT_START`, u64 off/len
 overflow, cache hit, in-range window. `h_disj` keeps the id read disjoint from
 the output write. -/
 
-theorem call_sol_get_sysvar_spec
+theorem call_sol_get_sysvar_spec (env : SysvarEnv)
     (r0Old idA outA offV lenV : Nat)
     (idBytes buf slice bsOut : ByteArray) (pc : Nat) (nCu : Nat)
     (hIdSize : idBytes.size = 32)
-    (hBuf : SysvarData.sysvarBuffer idBytes = some buf)
+    (hBuf : env.bincode idBytes = some buf)
     (hInRange : offV + lenV ≤ buf.size)
     (hOutAddr : outA < Memory.INPUT_START)
     (hOffLen : offV + lenV < U64_MODULUS)
@@ -247,7 +247,7 @@ theorem call_sol_get_sysvar_spec
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) ** (outA ↦Bytes slice))
-      (fun rt => rt.containsWritable outA lenV = true ∧
+      (fun rt => rt.sysvars = env ∧ rt.containsWritable outA lenV = true ∧
                  rt.containsRange idA 32 = true) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud hrr
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -424,16 +424,16 @@ theorem call_sol_get_sysvar_spec
     rintro (h | h)
     · exact absurd h (Nat.not_le.mpr hOffLen)
     · exact absurd h (Nat.not_le.mpr hOutLen)
-  have h_discr : SysvarData.sysvarBuffer (readBytes s.mem s.regs.r1 32)
+  have h_discr : s.regions.sysvars.bincode (readBytes s.mem s.regs.r1 32)
       = some buf := by
-    rw [hs_r1_field, h_readBytes]; exact hBuf
+    rw [hs_r1_field, h_readBytes, hrr.1]; exact hBuf
   have h_if3 : ¬ (s.regs.r3 + s.regs.r4 > buf.size) := by
     rw [hs_r3_field, hs_r4_field]; exact Nat.not_lt.mpr hInRange
   -- H6 guards: output writable, id readable (from `rr`)
   have h_gw : s.regs.r4 = 0 ∨ s.regions.containsWritable s.regs.r2 s.regs.r4 = true := by
-    rw [hs_r2_field, hs_r4_field]; exact Or.inr hrr.1
+    rw [hs_r2_field, hs_r4_field]; exact Or.inr hrr.2.1
   have h_gr : (32 : Nat) = 0 ∨ s.regions.containsRange s.regs.r1 32 = true := by
-    rw [hs_r1_field]; exact Or.inr hrr.2
+    rw [hs_r1_field]; exact Or.inr hrr.2.2
   have hfetch : fetch s.pc = some (.call .sol_get_sysvar) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 =
@@ -1017,13 +1017,13 @@ set_option maxHeartbeats 1600000 in
 /-- `sol_get_sysvar` (success, exact 17-byte slice) over a cell-granular out
     region. The slice decomposition `hsl` and cell addresses `ha1`/`ha2` are
     parameters the emitter discharges by `decide` / surfaces as side hyps. H6:
-    `rr` as `call_sol_get_sysvar_spec` (out writable, id readable). -/
-theorem call_sol_get_sysvar_cells17_spec
+    `rr` as `call_sol_get_sysvar_spec` (environment, out writable, id readable). -/
+theorem call_sol_get_sysvar_cells17_spec (env : SysvarEnv)
     (r0Old idA outA offV lenV a1 a2 : Nat)
     (oldD0 oldD1 oldB w0 w1 wb : Nat)
     (idBytes buf slice : ByteArray) (pc : Nat) (nCu : Nat)
     (hIdSize : idBytes.size = 32)
-    (hBuf : SysvarData.sysvarBuffer idBytes = some buf)
+    (hBuf : env.bincode idBytes = some buf)
     (hInRange : offV + lenV ≤ buf.size)
     (hOutAddr : outA < Memory.INPUT_START)
     (hOffLen : offV + lenV < U64_MODULUS)
@@ -1048,7 +1048,7 @@ theorem call_sol_get_sysvar_cells17_spec
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) **
         ((outA ↦U64 w0) ** ((a1 ↦U64 w1) ** (a2 ↦ₘ wb))))
-      (fun rt => rt.containsWritable outA lenV = true ∧
+      (fun rt => rt.sysvars = env ∧ rt.containsWritable outA lenV = true ∧
                  rt.containsRange idA 32 = true) := by
   -- cells ↔ blob decomposition, parametric over the cell values
   have hcells : ∀ (d0 d1 b : Nat), b < 256 → ∀ h',
@@ -1083,7 +1083,7 @@ theorem call_sol_get_sysvar_cells17_spec
       = lenV := by
     simp [ByteArray.size_append, hLen]
   refine cuTripleWithinMem_weaken ?_ ?_ (fun _ x => x)
-    (call_sol_get_sysvar_spec r0Old idA outA offV lenV idBytes buf slice
+    (call_sol_get_sysvar_spec env r0Old idA outA offV lenV idBytes buf slice
       (PartialState.u64LE oldD0
         ++ (PartialState.u64LE oldD1 ++ PartialState.byteBA oldB))
       pc nCu hIdSize hBuf hInRange hOutAddr hOffLen hOutLen hOutSize

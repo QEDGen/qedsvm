@@ -215,6 +215,28 @@ def runWithRegistryAndPid
     -- H5 total metering, clamped to the budget (see runElfBuffer).
     encodeRun s input.size cuBudget.toNat
 
+/-- Variant of `runWithRegistryAndPid` that also takes the sysvars, in the wire
+    format of `SysvarEnv.ofWire`. A malformed blob reports a decode failure rather
+    than running under a default. -/
+@[export qedsvm_run_with_sysvars]
+def runWithSysvars
+    (elf input registry pidBytes sysvars : ByteArray) (cuBudget : UInt64)
+    : ByteArray :=
+  match SysvarEnv.ofWire sysvars with
+  | none => encodeElfError
+  | some env =>
+    let cfg : Runner.RunConfig :=
+      { input           := input
+        cuBudget        := cuBudget.toNat
+        programRegistry := parseRegistry registry
+        progIdBytes     := pidBytes
+        sysvars         := env }
+    match Runner.runElfWithFuel elf cfg with
+    | none => encodeElfError
+    | some (s, _fuelRemaining) =>
+      -- H5 total metering, clamped to the budget (see runElfBuffer).
+      encodeRun s input.size cuBudget.toNat
+
 /-! ## Top-level precompile dispatch
 
 Agave's three sig-verify precompiles (`Ed25519SigVerify1111…`,

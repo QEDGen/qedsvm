@@ -229,9 +229,10 @@ A `runtimeRegions`-shaped literal table + a symbolic bounded address:
 coverage and writable-coverage both close mechanically. -/
 
 private def regionCoversTestTable (inputLen : Nat) : Memory.RegionTable :=
-  [ { start := Memory.STACK_START, size := 0x1000 * 64, writable := true }
-  , { start := Memory.HEAP_START,  size := 0x8000,      writable := true }
-  , { start := Memory.INPUT_START, size := inputLen,    writable := false } ]
+  { regions :=
+      [ { start := Memory.STACK_START, size := 0x1000 * 64, writable := true }
+      , { start := Memory.HEAP_START,  size := 0x8000,      writable := true }
+      , { start := Memory.INPUT_START, size := inputLen,    writable := false } ] }
 
 private theorem region_covers_concrete_table
     (inputLen addr : Nat)

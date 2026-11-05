@@ -1,4 +1,5 @@
--- Baked sysvar-cache buffers for the generic `sol_get_sysvar` syscall.
+-- The default environment's sysvar-cache buffers, as literals for lifts to name
+-- (`molluskDefaults_bincode` below ties them to `SysvarEnv.molluskDefaults`).
 --
 -- agave's `SyscallGetSysvar` serves slices of the BINCODE-serialized sysvars in
 -- the sysvar cache (exactly seven: clock, epoch_schedule, epoch_rewards, rent,
@@ -11,63 +12,13 @@
 -- write: e.g. EpochSchedule is 33 bytes here vs 40 there.
 
 import SVM.SBPF.Machine
+import SVM.Syscalls.SysvarEnv
 
 namespace SVM.SBPF
 namespace SysvarData
 
 /-- `n` zero bytes (local copy; `zerosByteArray` lives downstream). -/
 def zeros (n : Nat) : ByteArray := ⟨Array.replicate n 0⟩
-
-/-! ## Sysvar ids (32-byte pubkeys, from `solana_sdk_ids::sysvar`) -/
-
-/-- `SysvarC1ock11111111111111111111111111111111` -/
-def clockId : ByteArray :=
-  ⟨#[0x06, 0xa7, 0xd5, 0x17, 0x18, 0xc7, 0x74, 0xc9,
-     0x28, 0x56, 0x63, 0x98, 0x69, 0x1d, 0x5e, 0xb6,
-     0x8b, 0x5e, 0xb8, 0xa3, 0x9b, 0x4b, 0x6d, 0x5c,
-     0x73, 0x55, 0x5b, 0x21, 0x00, 0x00, 0x00, 0x00]⟩
-
-/-- `SysvarEpochSchedu1e111111111111111111111111` -/
-def epochScheduleId : ByteArray :=
-  ⟨#[0x06, 0xa7, 0xd5, 0x17, 0x18, 0xdc, 0x3f, 0xee,
-     0x02, 0xd3, 0xe4, 0x7f, 0x01, 0x00, 0xf8, 0xb0,
-     0x54, 0xf7, 0x94, 0x2e, 0x60, 0x59, 0x1e, 0x3f,
-     0x50, 0x87, 0x19, 0xa8, 0x05, 0x00, 0x00, 0x00]⟩
-
-/-- `SysvarEpochRewards1111111111111111111111111` -/
-def epochRewardsId : ByteArray :=
-  ⟨#[0x06, 0xa7, 0xd5, 0x17, 0x18, 0xdc, 0x3f, 0xee,
-     0x02, 0xa5, 0x58, 0xbf, 0x83, 0xce, 0x66, 0xe1,
-     0x44, 0x42, 0x2a, 0x1c, 0x34, 0x95, 0x0b, 0x27,
-     0xc1, 0x86, 0x9b, 0x5a, 0x9c, 0x00, 0x00, 0x00]⟩
-
-/-- `SysvarRent111111111111111111111111111111111` -/
-def rentId : ByteArray :=
-  ⟨#[0x06, 0xa7, 0xd5, 0x17, 0x19, 0x2c, 0x5c, 0x51,
-     0x21, 0x8c, 0xc9, 0x4c, 0x3d, 0x4a, 0xf1, 0x7f,
-     0x58, 0xda, 0xee, 0x08, 0x9b, 0xa1, 0xfd, 0x44,
-     0xe3, 0xdb, 0xd9, 0x8a, 0x00, 0x00, 0x00, 0x00]⟩
-
-/-- `SysvarS1otHashes111111111111111111111111111` -/
-def slotHashesId : ByteArray :=
-  ⟨#[0x06, 0xa7, 0xd5, 0x17, 0x19, 0x2f, 0x0a, 0xaf,
-     0xc6, 0xf2, 0x65, 0xe3, 0xfb, 0x77, 0xcc, 0x7a,
-     0xda, 0x82, 0xc5, 0x29, 0xd0, 0xbe, 0x3b, 0x13,
-     0x6e, 0x2d, 0x00, 0x55, 0x20, 0x00, 0x00, 0x00]⟩
-
-/-- `SysvarStakeHistory1111111111111111111111111` -/
-def stakeHistoryId : ByteArray :=
-  ⟨#[0x06, 0xa7, 0xd5, 0x17, 0x19, 0x35, 0x84, 0xd0,
-     0xfe, 0xed, 0x9b, 0xb3, 0x43, 0x1d, 0x13, 0x20,
-     0x6b, 0xe5, 0x44, 0x28, 0x1b, 0x57, 0xb8, 0x56,
-     0x6c, 0xc5, 0x37, 0x5f, 0xf4, 0x00, 0x00, 0x00]⟩
-
-/-- `SysvarLastRestartS1ot1111111111111111111111` -/
-def lastRestartSlotId : ByteArray :=
-  ⟨#[0x06, 0xa7, 0xd5, 0x17, 0x19, 0x06, 0xdd, 0xe1,
-     0xcd, 0x3f, 0x94, 0x7d, 0xca, 0xb4, 0xc8, 0xf4,
-     0xf4, 0xf5, 0x1b, 0xad, 0x0f, 0x98, 0x13, 0xb8,
-     0x00, 0xd2, 0x89, 0x47, 0x1f, 0xc0, 0x00, 0x00]⟩
 
 /-! ## Serialized buffers (mollusk defaults, bincode) -/
 
@@ -96,18 +47,11 @@ def rentBuf : ByteArray :=
      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f,
      0x32]⟩
 
-/-- Mollusk default `SlotHashes`: 512 × `(slot 0, Hash::default())`. bincode `Vec`:
-    8-byte LE length (0x200) + 512 × 40 zeros = 20488 bytes, all zero except
-    `buf[1] = 0x02`. Built via `setIfInBounds` on `replicate`, NOT `#[..] ++
-    replicate` (whose whnf model is a quadratic `Array.push` chain). -/
-def slotHashesBuf : ByteArray :=
-  ⟨(Array.replicate 20488 0).setIfInBounds 1 0x02⟩
+/-- Mollusk default `SlotHashes`. -/
+def slotHashesBuf : ByteArray := SysvarEnv.defaultSlotHashes
 
-/-- Mollusk default `StakeHistory`: one `(epoch 0, default())`. bincode `Vec`:
-    8-byte LE length (1) + 32 zeros = 40 bytes. -/
-def stakeHistoryBuf : ByteArray :=
-  ⟨#[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-    ++ Array.replicate 32 0⟩
+/-- Mollusk default `StakeHistory`. -/
+def stakeHistoryBuf : ByteArray := SysvarEnv.defaultStakeHistory
 
 /-- `LastRestartSlot::default()`: one zero u64. -/
 def lastRestartSlotBuf : ByteArray := zeros 8
@@ -148,13 +92,37 @@ Proved by `rfl` BEFORE the irreducible seal below (the `rfl`s force only the
     compares against it). By rewriting, not evaluation: whnf of a 20488-element
     array blows `maxRecDepth`. -/
 @[simp] theorem slotHashesBuf_size : slotHashesBuf.size = 20488 := by
+  unfold slotHashesBuf SysvarEnv.defaultSlotHashes
   show ((Array.replicate 20488 (0 : UInt8)).setIfInBounds 1 0x02).size = 20488
   rw [Array.size_setIfInBounds, Array.size_replicate]
 
--- Sealed: `slotHashesBuf`'s logical value whnf-evaluates via the QUADRATIC
--- `Array.push` model (~2×10⁸ steps), timing out any simp/whnf that wanders into a
--- `sysvarBuffer` branch (e.g. `execSyscall_preserves_*`). Compiled code
--- (runner, native_decide) is unaffected. Use the evaluation lemmas above.
+/-! ## The Mollusk-defaults instance
+
+The literals above are the default environment's encodings. -/
+
+theorem molluskDefaults_clock : SysvarEnv.molluskDefaults.clock.reprC = clockBuf := by decide
+theorem molluskDefaults_rent : SysvarEnv.molluskDefaults.rent.bincode = rentBuf := by decide
+theorem molluskDefaults_epochSchedule :
+    SysvarEnv.molluskDefaults.epochSchedule.bincode = epochScheduleBuf := by decide
+theorem molluskDefaults_epochRewards :
+    SysvarEnv.molluskDefaults.epochRewards.bincode = epochRewardsBuf := by decide
+theorem molluskDefaults_lastRestartSlot :
+    SysvarEnv.molluskDefaults.lastRestartBytes = lastRestartSlotBuf := by decide
+
+/-- The builtin buffers are the Mollusk-defaults instance of the environment. -/
+theorem molluskDefaults_bincode (id : ByteArray) :
+    SysvarEnv.molluskDefaults.bincode id = sysvarBuffer id := by
+  unfold SysvarEnv.bincode sysvarBuffer
+  rw [molluskDefaults_clock, molluskDefaults_rent, molluskDefaults_epochSchedule,
+    molluskDefaults_epochRewards, molluskDefaults_lastRestartSlot]
+  rfl
+
+/-- The default environment's rent, as the lift's literal. -/
+@[simp] theorem molluskDefaults_bincode_rent :
+    SysvarEnv.molluskDefaults.bincode rentId = some rentBuf := by
+  rw [SysvarEnv.bincode_rent, molluskDefaults_rent]
+
+-- Sealed for the reason given on `SysvarEnv.defaultSlotHashes`.
 attribute [irreducible] sysvarBuffer slotHashesBuf
 
 end SysvarData

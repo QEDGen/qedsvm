@@ -20,7 +20,7 @@ example (base k : Nat) : effectiveAddr base (↑k) = base + k := rfl
 /-- A V3-like state: a 64-byte region at 0 (rodata), `r1 = base`, `r2 = 0x2a`. -/
 private def at0 (base : Nat) (writable : Bool := false) : State :=
   { regs := { r1 := base, r2 := 0x2a }, mem := {},
-    regions := [{ start := 0, size := 64, writable }], pc := 0 }
+    regions := { regions := [{ start := 0, size := 64, writable }] }, pc := 0 }
 
 /-- `ldxdw r0, [r1 - 8]` with `r1 = 0`: the address wraps to 2^64 - 8, unmapped. -/
 example : (step (.ldx .dword .r0 .r1 (-8)) (at0 0)).vmError = some .accessViolation := by
