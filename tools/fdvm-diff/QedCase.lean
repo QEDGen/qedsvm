@@ -72,7 +72,7 @@ def runCase (b : ByteArray) (idx h : Nat) : String := Id.run do
   let regs := (List.range 11).foldl (fun rf i =>
     if regMask / 2 ^ i % 2 = 1 then setReg rf i (w (12 + i)) else rf) regs₀
   let s₀ : State :=
-    { regs, mem, regions, pc := slotMap.getD entryPc 0, cuBudget := budget }
+    { regs, mem, regions := { regions }, pc := slotMap.getD entryPc 0, cuBudget := budget }
   let s := Runner.executeFnCpi (fun _ => none) (Runner.fetchFromArray insns) s₀ budget
   let outcome := match Outcome.ofState s inputSz budget with
     | .cuExceeded => "cu_exhausted"
