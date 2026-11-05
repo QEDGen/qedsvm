@@ -247,7 +247,7 @@ theorem call_sol_get_sysvar_spec (env : SysvarEnv)
       ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ idA) ** (.r2 ↦ᵣ outA) **
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) ** (outA ↦Bytes slice))
-      (fun rt => rt.sysvars = env ∧ rt.containsWritable outA lenV = true ∧
+      (fun rt => (rt.sysvars = env ∧ rt.containsWritable outA lenV = true) ∧
                  rt.containsRange idA 32 = true) := by
   intro R hRfree fetch hcr s hPR hpc hex hbud hrr
   obtain ⟨hp, hcompat, h_P, h_R, hd_PR, hu_PR, h_P_sat, h_R_sat⟩ := hPR
@@ -426,14 +426,14 @@ theorem call_sol_get_sysvar_spec (env : SysvarEnv)
     · exact absurd h (Nat.not_le.mpr hOutLen)
   have h_discr : s.regions.sysvars.bincode (readBytes s.mem s.regs.r1 32)
       = some buf := by
-    rw [hs_r1_field, h_readBytes, hrr.1]; exact hBuf
+    rw [hs_r1_field, h_readBytes, hrr.1.1]; exact hBuf
   have h_if3 : ¬ (s.regs.r3 + s.regs.r4 > buf.size) := by
     rw [hs_r3_field, hs_r4_field]; exact Nat.not_lt.mpr hInRange
   -- H6 guards: output writable, id readable (from `rr`)
   have h_gw : s.regs.r4 = 0 ∨ s.regions.containsWritable s.regs.r2 s.regs.r4 = true := by
-    rw [hs_r2_field, hs_r4_field]; exact Or.inr hrr.2.1
+    rw [hs_r2_field, hs_r4_field]; exact Or.inr hrr.1.2
   have h_gr : (32 : Nat) = 0 ∨ s.regions.containsRange s.regs.r1 32 = true := by
-    rw [hs_r1_field]; exact Or.inr hrr.2.2
+    rw [hs_r1_field]; exact Or.inr hrr.2
   have hfetch : fetch s.pc = some (.call .sol_get_sysvar) := by
     rw [hpc]; exact hcr pc _ CodeReq.singleton_self
   have hstep_eq : executeFn fetch s 1 =
@@ -1048,7 +1048,7 @@ theorem call_sol_get_sysvar_cells17_spec (env : SysvarEnv)
         (.r3 ↦ᵣ offV) ** (.r4 ↦ᵣ lenV) **
         (idA ↦Bytes32 idBytes) **
         ((outA ↦U64 w0) ** ((a1 ↦U64 w1) ** (a2 ↦ₘ wb))))
-      (fun rt => rt.sysvars = env ∧ rt.containsWritable outA lenV = true ∧
+      (fun rt => (rt.sysvars = env ∧ rt.containsWritable outA lenV = true) ∧
                  rt.containsRange idA 32 = true) := by
   -- cells ↔ blob decomposition, parametric over the cell values
   have hcells : ∀ (d0 d1 b : Nat), b < 256 → ∀ h',

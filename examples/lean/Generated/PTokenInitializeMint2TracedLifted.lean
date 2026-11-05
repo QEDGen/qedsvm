@@ -452,7 +452,8 @@ theorem PTokenInitializeMint2_lifted_spec
                   rt.containsRange (effectiveAddr baseAddr 88) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr1 (-4)) 4 = true) ∧
                   rt.containsWritable (effectiveAddr addr1 (-7)) 4 = true) ∧
-                  (rt.containsWritable (addr2) (17) = true) ∧
+                  ((rt.sysvars = SysvarEnv.molluskDefaults) ∧
+                  rt.containsWritable (addr2) (17) = true) ∧
                   rt.containsRange (toU64 4295070680) (32) = true) ∧
                   rt.containsRange (effectiveAddr addr1 (-8)) 8 = true) ∧
                   rt.containsWritable (effectiveAddr addr3 24) 8 = true) ∧
@@ -530,7 +531,7 @@ theorem PTokenInitializeMint2_lifted_spec
   have h_10842 := lddw_spec .r1 4295070680 (wrapAdd vR10Old (toU64 (-32))) 10842 (by decide)
   have h_10843 := mov64_imm_spec .r3 0 (vR3Old) 10843 (by decide)
   have h_10844 := mov64_imm_spec .r4 17 (wrapAdd baseAddr (toU64 8)) 10844 (by decide)
-  have h_10845 := call_sol_get_sysvar_cells17_spec (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 4295070680) (wrapAdd (vR10Old + 4096) (toU64 (-24))) 0 17 (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (8)) (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (16)) oldMemD_23 oldMemD_24 oldMemB_25 6960 4607182418800017408 50 SysvarData.rentId SysvarData.rentBuf SysvarData.rentBuf 10845 nCuGetSysvar22 rfl SysvarData.sysvarBuffer_rent (by decide) h_sysvar_out_10845 (by decide) h_sysvar_outlen_10845 rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) holdMemB_25_lt h_sysvar_a1_10845 h_sysvar_a2_10845 h_sysvar_disj_10845 hCuGetSysvar22
+  have h_10845 := call_sol_get_sysvar_cells17_spec SysvarEnv.molluskDefaults (((wrapAdd (wrapAdd baseAddr oldMemD_9) (toU64 10351)) &&& toU64 (-8)) % U64_MODULUS) (toU64 4295070680) (wrapAdd (vR10Old + 4096) (toU64 (-24))) 0 17 (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (8)) (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (16)) oldMemD_23 oldMemD_24 oldMemB_25 6960 4607182418800017408 50 SysvarData.rentId SysvarData.rentBuf SysvarData.rentBuf 10845 nCuGetSysvar22 rfl SysvarData.molluskDefaults_bincode_rent (by decide) h_sysvar_out_10845 (by decide) h_sysvar_outlen_10845 rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) holdMemB_25_lt h_sysvar_a1_10845 h_sysvar_a2_10845 h_sysvar_disj_10845 hCuGetSysvar22
   have h_10846 := jeq_imm_taken_spec .r0 0 (0) 10846 10850 h_branch13
   have h_10850 := ldxdw_bytes_spec .r1 .r10 (-8) (toU64 4295070680) (vR10Old + 4096) 50 0 0 0 0 0 0 0 (effectiveAddr (wrapAdd (vR10Old + 4096) (toU64 (-24))) (16)) (effectiveAddr (vR10Old + 4096) (-7)) (effectiveAddr (vR10Old + 4096) (-7) + 1) (effectiveAddr (vR10Old + 4096) (-7) + 2) (effectiveAddr (vR10Old + 4096) (-4)) (effectiveAddr (vR10Old + 4096) (-4) + 1) (effectiveAddr (vR10Old + 4096) (-4) + 2) (effectiveAddr (vR10Old + 4096) (-4) + 3) 10850 (by decide) (by omega) (by omega) (by omega) (by omega) (by omega) (by omega) (by omega) (by omega) h_alias_10850_0 h_alias_10850_1 h_alias_10850_2 h_alias_10850_3 h_alias_10850_4 h_alias_10850_5 h_alias_10850_6 h_alias_10850_7
   have h_10851 := stxdw_spec .r6 .r1 24 (wrapAdd vR10Old (toU64 (-32))) (50 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * (0 + 256 * 0))))))) oldMemD_26 10851

@@ -659,6 +659,10 @@ pub(super) fn region_req(
                 ));
                 continue;
             }
+            RegionClause::Sysvars { env } => {
+                clauses.push(format!("rt.sysvars = {}", env));
+                continue;
+            }
         };
         // H6 variable-length: `contains{Writable,Range} addr count` with raw (subst-folded, no
         // `effectiveAddr`) address — matches the rr from `call_sol_{memset,log}_*_spec` after sl_rw_abs.
