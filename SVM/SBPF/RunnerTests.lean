@@ -911,43 +911,45 @@ example : Runner.runForExit stackHeightProgram = some 1 := by native_decide
 
 The sysvar getter writes 40 bytes (Clock layout) to `*r1`: the mollusk
 default `slot = 1` (`DEFAULT_CLOCK_SLOT`), every other field 0. Verify by
-pre-loading input with `0xFF` bytes and observing that they're overwritten
-after the syscall:
+storing `0xFF` in a stack buffer and observing it's overwritten after the
+syscall:
 
 ```
-  call sol_get_clock_sysvar     ; writes slot = 1, rest 0, at *r1 (= INPUT_START)
-  ldxb r0, [r1 + 5]              ; read byte 5 of the buffer (= 0 now)
+  mov64 r1, r10
+  add64 r1, -40
+  stb [r1 + off], 0xff
+  call sol_get_clock_sysvar     ; writes slot = 1, rest 0, at *r1
+  ldxb r0, [r1 + off]
   exit
 ```
 -/
 
-def clockSysvarDemo : ByteArray :=
+def clockSysvarByteDemo (off : UInt8) : ByteArray :=
+  let h := SyscallHash.sol_get_clock_sysvar_hash
+  ⟨#[0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+     0x07, 0x01, 0x00, 0x00, 0xd8, 0xff, 0xff, 0xff,
+     0x72, 0x01, off, 0x00, 0xff, 0x00, 0x00, 0x00,
+     0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    0x71, 0x10, off, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example : Runner.runForExit (clockSysvarByteDemo 5) = some 0 := by native_decide
+
+/-- Byte 0: the slot's low byte = 1. -/
+example : Runner.runForExit (clockSysvarByteDemo 0) = some 1 := by native_decide
+
+/-- `call sol_get_clock_sysvar` with `r1 = INPUT_START` at entry: agave rejects an
+    output in the input region, even a writable one (#105). -/
+def clockSysvarInputDemo : ByteArray :=
   let h := SyscallHash.sol_get_clock_sysvar_hash
   ⟨#[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
-    -- ldxb r0, [r1 + 5]
-    0x71, 0x10, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
-    -- exit
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   ]⟩
 
 example :
-    Runner.runForExit clockSysvarDemo
-      { input := padInput ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ 40 }
-      = some 0 := by
-  native_decide
-
-/-- Same program reading byte 0 (`ldxb r0, [r1 + 0]`): the slot's low byte = 1. -/
-def clockSysvarSlotDemo : ByteArray :=
-  let h := SyscallHash.sol_get_clock_sysvar_hash
-  ⟨#[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
-    0x71, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-  ]⟩
-
-example :
-    Runner.runForExit clockSysvarSlotDemo
-      { input := padInput ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ 40 }
-      = some 1 := by
+    Runner.runForExit clockSysvarInputDemo
+      { input := padInput ⟨#[0xff]⟩ 40 } = some ERR_ACCESS_VIOLATION := by
   native_decide
 
 /-! ## Demo 22 — `sol_sha256` hashes "abc" and writes the 32-byte digest

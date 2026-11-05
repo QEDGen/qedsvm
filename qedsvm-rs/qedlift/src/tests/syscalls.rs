@@ -114,7 +114,7 @@ fn oob_clock_sysvar_fault_lift_is_mechanically_emitted() {
 }
 
 /// Pins the rent-getter OOB fault corollary (H6 scale-out class (a)):
-/// byte-identical recipe to the clock getter, over the de-simp'd 17-byte
+/// byte-identical recipe to the clock getter, over the 24-byte
 /// `execRent` write. Validates the OobSyscall registry generalizes by
 /// pure registration (no emitter changes).
 #[test]

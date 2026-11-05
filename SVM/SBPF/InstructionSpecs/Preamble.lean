@@ -25,7 +25,7 @@ def zerosByteArray (N : Nat) : ByteArray :=
   exact Array.size_replicate
 
 /-- `Mem.read` on a coerced bare `Nat → Nat` equals the function applied:
-    closure-style writes (`Sysvar.zeroFillR1` / `ReturnData.execGet`) make a
+    closure-style writes (`Sysvar.execTyped` / `ReturnData.execGet`) make a
     `Mem` of form `↑(fun a => ...)` whose reads fall through `default` (empty
     overlay). -/
 theorem Mem_read_default (f : Nat → Nat) (a : Nat) :

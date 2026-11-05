@@ -191,23 +191,6 @@ an `rr : RegionTable → Prop` side-condition (per-slice ranges live in memory t
 precondition doesn't own, and `rr` can't see `s.mem`), so there's no happy-path
 triple. Pinned by `oob_log_data.so` + `Logging.execLogData_faults_oob`. -/
 
-/-! ## Syscall: `sol_get_epoch_stake`
-
-Returns 0 in `r0` (stake not modeled). Memory unchanged. -/
-
-theorem call_sol_get_epoch_stake_spec (r0Old : Nat) (pc : Nat) (nCu : Nat)
-    (h_step_cu : ∀ s : State,
-        (step (.call .sol_get_epoch_stake) s).cuConsumed ≤ s.cuConsumed + nCu) :
-    cuTripleWithin 1 nCu pc (pc + 1)
-      (CodeReq.singleton pc (.call .sol_get_epoch_stake))
-      (.r0 ↦ᵣ r0Old)
-      (.r0 ↦ᵣ 0) :=
-  (r0_writer_obligations
-    (cuTripleWithin_syscall_writes_r0_only .sol_get_epoch_stake 0 pc nCu)
-    Sysvar.execEpochStake)
-    (fun s => h_step_cu s)
-    r0Old
-
 /-! ## Syscall: `sol_get_processed_sibling_instruction`
 
 Sibling-instruction tracking is not modeled; the syscall returns 0

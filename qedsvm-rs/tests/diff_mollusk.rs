@@ -343,7 +343,7 @@ const OOB_SET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_set_return_da
 
 /// Calls `sol_get_rent_sysvar` with a 17-byte output buffer 256 MiB out of
 /// region. agave's `translate_type_mut::<Rent>` traps; post-fix (stage 4c)
-/// `Sysvar.execRent` (de-simp'd) routes the write through `guardWrite` and
+/// `Sysvar.execRent` routes the write through `guardWrite` and
 /// faults. Source in `oob_rent_sysvar_src/`.
 const OOB_RENT_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_rent_sysvar.so");
 

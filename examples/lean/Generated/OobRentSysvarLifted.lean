@@ -100,7 +100,7 @@ theorem OobRentSysvar_fault_correct
       (((CodeReq.singleton 0 (.add64 .r1 (.imm (268435456))))).union
         (CodeReq.singleton 1 (.call .sol_get_rent_sysvar)))
       ((.r1 ↦ᵣ baseAddr))
-      (fun rt => (True) ∧ rt.containsWritable (wrapAdd baseAddr (toU64 268435456)) 17 = false)
+      (fun rt => (True) ∧ rt.containsWritable (wrapAdd baseAddr (toU64 268435456)) 24 = false)
       .accessViolation := by
   refine cuTripleWithinMem_seq_fault ?_ (OobRentSysvar_lifted_spec baseAddr) (call_sol_get_rent_sysvar_faults_oob_spec (wrapAdd baseAddr (toU64 268435456)) 1 nCuOob hCuOob)
   repeat' apply CodeReq.Disjoint_union_left

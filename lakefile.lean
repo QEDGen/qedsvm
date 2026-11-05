@@ -234,7 +234,7 @@ lean_lib Examples where
     -- bare, no `frame_right`). Shows the OOB arm scales across syscall families.
     `Generated.OobClockSysvarLifted,
     -- OobRentSysvar: the H6 scale-out of the OOB fault emitter to the rent
-    -- getter (17-byte execRent write region) — pure OobSyscall registration,
+    -- getter (24-byte execRent write region) — pure OobSyscall registration,
     -- no emitter changes.
     `Generated.OobRentSysvarLifted,
     -- OobSetReturnData: the register-sized-region OOB arm — the guarded

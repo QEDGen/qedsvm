@@ -290,31 +290,6 @@ theorem Pda_execTryFind_regs_of_k {motive : RegFile → Prop} (s : State)
   · exact hk1
 
 
-/-- `mem_lt` closers for the de-simp'd rent/epoch_schedule sysvars: peel
-    `guardWrite` (fault keeps `s.mem`), then `Mem.read_mk_lt` + repeated
-    `ite_lt` bounds the lambda-coerced multi-`if` write. -/
-theorem execRent_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
-    (Sysvar.execRent s).mem a < 256 := by
-  simp only [Sysvar.execRent]
-  refine State.guardWrite_mem_lt_of_k s _ _ _ a (h a) ?_
-  apply Mem.read_mk_lt
-  intro x
-  repeat first
-    | omega
-    | exact h _
-    | apply ite_lt
-
-theorem execEpochSchedule_mem_lt (s : State) (h : ∀ a, s.mem a < 256) (a : Nat) :
-    (Sysvar.execEpochSchedule s).mem a < 256 := by
-  simp only [Sysvar.execEpochSchedule]
-  refine State.guardWrite_mem_lt_of_k s _ _ _ a (h a) ?_
-  apply Mem.read_mk_lt
-  intro x
-  repeat first
-    | omega
-    | exact h _
-    | apply ite_lt
-
 /-- `execTryFind` `mem_lt` closer: peel three input guards → `some` arm's
     two output guards → coerced `mem'` lambda (bump byte / PDA `writeBytes`);
     `none` arm keeps `s.mem`. -/
@@ -481,10 +456,10 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
           AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
           Cpi.exec,
-          Sysvar.execClock,
-          Sysvar.execLastRestartSlot, Sysvar.execFees,
+          Sysvar.execClock, Sysvar.execRent, Sysvar.execEpochSchedule, Sysvar.execTyped,
+          Sysvar.execLastRestartSlot,
           Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
-          Sysvar.zeroFillR1, ReturnData.execSet, ReturnData.execGet,
+          ReturnData.execSet, ReturnData.execGet,
           Abort.execAbort, Abort.execPanic, Misc.execAllocFree,
           Misc.allocFreeStep, Misc.execRemainingComputeUnits,
           Misc.execGetStackHeight, Misc.execProcessedSibling,
@@ -521,12 +496,7 @@ theorem execSyscall_regs_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
       | exact Pda_execTryFind_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
           s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
-          (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
-      -- rent / epoch_schedule (de-simp'd, out of roster): folded exec, set .r0 0.
-      | exact Sysvar.execRent_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
-          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r)
-      | exact Sysvar.execEpochSchedule_regs_of_k (motive := fun rf => rf.get r < U64_MODULUS)
-          s (hb.regs_lt r) (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r))
+          (RegFile.set_get_lt hb.regs_lt (by decide) .r0 r))
 
 set_option maxHeartbeats 8000000 in
 set_option maxRecDepth 65536 in
@@ -548,10 +518,10 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
           AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
           Cpi.exec,
-          Sysvar.execClock,
-          Sysvar.execLastRestartSlot, Sysvar.execFees,
+          Sysvar.execClock, Sysvar.execRent, Sysvar.execEpochSchedule, Sysvar.execTyped,
+          Sysvar.execLastRestartSlot,
           Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
-          Sysvar.zeroFillR1, ReturnData.execSet, ReturnData.execGet,
+          ReturnData.execSet, ReturnData.execGet,
           Abort.execAbort, Abort.execPanic, Misc.execAllocFree,
           Misc.allocFreeStep, Misc.execRemainingComputeUnits,
           Misc.execGetStackHeight, Misc.execProcessedSibling,
@@ -570,9 +540,6 @@ theorem execSyscall_mem_lt (sc : Syscall) (s : State) (hb : StateBounded s) :
       | exact Poseidon_exec_mem_lt s hb.mem_lt a
       | exact Pda_execCreate_mem_lt s hb.mem_lt a
       | exact Pda_execTryFind_mem_lt s hb.mem_lt a
-      -- rent / epoch_schedule (de-simp'd): head-match on folded exec.
-      | exact execRent_mem_lt s hb.mem_lt a
-      | exact execEpochSchedule_mem_lt s hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt a
       | exact writeBytes_lt _ _ _ _ hb.mem_lt _
       | exact writeByWidth_lt _ _ _ .word hb.mem_lt a

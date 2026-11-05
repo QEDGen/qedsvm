@@ -69,13 +69,6 @@ theorem State.guardedCommit_exitOrFault (s : State) (outPtr outLen inPtr inN : N
 theorem Pda.execTryFind_exitOrFault (s : State) : ExitOrFault s (Pda.execTryFind s) := by
   simp only [Pda.execTryFind]; exit_or_fault
 
-theorem Sysvar.execRent_exitOrFault (s : State) : ExitOrFault s (Sysvar.execRent s) := by
-  simp only [Sysvar.execRent]; exit_or_fault
-
-theorem Sysvar.execEpochSchedule_exitOrFault (s : State) :
-    ExitOrFault s (Sysvar.execEpochSchedule s) := by
-  simp only [Sysvar.execEpochSchedule]; exit_or_fault
-
 theorem Logging.execLogData_exitOrFault (s : State) : ExitOrFault s (Logging.execLogData s) := by
   simp only [Logging.execLogData]; exit_or_fault
 
@@ -90,8 +83,6 @@ theorem execSyscall_exitCode_or_fault (sc : Syscall) (s : State) :
     | exact State.hashWrite_exitOrFault s _ _ _ _ _
     | exact State.guardedCommit_exitOrFault s _ _ _ _ _
     | exact Pda.execTryFind_exitOrFault s
-    | exact Sysvar.execRent_exitOrFault s
-    | exact Sysvar.execEpochSchedule_exitOrFault s
     | exact Logging.execLogData_exitOrFault s
 
 /-- Every modeled syscall fails closed. -/

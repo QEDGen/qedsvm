@@ -70,15 +70,6 @@ theorem State.guardedCommit_withBudget (s : State) (B outPtr outLen inPtr inN : 
   simp only [State.guardedCommit]; budget_comm
   cases result <;> rfl
 
-theorem Sysvar.execRent_withBudget (s : State) (B : Nat) :
-    Sysvar.execRent { s with cuBudget := B } = { Sysvar.execRent s with cuBudget := B } := by
-  simp only [Sysvar.execRent]; budget_comm
-
-theorem Sysvar.execEpochSchedule_withBudget (s : State) (B : Nat) :
-    Sysvar.execEpochSchedule { s with cuBudget := B }
-      = { Sysvar.execEpochSchedule s with cuBudget := B } := by
-  simp only [Sysvar.execEpochSchedule]; budget_comm
-
 theorem Logging.execLogData_withBudget (s : State) (B : Nat) :
     Logging.execLogData { s with cuBudget := B } = { Logging.execLogData s with cuBudget := B } := by
   simp only [Logging.execLogData]; budget_comm
@@ -136,8 +127,6 @@ theorem execSyscall_withBudget (sc : Syscall) (s : State) (B : Nat)
     dsimp only
     exact State.guardedCommit_withBudget s B _ _ _ _ _
   case sol_try_find_program_address => exact Pda.execTryFind_withBudget s B
-  case sol_get_rent_sysvar => exact Sysvar.execRent_withBudget s B
-  case sol_get_epoch_schedule_sysvar => exact Sysvar.execEpochSchedule_withBudget s B
   case sol_log_data => exact Logging.execLogData_withBudget s B
   case sol_memcpy => exact MemOps.execCopy_withBudget s B
   case sol_memmove => exact MemOps.execMove_withBudget s B

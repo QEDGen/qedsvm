@@ -1,7 +1,7 @@
 //! Out-of-bounds `sol_get_rent_sysvar` OUTPUT write (the de-simp'd, hand-coded
 //! 17-byte Rent struct write). agave's `translate_type_mut::<Rent>` traps the
 //! out-of-region store with AccessViolation; post-fix (stage 4c)
-//! `Sysvar.execRent`'s `guardWrite` on `[r1, r1+17)` VM-faults.
+//! `Sysvar.execRent`'s `guardWrite` on `[r1, r1+24)` VM-faults.
 #![no_std]
 #![allow(unexpected_cfgs)]
 #[panic_handler]

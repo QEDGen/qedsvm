@@ -336,7 +336,7 @@ static SYSCALLS: &[SyscallModel] = &[
             ctor: ".sol_get_rent_sysvar",
             faults_spec: "call_sol_get_rent_sysvar_faults_oob_spec",
             region_reg: 1,
-            region_size: 17,
+            region_size: 24,
             region_len_reg: None,
             region_writable: true,
         }),
