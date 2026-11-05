@@ -4,6 +4,7 @@ theorem acquires an axiom outside {propext, Classical.choice, Quot.sound}.
 On failure, either a proof regressed to sorry/native_decide, or a new axiom
 legitimately belongs — add it to the per-theorem allow-list with justification.
 -/
+import VestingGate
 import Lean
 import SVM.SBPF.Bounded
 import SVM.SBPF.NoReturnCheck
@@ -144,6 +145,9 @@ elab "#assert_native_decide_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.call_sol_get_sysvar_cells17_spec
 
 -- #105: sysvar getters, general in the environment.
+#assert_std_axioms SVM.SBPF.call_sol_get_clock_sysvar_ts_spec
+#assert_std_axioms Examples.VestingGate.vestingGate_unlocks
+#assert_std_axioms Examples.VestingGate.vestingGate_locks
 #assert_std_axioms SVM.SBPF.call_sol_get_clock_sysvar_spec
 #assert_std_axioms SVM.SBPF.call_sol_get_rent_sysvar_spec
 #assert_std_axioms SVM.SBPF.call_sol_get_epoch_schedule_sysvar_spec

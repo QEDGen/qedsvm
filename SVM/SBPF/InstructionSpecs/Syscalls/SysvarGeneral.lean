@@ -436,6 +436,58 @@ theorem call_sol_get_last_restart_slot_spec (env : SysvarEnv) (r0Old out pc nCu 
   call_typed_getter_spec isTypedGetter_lastRestartSlot (fun e => e.lastRestartBytes_size)
     env r0Old out pc nCu old hOld hAlign hOut hCu
 
+/-- `Clock` up to `unix_timestamp`, the fields before its offset 32. -/
+def ClockEnv.head (c : ClockEnv) : ByteArray :=
+  ⟨⟨leBytes 8 c.slot ++ leBytes 8 c.epochStartTimestamp ++ leBytes 8 c.epoch ++
+    leBytes 8 c.leaderScheduleEpoch⟩⟩
+
+@[simp] theorem ClockEnv.head_size (c : ClockEnv) : c.head.size = 32 := by
+  show (leBytes 8 c.slot ++ leBytes 8 c.epochStartTimestamp ++ leBytes 8 c.epoch ++
+    leBytes 8 c.leaderScheduleEpoch).toArray.size = 32
+  simp
+
+private theorem u64LE_eq_leBytes (v : Nat) :
+    PartialState.u64LE v = ⟨⟨leBytes 8 v⟩⟩ := by
+  have hb : ∀ n k : Nat, (n / k % 256).toUInt8 = UInt8.ofNat (n / k) := by
+    intro n k
+    apply UInt8.toNat.inj
+    simp [Nat.toUInt8, UInt8.toNat_ofNat']
+  unfold PartialState.u64LE
+  simp only [leBytes, Nat.div_div_eq_div_mul]
+  have h0 : (v % 256).toUInt8 = UInt8.ofNat v := by
+    apply UInt8.toNat.inj
+    simp [Nat.toUInt8, UInt8.toNat_ofNat']
+  rw [h0]
+  simp only [hb]
+
+theorem ClockEnv.reprC_eq (c : ClockEnv) :
+    c.reprC = c.head ++ PartialState.u64LE c.unixTimestamp := by
+  rw [u64LE_eq_leBytes]
+  apply ByteArray.ext
+  rw [ByteArray.data_append]
+  simp [ClockEnv.reprC, ClockEnv.head]
+
+/-- The clock getter with `unix_timestamp` as its own cell, ready to load. -/
+theorem call_sol_get_clock_sysvar_ts_spec (env : SysvarEnv) (r0Old out pc nCu : Nat)
+    (old : ByteArray) (hOld : old.size = 40) (hAlign : out % 8 = 0)
+    (hOut : out < Memory.INPUT_START) (hEff : effectiveAddr out 32 = out + 32)
+    (hCu : ∀ s : State,
+      (step (.call .sol_get_clock_sysvar) s).cuConsumed ≤ s.cuConsumed + nCu) :
+    cuTripleWithinMem 1 nCu pc (pc + 1)
+      (CodeReq.singleton pc (.call .sol_get_clock_sysvar))
+      ((.r0 ↦ᵣ r0Old) ** (.r1 ↦ᵣ out) ** (out ↦Bytes old))
+      ((.r0 ↦ᵣ 0) ** (.r1 ↦ᵣ out) ** ((out ↦Bytes env.clock.head) **
+        (effectiveAddr out 32 ↦U64 env.clock.unixTimestamp)))
+      (fun rt => rt.sysvars = env ∧ rt.containsWritable out 40 = true) := by
+  refine cuTripleWithinMem_weaken (fun _ x => x) ?_ (fun _ x => x)
+    (call_sol_get_clock_sysvar_spec env r0Old out pc nCu old hOld hAlign hOut hCu)
+  intro h hh
+  refine (sepConj_iff_congr_right _ (fun h1 =>
+    sepConj_iff_congr_right _ (fun h2 => ?_) h1) h).mp hh
+  show memBytesIs out env.clock.reprC h2 ↔ _
+  rw [ClockEnv.reprC_eq, memBytesIs_append, ClockEnv.head_size, hEff]
+  exact sepConj_iff_congr_right _ (fun h3 => (memU64Is_eq_memBytesIs _ _ h3).symm) h2
+
 /-! ## Typed getter faults -/
 
 private theorem r1_get {r1V : Nat} {R : Assertion} {s : State}

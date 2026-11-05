@@ -96,6 +96,7 @@ lean_lib Examples where
     -- Soundness gate: fails the build if any flagship theorem acquires a
     -- non-standard axiom (sorry / native_decide / crypto). Keep first.
     `AxiomAudit,
+    `VestingGate,
     `SyscallHashPin,
     `H2Pin,
     `M4Pin,
