@@ -177,6 +177,27 @@ def SysvarEnv.bincode (env : SysvarEnv) (id : ByteArray) : Option ByteArray :=
   else if id == SysvarData.lastRestartSlotId then some env.lastRestartBytes
   else none
 
+/-! ## Encoding sizes -/
+
+@[simp] theorem leBytes_length (w n : Nat) : (leBytes w n).length = w := by
+  induction w generalizing n with
+  | zero => rfl
+  | succ w ih => simp [leBytes, ih]
+
+private theorem size_mk (l : List UInt8) : (ByteArray.mk (Array.mk l)).size = l.length := rfl
+
+@[simp] theorem ClockEnv.reprC_size (c : ClockEnv) : c.reprC.size = 40 := by
+  simp [ClockEnv.reprC, size_mk]
+@[simp] theorem RentEnv.reprC_size (r : RentEnv) : r.reprC.size = 24 := by
+  simp [RentEnv.reprC, RentEnv.fields, size_mk, pad]
+@[simp] theorem EpochScheduleEnv.reprC_size (e : EpochScheduleEnv) : e.reprC.size = 40 := by
+  simp [EpochScheduleEnv.reprC, size_mk, pad, boolByte]
+@[simp] theorem EpochRewardsEnv.reprC_size (e : EpochRewardsEnv) : e.reprC.size = 96 := by
+  simp [EpochRewardsEnv.reprC, EpochRewardsEnv.fields, size_mk, pad, boolByte]
+@[simp] theorem SysvarEnv.lastRestartBytes_size (env : SysvarEnv) :
+    env.lastRestartBytes.size = 8 := by
+  simp [SysvarEnv.lastRestartBytes, size_mk]
+
 /-! Evaluation lemmas, proved before the seal below. Call sites rewrite with these. -/
 
 @[simp] theorem SysvarEnv.bincode_clock (env : SysvarEnv) :
