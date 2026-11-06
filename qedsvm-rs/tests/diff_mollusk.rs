@@ -7434,41 +7434,77 @@ fn lean_input_parse(input: &[u8]) -> Option<(Vec<LeanInputPosition>, Vec<u8>, [u
     Some((positions, ix, pid))
 }
 
-/// Run the pinned SDK's entrypoint deserializer on a copy of a buffer. `None` if it panics.
+/// Run the pinned SDK's entrypoint deserializer on a copy of a buffer. It panics on a malformed
+/// duplicate reference, and a panic cannot unwind in this binary on Linux, so a buffer that may
+/// panic goes through `sdk_panics` instead.
 #[allow(clippy::type_complexity)]
 fn sdk_deserialize(
     input: &[u8],
-) -> Option<(
+) -> (
     Vec<([u8; 32], bool, bool, bool, [u8; 32], u64, Vec<u8>)>,
     Vec<u8>,
     [u8; 32],
-)> {
+) {
     let mut aligned = vec![0u64; input.len() / 8 + 1];
     // SAFETY: `aligned` holds `input.len()` bytes and outlives this copy.
     unsafe {
         std::ptr::copy_nonoverlapping(input.as_ptr(), aligned.as_mut_ptr() as *mut u8, input.len());
     }
     let ptr = aligned.as_mut_ptr() as *mut u8;
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SAFETY: the test only passes buffers whose record lengths stay inside `aligned`.
-        let (pid, accounts, ix) = unsafe { solana_program_entrypoint::deserialize(ptr) };
-        let accounts = accounts
-            .iter()
-            .map(|a| {
-                (
-                    a.key.to_bytes(),
-                    a.is_signer,
-                    a.is_writable,
-                    a.executable,
-                    a.owner.to_bytes(),
-                    **a.lamports.borrow(),
-                    a.data.borrow().to_vec(),
-                )
-            })
-            .collect();
-        (accounts, ix.to_vec(), pid.to_bytes())
-    }))
-    .ok()
+    // SAFETY: the test only passes buffers whose record lengths stay inside `aligned`.
+    let (pid, accounts, ix) = unsafe { solana_program_entrypoint::deserialize(ptr) };
+    let accounts = accounts
+        .iter()
+        .map(|a| {
+            (
+                a.key.to_bytes(),
+                a.is_signer,
+                a.is_writable,
+                a.executable,
+                a.owner.to_bytes(),
+                **a.lamports.borrow(),
+                a.data.borrow().to_vec(),
+            )
+        })
+        .collect();
+    (accounts, ix.to_vec(), pid.to_bytes())
+}
+
+/// Child exit codes for `sdk_panics`. A hook exits at the panic, before any unwinding starts.
+const SDK_CHILD_PANICKED: i32 = 42;
+const SDK_CHILD_RETURNED: i32 = 43;
+
+/// Whether the SDK's deserializer panics on a buffer, seen from a child running
+/// `input_abi_sdk_child`. Any other child exit fails the test, so a child that never reached the
+/// deserializer cannot pass for a panic.
+fn sdk_panics(input: &[u8]) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "input_abi_sdk_child", "--ignored", "--nocapture"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    match child.wait().unwrap().code() {
+        Some(SDK_CHILD_PANICKED) => true,
+        Some(SDK_CHILD_RETURNED) => false,
+        other => panic!("input_abi_sdk_child exited with {other:?}"),
+    }
+}
+
+/// The child half of `sdk_panics`: reads a buffer from stdin and reports through its exit code.
+#[test]
+#[ignore = "run by sdk_panics"]
+fn input_abi_sdk_child() {
+    use std::io::Read;
+    let mut input = Vec::new();
+    std::io::stdin().read_to_end(&mut input).unwrap();
+    std::panic::set_hook(Box::new(|_| std::process::exit(SDK_CHILD_PANICKED)));
+    sdk_deserialize(&input);
+    std::process::exit(SDK_CHILD_RETURNED);
 }
 
 /// #145: the Lean parser against the SDK's deserializer on every serialized case, and against
@@ -7484,7 +7520,7 @@ fn input_abi_parse_matches_sdk() {
         let ix = input_abi_instruction(program, &table, &metas, vec![0x5A; 16 + tail]);
         let bytes = qedsvm::serialize_parameters(&ix, &fs_accounts, &program).unwrap();
         let (positions, data, pid) = lean_input_parse(&bytes).unwrap_or_else(|| panic!("{name}"));
-        let (accounts, sdk_data, sdk_pid) = sdk_deserialize(&bytes).expect(name);
+        let (accounts, sdk_data, sdk_pid) = sdk_deserialize(&bytes);
         assert_eq!(data, sdk_data, "{name}");
         assert_eq!(pid, sdk_pid, "{name}");
         assert_eq!(positions.len(), accounts.len(), "{name}");
@@ -7520,12 +7556,13 @@ fn input_abi_parse_matches_sdk() {
         b
     };
     assert!(lean_input_parse(&good).is_some());
+    assert!(!sdk_panics(&good));
 
     // Malformed duplicate references: the SDK panics on all of them, and they do not parse.
     for (name, value) in [("self", 2u8), ("forward", 3), ("out_of_range", 200)] {
         let bad = patched(dup, value);
         assert!(lean_input_parse(&bad).is_none(), "{name}");
-        assert!(sdk_deserialize(&bad).is_none(), "{name}");
+        assert!(sdk_panics(&bad), "{name}");
     }
     // A duplicate of a duplicate, which the runtime never writes. The SDK follows it.
     let metas = [(1, false, true), (1, false, true), (1, false, true)];
@@ -7540,7 +7577,7 @@ fn input_abi_parse_matches_sdk() {
     let record = 0x4_0000_0000u64 + (first + 88 + 1 + 7 + 10240 + 8) as u64;
     chain[at..].copy_from_slice(&record.to_le_bytes());
     assert!(lean_input_parse(&chain).is_none());
-    assert!(sdk_deserialize(&chain).is_some());
+    assert!(!sdk_panics(&chain));
 
     // What the SDK ignores, and the runtime never writes.
     let cases: Vec<(&str, Vec<u8>)> = vec![
@@ -7565,7 +7602,7 @@ fn input_abi_parse_matches_sdk() {
     ];
     for (name, bad) in cases {
         assert!(lean_input_parse(&bad).is_none(), "{name}");
-        assert!(sdk_deserialize(&bad).is_some(), "{name}");
+        assert!(!sdk_panics(&bad), "{name}");
     }
 
     // Two records of one key, and no structure at all: the Lean parser alone can safely read these.
