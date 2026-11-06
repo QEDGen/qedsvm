@@ -24,6 +24,9 @@
   program id. The formulas below are VALIDATED against offsets that the
   diff-tested p_token lifts anchor on real agave/mollusk executions
   (`p_token_transfer_input_layout`).
+
+  These offsets assume no account repeats. `SVM.Runtime` in `SVM/Lib/Runtime/InputAbi.lean`
+  states the whole input with duplicates and proves it agrees (`slotOff_records`).
 -/
 
 import SVM.Solana.Abstract.Refinement

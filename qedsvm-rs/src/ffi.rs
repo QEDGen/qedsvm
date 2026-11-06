@@ -65,6 +65,12 @@ extern "C" {
     /// `SVM.Runtime.postInstructionCheck`; see `check_account_changes` for the wire and result codes.
     pub fn qedsvm_check_account_changes(wire: lean_obj_arg) -> u64;
 
+    /// `SVM.Runtime.serialize` of an instruction wire (see `SVM/Ffi.lean`). Empty if malformed.
+    pub fn qedsvm_input_serialize(wire: lean_obj_arg) -> lean_obj_res;
+
+    /// `SVM.Runtime.parse` of a buffer (see `SVM/Ffi.lean`).
+    pub fn qedsvm_input_parse(input: lean_obj_arg) -> lean_obj_res;
+
     /// Run `SVM.Native.Precompiles.dispatch` for ed25519/secp256k1/secp256r1 (agave bypasses BPF VM for these).
     /// Returns 16-byte ByteArray: [u64 LE r0, u64 LE cu_consumed].
     pub fn qedsvm_precompile_dispatch(

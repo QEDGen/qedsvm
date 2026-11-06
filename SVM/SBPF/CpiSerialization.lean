@@ -77,7 +77,7 @@ theorem emitNonDupBlock_eq (p : ParsedAcct) :
         ++ zeroBytes 4 ++ p.key ++ p.owner
         ++ u64ToLE p.lamports ++ u64ToLE p.dataLen ++ p.data
         ++ zeroBytes ((8 - p.dataLen % 8) % 8)
-        ++ zeroBytes MAX_PERMITTED_DATA_INCREASE ++ u64ToLE p.rentEpoch := rfl
+        ++ zeroBytes MAX_PERMITTED_DATA_INCREASE ++ u64ToLE RENT_EPOCH_MASKED := rfl
 
 /-- Size of the 88-byte non-dup block header (dup marker through data_len). -/
 theorem nonDupHeader_size (p : ParsedAcct)
@@ -109,7 +109,7 @@ theorem emitNonDupBlock_data (p : ParsedAcct) (i : Nat) (hi : i < p.data.size)
         ++ u64ToLE p.lamports ++ u64ToLE p.dataLen) = H at hH ⊢
   generalize zeroBytes ((8 - p.dataLen % 8) % 8) = A
   generalize zeroBytes MAX_PERMITTED_DATA_INCREASE = Z
-  generalize u64ToLE p.rentEpoch = R
+  generalize u64ToLE RENT_EPOCH_MASKED = R
   refine ⟨by simp only [ByteArray.size_append]; omega, ?_⟩
   rw [get!_append_left _ _ _ (by simp only [ByteArray.size_append]; omega),
       get!_append_left _ _ _ (by simp only [ByteArray.size_append]; omega),
@@ -131,8 +131,10 @@ theorem buildCpiSubInputN_first_data (p : ParsedAcct) (pid ix : ByteArray)
   simp only [buildCpiSubInputN, List.foldl_cons, List.foldl_nil,
     ByteArray.empty_append]
   generalize emitNonDupBlock p = E at hlt hget ⊢
+  generalize cpiPointerArray _ ix.size = T
   have h8 : ∀ k, (u64ToLE k).size = 8 := u64ToLE_size
   rw [get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
+      get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
       get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
       get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
       get!_append_right _ _ _ (by simp only [h8]; omega), h8]
@@ -415,7 +417,7 @@ theorem emitNonDupBlock_get!_header (p : ParsedAcct) (k : Nat)
   generalize zeroBytes 4 = P at h4 ⊢
   generalize zeroBytes ((8 - p.dataLen % 8) % 8) = A
   generalize zeroBytes MAX_PERMITTED_DATA_INCREASE = Z
-  generalize u64ToLE p.rentEpoch = R
+  generalize u64ToLE RENT_EPOCH_MASKED = R
   have hl := u64ToLE_size p.lamports
   have hd := u64ToLE_size p.dataLen
   generalize u64ToLE p.lamports = L at hl ⊢
@@ -439,7 +441,7 @@ theorem emitNonDupBlock_size_ge (p : ParsedAcct) (hsz : p.key.size = 32 ∧ p.ow
         ++ u64ToLE p.lamports ++ u64ToLE p.dataLen) = H at hH ⊢
   generalize zeroBytes ((8 - p.dataLen % 8) % 8) = A
   generalize zeroBytes MAX_PERMITTED_DATA_INCREASE = Z
-  generalize u64ToLE p.rentEpoch = R
+  generalize u64ToLE RENT_EPOCH_MASKED = R
   simp only [ByteArray.size_append]; omega
 
 /-- Byte `8 + k` of a single-account sub-input is byte `k` of its block. -/
@@ -450,9 +452,11 @@ theorem buildCpiSubInputN_single_get! (p : ParsedAcct) (pid ix : ByteArray) (k :
   simp only [buildCpiSubInputN, List.foldl_cons, List.foldl_nil, slot1,
     ByteArray.empty_append]
   generalize emitNonDupBlock p = E at hk ⊢
+  generalize cpiPointerArray _ ix.size = T
   have h8 : ∀ k, (u64ToLE k).size = 8 := u64ToLE_size
   refine ⟨by simp only [ByteArray.size_append, h8]; omega, ?_⟩
   rw [get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
+      get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
       get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
       get!_append_left _ _ _ (by simp only [ByteArray.size_append, h8]; omega),
       get!_append_right _ _ _ (by simp only [h8]; omega), h8, Nat.add_sub_cancel_left]

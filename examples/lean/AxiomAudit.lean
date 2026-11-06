@@ -12,6 +12,7 @@ import SVM.SBPF.NoReturnCheck
 import SVM.SBPF.BoundedCpi
 import SVM.SBPF.CodecRead
 import SVM.Solana.InputLayout
+import SVM.Lib.Runtime.InputAbi
 import SVM.Solana.CpiEnvelope
 import Generated.PTokenTransferTracedLifted
 import PToken.TransferRefinement
@@ -104,6 +105,36 @@ elab "#assert_native_decide_axioms " id:ident : command => do
 -- Gap 3: the loader-serialization offset algebra must reproduce the
 -- diff-tested p_token lift anchors decide-only.
 #assert_std_axioms SVM.Solana.p_token_transfer_input_layout
+-- #145: the aligned input ABI, its roundtrip, offsets and duplicate aliasing.
+#assert_std_axioms SVM.Runtime.parse_serialize
+#assert_std_axioms SVM.Runtime.serialize_of_parse
+#assert_std_axioms SVM.Runtime.decode_serialize
+#assert_std_axioms SVM.Runtime.serialize_length
+#assert_std_axioms SVM.Runtime.record_fields
+#assert_std_axioms SVM.Runtime.trailer_fields
+#assert_std_axioms SVM.Runtime.instrData_word
+#assert_std_axioms SVM.Runtime.rd64_bounded
+#assert_std_axioms SVM.Runtime.pointer_field
+#assert_std_axioms SVM.Runtime.slotOff_aligned
+#assert_std_axioms SVM.Runtime.dataOff_aligned
+#assert_std_axioms SVM.Runtime.rentEpochOff_aligned
+#assert_std_axioms SVM.Runtime.pointersOff_aligned
+#assert_std_axioms SVM.Runtime.slot_within
+#assert_std_axioms SVM.Runtime.dup_target
+#assert_std_axioms SVM.Runtime.record_key_unique
+#assert_std_axioms SVM.Runtime.resolve_dup
+#assert_std_axioms SVM.Runtime.resolve_total
+#assert_std_axioms SVM.Runtime.resolve_key_alias
+#assert_std_axioms SVM.Runtime.pointer_dup
+#assert_std_axioms SVM.Runtime.slotOff_records
+#assert_std_axioms SVM.Runtime.instrDataOff_records
+#assert_std_axioms SVM.Runtime.dataOff_records
+#assert_std_axioms SVM.Runtime.p_token_transfer_abi_layout
+#assert_std_axioms SVM.Runtime.ofInstruction_wellFormed
+#assert_std_axioms SVM.Runtime.ofInstruction_resolve
+#assert_std_axioms SVM.Runtime.ofInstruction_alias
+#assert_std_axioms SVM.Runtime.ofInstruction_isWritable
+#assert_std_axioms SVM.Runtime.ofInstruction_isSigner
 -- Gap 4: the CPI envelope encodings (Rust + C ABI) answer the runner's exact
 -- decode reads from a holdsFor witness — axiom-clean via the #48 forward
 -- bridges — and the pid_read bridges make the runner's program-id read

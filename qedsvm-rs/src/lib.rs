@@ -129,6 +129,36 @@ pub(crate) fn check_account_changes(wire: &[u8]) -> u64 {
     }
 }
 
+/// `SVM.Runtime.serialize` of an instruction's input, for differential tests. `metas` are
+/// `(key, is_signer, is_writable, account)`; see `SVM/Ffi.lean` for the wire.
+pub fn lean_input_serialize(
+    instruction_data: &[u8],
+    metas: &[(&[u8; 32], bool, bool, &solana_account::AccountSharedData)],
+    program_id: &[u8; 32],
+) -> Vec<u8> {
+    use solana_account::ReadableAccount;
+    let mut wire = program_id.to_vec();
+    wire.extend_from_slice(&(instruction_data.len() as u64).to_le_bytes());
+    wire.extend_from_slice(instruction_data);
+    wire.extend_from_slice(&(metas.len() as u64).to_le_bytes());
+    for (key, is_signer, is_writable, account) in metas {
+        wire.extend_from_slice(*key);
+        wire.push(*is_signer as u8);
+        wire.push(*is_writable as u8);
+        wire.extend_from_slice(account.owner().as_ref());
+        wire.extend_from_slice(&account.lamports().to_le_bytes());
+        wire.push(account.executable() as u8);
+        wire.extend_from_slice(&(account.data().len() as u64).to_le_bytes());
+        wire.extend_from_slice(account.data());
+    }
+    with_lean(|g| unsafe { ffi::qedsvm_input_serialize(ffi::alloc_bytearray(g, &wire)) })
+}
+
+/// `SVM.Runtime.parse` of a buffer, for differential tests; see `SVM/Ffi.lean` for the wire.
+pub fn lean_input_parse(input: &[u8]) -> Vec<u8> {
+    with_lean(|g| unsafe { ffi::qedsvm_input_parse(ffi::alloc_bytearray(g, input)) })
+}
+
 /// Drive `SVM.Native.Precompiles.dispatch` for the three sig-verify precompiles.
 /// Returns `(r0, cu)`: r0=0 success, r0=1 failure. Bypasses the BPF VM (agave does the same).
 pub fn run_precompile(pid: &[u8; 32], ix_data: &[u8]) -> Result<(u64, u64), DecodeError> {
