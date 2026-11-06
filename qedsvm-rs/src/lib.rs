@@ -16,8 +16,8 @@ pub mod diff;
 pub use deserialize::{deserialize_account_writes, DeserializeError};
 pub use serialize::{serialize_parameters, SerializeError};
 pub use svm::{
-    vm_fault_name, InstructionResult, PostStateError, ProgramResult, Svm, SvmError, SysvarWire,
-    ERR_INVALID_POSTSTATE,
+    vm_fault_name, AccountChangeError, InstructionResult, PostStateError, ProgramResult, Svm,
+    SvmError, SysvarWire, ERR_INVALID_POSTSTATE,
 };
 pub use wire::{decode as decode_wire, DecodeError, ExitOutcome, RawResult};
 
@@ -116,6 +116,17 @@ pub fn run_buffer_with_sysvars(
         )
     });
     wire::decode(&bytes)
+}
+
+/// Run `SVM.Runtime.postInstructionCheck` over a wire blob (see `SVM/Ffi.lean`).
+/// 0 accepts, 1 to 7 name an [`AccountChangeError`], 255 is a malformed blob.
+pub(crate) fn check_account_changes(wire: &[u8]) -> u64 {
+    let g = ffi::lock();
+    // SAFETY: the Lean-runtime calls happen under `g`, and the callee takes ownership of the blob.
+    unsafe {
+        let wire_obj = ffi::alloc_bytearray(&g, wire);
+        ffi::qedsvm_check_account_changes(wire_obj)
+    }
 }
 
 /// Drive `SVM.Native.Precompiles.dispatch` for the three sig-verify precompiles.

@@ -26,6 +26,8 @@ pub struct RawResult {
     pub modified_input: Vec<u8>,
     pub logs: Vec<Vec<u8>>,
     pub return_data: Vec<u8>,
+    /// The input region when the last successful CPI returned; `None` if none did.
+    pub cpi_return_input: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +75,11 @@ pub fn decode(bytes: &[u8]) -> Result<RawResult, DecodeError> {
             }
             let rd_len = r.u32().ok_or(TRUNCATED)? as usize;
             let return_data = r.take(rd_len).ok_or(TRUNCATED)?.to_vec();
+            let cpi_return_len = r.u32().ok_or(TRUNCATED)? as usize;
+            let cpi_return_bytes = r.take(cpi_return_len).ok_or(TRUNCATED)?;
+            let cpi_return_input = (cpi_return_len != 0).then(|| cpi_return_bytes.to_vec());
             Ok(RawResult {
+                cpi_return_input,
                 outcome,
                 compute_units_consumed,
                 modified_input,

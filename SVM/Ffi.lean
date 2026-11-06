@@ -16,6 +16,7 @@
   on. The rest of `SVM.*` is internal API that may change shape.
 -/
 
+import SVM.Lib.Runtime.Checks
 import SVM.SBPF.Runner
 import SVM.SBPF.Outcome
 import SVM.Native.Precompiles
@@ -97,6 +98,10 @@ def encodeRun (s : State) (inputLen budget : Nat) : ByteArray := Id.run do
     out := appendLP out log
   -- Return data.
   out := appendLP out s.returnData
+  -- Input region at the last CPI return; empty if no CPI returned.
+  out := appendLP out (match s.cpiReturnMem with
+    | some mem => readBytes mem INPUT_START inputLen
+    | none => ByteArray.empty)
   return out
 
 /-- The Rust-facing entrypoint.
@@ -236,6 +241,91 @@ def runWithSysvars
     | some (s, _fuelRemaining) =>
       -- H5 total metering, clamped to the budget (see runElfBuffer).
       encodeRun s input.size cuBudget.toNat
+
+/-! ## Account-change check
+
+Wire format, integers little-endian:
+
+    program id (32)
+    u64 reference count, then per instruction reference:
+      key (32), is_writable (1), executable (1), rent_epoch (u64)
+      entry: owner (32), lamports (u64), data_len (u64), data
+      pre: the same fields
+      post: owner (32), lamports (u64), raw data_len (u64), bytes (u64), data
+-/
+
+private def wireU64 (b : ByteArray) (off : Nat) : Option Nat :=
+  if off + 8 ≤ b.size then
+    some ((List.range 8).foldl (fun acc i => acc + (b.get! (off + i)).toNat * 256 ^ i) 0)
+  else none
+
+private def wirePubkey (b : ByteArray) (off : Nat) : Option SVM.Pubkey.Pubkey := do
+  let c0 ← wireU64 b off
+  let c1 ← wireU64 b (off + 8)
+  let c2 ← wireU64 b (off + 16)
+  let c3 ← wireU64 b (off + 24)
+  pure { c0, c1, c2, c3 }
+
+private def wireBytes (b : ByteArray) (off n : Nat) : Option (List UInt8) :=
+  if off + n ≤ b.size then some (b.extract off (off + n)).toList else none
+
+private def wireState (b : ByteArray) (off : Nat) (executable : Bool) (rentEpoch : Nat) :
+    Option (SVM.Runtime.AccountState × Nat) := do
+  let owner ← wirePubkey b off
+  let lamports ← wireU64 b (off + 32)
+  let len ← wireU64 b (off + 40)
+  let data ← wireBytes b (off + 48) len
+  pure ({ owner, lamports, data, executable, rentEpoch }, off + 48 + len)
+
+private def wireChange (b : ByteArray) (off : Nat) :
+    Option (SVM.Runtime.AccountChange × Nat) := do
+  let key ← wirePubkey b off
+  let flags ← wireBytes b (off + 32) 2
+  let rentEpoch ← wireU64 b (off + 34)
+  let executable := flags.getLast? != some 0
+  let (entry, off) ← wireState b (off + 42) executable rentEpoch
+  let (pre, off) ← wireState b off executable rentEpoch
+  let postOwner ← wirePubkey b off
+  let postLamports ← wireU64 b (off + 32)
+  let dataLen ← wireU64 b (off + 40)
+  let postLen ← wireU64 b (off + 48)
+  let postData ← wireBytes b (off + 56) postLen
+  let change : SVM.Runtime.AccountChange :=
+    { key
+      isWritable := flags.head? != some 0
+      entry
+      pre
+      post := { owner := postOwner, lamports := postLamports, dataLen, data := postData } }
+  pure (change, off + 56 + postLen)
+
+private def wireChanges (b : ByteArray) : Nat → Nat → Option (List SVM.Runtime.AccountChange)
+  | 0, off => if off == b.size then some [] else none
+  | n + 1, off => do
+    let (c, off) ← wireChange b off
+    let rest ← wireChanges b n off
+    pure (c :: rest)
+
+/-- `postInstructionCheck` for the Rust host: 0 accepts, 1 to 7 name the error in
+    `AccountChangeError` order, and 255 is a malformed blob. -/
+@[export qedsvm_check_account_changes]
+def checkAccountChanges (wire : ByteArray) : UInt64 :=
+  let parsed := do
+    let programId ← wirePubkey wire 0
+    let count ← wireU64 wire 32
+    let refs ← wireChanges wire count 40
+    pure (programId, refs)
+  match parsed with
+  | none => 255
+  | some (programId, refs) =>
+    match SVM.Runtime.postInstructionCheck programId refs with
+    | .ok () => 0
+    | .error .externalAccountLamportSpend => 1
+    | .error .readonlyLamportChange => 2
+    | .error .invalidRealloc => 3
+    | .error .readonlyDataModified => 4
+    | .error .externalAccountDataModified => 5
+    | .error .modifiedProgramId => 6
+    | .error .unbalancedInstruction => 7
 
 /-! ## Top-level precompile dispatch
 

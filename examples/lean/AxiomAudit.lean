@@ -5,6 +5,7 @@ On failure, either a proof regressed to sorry/native_decide, or a new axiom
 legitimately belongs — add it to the per-theorem allow-list with justification.
 -/
 import VestingGate
+import AccountGuarantees
 import Lean
 import SVM.SBPF.Bounded
 import SVM.SBPF.NoReturnCheck
@@ -148,6 +149,25 @@ elab "#assert_native_decide_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.call_sol_get_clock_sysvar_ts_spec
 #assert_std_axioms Examples.VestingGate.vestingGate_unlocks
 #assert_std_axioms Examples.VestingGate.vestingGate_locks
+
+-- Runtime account-change rules (#144).
+#assert_std_axioms SVM.Runtime.debit_requires_owner
+#assert_std_axioms SVM.Runtime.readonly_lamports_unchanged
+#assert_std_axioms SVM.Runtime.lamports_conserved
+#assert_std_axioms SVM.Runtime.content_change_authorized
+#assert_std_axioms SVM.Runtime.realloc_within_increase
+#assert_std_axioms SVM.Runtime.realloc_within_max
+#assert_std_axioms SVM.Runtime.resize_authorized
+#assert_std_axioms SVM.Runtime.owner_change_authorized
+#assert_std_axioms SVM.Runtime.readonly_unchanged
+#assert_std_axioms SVM.Runtime.commit_executable
+#assert_std_axioms SVM.Runtime.commit_rentEpoch
+#assert_std_axioms SVM.Runtime.prefixDiffers_false_iff
+#assert_std_axioms SVM.Runtime.uniqueChanges_nodup
+#assert_std_axioms SVM.Runtime.mergeRef_dup_lamports
+#assert_std_axioms SVM.Runtime.key_mem_uniqueChanges
+#assert_std_axioms Examples.AccountGuarantees.foreign_account_safe
+#assert_std_axioms Examples.AccountGuarantees.pool_total_conserved
 #assert_std_axioms SVM.SBPF.call_sol_get_clock_sysvar_spec
 #assert_std_axioms SVM.SBPF.call_sol_get_rent_sysvar_spec
 #assert_std_axioms SVM.SBPF.call_sol_get_epoch_schedule_sysvar_spec

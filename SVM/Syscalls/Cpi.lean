@@ -54,7 +54,8 @@ structure CalleeResult where
            log := r.log
            returnData := r.returnData
            returnDataProgId := r.returnDataProgId
-           cuConsumed := s.cuConsumed + cu + r.cuConsumed }
+           cuConsumed := s.cuConsumed + cu + r.cuConsumed
+           cpiReturnMem := if r.code = 0 then some r.mem else s.cpiReturnMem }
 
 /-- A callee semantics is a relation, rather than a function, so a proof may
     abstract over another verified program, a native-program specification, or

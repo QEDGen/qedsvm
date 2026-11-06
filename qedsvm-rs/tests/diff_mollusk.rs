@@ -6704,3 +6704,309 @@ fn malformed_sysvar_wire_fails_closed() {
         assert!(fs_vm.process_instruction(&ix, &[]).is_err());
     }
 }
+
+/// #144: one case is (name, metas as (account, writable), ops as (op, position, arg)). The account
+/// indices name `account_change_table` entries, and the ops are `account_change_probe`'s.
+type AccountChangeCase = (
+    &'static str,
+    &'static [(usize, bool)],
+    &'static [(u8, u8, u64)],
+);
+
+#[rustfmt::skip]
+const ACCOUNT_CHANGE_CASES: &[AccountChangeCase] = {
+    const A: usize = 0; // owned, data nonzero
+    const B: usize = 1; // owned, data nonzero
+    const X: usize = 2; // external, data nonzero
+    const Z: usize = 3; // owned, data zeroed
+    const E: usize = 4; // owned, data empty
+    const XE: usize = 5; // external, data zeroed
+    const EX: usize = 6; // owned, executable
+    const L: usize = 7; // owned, 10 MiB - 100 bytes of data
+    const Q: usize = 8; // the callee program, loaded from the same ELF
+    const CZ: usize = 9; // owned by the callee, data zeroed
+    const P: u64 = 0x77; // the fill byte of the caller's id
+    const MINUS_1: u64 = u64::MAX;
+    &[
+        ("noop",                       &[(A, true)], &[]),
+        // Lamports.
+        ("lam_owned_to_owned",         &[(A, true), (B, true)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("lam_owned_to_external",      &[(A, true), (X, true)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("lam_external_debit",         &[(X, true), (A, true)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("lam_readonly_credit",        &[(A, true), (B, false)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("lam_readonly_debit",         &[(B, false), (A, true)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("lam_readonly_external_debit",&[(X, false), (A, true)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("lam_mint",                   &[(A, true)], &[(1, 0, 1)]),
+        ("lam_burn",                   &[(A, true)], &[(1, 0, MINUS_1)]),
+        ("lam_readonly_restored",      &[(A, false)], &[(1, 0, 1), (1, 0, MINUS_1)]),
+        ("lam_unbalanced_two_accounts",&[(A, true), (B, true)], &[(1, 0, 2), (1, 1, MINUS_1)]),
+        // Duplicates.
+        ("dup_transfer",               &[(A, true), (A, true), (B, true)], &[(1, 0, MINUS_1), (1, 2, 1)]),
+        ("dup_transfer_via_dup_slot",  &[(A, true), (A, true), (B, true)], &[(1, 1, MINUS_1), (1, 2, 1)]),
+        ("dup_mint",                   &[(A, true), (A, true)], &[(1, 0, 1)]),
+        ("dup_mixed_ro_then_w",        &[(A, false), (A, true), (B, true)], &[(1, 0, MINUS_1), (1, 2, 1)]),
+        ("dup_mixed_w_then_ro",        &[(A, true), (A, false), (B, true)], &[(1, 0, MINUS_1), (1, 2, 1)]),
+        // Data content.
+        ("data_owned_write",           &[(A, true)], &[(3, 0, (0xaau64 << 32) | 3)]),
+        ("data_readonly_write",        &[(A, false)], &[(3, 0, (0xaau64 << 32) | 3)]),
+        ("data_external_write",        &[(X, true)], &[(3, 0, (0xaau64 << 32) | 3)]),
+        // Realloc.
+        ("len_grow_max",               &[(A, true)], &[(2, 0, 16 + 10240)]),
+        ("len_grow_over",              &[(A, true)], &[(2, 0, 16 + 10241)]),
+        ("len_shrink",                 &[(A, true)], &[(2, 0, 8)]),
+        ("len_shrink_zero",            &[(A, true)], &[(2, 0, 0)]),
+        ("len_grow_readonly",          &[(A, false)], &[(2, 0, 17)]),
+        ("len_shrink_readonly",        &[(A, false)], &[(2, 0, 8)]),
+        ("len_grow_external",          &[(X, true)], &[(2, 0, 17)]),
+        ("len_shrink_external",        &[(X, true)], &[(2, 0, 8)]),
+        ("len_huge",                   &[(A, true)], &[(2, 0, u64::MAX)]),
+        ("len_over_10mib",             &[(L, true)], &[(2, 0, 10 * 1024 * 1024 + 1)]),
+        ("len_exact_10mib",            &[(L, true)], &[(2, 0, 10 * 1024 * 1024)]),
+        // Owner.
+        ("own_zeroed",                 &[(Z, true)], &[(4, 0, 0x55)]),
+        ("own_empty",                  &[(E, true)], &[(4, 0, 0x55)]),
+        ("own_nonzero",                &[(A, true)], &[(4, 0, 0x55)]),
+        ("own_external_zeroed",        &[(XE, true)], &[(4, 0, 0x55)]),
+        ("own_readonly_zeroed",        &[(Z, false)], &[(4, 0, 0x55)]),
+        ("own_zeroed_this_ix",         &[(A, true)], &[(11, 0, 16), (4, 0, 0x55)]),
+        ("own_after_shrink_to_zero",   &[(A, true)], &[(2, 0, 0), (4, 0, 0x55)]),
+        ("own_then_debit",             &[(Z, true), (A, true)], &[(4, 0, 0x55), (1, 0, MINUS_1), (1, 1, 1)]),
+        ("own_take_external_then_debit",&[(XE, true), (A, true)], &[(10, 0, 0), (1, 0, MINUS_1), (1, 1, 1)]),
+        ("own_take_external_no_debit", &[(XE, true)], &[(10, 0, 0)]),
+        ("own_restored",               &[(A, true)], &[(4, 0, 0x55), (10, 0, 0)]),
+        // Fields the runtime does not read back.
+        ("exec_byte_set",              &[(A, true)], &[(5, 0, 1)]),
+        ("exec_byte_clear",            &[(EX, true)], &[(5, 0, 0)]),
+        ("signer_byte",                &[(A, true)], &[(6, 0, 1)]),
+        ("writable_byte",              &[(A, false)], &[(7, 0, 1)]),
+        ("key_byte",                   &[(A, true)], &[(8, 0, 0xee)]),
+        ("rent_epoch",                 &[(A, true)], &[(9, 0, 42)]),
+        // Executable accounts follow the same rules.
+        ("exec_account_lamports",      &[(EX, true), (A, true)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("exec_account_data",          &[(EX, true)], &[(3, 0, (0xaau64 << 32) | 3)]),
+        ("exec_account_len",           &[(EX, true)], &[(2, 0, 8)]),
+        // Competing errors: account order, then the field order lamports, length, owner.
+        ("order_external_then_readonly",&[(X, true), (B, false)], &[(1, 0, MINUS_1), (1, 1, 1)]),
+        ("order_readonly_then_external",&[(B, false), (X, true)], &[(1, 0, 1), (1, 1, MINUS_1)]),
+        ("order_lamports_before_len",  &[(X, true), (A, true)], &[(1, 0, MINUS_1), (2, 0, u64::MAX), (1, 1, 1)]),
+        ("order_len_before_owner",     &[(A, true)], &[(2, 0, u64::MAX), (4, 0, 0x55)]),
+        ("order_shape_before_owner",   &[(X, true)], &[(2, 0, 8), (4, 0, 0x55)]),
+        ("order_readonly_before_balance",&[(B, false)], &[(1, 0, 1)]),
+        ("order_owner_before_balance", &[(A, true)], &[(1, 0, 1), (4, 0, 0x55)]),
+        ("order_data_before_lamports", &[(X, true), (A, true)], &[(1, 0, MINUS_1), (3, 0, (0xaau64 << 32) | 3), (1, 1, 1)]),
+        ("order_data_second_before_lamports_first", &[(X, true), (B, false)], &[(1, 0, MINUS_1), (3, 1, (0xaau64 << 32) | 3)]),
+        ("order_readonly_before_external_data",&[(X, false)], &[(3, 0, (0xaau64 << 32) | 3)]),
+        ("order_readonly_before_external_len",&[(X, false)], &[(2, 0, 8)]),
+        // Across a CPI: a callee's changes are not the caller's, the realloc bound keeps the entry
+        // length, and the balance keeps the entry total.
+        ("cpi_callee_changes_its_account",&[(CZ, true), (A, true), (Q, false)], &[(12, 2, 16 * 3), (1, 0, MINUS_1), (1, 1, 1), (3, 0, (0xaau64 << 32) | 3)]),
+        ("cpi_callee_grows_then_caller_over",&[(CZ, true), (Q, false)], &[(12, 1, 16), (2, 0, 16 + 10240), (2, 0, 16 + 10241)]),
+        ("cpi_callee_grows_then_caller_same",&[(CZ, true), (Q, false)], &[(12, 1, 16), (2, 0, 16 + 10240)]),
+        ("cpi_callee_mints",           &[(CZ, true), (A, true), (Q, false)], &[(12, 2, 16), (1, 0, 1)]),
+        ("cpi_callee_gives_account_then_debit",&[(CZ, true), (A, true), (Q, false)], &[(12, 2, 16), (4, 0, P), (1, 0, MINUS_1), (1, 1, 1)]),
+        ("cpi_caller_debits_after_keeping_foreign",&[(CZ, true), (A, true), (Q, false)], &[(12, 2, 16), (1, 1, 0), (1, 0, MINUS_1), (1, 1, 1)]),
+        ("order_data_before_balance",  &[(B, false)], &[(1, 0, 1), (3, 0, (0xaau64 << 32) | 3)]),
+    ]
+};
+
+fn account_change_callee() -> Pubkey {
+    Pubkey::from([0x78u8; 32])
+}
+
+fn dual_program_account() -> Account {
+    dual_program().1
+}
+
+fn account_change_table() -> Vec<(Pubkey, Account)> {
+    let program = Pubkey::from([0x77u8; 32]);
+    let external = Pubkey::from([0x22u8; 32]);
+    let rich = 1_000_000_000_000u64;
+    let acct = |data: Vec<u8>, owner: Pubkey, executable: bool| Account {
+        lamports: rich,
+        data,
+        owner,
+        executable,
+        rent_epoch: 0,
+    };
+    vec![
+        (pid(0x14400), acct(vec![0x11; 16], program, false)),
+        (pid(0x14401), acct(vec![0x11; 16], program, false)),
+        (pid(0x14402), acct(vec![0x11; 16], external, false)),
+        (pid(0x14403), acct(vec![0; 16], program, false)),
+        (pid(0x14404), acct(vec![], program, false)),
+        (pid(0x14405), acct(vec![0; 16], external, false)),
+        (pid(0x14406), acct(vec![0x11; 16], program, true)),
+        (
+            pid(0x14407),
+            acct(vec![0x11; 10 * 1024 * 1024 - 100], program, false),
+        ),
+        (account_change_callee(), dual_program_account()),
+        (
+            pid(0x14409),
+            acct(vec![0; 16], account_change_callee(), false),
+        ),
+    ]
+}
+
+/// Build `(instruction, qedsvm accounts, mollusk accounts)` for one `ACCOUNT_CHANGE_CASES` row.
+#[allow(clippy::type_complexity)]
+fn account_change_inputs(
+    program: Pubkey,
+    table: &[(Pubkey, Account)],
+    metas: &[(usize, bool)],
+    ops: &[(u8, u8, u64)],
+) -> (
+    Instruction,
+    Vec<(Pubkey, AccountSharedData)>,
+    Vec<(Pubkey, Account)>,
+) {
+    let mut data = Vec::new();
+    for (op, pos, arg) in ops {
+        data.extend_from_slice(&[*op, *pos, 0, 0, 0, 0, 0, 0]);
+        data.extend_from_slice(&arg.to_le_bytes());
+    }
+    let accounts = metas
+        .iter()
+        .map(|(i, writable)| {
+            if *writable {
+                AccountMeta::new(table[*i].0, false)
+            } else {
+                AccountMeta::new_readonly(table[*i].0, false)
+            }
+        })
+        .collect();
+    let mut seen = Vec::new();
+    let mut fs_accounts = Vec::new();
+    let mut ml_accounts = Vec::new();
+    for (i, _) in metas {
+        if !seen.contains(i) {
+            seen.push(*i);
+            fs_accounts.push((table[*i].0, AccountSharedData::from(table[*i].1.clone())));
+            ml_accounts.push(table[*i].clone());
+        }
+    }
+    (
+        Instruction {
+            program_id: program,
+            accounts,
+            data,
+        },
+        fs_accounts,
+        ml_accounts,
+    )
+}
+
+/// The agave error a rejection by the Lean checker claims to be. These are the errors of a rule
+/// that ran after exit or at a store, so the comparison is by name, finer than M14's collapse.
+fn account_change_result(e: qedsvm::AccountChangeError) -> MlProgramResult {
+    use qedsvm::AccountChangeError as E;
+    match e {
+        E::ExternalAccountLamportSpend => {
+            MlProgramResult::UnknownError(InstructionError::ExternalAccountLamportSpend)
+        }
+        E::ReadonlyLamportChange => {
+            MlProgramResult::UnknownError(InstructionError::ReadonlyLamportChange)
+        }
+        E::InvalidRealloc => {
+            MlProgramResult::Failure(solana_program_error::ProgramError::InvalidRealloc)
+        }
+        E::ReadonlyDataModified => {
+            MlProgramResult::UnknownError(InstructionError::ReadonlyDataModified)
+        }
+        E::ExternalAccountDataModified => {
+            MlProgramResult::UnknownError(InstructionError::ExternalAccountDataModified)
+        }
+        E::ModifiedProgramId => MlProgramResult::UnknownError(InstructionError::ModifiedProgramId),
+        E::UnbalancedInstruction => {
+            MlProgramResult::UnknownError(InstructionError::UnbalancedInstruction)
+        }
+    }
+}
+
+/// #144: the Lean account-change checker against Mollusk, by error name, on every rule's accept and
+/// reject, its boundaries, duplicates, competing errors and CPI comparison points. CU compares except
+/// where agave depletes the meter on a store fault, which the model's post-exit check cannot see
+/// (#158), and where agave rejects inside a callee (#112).
+#[test]
+fn account_change_rules_match_mollusk() {
+    let program = Pubkey::from([0x77u8; 32]);
+    let elf = include_bytes!("fixtures/account_change_probe.so");
+    let programs = [
+        (program, elf.as_slice()),
+        (account_change_callee(), elf.as_slice()),
+    ];
+    let fs_vm = svm_with(&programs);
+    let ml_vm = mollusk_with(&programs);
+    let table = account_change_table();
+    let mut why = Vec::new();
+    let mut accepted = 0;
+    for (name, metas, ops) in ACCOUNT_CHANGE_CASES {
+        let (ix, fs_accounts, ml_accounts) = account_change_inputs(program, &table, metas, ops);
+        let fs = fs_vm.process_instruction(&ix, &fs_accounts).unwrap();
+        let ml = ml_vm.process_instruction(&ix, &ml_accounts);
+        match (&fs.poststate_violation, &ml.program_result) {
+            (None, MlProgramResult::Success) => {
+                accepted += 1;
+                assert!(
+                    matches!(fs.program_result, FsProgramResult::Success),
+                    "{name}"
+                );
+                for (key, want) in &ml.resulting_accounts {
+                    let got = fs_acct_by_key(&fs, key);
+                    assert_eq!(got.lamports(), want.lamports, "{name} lamports");
+                    assert_eq!(got.data(), want.data.as_slice(), "{name} data");
+                    assert_eq!(got.owner(), &want.owner, "{name} owner");
+                    assert_eq!(got.executable(), want.executable, "{name} executable");
+                    assert_eq!(got.rent_epoch(), want.rent_epoch, "{name} rent_epoch");
+                }
+            }
+            (Some(qedsvm::PostStateError::AccountChange(e)), got) => {
+                let want = account_change_result(*e);
+                if want != *got {
+                    why.push(format!("{name}: checker {want:?}, mollusk {got:?}"));
+                }
+            }
+            (ours, got) => why.push(format!("{name}: checker {ours:?}, mollusk {got:?}")),
+        }
+        // Agave rejects an unbalanced callee at its return, so the caller's remaining instructions
+        // never run. The model has no callee-level check yet and rejects at the top level (#112).
+        let rejected_in_callee = *name == "cpi_callee_mints";
+        if !rejected_in_callee
+            && ml.compute_units_consumed != DEFAULT_CU_BUDGET
+            && fs.compute_units_consumed != ml.compute_units_consumed
+        {
+            why.push(format!(
+                "{name}: CU ours={} mollusk={}",
+                fs.compute_units_consumed, ml.compute_units_consumed
+            ));
+        }
+    }
+    assert!(why.is_empty(), "{}", why.join("\n"));
+    assert!(accepted >= 16 && ACCOUNT_CHANGE_CASES.len() - accepted >= 16);
+}
+
+/// #144: a store that leaves the bytes as they were is invisible in a pre/post comparison, so the
+/// checker accepts what agave rejects at the store. Accepting is one-sided by design until the
+/// model has per-account write protection (#158); this pins the gap so closing it shows up.
+#[test]
+fn account_change_store_without_effect_diverges_from_mollusk() {
+    const A: usize = 0;
+    const X: usize = 2;
+    let program = Pubkey::from([0x77u8; 32]);
+    let elf = include_bytes!("fixtures/account_change_probe.so");
+    let fs_vm = svm_with(&[(program, elf.as_slice())]);
+    let ml_vm = mollusk_with(&[(program, elf.as_slice())]);
+    let table = account_change_table();
+    let same_byte = (0x11u64 << 32) | 3;
+    for (metas, err) in [
+        (&[(A, false)], InstructionError::ReadonlyDataModified),
+        (&[(X, true)], InstructionError::ExternalAccountDataModified),
+    ] {
+        let (ix, fs_accounts, ml_accounts) =
+            account_change_inputs(program, &table, metas, &[(3, 0, same_byte)]);
+        let fs = fs_vm.process_instruction(&ix, &fs_accounts).unwrap();
+        let ml = ml_vm.process_instruction(&ix, &ml_accounts);
+        assert!(matches!(fs.program_result, FsProgramResult::Success));
+        assert_eq!(ml.program_result, MlProgramResult::UnknownError(err));
+    }
+}

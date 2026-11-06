@@ -8,14 +8,35 @@ use solana_instruction::Instruction;
 use solana_program_entrypoint::MAX_PERMITTED_DATA_INCREASE;
 use solana_pubkey::Pubkey;
 
+/// Each instruction reference's account, and beside them its raw `data_len` field.
+pub(crate) type AccountWrites = (Vec<(Pubkey, AccountSharedData)>, Vec<u64>);
+
 /// Walk `buffer` (post-execution `INPUT_START` region), overwriting each non-dup account's
 /// lamports/owner/data from `buffer`; executable and rent_epoch inherited from `pre_accounts`.
-/// Returns `Err` on malformed buffer.
+/// Returns `Err` on malformed buffer, or if a program set a length the runtime would reject.
 pub fn deserialize_account_writes(
     buffer: &[u8],
     instruction: &Instruction,
     pre_accounts: &[(Pubkey, AccountSharedData)],
 ) -> Result<Vec<(Pubkey, AccountSharedData)>, DeserializeError> {
+    let (accounts, raw_lens) = read_account_writes(buffer, instruction, pre_accounts)?;
+    for ((_, account), raw) in accounts.iter().zip(&raw_lens) {
+        use solana_account::ReadableAccount;
+        if *raw != account.data().len() as u64 {
+            return Err(DeserializeError::DataLengthOverflow(*raw as usize));
+        }
+    }
+    Ok(accounts)
+}
+
+/// As [`deserialize_account_writes`], but a program's oversized length field is a value the
+/// account-change check must judge, not a parse failure. Returns each reference's raw length
+/// field beside its account; the account holds only the bytes the buffer has room for.
+pub(crate) fn read_account_writes(
+    buffer: &[u8],
+    instruction: &Instruction,
+    pre_accounts: &[(Pubkey, AccountSharedData)],
+) -> Result<AccountWrites, DeserializeError> {
     let mut r = ByteCursor::new(buffer);
 
     let num_accounts = r.u64().ok_or(DeserializeError::Truncated)? as usize;
@@ -32,7 +53,7 @@ pub fn deserialize_account_writes(
     // Dup structure is fully determined by `instruction.accounts` — the shared `dup_map`
     // invariant the serializer also uses — so we recompute it and skip 8 bytes per dup.
     let dup_of = crate::serialize::dup_map(&instruction.accounts);
-    let mut by_first_occurrence: Vec<Option<AccountSharedData>> = vec![None; num_accounts];
+    let mut by_first_occurrence: Vec<Option<(AccountSharedData, u64)>> = vec![None; num_accounts];
     for (i, slot) in by_first_occurrence.iter_mut().enumerate() {
         if dup_of[i].is_some() {
             // Dup: 1B (post-execution borrow_state, ignored) + 7B padding.
@@ -52,85 +73,57 @@ pub fn deserialize_account_writes(
     r.skip(32).ok_or(DeserializeError::Truncated)?; // program_id
 
     let mut result = Vec::with_capacity(num_accounts);
+    let mut raw_lens = Vec::with_capacity(num_accounts);
     for (i, meta) in instruction.accounts.iter().enumerate() {
         let first = dup_of[i].unwrap_or(i); // first occurrence of this pubkey (i itself if non-dup)
-        let updated = by_first_occurrence[first]
+        let (updated, raw_len) = by_first_occurrence[first]
             .clone()
             .ok_or(DeserializeError::MissingFirstOccurrence(first))?;
         result.push((meta.pubkey, updated));
+        raw_lens.push(raw_len);
     }
-    Ok(result)
+    Ok((result, raw_lens))
 }
 
 fn parse_non_dup_record(
     r: &mut ByteCursor<'_>,
     meta_key: &Pubkey,
     pre_accounts: &[(Pubkey, AccountSharedData)],
-) -> Result<AccountSharedData, DeserializeError> {
-    // 1B is_signer + 1B is_writable + 1B is_executable + 4B padding — all runtime-only, skip.
-    r.skip(7).ok_or(DeserializeError::Truncated)?;
-    let mut key_bytes = [0u8; 32];
-    r.read_into(&mut key_bytes)
-        .ok_or(DeserializeError::Truncated)?;
-    let key = Pubkey::from(key_bytes);
-    if &key != meta_key {
-        return Err(DeserializeError::PubkeyMismatch {
-            expected: *meta_key,
-            got: key,
-        });
-    }
+) -> Result<(AccountSharedData, u64), DeserializeError> {
+    use solana_account::ReadableAccount;
+    // 1B is_signer + 1B is_writable + 1B is_executable + 4B padding + 32B key: agave reads none
+    // of these back, so a program's writes to them have no effect.
+    r.skip(7 + 32).ok_or(DeserializeError::Truncated)?;
     let mut owner_bytes = [0u8; 32];
     r.read_into(&mut owner_bytes)
         .ok_or(DeserializeError::Truncated)?;
     let owner = Pubkey::from(owner_bytes);
     let lamports = r.u64().ok_or(DeserializeError::Truncated)?;
-    let data_len = r.u64().ok_or(DeserializeError::Truncated)? as usize;
-    if data_len
-        > MAX_PERMITTED_DATA_INCREASE
-            + pre_accounts
-                .iter()
-                .find(|(k, _)| *k == *meta_key)
-                .map(|(_, a)| {
-                    use solana_account::ReadableAccount;
-                    a.data().len()
-                })
-                .unwrap_or(0)
-    {
-        return Err(DeserializeError::DataLengthOverflow(data_len));
-    }
+    let raw_len = r.u64().ok_or(DeserializeError::Truncated)?;
+    let pre = &pre_accounts
+        .iter()
+        .find(|(k, _)| *k == *meta_key)
+        .ok_or(DeserializeError::UnknownPubkeyInInstruction(*meta_key))?
+        .1;
+    let pre_data_len = pre.data().len();
+    let room = pre_data_len + MAX_PERMITTED_DATA_INCREASE;
+    let data_len = usize::try_from(raw_len).map_or(room, |n| n.min(room));
     let data = r
         .take(data_len)
         .ok_or(DeserializeError::Truncated)?
         .to_vec();
-    // Skip the reserved realloc-room: pre_data_len + pre_align + MAX_PERMITTED_DATA_INCREASE
-    // bytes total; remaining = pre_data_len + pre_align - post_data_len - post_align + 10240.
-    let pre_data_len = pre_accounts
-        .iter()
-        .find(|(k, _)| *k == *meta_key)
-        .map(|(_, a)| a.data().len())
-        .unwrap_or(0);
+    // The record's data area is fixed by the pre-state length, whatever the program set.
     let pre_align_pad = (8 - pre_data_len % 8) % 8;
-    let post_align_pad = (8 - data_len % 8) % 8;
-    let remaining_pad =
-        pre_data_len + pre_align_pad + MAX_PERMITTED_DATA_INCREASE - data_len - post_align_pad;
-    r.skip(post_align_pad + remaining_pad)
+    r.skip(room + pre_align_pad - data_len)
         .ok_or(DeserializeError::Truncated)?;
     r.skip(8).ok_or(DeserializeError::Truncated)?; // rent_epoch
 
     // `executable` and `rent_epoch` are always inherited from pre-state (immutable to programs).
-    // Load-bearing: `validate_post_state` does not re-check these fields.
-    let pre = pre_accounts
-        .iter()
-        .find(|(k, _)| *k == *meta_key)
-        .ok_or(DeserializeError::UnknownPubkeyInInstruction(*meta_key))?
-        .1
-        .clone();
-    use solana_account::ReadableAccount;
     let mut out = AccountSharedData::new(lamports, data.len(), &owner);
     out.set_data_from_slice(&data);
     out.set_executable(pre.executable());
     out.set_rent_epoch(pre.rent_epoch());
-    Ok(out)
+    Ok((out, raw_len))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,7 +131,6 @@ pub enum DeserializeError {
     Truncated,
     AccountCountMismatch { expected: usize, got: usize },
     MissingFirstOccurrence(usize),
-    PubkeyMismatch { expected: Pubkey, got: Pubkey },
     DataLengthOverflow(usize),
     UnknownPubkeyInInstruction(Pubkey),
 }
@@ -152,9 +144,6 @@ impl std::fmt::Display for DeserializeError {
             }
             Self::MissingFirstOccurrence(i) => {
                 write!(f, "missing first-occurrence record for account {i}")
-            }
-            Self::PubkeyMismatch { expected, got } => {
-                write!(f, "pubkey mismatch: expected {expected}, got {got}")
             }
             Self::DataLengthOverflow(n) => write!(
                 f,
