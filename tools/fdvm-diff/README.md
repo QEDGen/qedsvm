@@ -49,7 +49,7 @@ Known disagreements go in `allow.txt` with their tracking issue. It is empty.
 | `synth.py`, `sweep.py` | seed programs and the CU-boundary sweep |
 | `fuzz.py` | random programs: ALU, loads and stores in and out of bounds, loops, calls, `callx`, `sol_log_64_`, some verifier rejects; a seed replays exactly |
 | `QedCase.lean` | the same batch through qedsvm (`lake build qedcase`) |
-| `agave/` | the same batch through agave's verifier and interpreter (`solana-sbpf` 0.23.0, the version agave 4.3 runs; rustc 1.97.1) |
+| `agave/` | the same batch through agave's verifier and interpreter (`solana-sbpf` 0.24.0, the version agave 4.4 runs; rustc 1.97.1) |
 | `diffcase.py` | the three-way diff; `--strict` fails on anything not allow-listed |
 
 The syscalls are CU-only models (`harness/syscall_models.c`, and the same
