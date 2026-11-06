@@ -16,11 +16,15 @@
 
   Composed with `cpiEnvelope_reads`, the runner's decode of this call is
   pinned by the caller's memory — no axiom about the call site remains.
+
+  `cpi_envelope_of_input` states the same event for a program input: the input ABI
+  (#145) supplies the offset, the four limbs and their bounds.
 -/
 
 import Lean
 import SVM.Solana.CpiEnvelope
 import SVM.SBPF.Tactic.SL
+import SVM.Lib.Runtime.InputAbi
 import Generated.CpiEnvelopeCallerLifted
 
 set_option maxRecDepth 65536
@@ -30,15 +34,10 @@ namespace Examples.CpiEnvelopeDemo
 open SVM SVM.SBPF SVM.SBPF.Memory SVM.Solana
 open Examples.Lifted.CpiEnvelopeCaller
 
-set_option maxHeartbeats 1600000 in
-/-- The envelope event at the invoke call site, from the lifted prefix. -/
-theorem cpi_envelope_at_call_site
-    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old : Nat)
-    (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
-    (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
-    (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
-    (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
-    : cuTripleWithinMem 33 0 0 33
+/-- The envelope event at the invoke call site. -/
+def CallSiteEnvelope
+    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old : Nat) : Prop :=
+    cuTripleWithinMem 33 0 0 33
       ((((((((((((((((((((((((((((((((((CodeReq.singleton 0 (.mov64 .r4 (.reg .r1))).union
         (CodeReq.singleton 1 (.lddw .r1 (12884901888)))).union
         (CodeReq.singleton 2 (.lddw .r2 (12884901984)))).union
@@ -120,7 +119,18 @@ theorem cpi_envelope_at_call_site
                   rt.containsWritable (effectiveAddr (toU64 12884901952) 0) 8 = true) ∧
                   rt.containsRange (effectiveAddr baseAddr 10376) 8 = true) ∧
                   rt.containsWritable (effectiveAddr (toU64 12884901960) 0) 8 = true) ∧
-                  rt.containsWritable (effectiveAddr (toU64 12884901976) 0) 8 = true) := by
+                  rt.containsWritable (effectiveAddr (toU64 12884901976) 0) 8 = true)
+
+set_option maxHeartbeats 1600000 in
+/-- The envelope event at the invoke call site, from the lifted prefix. -/
+theorem cpi_envelope_at_call_site
+    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old : Nat)
+    (holdMemD_6_lt : oldMemD_6 < 2 ^ 64)
+    (holdMemD_8_lt : oldMemD_8 < 2 ^ 64)
+    (holdMemD_10_lt : oldMemD_10 < 2 ^ 64)
+    (holdMemD_12_lt : oldMemD_12 < 2 ^ 64)
+    : CallSiteEnvelope baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old := by
+  unfold CallSiteEnvelope
   have h := CpiEnvelopeCaller_lifted_spec baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 oldMemD_6 vR3Old oldMemD_7 oldMemD_8 oldMemD_9 oldMemD_10 oldMemD_11 oldMemD_12 oldMemD_13 oldMemD_14 vR5Old holdMemD_6_lt holdMemD_8_lt holdMemD_10_lt holdMemD_12_lt
   simp only [cpiEnvelope, metasSL_nil, pubkeyIs, sepConj_emp_right_eq,
              List.length_nil, List.length_cons, Nat.reduceAdd]
@@ -128,6 +138,33 @@ theorem cpi_envelope_at_call_site
         = PartialState.u64LE (toU64 578437695752307201) from rfl,
       ← memU64Is_eq_bytes_eq]
   sl_exact h
+
+/-- The event for an input with one empty account: the program id the caller reads is the first
+    32 bytes of its instruction data, at the offset the input ABI gives, and those bytes
+    discharge the lifted spec's bounds. -/
+theorem cpi_envelope_of_input {i : SVM.Runtime.Input} {a : SVM.Runtime.InputAccount}
+    (he : i.entries = [.account a]) (hd : a.state.data = [])
+    (hlen : 32 ≤ i.instrData.length)
+    (baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 vR3Old oldMemD_7 oldMemD_9 oldMemD_11 oldMemD_13 oldMemD_14 vR5Old : Nat) :
+    let w (n : Nat) := SVM.Runtime.rd64 (i.instrData.drop n)
+    SVM.Runtime.instrDataOff i.entries = 10352 ∧
+    SVM.Runtime.rd64 ((SVM.Runtime.serialize i).drop 10352) = w 0 ∧
+    SVM.Runtime.rd64 ((SVM.Runtime.serialize i).drop 10360) = w 8 ∧
+    SVM.Runtime.rd64 ((SVM.Runtime.serialize i).drop 10368) = w 16 ∧
+    SVM.Runtime.rd64 ((SVM.Runtime.serialize i).drop 10376) = w 24 ∧
+    CallSiteEnvelope baseAddr vR4Old vR2Old oldMemD_0 oldMemD_1 oldMemD_2 oldMemD_3 oldMemD_4 oldMemD_5 (w 0) vR3Old oldMemD_7 (w 8) oldMemD_9 (w 16) oldMemD_11 (w 24) oldMemD_13 oldMemD_14 vR5Old := by
+  intro w
+  have hoff : SVM.Runtime.instrDataOff i.entries = 10352 := by
+    rw [he]
+    simp [SVM.Runtime.instrDataOff, SVM.Runtime.instrLenOff, SVM.Runtime.slotOff,
+      SVM.Runtime.entrySize, SVM.Runtime.recordSize, SVM.Runtime.alignPad, hd,
+      SVM.Runtime.MAX_PERMITTED_DATA_INCREASE]
+  have hw (n : Nat) (hn : n + 8 ≤ i.instrData.length) :
+      SVM.Runtime.rd64 ((SVM.Runtime.serialize i).drop (10352 + n)) = w n := by
+    rw [← hoff]; exact SVM.Runtime.instrData_word i hn
+  have hb (n : Nat) : w n < 2 ^ 64 := SVM.Runtime.rd64_bounded _
+  exact ⟨hoff, hw 0 (by omega), hw 8 (by omega), hw 16 (by omega), hw 24 (by omega),
+    cpi_envelope_at_call_site _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ (hb 0) (hb 8) (hb 16) (hb 24)⟩
 
 /-! ## Axiom gate
 
@@ -146,5 +183,6 @@ elab "#assert_std_axioms_local " id:ident : command => do
                 axioms: {bad.toList}"
 
 #assert_std_axioms_local Examples.CpiEnvelopeDemo.cpi_envelope_at_call_site
+#assert_std_axioms_local Examples.CpiEnvelopeDemo.cpi_envelope_of_input
 
 end Examples.CpiEnvelopeDemo

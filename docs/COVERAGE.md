@@ -215,6 +215,34 @@ Limits:
 - The runner's result does not use this checker yet, so proofs about `Runner` results can't cite it (#146). On rejection the Rust host's `resulting_accounts` still holds the post-buffer state.
 - Rent-state transitions are transaction-level and out of scope. Mollusk 0.16.2 checks them by default, so differential cases stay rent-safe.
 
+## Runtime Input ABI
+
+`SVM/Lib/Runtime/InputAbi.lean` (#145) states the aligned input at `r1`: account count, records and
+duplicate markers, padding, rent epoch, instruction data, program id and the SIMD-0449 pointer
+array. Differential tests walk the bytes against Mollusk and the pinned SDK deserializer.
+
+| Fact | Theorem |
+|---|---|
+| Well-formed inputs survive the bytes | `parse_serialize` |
+| Whatever parses is exactly a well-formed input's bytes | `serialize_of_parse` |
+| Each field is at its offset | `record_fields`, `trailer_fields`, `pointer_field` |
+| Records, data, rent epochs and the pointer array are 8-aligned | `slotOff_aligned`, `dataOff_aligned`, `rentEpochOff_aligned`, `pointersOff_aligned` |
+| Length and bounds | `serialize_length`, `slot_within`, `slotOff_bounded` |
+| A duplicate names an earlier record and shares its account and address | `dup_target`, `resolve_dup`, `pointer_dup`, `resolve_key_alias` |
+| An account's signer and writable flags are the OR over its references | `ofInstruction_isSigner`, `ofInstruction_isWritable` |
+| Without duplicates the layout is `InputLayout`'s | `slotOff_records`, `p_token_transfer_abi_layout` |
+
+Limits:
+
+- The realloc room is address space. Under direct mapping agave faults on any access beyond an
+  account's length, where the model's flat region shows zeros (#158).
+- The bytes called `original_data_len` are zeros on entry. A program may keep a length there, and
+  the runtime never reads or writes one.
+- `parse` is for the buffer at entry. After a program runs, the buffer need not parse; #146 connects
+  the two.
+- The CPI encoder in `Runner.lean` matches agave's bytes by test, not by a proof connecting it to
+  this file. Its flags come from the caller's account info, which is #112's.
+
 ## Abstract Refinement / Codec Coverage
 
 Raw triples prove a selected bytecode path. Abstract refinements additionally connect that path to account-level state claims.

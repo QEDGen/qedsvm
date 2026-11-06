@@ -181,5 +181,8 @@ fn known_offsets_match_spec() {
     // program_id = [7;32]
     assert_eq!(&bytes[trailer_off + 9..trailer_off + 9 + 32], &[7u8; 32]);
     // No trailing garbage.
-    assert_eq!(bytes.len(), trailer_off + 9 + 32);
+    // padding to 8, then the SIMD-0449 pointer to the record at offset 8
+    let pointers = trailer_off + 9 + 32 + 7;
+    assert_eq!(&bytes[trailer_off + 9 + 32..pointers], &[0u8; 7]);
+    assert_eq!(&bytes[pointers..], &0x4_0000_0008u64.to_le_bytes());
 }

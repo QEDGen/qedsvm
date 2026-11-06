@@ -261,40 +261,9 @@ def MAX_PERMITTED_DATA_INCREASE : Nat := 10240
 def zeroBytes (n : Nat) : ByteArray :=
   ⟨(List.range n).foldl (fun acc _ => acc.push 0) #[]⟩
 
-/-- Build a one-account sub-input buffer for a CPI. Matches
-    `serialize_parameters` byte-for-byte with `accounts = [acct]`. -/
-def buildCpiSubInputOneAccount (acct : ParsedAcct)
-    (programId ixData : ByteArray) : ByteArray :=
-  let numAccounts := u64ToLE 1
-  let dupMarker   := ByteArray.empty.push 0xFF
-  let signer      : UInt8 := if acct.isSigner then 1 else 0
-  let writable    : UInt8 := if acct.isWritable then 1 else 0
-  let executable  : UInt8 := if acct.executable then 1 else 0
-  let flags       := ⟨#[signer, writable, executable]⟩
-  let padU32      := zeroBytes 4
-  let lamports    := u64ToLE acct.lamports
-  let dataLen     := u64ToLE acct.dataLen
-  let alignPad    := zeroBytes ((8 - acct.dataLen % 8) % 8)
-  let increasePad := zeroBytes MAX_PERMITTED_DATA_INCREASE
-  let rentEpoch   := u64ToLE acct.rentEpoch
-  let ixLen       := u64ToLE ixData.size
-  numAccounts ++ dupMarker ++ flags ++ padU32
-    ++ acct.key ++ acct.owner ++ lamports ++ dataLen
-    ++ acct.data ++ alignPad ++ increasePad ++ rentEpoch
-    ++ ixLen ++ ixData ++ programId
-
-/-- Offsets (from `INPUT_START`) in a one-account sub-input. These
-    match the layout `buildCpiSubInputOneAccount` emits: 8-byte
-    `num_accounts` header, then per-account block laid out per
-    `serialize_parameters`. -/
-def CPI_OWNER_OFFSET    : Nat := 8 + 40                 -- = 48
-def CPI_LAMPORTS_OFFSET : Nat := 8 + 72                 -- = 80
-def CPI_DATA_OFFSET     : Nat := 8 + 88                 -- = 96
-
 /-! ### N-account CPI marshaling (Phase 3-N)
 
-Generalizes `buildCpiSubInputOneAccount` to an account list. Two
-complications vs. N=1:
+Marshals an account list. Two complications:
 
 - **Duplicate accounts** (same pubkey at i < j) compress: slot j emits a
   1-byte position index `i` + 7 pad, not a full block. The callee
@@ -416,6 +385,10 @@ def parseCpiAccount (mem : Mem) (addr : Nat) : ParsedAcct :=
 def parseCpiAccounts (mem : Mem) (baseAddr count : Nat) : List ParsedAcct :=
   (List.range count).map (fun i => parseCpiAccount mem (baseAddr + i * 56))
 
+/-- Agave serializes `u64::MAX` for every account's rent epoch, whatever the caller
+    claims in its account info. -/
+def RENT_EPOCH_MASKED : Nat := 18446744073709551615
+
 /-- Emit a single non-dup account block (88 + dataLen + align_pad +
     MAX_PERMITTED_DATA_INCREASE + 8 bytes). -/
 def emitNonDupBlock (p : ParsedAcct) : ByteArray :=
@@ -429,7 +402,7 @@ def emitNonDupBlock (p : ParsedAcct) : ByteArray :=
   let dataLen     := u64ToLE p.dataLen
   let alignPad    := zeroBytes ((8 - p.dataLen % 8) % 8)
   let increasePad := zeroBytes MAX_PERMITTED_DATA_INCREASE
-  let rentEpoch   := u64ToLE p.rentEpoch
+  let rentEpoch   := u64ToLE RENT_EPOCH_MASKED
   dupMarker ++ flags ++ padU32 ++ p.key ++ p.owner
     ++ lamports ++ dataLen ++ p.data ++ alignPad
     ++ increasePad ++ rentEpoch
@@ -437,6 +410,16 @@ def emitNonDupBlock (p : ParsedAcct) : ByteArray :=
 /-- Emit a dup-marker slot (1 byte position + 7 zero pad bytes). -/
 private def emitDupBlock (j : Nat) : ByteArray :=
   (ByteArray.empty.push j.toUInt8) ++ zeroBytes 7
+
+/-- The SIMD-0449 pointer array: padding to 8 after the program id, then one
+    record address per slot, a duplicate's being its original's. -/
+def cpiPointerArray (slots : List AcctSlot) (ixLen : Nat) : ByteArray :=
+  let ptrs : ByteArray := slots.foldl (fun acc slot =>
+    let off := match slot.dupOf? with
+      | some j => (slots.getD j slot).blockOff
+      | none   => slot.blockOff
+    acc ++ u64ToLE (INPUT_START + off)) ByteArray.empty
+  zeroBytes ((8 - ixLen % 8) % 8) ++ ptrs
 
 /-- Build an N-account CPI sub-input from a slot table. Byte-for-byte
     matches `serialize_parameters` for the same account list. -/
@@ -449,6 +432,7 @@ def buildCpiSubInputN (slots : List AcctSlot)
     | none   => acc ++ emitNonDupBlock slot.parsed) ByteArray.empty
   let ixLen := u64ToLE ixData.size
   numAccounts ++ blocks ++ ixLen ++ ixData ++ programId
+    ++ cpiPointerArray slots ixData.size
 
 /-- Per-slot write-back offsets (from the slot's `blockOff`) for the
     three modifiable fields inside a non-dup block. -/

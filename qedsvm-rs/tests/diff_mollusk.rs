@@ -7010,3 +7010,609 @@ fn account_change_store_without_effect_diverges_from_mollusk() {
         assert_eq!(ml.program_result, MlProgramResult::UnknownError(err));
     }
 }
+
+/// Accounts for the #145 input ABI cases: one per padding boundary, one with a rent epoch the
+/// runtime must mask, one executable, and the probe's second id for a CPI.
+fn input_abi_table(program: Pubkey) -> Vec<(Pubkey, Account)> {
+    let acct = |len: usize, fill: u8, executable: bool, rent_epoch: u64| Account {
+        lamports: 1_000_000_000_000 + len as u64,
+        data: vec![fill; len],
+        owner: program,
+        executable,
+        rent_epoch,
+    };
+    vec![
+        (pid(0x14500), acct(0, 0, false, 0)),
+        (pid(0x14501), acct(1, 0xA1, false, 0)),
+        (pid(0x14502), acct(7, 0xA2, false, 0)),
+        (pid(0x14503), acct(8, 0xA3, false, 0)),
+        (pid(0x14504), acct(9, 0xA4, false, 0)),
+        (pid(0x14505), acct(15, 0xA5, false, 0)),
+        (pid(0x14506), acct(16, 0xA6, false, 7)),
+        (pid(0x14507), acct(3, 0xA7, true, 0)),
+        (account_change_callee(), dual_program_account()),
+    ]
+}
+
+/// `(table index, is_signer, is_writable)`
+type InputAbiMeta = (usize, bool, bool);
+const INPUT_ABI_CALLEE: usize = 8;
+
+/// `(name, metas, instruction data past the 16-byte window, invoke the last meta)`
+fn input_abi_cases() -> Vec<(&'static str, Vec<InputAbiMeta>, usize, bool)> {
+    let w = |i: usize| (i, false, true);
+    let ro = |i: usize| (i, false, false);
+    let callee = ro(INPUT_ABI_CALLEE);
+    let mut cases = vec![
+        ("no_accounts", vec![], 0, false),
+        ("no_accounts_data_17", vec![], 1, false),
+        ("no_accounts_data_23", vec![], 7, false),
+        ("no_accounts_data_24", vec![], 8, false),
+        ("len_0", vec![w(0)], 0, false),
+        ("len_1", vec![w(1)], 0, false),
+        ("len_7", vec![w(2)], 0, false),
+        ("len_8", vec![w(3)], 0, false),
+        ("len_9", vec![w(4)], 0, false),
+        ("len_15", vec![w(5)], 0, false),
+        ("len_16_rent_epoch", vec![w(6)], 0, false),
+        ("executable", vec![ro(7)], 0, false),
+        ("signer", vec![(1, true, true)], 0, false),
+        ("readonly", vec![ro(1)], 0, false),
+        ("two", vec![w(1), w(2)], 3, false),
+        ("dup_adjacent", vec![w(1), w(1)], 0, false),
+        ("dup_of_first", vec![w(1), w(2), w(1)], 0, false),
+        ("dup_of_second", vec![w(1), w(2), w(2)], 0, false),
+        ("dup_triple", vec![w(1), w(1), w(1)], 0, false),
+        ("dup_readonly_then_writable", vec![ro(1), w(1)], 0, false),
+        ("dup_writable_then_readonly", vec![w(1), ro(1)], 0, false),
+        (
+            "dup_unsigned_then_signed",
+            vec![w(1), (1, true, true)],
+            0,
+            false,
+        ),
+        (
+            "dup_signed_then_unsigned",
+            vec![(1, true, true), w(1)],
+            0,
+            false,
+        ),
+        ("cpi_one", vec![w(1), callee], 1, true),
+        ("cpi_dup", vec![w(1), w(2), w(1), callee], 1, true),
+        ("cpi_masks_rent_epoch", vec![w(6), callee], 1, true),
+        ("cpi_callee_data_17", vec![w(1), callee], 2, true),
+        ("cpi_callee_data_24", vec![w(1), callee], 9, true),
+    ];
+    cases.push(("dup_max_accounts", vec![w(1); 255], 0, false));
+    cases
+}
+
+/// The unique accounts of a case, for each engine.
+#[allow(clippy::type_complexity)]
+fn input_abi_accounts(
+    table: &[(Pubkey, Account)],
+    metas: &[InputAbiMeta],
+) -> (Vec<(Pubkey, AccountSharedData)>, Vec<(Pubkey, Account)>) {
+    let mut seen = Vec::new();
+    let mut fs_accounts = Vec::new();
+    let mut ml_accounts = Vec::new();
+    for (i, _, _) in metas {
+        if !seen.contains(i) {
+            seen.push(*i);
+            fs_accounts.push((table[*i].0, AccountSharedData::from(table[*i].1.clone())));
+            ml_accounts.push(table[*i].clone());
+        }
+    }
+    (fs_accounts, ml_accounts)
+}
+
+fn input_abi_instruction(
+    program: Pubkey,
+    table: &[(Pubkey, Account)],
+    metas: &[InputAbiMeta],
+    data: Vec<u8>,
+) -> Instruction {
+    let accounts = metas
+        .iter()
+        .map(|(i, is_signer, is_writable)| AccountMeta {
+            pubkey: table[*i].0,
+            is_signer: *is_signer,
+            is_writable: *is_writable,
+        })
+        .collect();
+    Instruction {
+        program_id: program,
+        accounts,
+        data,
+    }
+}
+
+/// Instruction data asking the probe for a window of its input.
+fn input_abi_window(start: usize, len: usize, tail: usize, cpi: bool) -> Vec<u8> {
+    let mut data = Vec::new();
+    data.extend_from_slice(&(start as u64).to_le_bytes());
+    data.extend_from_slice(&(len as u64).to_le_bytes());
+    data.resize(16 + tail, 0);
+    if cpi {
+        data[15 + tail] = 0xC9;
+    }
+    data
+}
+
+/// Byte ranges of a serialized input holding a realloc room: `[start, end)`.
+fn input_abi_rooms(table: &[(Pubkey, Account)], metas: &[InputAbiMeta]) -> Vec<(usize, usize)> {
+    let mut seen = Vec::new();
+    let mut rooms = Vec::new();
+    let mut off = 8usize;
+    for (i, _, _) in metas {
+        if seen.contains(i) {
+            off += 8;
+        } else {
+            seen.push(*i);
+            let len = table[*i].1.data.len();
+            rooms.push((off + 88 + len, off + 88 + len + 10240));
+            off += 88 + len + 10240 + (8 - len % 8) % 8 + 8;
+        }
+    }
+    rooms
+}
+
+/// #145: every byte a program can read of its input, in the model and in Mollusk, against the
+/// Rust serializer's and the Lean serializer's buffers. A realloc room is left out here because
+/// Mollusk faults on any access to it (`input_abi_realloc_room_diverges_from_mollusk`).
+#[test]
+fn input_abi_matches_mollusk() {
+    let program = Pubkey::from([0x77u8; 32]);
+    let elf = include_bytes!("fixtures/input_abi_probe.so");
+    let programs = [
+        (program, elf.as_slice()),
+        (account_change_callee(), elf.as_slice()),
+    ];
+    let fs_vm = svm_with(&programs);
+    let ml_vm = mollusk_with(&programs);
+    let table = input_abi_table(program);
+    for (name, metas, tail, cpi) in input_abi_cases() {
+        let (fs_accounts, ml_accounts) = input_abi_accounts(&table, &metas);
+        // What the probe's window reads: the callee's input if this case invokes it.
+        let seen_metas = if cpi {
+            &metas[..metas.len() - 1]
+        } else {
+            &metas[..]
+        };
+        let seen_program = if cpi {
+            account_change_callee()
+        } else {
+            program
+        };
+        let seen_tail = if cpi { tail - 1 } else { tail };
+        let expected = |start: usize, len: usize| {
+            let ix = input_abi_instruction(
+                seen_program,
+                &table,
+                seen_metas,
+                input_abi_window(start, len, seen_tail, false),
+            );
+            qedsvm::serialize_parameters(&ix, &fs_accounts, &seen_program).unwrap()
+        };
+        let total = expected(0, 0).len();
+        let rooms = input_abi_rooms(&table, seen_metas);
+        let mut start = 0;
+        while start < total {
+            if let Some(room) = rooms.iter().find(|r| start >= r.0 && start < r.1) {
+                start = room.1;
+                continue;
+            }
+            let stop = rooms
+                .iter()
+                .filter(|r| r.0 > start)
+                .map(|r| r.0)
+                .min()
+                .unwrap_or(total)
+                .min(total);
+            let len = (stop - start).min(1024);
+            let want = expected(start, len);
+            let ix = input_abi_instruction(
+                program,
+                &table,
+                &metas,
+                input_abi_window(start, len, tail, cpi),
+            );
+            let fs = fs_vm.process_instruction(&ix, &fs_accounts).unwrap();
+            let ml = ml_vm.process_instruction(&ix, &ml_accounts);
+            assert!(
+                matches!(fs.program_result, FsProgramResult::Success),
+                "{name} at {start}: {:?}",
+                fs.program_result
+            );
+            assert_eq!(
+                ml.program_result,
+                MlProgramResult::Success,
+                "{name} at {start}"
+            );
+            assert_eq!(
+                ml.return_data.as_slice(),
+                &want[start..start + len],
+                "{name}: the Rust serializer against Mollusk at {start}"
+            );
+            assert_eq!(fs.return_data, ml.return_data, "{name}: bytes at {start}");
+            assert_eq!(
+                fs.compute_units_consumed, ml.compute_units_consumed,
+                "{name}: CU at {start}"
+            );
+            start += len;
+        }
+        // The input ends where the serializer says.
+        let ix = input_abi_instruction(
+            program,
+            &table,
+            &metas,
+            input_abi_window(total, 1, tail, cpi),
+        );
+        let fs = fs_vm.process_instruction(&ix, &fs_accounts).unwrap();
+        let ml = ml_vm.process_instruction(&ix, &ml_accounts);
+        assert!(
+            !matches!(fs.program_result, FsProgramResult::Success),
+            "{name}: read past the input"
+        );
+        assert_ne!(
+            ml.program_result,
+            MlProgramResult::Success,
+            "{name}: read past the input"
+        );
+        // The Lean serializer builds the same buffer for the top-level instruction.
+        let ix = input_abi_instruction(program, &table, &metas, input_abi_window(0, 0, tail, cpi));
+        let lean_metas: Vec<_> = metas
+            .iter()
+            .map(|(i, is_signer, is_writable)| {
+                (
+                    table[*i].0.as_array(),
+                    *is_signer,
+                    *is_writable,
+                    AccountSharedData::from(table[*i].1.clone()),
+                )
+            })
+            .collect();
+        let lean_refs: Vec<_> = lean_metas
+            .iter()
+            .map(|(key, is_signer, is_writable, account)| (*key, *is_signer, *is_writable, account))
+            .collect();
+        assert_eq!(
+            qedsvm::lean_input_serialize(&ix.data, &lean_refs, program.as_array()),
+            qedsvm::serialize_parameters(&ix, &fs_accounts, &program).unwrap(),
+            "{name}: the Lean serializer"
+        );
+    }
+}
+
+/// #145: instruction data too short to name a window selects the trailer, so this covers every
+/// length around the pointer array's padding, with and without accounts.
+#[test]
+fn input_abi_trailer_matches_mollusk() {
+    let program = Pubkey::from([0x77u8; 32]);
+    let elf = include_bytes!("fixtures/input_abi_probe.so");
+    let programs = [(program, elf.as_slice())];
+    let fs_vm = svm_with(&programs);
+    let ml_vm = mollusk_with(&programs);
+    let table = input_abi_table(program);
+    for metas in [
+        vec![],
+        vec![(1, false, true)],
+        vec![(1, false, true), (1, false, true)],
+    ] {
+        let (fs_accounts, ml_accounts) = input_abi_accounts(&table, &metas);
+        for ix_len in 0..16 {
+            let ix = input_abi_instruction(program, &table, &metas, vec![0x5A; ix_len]);
+            let want = qedsvm::serialize_parameters(&ix, &fs_accounts, &program).unwrap();
+            let fs = fs_vm.process_instruction(&ix, &fs_accounts).unwrap();
+            let ml = ml_vm.process_instruction(&ix, &ml_accounts);
+            assert_eq!(
+                ml.program_result,
+                MlProgramResult::Success,
+                "ix_len {ix_len}"
+            );
+            assert_eq!(fs.return_data, ml.return_data, "ix_len {ix_len}");
+            assert_eq!(
+                fs.compute_units_consumed, ml.compute_units_consumed,
+                "ix_len {ix_len}"
+            );
+            assert!(
+                want.windows(ml.return_data.len())
+                    .any(|w| w == ml.return_data.as_slice()),
+                "ix_len {ix_len}: the trailer is in the serializer's buffer"
+            );
+        }
+    }
+}
+
+/// #145 known gap, owned by #158. Under direct mapping a realloc room is address space, and agave
+/// refuses a read of it, where the model's flat input region shows the serializer's zeros.
+#[test]
+fn input_abi_realloc_room_diverges_from_mollusk() {
+    let program = Pubkey::from([0x77u8; 32]);
+    let elf = include_bytes!("fixtures/input_abi_probe.so");
+    let programs = [(program, elf.as_slice())];
+    let fs_vm = svm_with(&programs);
+    let ml_vm = mollusk_with(&programs);
+    let table = input_abi_table(program);
+    for metas in [vec![(1, false, true)], vec![(1, false, false)]] {
+        let (fs_accounts, ml_accounts) = input_abi_accounts(&table, &metas);
+        let room = input_abi_rooms(&table, &metas)[0];
+        for at in [room.0, room.1 - 1] {
+            let ix =
+                input_abi_instruction(program, &table, &metas, input_abi_window(at, 1, 0, false));
+            let fs = fs_vm.process_instruction(&ix, &fs_accounts).unwrap();
+            let ml = ml_vm.process_instruction(&ix, &ml_accounts);
+            assert!(matches!(fs.program_result, FsProgramResult::Success));
+            assert_eq!(fs.return_data, vec![0]);
+            assert_ne!(
+                ml.program_result,
+                MlProgramResult::Success,
+                "{metas:?} at {at}"
+            );
+        }
+    }
+}
+
+/// #145: past `MAX_ACCOUNTS_PER_INSTRUCTION` both engines refuse the instruction.
+#[test]
+fn input_abi_too_many_accounts_matches_mollusk() {
+    let program = Pubkey::from([0x77u8; 32]);
+    let elf = include_bytes!("fixtures/input_abi_probe.so");
+    let programs = [(program, elf.as_slice())];
+    let fs_vm = svm_with(&programs);
+    let ml_vm = mollusk_with(&programs);
+    let table = input_abi_table(program);
+    let metas = vec![(1, false, true); 256];
+    let (fs_accounts, ml_accounts) = input_abi_accounts(&table, &metas);
+    let ix = input_abi_instruction(program, &table, &metas, vec![]);
+    assert!(matches!(
+        fs_vm.process_instruction(&ix, &fs_accounts),
+        Err(qedsvm::SvmError::Serialize(
+            qedsvm::SerializeError::TooManyAccounts(256)
+        ))
+    ));
+    assert_eq!(
+        ml_vm.process_instruction(&ix, &ml_accounts).program_result,
+        MlProgramResult::UnknownError(InstructionError::MaxAccountsExceeded)
+    );
+}
+
+/// One position as `qedsvm_input_parse` reports it.
+struct LeanInputPosition {
+    key: [u8; 32],
+    is_signer: bool,
+    is_writable: bool,
+    executable: bool,
+    owner: [u8; 32],
+    lamports: u64,
+    data: Vec<u8>,
+    pointer: u64,
+}
+
+/// Decode `qedsvm_input_parse`'s reply: `None` if the buffer did not parse.
+fn lean_input_parse(input: &[u8]) -> Option<(Vec<LeanInputPosition>, Vec<u8>, [u8; 32])> {
+    let out = qedsvm::lean_input_parse(input);
+    if out[0] == 0 {
+        return None;
+    }
+    let mut at = 1;
+    let u64_at = |at: &mut usize| {
+        let v = u64::from_le_bytes(out[*at..*at + 8].try_into().unwrap());
+        *at += 8;
+        v
+    };
+    let n = u64_at(&mut at) as usize;
+    let mut positions = Vec::new();
+    for _ in 0..n {
+        let key: [u8; 32] = out[at..at + 32].try_into().unwrap();
+        at += 32;
+        let (is_signer, is_writable, executable) =
+            (out[at] != 0, out[at + 1] != 0, out[at + 2] != 0);
+        at += 3;
+        let owner: [u8; 32] = out[at..at + 32].try_into().unwrap();
+        at += 32;
+        let lamports = u64_at(&mut at);
+        let len = u64_at(&mut at) as usize;
+        let data = out[at..at + len].to_vec();
+        at += len;
+        let pointer = u64_at(&mut at);
+        positions.push(LeanInputPosition {
+            key,
+            is_signer,
+            is_writable,
+            executable,
+            owner,
+            lamports,
+            data,
+            pointer,
+        });
+    }
+    let len = u64_at(&mut at) as usize;
+    let ix = out[at..at + len].to_vec();
+    at += len;
+    let pid: [u8; 32] = out[at..at + 32].try_into().unwrap();
+    Some((positions, ix, pid))
+}
+
+/// Run the pinned SDK's entrypoint deserializer on a copy of a buffer. It panics on a malformed
+/// duplicate reference, and a panic cannot unwind in this binary on Linux, so a buffer that may
+/// panic goes through `sdk_panics` instead.
+#[allow(clippy::type_complexity)]
+fn sdk_deserialize(
+    input: &[u8],
+) -> (
+    Vec<([u8; 32], bool, bool, bool, [u8; 32], u64, Vec<u8>)>,
+    Vec<u8>,
+    [u8; 32],
+) {
+    let mut aligned = vec![0u64; input.len() / 8 + 1];
+    // SAFETY: `aligned` holds `input.len()` bytes and outlives this copy.
+    unsafe {
+        std::ptr::copy_nonoverlapping(input.as_ptr(), aligned.as_mut_ptr() as *mut u8, input.len());
+    }
+    let ptr = aligned.as_mut_ptr() as *mut u8;
+    // SAFETY: the test only passes buffers whose record lengths stay inside `aligned`.
+    let (pid, accounts, ix) = unsafe { solana_program_entrypoint::deserialize(ptr) };
+    let accounts = accounts
+        .iter()
+        .map(|a| {
+            (
+                a.key.to_bytes(),
+                a.is_signer,
+                a.is_writable,
+                a.executable,
+                a.owner.to_bytes(),
+                **a.lamports.borrow(),
+                a.data.borrow().to_vec(),
+            )
+        })
+        .collect();
+    (accounts, ix.to_vec(), pid.to_bytes())
+}
+
+/// Child exit codes for `sdk_panics`. A hook exits at the panic, before any unwinding starts.
+const SDK_CHILD_PANICKED: i32 = 42;
+const SDK_CHILD_RETURNED: i32 = 43;
+
+/// Whether the SDK's deserializer panics on a buffer, seen from a child running
+/// `input_abi_sdk_child`. Any other child exit fails the test, so a child that never reached the
+/// deserializer cannot pass for a panic.
+fn sdk_panics(input: &[u8]) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "input_abi_sdk_child", "--ignored", "--nocapture"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(input).unwrap();
+    match child.wait().unwrap().code() {
+        Some(SDK_CHILD_PANICKED) => true,
+        Some(SDK_CHILD_RETURNED) => false,
+        other => panic!("input_abi_sdk_child exited with {other:?}"),
+    }
+}
+
+/// The child half of `sdk_panics`: reads a buffer from stdin and reports through its exit code.
+#[test]
+#[ignore = "run by sdk_panics"]
+fn input_abi_sdk_child() {
+    use std::io::Read;
+    let mut input = Vec::new();
+    std::io::stdin().read_to_end(&mut input).unwrap();
+    std::panic::set_hook(Box::new(|_| std::process::exit(SDK_CHILD_PANICKED)));
+    sdk_deserialize(&input);
+    std::process::exit(SDK_CHILD_RETURNED);
+}
+
+/// #145: the Lean parser against the SDK's deserializer on every serialized case, and against
+/// its treatment of duplicates. The SDK trusts the runtime, so it reads a duplicate of a duplicate
+/// and ignores padding, and the Lean parser, which states what the runtime can produce, refuses
+/// them. Every case below that the SDK reads differently says so.
+#[test]
+fn input_abi_parse_matches_sdk() {
+    let program = Pubkey::from([0x77u8; 32]);
+    let table = input_abi_table(program);
+    for (name, metas, tail, _) in input_abi_cases() {
+        let (fs_accounts, _) = input_abi_accounts(&table, &metas);
+        let ix = input_abi_instruction(program, &table, &metas, vec![0x5A; 16 + tail]);
+        let bytes = qedsvm::serialize_parameters(&ix, &fs_accounts, &program).unwrap();
+        let (positions, data, pid) = lean_input_parse(&bytes).unwrap_or_else(|| panic!("{name}"));
+        let (accounts, sdk_data, sdk_pid) = sdk_deserialize(&bytes);
+        assert_eq!(data, sdk_data, "{name}");
+        assert_eq!(pid, sdk_pid, "{name}");
+        assert_eq!(positions.len(), accounts.len(), "{name}");
+        for (p, a) in positions.iter().zip(&accounts) {
+            assert_eq!(p.key, a.0, "{name}");
+            assert_eq!(p.is_signer, a.1, "{name}");
+            assert_eq!(p.is_writable, a.2, "{name}");
+            assert_eq!(p.executable, a.3, "{name}");
+            assert_eq!(p.owner, a.4, "{name}");
+            assert_eq!(p.lamports, a.5, "{name}");
+            assert_eq!(p.data, a.6, "{name}");
+        }
+        // A duplicate's pointer names its original's record, by key.
+        for (j, p) in positions.iter().enumerate() {
+            for q in &positions[..j] {
+                assert_eq!(p.pointer == q.pointer, p.key == q.key, "{name}");
+            }
+        }
+    }
+
+    let metas = [(1, false, true), (2, false, true), (1, false, true)];
+    let (fs_accounts, _) = input_abi_accounts(&table, &metas);
+    let ix = input_abi_instruction(program, &table, &metas, vec![0x5A; 3]);
+    let good = qedsvm::serialize_parameters(&ix, &fs_accounts, &program).unwrap();
+    let first = 8;
+    let second = first + 88 + 1 + 7 + 10240 + 8;
+    let dup = second + 88 + 7 + 1 + 10240 + 8;
+    let trailer = dup + 8;
+    assert_eq!((good[first], good[second], good[dup]), (0xFF, 0xFF, 0));
+    let patched = |at: usize, value: u8| {
+        let mut b = good.clone();
+        b[at] = value;
+        b
+    };
+    assert!(lean_input_parse(&good).is_some());
+    assert!(!sdk_panics(&good));
+
+    // Malformed duplicate references: the SDK panics on all of them, and they do not parse.
+    for (name, value) in [("self", 2u8), ("forward", 3), ("out_of_range", 200)] {
+        let bad = patched(dup, value);
+        assert!(lean_input_parse(&bad).is_none(), "{name}");
+        assert!(sdk_panics(&bad), "{name}");
+    }
+    // A duplicate of a duplicate, which the runtime never writes. The SDK follows it.
+    let metas = [(1, false, true), (1, false, true), (1, false, true)];
+    let (fs_accounts, _) = input_abi_accounts(&table, &metas);
+    let ix = input_abi_instruction(program, &table, &metas, vec![]);
+    let mut chain = qedsvm::serialize_parameters(&ix, &fs_accounts, &program).unwrap();
+    let last_dup = first + 88 + 1 + 7 + 10240 + 8 + 8;
+    assert_eq!(chain[last_dup], 0);
+    chain[last_dup] = 1;
+    // Its pointer agrees, so only the reference itself is wrong.
+    let at = chain.len() - 8;
+    let record = 0x4_0000_0000u64 + (first + 88 + 1 + 7 + 10240 + 8) as u64;
+    chain[at..].copy_from_slice(&record.to_le_bytes());
+    assert!(lean_input_parse(&chain).is_none());
+    assert!(!sdk_panics(&chain));
+
+    // What the SDK ignores, and the runtime never writes.
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("flag_not_bool", patched(first + 1, 2)),
+        ("original_data_len", patched(first + 4, 1)),
+        ("align_padding", patched(first + 88 + 1, 1)),
+        ("realloc_room", patched(first + 88 + 1 + 7, 1)),
+        ("rent_epoch", patched(second - 8, 0)),
+        ("dup_padding", patched(dup + 1, 1)),
+        ("pointer_padding", patched(trailer + 8 + 3 + 32, 1)),
+        ("pointer", patched(trailer + 8 + 3 + 32 + 5, 0xEE)),
+        ("program_id_pointer_only", {
+            let mut b = good.clone();
+            b.truncate(b.len() - 8);
+            b
+        }),
+        ("trailing_byte", {
+            let mut b = good.clone();
+            b.push(0);
+            b
+        }),
+    ];
+    for (name, bad) in cases {
+        assert!(lean_input_parse(&bad).is_none(), "{name}");
+        assert!(!sdk_panics(&bad), "{name}");
+    }
+
+    // Two records of one key, and no structure at all: the Lean parser alone can safely read these.
+    let mut two_keys = good.clone();
+    let key_a: Vec<u8> = good[first + 8..first + 40].to_vec();
+    two_keys[second + 8..second + 40].copy_from_slice(&key_a);
+    assert!(lean_input_parse(&two_keys).is_none());
+    assert!(lean_input_parse(&[]).is_none());
+    assert!(lean_input_parse(&good[..good.len() / 2]).is_none());
+    let mut too_many = good.clone();
+    too_many[..8].copy_from_slice(&256u64.to_le_bytes());
+    assert!(lean_input_parse(&too_many).is_none());
+}

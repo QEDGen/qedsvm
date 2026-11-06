@@ -505,3 +505,23 @@ cp /tmp/qedsvm-account-change-build/qedsvm_account_change_probe.so qedsvm-rs/tes
 ```
 
 SHA-256: `fb06d05175ebfb5be3bcc2de00b58011f606dcc39c4fe07bbd7731b8573b1746`.
+
+## `input_abi_probe.so`
+
+Regression for #145. `input_abi_probe_src` only reads: it returns a window of its own serialized
+input as return data, optionally from a callee it invokes (its header has the format), and
+short instruction data selects the trailer.
+
+`input_abi_matches_mollusk` walks every byte a program can read of its input across padding
+boundaries, duplicates, mixed flags, a CPI and the account limit, against Mollusk, the Rust
+serializer and the Lean serializer. `input_abi_realloc_room_diverges_from_mollusk` pins what it
+cannot compare: agave refuses a read of a realloc room (#158).
+
+Built with `cargo-build-sbf 4.5.0`, platform-tools v1.57 (Rust 1.95.0), sBPF V3 architecture:
+
+```sh
+cargo build-sbf --manifest-path qedsvm-rs/tests/fixtures/input_abi_probe_src/Cargo.toml --arch v3 --sbf-out-dir /tmp/qedsvm-input-abi-build
+cp /tmp/qedsvm-input-abi-build/qedsvm_input_abi_probe.so qedsvm-rs/tests/fixtures/input_abi_probe.so
+```
+
+SHA-256: `e80e8954a85e632cfb96e4f9ff39cc49ba818fcb7df9fab0d99e2895b503eaf6`.

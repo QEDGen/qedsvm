@@ -2,12 +2,16 @@
 //! Produces the byte layout written at `MM_INPUT_START` (0x4_0000_0000) before BPF program invocation.
 //! Non-dup account record: 0xFF, is_signer, is_writable, is_executable, u32 pad, [32] key, [32] owner,
 //! u64 lamports, u64 data_len, [data], align_pad+MAX_PERMITTED_DATA_INCREASE zeros, u64 rent_epoch.
-//! Dup: u8 original_index + 7B pad. Header: u64 num_accounts. Trailer: u64+[data] ix_data, [32] program_id.
+//! Dup: u8 original_index + 7B pad. Header: u64 num_accounts. Trailer: u64+[data] ix_data, [32] program_id,
+//! pad to 8, then one u64 record address per instruction account (SIMD-0449), a dup's being its original's.
 
 use solana_account::{AccountSharedData, ReadableAccount};
 use solana_instruction::{AccountMeta, Instruction};
 use solana_program_entrypoint::{BPF_ALIGN_OF_U128, MAX_PERMITTED_DATA_INCREASE, NON_DUP_MARKER};
 use solana_pubkey::Pubkey;
+
+/// Address the serialized input is mapped at, which the SIMD-0449 pointer array is relative to.
+const MM_INPUT_START: u64 = 0x4_0000_0000;
 
 /// First-occurrence map over an instruction's `AccountMeta` list: `map[i] = Some(j)` iff
 /// `metas[i].pubkey` first appears at index `j < i` (so `i` is a duplicate); `None` for
@@ -60,6 +64,8 @@ impl std::error::Error for SerializeError {}
 /// Serialize an instruction + accounts + program_id into the agave-conformant BPF input buffer.
 /// Duplicate `AccountMeta`s (same pubkey) are compressed to the dup-marker form.
 /// `rent_epoch` is hardcoded to `u64::MAX` (modern agave masks the real value).
+/// A serialized account's signer and writable bytes are the OR over its references, because the
+/// runtime compiles the instruction's metas by key before it serializes.
 pub fn serialize_parameters(
     instruction: &Instruction,
     accounts: &[(Pubkey, AccountSharedData)],
@@ -75,19 +81,28 @@ pub fn serialize_parameters(
     write_u64(&mut buf, n as u64);
 
     let seen = dup_map(&instruction.accounts); // first-occurrence index per slot, for dup detection
+    let mut records = Vec::with_capacity(n); // input offset of each slot's record
 
     for (i, meta) in instruction.accounts.iter().enumerate() {
         if let Some(j) = seen[i] {
+            records.push(records[j]);
             buf.push(j as u8);
             buf.extend_from_slice(&[0u8; 7]);
             continue;
         }
+        records.push(buf.len() as u64);
+        let refs = || {
+            instruction
+                .accounts
+                .iter()
+                .filter(|m| m.pubkey == meta.pubkey)
+        };
         let account = find_account(meta.pubkey, accounts)
             .ok_or(SerializeError::MissingAccount(meta.pubkey))?;
 
         buf.push(NON_DUP_MARKER);
-        buf.push(meta.is_signer as u8);
-        buf.push(meta.is_writable as u8);
+        buf.push(refs().any(|m| m.is_signer) as u8);
+        buf.push(refs().any(|m| m.is_writable) as u8);
         buf.push(account.executable() as u8);
         buf.extend_from_slice(&[0u8; 4]); // u32 padding ("original_data_len")
         buf.extend_from_slice(meta.pubkey.as_ref()); // 32B key
@@ -110,6 +125,13 @@ pub fn serialize_parameters(
     write_u64(&mut buf, instruction.data.len() as u64);
     buf.extend_from_slice(&instruction.data);
     buf.extend_from_slice(program_id.as_ref());
+
+    // SIMD-0449 pointer array, on under Mollusk's `all_enabled`.
+    let align_pad = align_offset_to_bpf_u128(buf.len());
+    buf.extend(std::iter::repeat_n(0u8, align_pad));
+    for record in records {
+        write_u64(&mut buf, MM_INPUT_START + record);
+    }
 
     Ok(buf)
 }

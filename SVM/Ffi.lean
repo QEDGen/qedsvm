@@ -17,6 +17,7 @@
 -/
 
 import SVM.Lib.Runtime.Checks
+import SVM.Lib.Runtime.InputAbi
 import SVM.SBPF.Runner
 import SVM.SBPF.Outcome
 import SVM.Native.Precompiles
@@ -352,5 +353,67 @@ def precompileDispatch (pidBytes ixData : ByteArray) : ByteArray :=
            | some res => (UInt64.ofNat res.r0, UInt64.ofNat res.cu)
            | none     => (1, 0)
   encodeU64 r.1 ++ encodeU64 r.2
+
+
+/-! ## The input ABI, for differential tests
+
+  Instruction wire: program id, u64 data length, data, u64 meta count, then per meta
+  key, is_signer, is_writable, owner, lamports, executable, u64 data length, data.
+  A meta carries its account's state, and a repeated key's first state is the one used. -/
+
+private def wireMetas (b : ByteArray) :
+    Nat → Nat → Option (List (SVM.Runtime.InputMeta × SVM.Runtime.AccountState))
+  | 0, _ => some []
+  | n + 1, off => do
+    let key ← wirePubkey b off
+    let flags ← wireBytes b (off + 32) 2
+    let owner ← wirePubkey b (off + 34)
+    let lamports ← wireU64 b (off + 66)
+    let exec ← wireBytes b (off + 74) 1
+    let len ← wireU64 b (off + 75)
+    let data ← wireBytes b (off + 83) len
+    let rest ← wireMetas b n (off + 83 + len)
+    pure (({ key, isSigner := flags.head? != some 0, isWritable := flags.getLast? != some 0 },
+      { owner, lamports, data, executable := exec.head? != some 0, rentEpoch := 0 }) :: rest)
+
+/-- `serialize (ofInstruction ..)` for an instruction wire. Empty if malformed. -/
+@[export qedsvm_input_serialize]
+def inputSerialize (wire : ByteArray) : ByteArray :=
+  let out : Option (List UInt8) := do
+    let pid ← wirePubkey wire 0
+    let len ← wireU64 wire 32
+    let data ← wireBytes wire 40 len
+    let count ← wireU64 wire (40 + len)
+    let ms ← wireMetas wire count (48 + len)
+    let acct (k : SVM.Pubkey.Pubkey) : SVM.Runtime.AccountState :=
+      match ms.find? (fun m => decide (m.1.key = k)) with
+      | some m => m.2
+      | none => { owner := ⟨0, 0, 0, 0⟩, lamports := 0, data := [], executable := false,
+                  rentEpoch := 0 }
+    pure (SVM.Runtime.serialize (SVM.Runtime.ofInstruction (ms.map (·.1)) acct data pid))
+  ⟨(out.getD []).toArray⟩
+
+private def outU64 (n : Nat) : List UInt8 := SVM.Runtime.le64 n
+
+private def outPubkey (k : SVM.Pubkey.Pubkey) : List UInt8 := SVM.Runtime.pubkeyBytes k
+
+/-- `parse` of a buffer: a leading 0 if it does not parse. Otherwise 1, then per position
+    what it resolves to (key, is_signer, is_writable, executable, owner, lamports,
+    u64 data length, data, pointer), then u64 data length, data, program id. -/
+@[export qedsvm_input_parse]
+def inputParse (input : ByteArray) : ByteArray :=
+  match SVM.Runtime.parse input.toList with
+  | none => ⟨#[0]⟩
+  | some i =>
+    let flag (b : Bool) : UInt8 := if b then 1 else 0
+    let positions := (List.range i.entries.length).flatMap fun k =>
+      match i.resolve k with
+      | none => []
+      | some a =>
+        outPubkey a.key ++ [flag a.isSigner, flag a.isWritable, flag a.state.executable] ++
+          outPubkey a.state.owner ++ outU64 a.state.lamports ++ outU64 a.state.data.length ++
+          a.state.data ++ outU64 (SVM.Runtime.pointer i.entries k)
+    ⟨((1 : UInt8) :: outU64 i.entries.length ++ positions ++ outU64 i.instrData.length ++
+      i.instrData ++ outPubkey i.programId).toArray⟩
 
 end SVM.Ffi
