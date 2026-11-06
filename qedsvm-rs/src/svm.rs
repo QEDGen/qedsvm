@@ -8,7 +8,7 @@ use solana_instruction::Instruction;
 use solana_program_error::ProgramError;
 use solana_pubkey::Pubkey;
 
-use crate::deserialize::{deserialize_account_writes, DeserializeError};
+use crate::deserialize::DeserializeError;
 use crate::serialize::{serialize_parameters, SerializeError};
 use crate::wire::ExitOutcome;
 
@@ -194,8 +194,9 @@ pub struct Svm {
     programs: HashMap<Pubkey, Vec<u8>>,
     cu_budget: u64,
     /// Enforce rent-state transition check at instruction exit. Default OFF: agave applies this at
-    /// the transaction layer; mollusk bypasses it too, so enabling here causes false diff divergences.
-    /// Enable only when using qedsvm as a transaction-level oracle (not in diff-mollusk mode).
+    /// the transaction layer, outside the instruction-level rules this host models. Mollusk 0.16.2
+    /// runs it after execution (`Config::rent_exempt_checks`, default on), so a differential case
+    /// that leaves an account in a rejected rent state diverges with this off; keep those rent-safe.
     enforce_rent_state: bool,
     /// Encoded [`SysvarWire`]. `None` runs under the Mollusk defaults.
     sysvars: Option<Vec<u8>>,
@@ -400,11 +401,23 @@ impl Svm {
             ExitOutcome::Faulted(n) => ProgramResult::VmFault { sentinel: n },
         };
 
-        let resulting_accounts = if accounts.is_empty() && instruction.accounts.is_empty() {
-            Vec::new()
-        } else {
-            deserialize_account_writes(&raw.modified_input, instruction, accounts)
-                .map_err(SvmError::BufferParse)?
+        let (resulting_accounts, raw_data_lens) =
+            if accounts.is_empty() && instruction.accounts.is_empty() {
+                (Vec::new(), Vec::new())
+            } else {
+                crate::deserialize::read_account_writes(&raw.modified_input, instruction, accounts)
+                    .map_err(SvmError::BufferParse)?
+            };
+
+        // What authorization compares against: the accounts when the last CPI returned, because
+        // a callee's changes are not this program's. With no CPI that is the entry state.
+        let cpi_return_accounts = match &raw.cpi_return_input {
+            Some(input) => Some(
+                crate::deserialize::read_account_writes(input, instruction, accounts)
+                    .map_err(SvmError::BufferParse)?
+                    .0,
+            ),
+            None => None,
         };
 
         // Post-instruction soundness validation (success only — failures are rolled back at the harness).
@@ -414,7 +427,11 @@ impl Svm {
                 match validate_post_state(
                     instruction,
                     &canonical_accounts,
+                    cpi_return_accounts
+                        .as_deref()
+                        .unwrap_or(&canonical_accounts),
                     &resulting_accounts,
+                    &raw_data_lens,
                     self.enforce_rent_state,
                 ) {
                     Ok(()) => (program_result, None),
@@ -440,8 +457,8 @@ impl Svm {
     }
 }
 
-/// Sentinel for "Success but post-state invariant violated" (M13). Collapses agave's
-/// `ExternalAccountDataModified`/`UnbalancedInstruction`/etc. to a single u64 sentinel.
+/// Sentinel for "Success but post-state invariant violated" (M13). The exact rule is in
+/// [`InstructionResult::poststate_violation`].
 /// `executable`/`rent_epoch` not validated — inherited from pre-state by construction.
 pub const ERR_INVALID_POSTSTATE: u64 = 0xFFFFFFFFFFFFFFFB;
 
@@ -500,19 +517,24 @@ fn is_precompile(pid: &Pubkey) -> bool {
         || *pid == solana_sdk_ids::secp256r1_program::ID
 }
 
-/// Per-account / cross-account invariants agave enforces at instruction exit; all failures → `ERR_INVALID_POSTSTATE`.
+/// The rule `SVM.Runtime.postInstructionCheck` rejected on; each mirrors agave's
+/// `InstructionError` of the same name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountChangeError {
+    ExternalAccountLamportSpend,
+    ReadonlyLamportChange,
+    InvalidRealloc,
+    ReadonlyDataModified,
+    ExternalAccountDataModified,
+    ModifiedProgramId,
+    UnbalancedInstruction,
+}
+
+/// Why a program that exited 0 did not succeed; all failures → `ERR_INVALID_POSTSTATE`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PostStateError {
-    /// A read-only account's lamports, data, or owner changed.
-    ReadOnlyAccountModified(Pubkey),
-    /// Lamport sum across listed accounts changed (mint or burn).
-    LamportConservationViolated { pre_sum: u128, post_sum: u128 },
-    /// Account data grew past `pre_len + MAX_PERMITTED_DATA_INCREASE`.
-    DataLengthOverflow {
-        pubkey: Pubkey,
-        pre: usize,
-        post: usize,
-    },
+    /// The runtime's account-change rules rejected the instruction.
+    AccountChange(AccountChangeError),
     /// Disallowed rent-state transition (mirrors `InsufficientFundsForRent`).
     RentStateTransitionInvalid {
         pubkey: Pubkey,
@@ -576,64 +598,84 @@ fn rent_transition_allowed(pre: &RentState, post: &RentState) -> bool {
     }
 }
 
+/// The account-change wire of `SVM/Ffi.lean`: one record per instruction reference.
+fn encode_account_changes(
+    instruction: &Instruction,
+    entry: &[(Pubkey, AccountSharedData)],
+    pre: &[(Pubkey, AccountSharedData)],
+    post: &[(Pubkey, AccountSharedData)],
+    raw_data_lens: &[u64],
+) -> Vec<u8> {
+    use solana_account::ReadableAccount;
+    fn state(wire: &mut Vec<u8>, account: &AccountSharedData) {
+        wire.extend_from_slice(account.owner().as_ref());
+        wire.extend_from_slice(&account.lamports().to_le_bytes());
+        wire.extend_from_slice(&(account.data().len() as u64).to_le_bytes());
+        wire.extend_from_slice(account.data());
+    }
+    let mut wire = Vec::new();
+    wire.extend_from_slice(instruction.program_id.as_ref());
+    wire.extend_from_slice(&(entry.len() as u64).to_le_bytes());
+    for (i, (key, entry_acct)) in entry.iter().enumerate() {
+        let post_acct = &post[i].1;
+        wire.extend_from_slice(key.as_ref());
+        wire.push(u8::from(instruction.accounts[i].is_writable));
+        wire.push(u8::from(entry_acct.executable()));
+        wire.extend_from_slice(&entry_acct.rent_epoch().to_le_bytes());
+        state(&mut wire, entry_acct);
+        state(&mut wire, &pre[i].1);
+        wire.extend_from_slice(post_acct.owner().as_ref());
+        wire.extend_from_slice(&post_acct.lamports().to_le_bytes());
+        wire.extend_from_slice(&raw_data_lens[i].to_le_bytes());
+        wire.extend_from_slice(&(post_acct.data().len() as u64).to_le_bytes());
+        wire.extend_from_slice(post_acct.data());
+    }
+    wire
+}
+
 fn validate_post_state(
     instruction: &Instruction,
     pre: &[(Pubkey, AccountSharedData)],
+    cpi_return: &[(Pubkey, AccountSharedData)],
     post: &[(Pubkey, AccountSharedData)],
+    raw_data_lens: &[u64],
     enforce_rent_state: bool,
 ) -> Result<(), PostStateError> {
     use solana_account::ReadableAccount;
 
-    const MAX_PERMITTED_DATA_INCREASE: usize = 10240;
-
-    // Lamport conservation across the per-call account list. Programs can redistribute but not mint/burn.
-    // System's create_account/transfer are redistributions, so this holds even there.
-    let pre_sum: u128 = pre.iter().map(|(_, a)| u128::from(a.lamports())).sum();
-    let post_sum: u128 = post.iter().map(|(_, a)| u128::from(a.lamports())).sum();
-    if pre_sum != post_sum {
-        return Err(PostStateError::LamportConservationViolated { pre_sum, post_sum });
+    // A zero-account instruction has nothing for the check to judge.
+    if !pre.is_empty() {
+        let wire = encode_account_changes(instruction, pre, cpi_return, post, raw_data_lens);
+        let error = match crate::check_account_changes(&wire) {
+            0 => None,
+            1 => Some(AccountChangeError::ExternalAccountLamportSpend),
+            2 => Some(AccountChangeError::ReadonlyLamportChange),
+            3 => Some(AccountChangeError::InvalidRealloc),
+            4 => Some(AccountChangeError::ReadonlyDataModified),
+            5 => Some(AccountChangeError::ExternalAccountDataModified),
+            6 => Some(AccountChangeError::ModifiedProgramId),
+            7 => Some(AccountChangeError::UnbalancedInstruction),
+            code => unreachable!("account-change wire is built above, got result {code}"),
+        };
+        if let Some(e) = error {
+            return Err(PostStateError::AccountChange(e));
+        }
     }
 
-    // Per-account checks. `pre` from `accounts_for_instruction` + `post` from
-    // `deserialize_account_writes` are both in `instruction.accounts` order; zip pairs them.
-    for ((_, pre_acct), (post_pk, post_acct)) in pre.iter().zip(post.iter()) {
-        let pk = *post_pk;
-
-        // `executable`/`rent_epoch` inherited from pre-state by construction — nothing to compare.
-        // Read-only enforcement: `is_writable=false` → lamports/data/owner must be unchanged.
-        let meta_writable = instruction
-            .accounts
-            .iter()
-            .find(|m| m.pubkey == pk)
-            .map(|m| m.is_writable)
-            .unwrap_or(true); // not in ix.accounts → unconstrained
-        if !meta_writable
-            && (pre_acct.lamports() != post_acct.lamports()
-                || pre_acct.data() != post_acct.data()
-                || pre_acct.owner() != post_acct.owner())
-        {
-            return Err(PostStateError::ReadOnlyAccountModified(pk));
-        }
-
-        // Data-growth bound.
-        let pre_len = pre_acct.data().len();
-        let post_len = post_acct.data().len();
-        if post_len > pre_len + MAX_PERMITTED_DATA_INCREASE {
-            return Err(PostStateError::DataLengthOverflow {
-                pubkey: pk,
-                pre: pre_len,
-                post: post_len,
-            });
-        }
-
-        // Rent-state transition enforcement (off by default — see `with_rent_state_enforcement`).
-        // Incinerator pubkey is exempt.
-        if enforce_rent_state && pk != solana_sdk_ids::incinerator::ID {
+    // Rent-state transition enforcement (off by default — see `with_rent_state_enforcement`).
+    // Incinerator pubkey is exempt.
+    if enforce_rent_state {
+        for ((_, pre_acct), (pk, post_acct)) in pre.iter().zip(post.iter()) {
+            if *pk == solana_sdk_ids::incinerator::ID {
+                continue;
+            }
+            let pre_len = pre_acct.data().len();
+            let post_len = post_acct.data().len();
             let pre_state = get_account_rent_state(pre_acct.lamports(), pre_len);
             let post_state = get_account_rent_state(post_acct.lamports(), post_len);
             if !rent_transition_allowed(&pre_state, &post_state) {
                 return Err(PostStateError::RentStateTransitionInvalid {
-                    pubkey: pk,
+                    pubkey: *pk,
                     pre_lamports: pre_acct.lamports(),
                     pre_data_size: pre_len,
                     post_lamports: post_acct.lamports(),
@@ -758,11 +800,23 @@ mod rent_state_tests {
         let acct = AccountSharedData::from(Account {
             lamports,
             data: vec![0u8; data_size],
-            owner: Pubkey::default(),
+            owner: test_pk(99),
             executable: false,
             rent_epoch: 0,
         });
         (pk, acct)
+    }
+
+    /// `validate_post_state` where each post account's length is its raw length field.
+    fn validate(
+        ix: &Instruction,
+        pre: &[(Pubkey, AccountSharedData)],
+        post: &[(Pubkey, AccountSharedData)],
+        rent: bool,
+    ) -> Result<(), PostStateError> {
+        use solana_account::ReadableAccount;
+        let lens: Vec<u64> = post.iter().map(|(_, a)| a.data().len() as u64).collect();
+        validate_post_state(ix, pre, pre, post, &lens, rent)
     }
 
     /// Seed-based test pubkey — stable across runs.
@@ -784,7 +838,7 @@ mod rent_state_tests {
         };
         let pre = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 1_000_000, 0), acct(b, 10_000, 200)];
-        assert!(validate_post_state(&ix, &pre, &post, false).is_ok());
+        assert!(validate(&ix, &pre, &post, false).is_ok());
     }
 
     #[test]
@@ -798,7 +852,7 @@ mod rent_state_tests {
         };
         let pre = vec![acct(a, 1_010_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 1_000_000, 0), acct(b, 10_000, 200)];
-        match validate_post_state(&ix, &pre, &post, true) {
+        match validate(&ix, &pre, &post, true) {
             Err(PostStateError::RentStateTransitionInvalid { pubkey, .. }) => {
                 assert_eq!(pubkey, b);
             }
@@ -818,7 +872,7 @@ mod rent_state_tests {
         // `a` stays above min(0)=891_360 post-debit; `b` reaches min(200)=2_282_880 → RentExempt.
         let pre = vec![acct(a, 5_000_000, 0), acct(b, 0, 200)];
         let post = vec![acct(a, 2_717_120, 0), acct(b, 2_282_880, 200)];
-        assert!(validate_post_state(&ix, &pre, &post, true).is_ok());
+        assert!(validate(&ix, &pre, &post, true).is_ok());
     }
 
     #[test]
@@ -835,7 +889,7 @@ mod rent_state_tests {
         let post = vec![acct(a, 1_000_000, 0), acct(inc, 10_000, 200)];
         // Same Uninitialized → RentPaying shape as the rejection
         // test, but on incinerator. Must pass.
-        assert!(validate_post_state(&ix, &pre, &post, true).is_ok());
+        assert!(validate(&ix, &pre, &post, true).is_ok());
     }
 
     #[test]

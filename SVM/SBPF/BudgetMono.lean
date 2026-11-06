@@ -110,6 +110,7 @@ theorem MemOps.execCmp_withBudget (s : State) (B : Nat) :
   dsimp only
   split <;> rfl
 
+set_option maxHeartbeats 400000 in
 /-- Every syscall that doesn't read the budget commutes with changing it. -/
 theorem execSyscall_withBudget (sc : Syscall) (s : State) (B : Nat)
     (h : sc.readsBudget = false) :

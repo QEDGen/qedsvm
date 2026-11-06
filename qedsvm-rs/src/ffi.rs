@@ -62,6 +62,9 @@ extern "C" {
         cu_budget: u64,
     ) -> lean_obj_res;
 
+    /// `SVM.Runtime.postInstructionCheck`; see `check_account_changes` for the wire and result codes.
+    pub fn qedsvm_check_account_changes(wire: lean_obj_arg) -> u64;
+
     /// Run `SVM.Native.Precompiles.dispatch` for ed25519/secp256k1/secp256r1 (agave bypasses BPF VM for these).
     /// Returns 16-byte ByteArray: [u64 LE r0, u64 LE cu_consumed].
     pub fn qedsvm_precompile_dispatch(

@@ -160,6 +160,10 @@ structure State where
       `executeFnCpiWithFuel`). agave caps stack height at 5 (≤4 nested CPIs);
       CPI dispatch fails closed past that (M6). -/
   invokeDepth : Nat := 0
+  /-- Memory when the last successful CPI returned to this program; `none` if none
+      has. Execution never reads it. It is the state the runtime's account-change
+      rules compare against, since a callee's changes are not the caller's (#144). -/
+  cpiReturnMem : Option Mem := none
   deriving Inhabited
 
 def State.running (s : State) : Prop := s.exitCode = none

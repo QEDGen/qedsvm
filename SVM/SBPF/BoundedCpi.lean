@@ -112,10 +112,10 @@ theorem StateBounded.with_cpi_r0_mem {s : State} (h : StateBounded s)
 theorem StateBounded.with_cpi_commit {s : State} (h : StateBounded s)
     {r0v : Nat} (hr0 : r0v < U64_MODULUS) {m' : Mem} (hm : ∀ a, m' a < 256)
     {rd : ByteArray} (hrd : rd.size ≤ 1024)
-    (pc' cu' : Nat) (lg : Array ByteArray) (rdp : ByteArray) :
+    (pc' cu' : Nat) (lg : Array ByteArray) (rdp : ByteArray) (rm : Option Mem) :
     StateBounded { s with regs := s.regs.set .r0 r0v, mem := m', pc := pc',
                           log := lg, returnData := rd, returnDataProgId := rdp,
-                          cuConsumed := cu' } :=
+                          cuConsumed := cu', cpiReturnMem := rm } :=
   { regs_lt := RegFile.set_get_lt h.regs_lt hr0 .r0
     stack_r10 := by
       show StackR10WF s.callStack (s.regs.set .r0 r0v).r10
@@ -135,9 +135,11 @@ theorem StateBounded.with_cpi_result {s : State} (h : StateBounded s)
     (hmem : ∀ a, r.mem a < 256) (hrd : r.returnData.size ≤ 1024) :
     StateBounded (Cpi.applyResult s r) := by
   unfold Cpi.applyResult
-  split
-  · exact h.with_cpi_commit hr0 hmem hrd _ _ _ _
-  · exact h.with_cpi_commit hr0 h.mem_lt hrd _ _ _ _
+  by_cases hc : r.code = 0
+  · rw [if_pos hc, if_pos hc]
+    exact h.with_cpi_commit hr0 hmem hrd _ _ _ _ _
+  · rw [if_neg hc, if_neg hc]
+    exact h.with_cpi_commit hr0 h.mem_lt hrd _ _ _ _ _
 
 /-- The CPI commit step preserves `StateBounded`. Each `cpiCallNextState`
     outcome is a `with_cpi_*`-shaped record update; the foreign-data arms

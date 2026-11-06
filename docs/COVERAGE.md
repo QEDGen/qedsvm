@@ -193,6 +193,28 @@ When a lifted path terminates in a typed fault rather than a clean `exit`, the l
 
 OOB terminals are detected trace-side: a guarded syscall that does not return to `pc+1` on the trace is treated as the faulting terminal (static mode cannot distinguish success from fault).
 
+## Runtime Account-Change Rules
+
+`SVM/Lib/Runtime/Checks.lean` states the rules agave applies to one top-level instruction, as `postInstructionCheck` over the account states and what the runtime reads back from the input buffer. Authorization compares against the account when the last CPI returned to the program (`State.cpiReturnMem`), because a callee's changes are not the caller's. The realloc bound and the balance compare against instruction entry. It returns the first error, by agave's name, and each rule has an "accepted implies" theorem. The Rust host calls this checker. `account_change_rules_match_mollusk` compares verdicts by error name, CU and committed fields against Mollusk 0.16.2 on the `account_change_probe` fixture.
+
+| Rule | Error | Theorem |
+|---|---|---|
+| Non-owner debit | `ExternalAccountLamportSpend` | `debit_requires_owner` |
+| Read-only balance change | `ReadonlyLamportChange` | `readonly_lamports_unchanged` |
+| Growth over 10 KiB, or size over 10 MiB | `InvalidRealloc` | `realloc_within_increase`, `realloc_within_max` |
+| Data write or resize on a read-only account | `ReadonlyDataModified` | `content_change_authorized`, `resize_authorized`, `readonly_unchanged` |
+| Data write or resize on a non-owned account | `ExternalAccountDataModified` | `content_change_authorized`, `resize_authorized` |
+| Owner change without ownership, writability and zeroed data | `ModifiedProgramId` | `owner_change_authorized` |
+| Lamport total across unique accounts | `UnbalancedInstruction` | `lamports_conserved`, `uniqueChanges_nodup`, `mergeRef_dup_lamports` |
+
+Executable and rent epoch have no rule, because the runtime never reads them back from the buffer (`commit_executable`, `commit_rentEpoch`). An executable account otherwise follows the same rules as any other.
+
+Limits:
+- Acceptance is one-sided. Anything agave accepts passes the checker, but a store into read-only or non-owned data that leaves the bytes unchanged passes the checker and faults on agave. Agave also depletes the meter on those store faults, and the model does not (#158).
+- Agave also applies these rules to a caller's pending changes at CPI entry and to a callee's changes at its return. The checker judges what follows the last return to the top-level program, so an unauthorized change made before a CPI, or by a callee, can go unjudged, apart from the balance and realloc bound (#112).
+- The runner's result does not use this checker yet, so proofs about `Runner` results can't cite it (#146). On rejection the Rust host's `resulting_accounts` still holds the post-buffer state.
+- Rent-state transitions are transaction-level and out of scope. Mollusk 0.16.2 checks them by default, so differential cases stay rent-safe.
+
 ## Abstract Refinement / Codec Coverage
 
 Raw triples prove a selected bytecode path. Abstract refinements additionally connect that path to account-level state claims.

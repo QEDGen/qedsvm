@@ -97,6 +97,7 @@ lean_lib Examples where
     -- non-standard axiom (sorry / native_decide / crypto). Keep first.
     `AxiomAudit,
     `VestingGate,
+    `AccountGuarantees,
     `SyscallHashPin,
     `H2Pin,
     `M4Pin,

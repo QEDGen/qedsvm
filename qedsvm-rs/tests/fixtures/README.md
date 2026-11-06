@@ -482,3 +482,26 @@ cp /tmp/qedsvm-sysvar-getters-build/qedsvm_sysvar_getters_probe.so qedsvm-rs/tes
 ```
 
 SHA-256: `21647a690691880276d1c664b44f45429e2ffb7a77dc82a303b49f746108bf45`.
+
+## `account_change_probe.so`
+
+Regression for #144. `account_change_probe_src` reads instruction data as a list of 16-byte ops,
+`[op, account, 0 x6, arg]`, and applies each to the serialized input, leaving the verdict to the
+runtime: set or add lamports, set `data_len`, store one data byte, set or take the owner, write
+the executable, signer, writable, key or rent-epoch fields, zero a data prefix, or invoke the same
+ELF loaded under a second id. The op table is in the source header.
+
+`account_change_rules_match_mollusk` runs each rule's accept and reject, the realloc and owner
+boundaries, duplicates, executable accounts, competing errors and the comparison points across a
+CPI. Verdicts compare by agave error name; CU compares except where agave depletes the meter on a
+store fault (#158) or rejects inside a callee (#112), and committed fields compare on success. `account_change_store_without_effect_diverges_from_mollusk` pins that
+gap.
+
+Built with `cargo-build-sbf 4.5.0`, platform-tools v1.57 (Rust 1.95.0), sBPF V3 architecture:
+
+```sh
+cargo build-sbf --manifest-path qedsvm-rs/tests/fixtures/account_change_probe_src/Cargo.toml --arch v3 --sbf-out-dir /tmp/qedsvm-account-change-build
+cp /tmp/qedsvm-account-change-build/qedsvm_account_change_probe.so qedsvm-rs/tests/fixtures/account_change_probe.so
+```
+
+SHA-256: `fb06d05175ebfb5be3bcc2de00b58011f606dcc39c4fe07bbd7731b8573b1746`.
