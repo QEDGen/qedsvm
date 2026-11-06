@@ -425,8 +425,8 @@ const RENT_BURN_PERCENT: i64 = 50;
 /// Emit `sol_get_sysvar` (H8 Phase C-2). Only the RENT id at offset 0, length 17 (pinocchio
 /// `Rent::get()`) is modeled, shaped to `call_sol_get_sysvar_cells17_spec`. Out region owned as
 /// two `↦U64` cells + one `↦ₘ` byte (post: mollusk-default rent 6960/1.0-bits/50); address-bound
-/// and disjointness side conditions surfaced as hypotheses. H6: `rr` gains the output-writable and
-/// id-readable clauses.
+/// and disjointness side conditions surfaced as hypotheses. `rr` states the default environment,
+/// then the output-writable and id-readable clauses (H6).
 pub(super) fn emit_sol_get_sysvar(
     state: &mut SymState,
     spec_calls: &mut Vec<SpecCall>,
@@ -470,10 +470,14 @@ pub(super) fn emit_sol_get_sysvar(
         )));
     }
 
-    // H6 rr in the spec's conjunct order: the 17-byte output writable, then
-    // the 32-byte id readable, kept as ONE grouped fold-unit (the id clause
-    // CONTINUES the group) so the goal matches `(prior) ∧ (wOut ∧ rId)`.
+    // rr in the spec's conjunct order: the default environment, the 17-byte output
+    // writable, then the 32-byte id readable, kept as ONE grouped fold-unit so the
+    // goal matches `(prior) ∧ ((env ∧ wOut) ∧ rId)`.
     let g0 = state.region_requirements_mut().len();
+    state
+        .region_requirements_mut()
+        .push_sysvars("SysvarEnv.molluskDefaults");
+    state.region_continuations_mut().insert(g0 + 1);
     state.region_requirements_mut().push((
         r2v.clone(),
         0,
@@ -488,7 +492,7 @@ pub(super) fn emit_sol_get_sysvar(
         false,
         Some((r1v.clone(), Expr::Const(32))),
     ));
-    state.region_continuations_mut().insert(g0 + 1);
+    state.region_continuations_mut().insert(g0 + 2);
 
     let (_idx, ncu_name, hcu_name) = state.alloc_syscall("GetSysvar");
 
@@ -580,11 +584,11 @@ pub(super) fn emit_sol_get_sysvar(
     //   hIdSize hBuf hInRange hOutAddr hOffLen hOutLen hLen hSliceSize
     //   hSlice hsl hwb hob ha1 ha2 h_disj hCu
     let have_line = format!(
-        "have h_{pc} := call_sol_get_sysvar_cells17_spec {r0} ({id}) ({out}) 0 17 \
+        "have h_{pc} := call_sol_get_sysvar_cells17_spec SysvarEnv.molluskDefaults {r0} ({id}) ({out}) 0 17 \
 (effectiveAddr ({outraw}) (8)) (effectiveAddr ({outraw}) (16)) \
 {o0} {o1} {o2} {RENT_LAMPORTS_PER_BYTE} {RENT_EXEMPTION_THRESHOLD_BITS} {RENT_BURN_PERCENT} \
 SysvarData.rentId SysvarData.rentBuf SysvarData.rentBuf {pc} {ncu} \
-rfl SysvarData.sysvarBuffer_rent (by decide) {hout} (by decide) {houtlen} \
+rfl SysvarData.molluskDefaults_bincode_rent (by decide) {hout} (by decide) {houtlen} \
 rfl rfl (by intro i _; rw [Nat.zero_add]) rfl (by decide) h{o2}_lt \
 {ha1} {ha2} {hdisj} {hcu}",
         pc = pc,

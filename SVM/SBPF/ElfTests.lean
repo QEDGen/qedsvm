@@ -46,7 +46,7 @@ example : Decode.decodeInsn (Decode.bytesOfHex "1600010001000000") #[0, 1, 2] 0 
 example : jump32Holds .eq 0x100000001 1 = true := by native_decide
 example : jump32Holds .slt 0xffffffff 0 = true := by native_decide
 example : (step (.jmp32 .eq .r0 (.imm 1) 9)
-    { regs := { r0 := 0x100000001 }, mem := default, regions := [], pc := 0 }).pc = 9 := by
+    { regs := { r0 := 0x100000001 }, mem := default, regions := default, pc := 0 }).pc = 9 := by
   native_decide
 
 end SVM.SBPF.ElfTests

@@ -457,18 +457,6 @@ theorem execLogData_exitBounded (s : State) (he : exitBounded s) :
   refine State.guardSlices_exitBounded s _ _ _ ?_
   exact he
 
-theorem execRent_exitBounded (s : State) (he : exitBounded s) :
-    exitBounded (Sysvar.execRent s) := by
-  simp only [Sysvar.execRent]
-  refine State.guardWrite_exitBounded s _ _ _ ?_
-  exact he
-
-theorem execEpochSchedule_exitBounded (s : State) (he : exitBounded s) :
-    exitBounded (Sysvar.execEpochSchedule s) := by
-  simp only [Sysvar.execEpochSchedule]
-  refine State.guardWrite_exitBounded s _ _ _ ?_
-  exact he
-
 set_option maxHeartbeats 8000000 in
 set_option maxRecDepth 65536 in
 /-- Every syscall surfaces a u64 exit code: pass-through (`he`), a fixed
@@ -487,10 +475,10 @@ theorem execSyscall_exitBounded (sc : Syscall) (s : State)
           Curve25519.execMSM, Bls12_381.execDecompress, Bls12_381.execPairing,
           AltBn128.execGroupOp, AltBn128.execCompression, BigModExp.exec,
           Cpi.exec,
-          Sysvar.execClock,
-          Sysvar.execLastRestartSlot, Sysvar.execFees,
+          Sysvar.execClock, Sysvar.execRent, Sysvar.execEpochSchedule, Sysvar.execTyped,
+          Sysvar.execLastRestartSlot,
           Sysvar.execEpochRewards, Misc.execGetSysvar, Sysvar.execEpochStake,
-          Sysvar.zeroFillR1, ReturnData.execSet, ReturnData.execGet,
+          ReturnData.execSet, ReturnData.execGet,
           Abort.execAbort, Abort.execPanic, Misc.execAllocFree,
           Misc.allocFreeStep, Misc.execRemainingComputeUnits,
           Misc.execGetStackHeight, Misc.execProcessedSibling,
@@ -509,8 +497,6 @@ theorem execSyscall_exitBounded (sc : Syscall) (s : State)
       | exact Poseidon_exec_exitBounded s he
       | exact Pda_execCreate_exitBounded s he
       | exact Pda_execTryFind_exitBounded s he
-      | exact execRent_exitBounded s he
-      | exact execEpochSchedule_exitBounded s he
 
 set_option maxHeartbeats 1000000 in
 /-- One `step` surfaces only u64 exit codes — the `hexit` discharge. The

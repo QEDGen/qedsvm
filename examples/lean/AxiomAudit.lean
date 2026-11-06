@@ -4,6 +4,7 @@ theorem acquires an axiom outside {propext, Classical.choice, Quot.sound}.
 On failure, either a proof regressed to sorry/native_decide, or a new axiom
 legitimately belongs — add it to the per-theorem allow-list with justification.
 -/
+import VestingGate
 import Lean
 import SVM.SBPF.Bounded
 import SVM.SBPF.NoReturnCheck
@@ -142,6 +143,50 @@ elab "#assert_native_decide_axioms " id:ident : command => do
 #assert_std_axioms SVM.SBPF.Misc.execGetSysvar_faults_oob_id
 #assert_std_axioms SVM.SBPF.call_sol_get_sysvar_spec
 #assert_std_axioms SVM.SBPF.call_sol_get_sysvar_cells17_spec
+
+-- #105: sysvar getters, general in the environment.
+#assert_std_axioms SVM.SBPF.call_sol_get_clock_sysvar_ts_spec
+#assert_std_axioms Examples.VestingGate.vestingGate_unlocks
+#assert_std_axioms Examples.VestingGate.vestingGate_locks
+#assert_std_axioms SVM.SBPF.call_sol_get_clock_sysvar_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_rent_sysvar_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_epoch_schedule_sysvar_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_epoch_rewards_sysvar_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_last_restart_slot_spec
+#assert_std_axioms SVM.SBPF.call_typed_getter_spec
+#assert_std_axioms SVM.SBPF.call_typed_getter_input_faults_spec
+#assert_std_axioms SVM.SBPF.call_typed_getter_oob_faults_spec
+#assert_std_axioms SVM.SBPF.call_typed_getter_unaligned_faults_spec
+#assert_std_axioms SVM.SBPF.isTypedGetter_clock
+#assert_std_axioms SVM.SBPF.isTypedGetter_rent
+#assert_std_axioms SVM.SBPF.isTypedGetter_epochSchedule
+#assert_std_axioms SVM.SBPF.isTypedGetter_epochRewards
+#assert_std_axioms SVM.SBPF.isTypedGetter_lastRestartSlot
+#assert_std_axioms SVM.SBPF.Sysvar.execTyped_ok
+#assert_std_axioms SVM.SBPF.Sysvar.execTyped_faults_input
+#assert_std_axioms SVM.SBPF.Sysvar.execTyped_faults_oob
+#assert_std_axioms SVM.SBPF.Sysvar.execTyped_faults_unaligned
+#assert_std_axioms SVM.SBPF.Sysvar.execEpochStake_null
+#assert_std_axioms SVM.SBPF.Sysvar.execEpochStake_vote
+#assert_std_axioms SVM.SBPF.Sysvar.execEpochStake_faults
+#assert_std_axioms SVM.SBPF.Misc.execGetSysvar_notFound
+#assert_std_axioms SVM.SBPF.Misc.execGetSysvar_outOfRange
+#assert_std_axioms SVM.SBPF.Misc.execGetSysvar_faults_input
+#assert_std_axioms SVM.SBPF.call_sol_get_epoch_stake_total_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_epoch_stake_vote_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_epoch_stake_oob_faults_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_sysvar_not_found_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_sysvar_out_of_range_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_sysvar_input_faults_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_sysvar_out_oob_faults_spec
+#assert_std_axioms SVM.SBPF.call_sol_get_sysvar_id_oob_faults_spec
+#assert_std_axioms SVM.SBPF.SysvarData.molluskDefaults_clock
+#assert_std_axioms SVM.SBPF.SysvarData.molluskDefaults_rent
+#assert_std_axioms SVM.SBPF.SysvarData.molluskDefaults_epochSchedule
+#assert_std_axioms SVM.SBPF.SysvarData.molluskDefaults_epochRewards
+#assert_std_axioms SVM.SBPF.SysvarData.molluskDefaults_lastRestartSlot
+#assert_std_axioms SVM.SBPF.SysvarData.molluskDefaults_bincode
+#assert_std_axioms SVM.SBPF.SysvarData.molluskDefaults_bincode_rent
 
 -- Pattern library Layer 3 (ENFORCES direction): the p-token error-path lifts
 -- and their EnforcedError compositions carry their own IN-MODULE assertions

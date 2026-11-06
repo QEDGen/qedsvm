@@ -317,7 +317,7 @@ pub(super) fn lift_one_with_layouts(
         .iter()
         .filter_map(|clause| match clause {
             RegionClause::Callx { addr, target } => Some((addr.to_lean(), *target)),
-            RegionClause::Access(_) => None,
+            RegionClause::Access(_) | RegionClause::Sysvars { .. } => None,
         })
         .collect();
     if !callx_targets.is_empty() {

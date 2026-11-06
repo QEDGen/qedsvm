@@ -343,7 +343,7 @@ const OOB_SET_RETURN_DATA_SO: &[u8] = include_bytes!("fixtures/oob_set_return_da
 
 /// Calls `sol_get_rent_sysvar` with a 17-byte output buffer 256 MiB out of
 /// region. agave's `translate_type_mut::<Rent>` traps; post-fix (stage 4c)
-/// `Sysvar.execRent` (de-simp'd) routes the write through `guardWrite` and
+/// `Sysvar.execRent` routes the write through `guardWrite` and
 /// faults. Source in `oob_rent_sysvar_src/`.
 const OOB_RENT_SYSVAR_SO: &[u8] = include_bytes!("fixtures/oob_rent_sysvar.so");
 
@@ -497,7 +497,11 @@ fn outcome_matches(fs: &FsProgramResult, ml: &MlProgramResult) -> Result<(), Str
             }
         }
         (F::OutOfBudget, M::UnknownError(ie)) => {
-            if is_failed_to_complete(ie) {
+            // A syscall's `consume_checked` surfaces `ComputationalBudgetExceeded`
+            // rather than the interpreter's catch-all.
+            if is_failed_to_complete(ie)
+                || matches!(ie, InstructionError::ComputationalBudgetExceeded)
+            {
                 Ok(())
             } else {
                 Err(format!(
@@ -6344,4 +6348,359 @@ fn memops_probe_matches_mollusk() {
         }
     }
     assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// #105: one sysvar-probe case through both engines. Compares outcome class,
+/// exact CU and the return data (window sha256 plus the syscall's r0).
+fn run_sysvar_probe(
+    fs_vm: &Svm,
+    ml_vm: &Mollusk,
+    id: Pubkey,
+    op: u8,
+    args: &[u64; 4],
+    trailing: &[u8],
+) -> Result<(), String> {
+    let mut data = vec![op, 0, 0, 0, 0, 0, 0, 0];
+    for a in args {
+        data.extend_from_slice(&a.to_le_bytes());
+    }
+    data.extend_from_slice(trailing);
+    let ix = Instruction {
+        program_id: id,
+        accounts: vec![],
+        data,
+    };
+    let fs = fs_vm.process_instruction(&ix, &[]).unwrap();
+    let ml = ml_vm.process_instruction(&ix, &[]);
+    let mut why = Vec::new();
+    if let Err(e) = outcome_matches(&fs.program_result, &ml.program_result) {
+        why.push(e);
+    }
+    // Op 5 is unregistered under `all_enabled` (`disable_fees_sysvar`), and agave
+    // depletes the meter on that non-syscall VM failure. The model reports CU
+    // consumed so far on every VM fault, so only the outcome class compares.
+    if op != 5 && fs.compute_units_consumed != ml.compute_units_consumed {
+        why.push(format!(
+            "CU ours={} mollusk={}",
+            fs.compute_units_consumed, ml.compute_units_consumed
+        ));
+    }
+    if fs.return_data != ml.return_data {
+        why.push(format!(
+            "return data diverged (r0 ours={:?} mollusk={:?})",
+            fs.return_data.get(32..),
+            ml.return_data.get(32..)
+        ));
+    }
+    if why.is_empty() {
+        Ok(())
+    } else {
+        Err(why.join("; "))
+    }
+}
+
+const SYSVAR_PROBE_H: u64 = 0x3_0000_0000;
+const SYSVAR_PROBE_CLOCK_ID: u64 = SYSVAR_PROBE_H + 0x2000;
+const SYSVAR_PROBE_RENT_ID: u64 = SYSVAR_PROBE_H + 0x2020;
+const SYSVAR_PROBE_SCHEDULE_ID: u64 = SYSVAR_PROBE_H + 0x2040;
+const SYSVAR_PROBE_SLOT_HASHES_ID: u64 = SYSVAR_PROBE_H + 0x2060;
+const SYSVAR_PROBE_VOTE_KEY: u64 = SYSVAR_PROBE_H + 0x2080;
+const SYSVAR_PROBE_UNKNOWN_ID: u64 = SYSVAR_PROBE_H + 0x20a0;
+
+/// #105: every sysvar getter against Mollusk, at the default sysvars.
+#[test]
+fn sysvar_getters_probe_matches_mollusk() {
+    const H: u64 = SYSVAR_PROBE_H;
+    const HEAP_END: u64 = H + 0x8000;
+    const INPUT: u64 = 0x4_0000_0000;
+    const BAD: u64 = 0x3_1000_0000;
+    const TEXT: u64 = 0x1_0000_0000;
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1050);
+    let fs_vm = svm_with(&[(id, elf.as_slice())]);
+    let ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    let mut cases: Vec<(String, u8, [u64; 4])> = Vec::new();
+    // (op, name, model's width, repr width).
+    for (op, name, sizes) in [
+        (0u8, "clock", &[40u64][..]),
+        (1, "rent", &[17, 24][..]),
+        (2, "schedule", &[40][..]),
+        (3, "rewards", &[81, 96][..]),
+        (4, "restart", &[8][..]),
+        (5, "fees", &[8][..]),
+    ] {
+        cases.push((format!("{name}_ok"), op, [H, 0, 0, 0]));
+        cases.push((format!("{name}_unaligned1"), op, [H + 1, 0, 0, 0]));
+        cases.push((format!("{name}_aligned8"), op, [H + 8, 0, 0, 0]));
+        cases.push((format!("{name}_input"), op, [INPUT, 0, 0, 0]));
+        cases.push((format!("{name}_unmapped"), op, [BAD, 0, 0, 0]));
+        cases.push((format!("{name}_text"), op, [TEXT, 0, 0, 0]));
+        for size in sizes {
+            cases.push((
+                format!("{name}_end_{size}"),
+                op,
+                [(HEAP_END - size) & !15, 0, 0, 0],
+            ));
+            cases.push((
+                format!("{name}_exact_end_{size}"),
+                op,
+                [HEAP_END - size, 0, 0, 0],
+            ));
+        }
+    }
+    #[rustfmt::skip]
+    let generic: &[(&str, [u64; 4])] = &[
+        ("get_rent_all",         [SYSVAR_PROBE_RENT_ID, H, 0, 17]),
+        ("get_rent_mid",         [SYSVAR_PROBE_RENT_ID, H, 8, 9]),
+        ("get_rent_last",        [SYSVAR_PROBE_RENT_ID, H, 16, 1]),
+        ("get_rent_overrun",     [SYSVAR_PROBE_RENT_ID, H, 0, 18]),
+        ("get_rent_zero_at_end", [SYSVAR_PROBE_RENT_ID, H, 17, 0]),
+        ("get_rent_zero_past",   [SYSVAR_PROBE_RENT_ID, H, 18, 0]),
+        ("get_zero_out_bad",     [SYSVAR_PROBE_RENT_ID, BAD, 0, 0]),
+        ("get_unknown",          [SYSVAR_PROBE_UNKNOWN_ID, H, 0, 8]),
+        ("get_out_is_id",        [SYSVAR_PROBE_RENT_ID, SYSVAR_PROBE_RENT_ID, 0, 17]),
+        ("get_id_unmapped",      [BAD, H, 0, 8]),
+        ("get_out_unmapped",     [SYSVAR_PROBE_RENT_ID, BAD, 0, 8]),
+        ("get_out_input",        [SYSVAR_PROBE_RENT_ID, INPUT, 0, 8]),
+        ("get_out_unaligned",    [SYSVAR_PROBE_RENT_ID, H + 3, 0, 8]),
+        ("get_clock_all",        [SYSVAR_PROBE_CLOCK_ID, H, 0, 40]),
+        ("get_clock_ts",         [SYSVAR_PROBE_CLOCK_ID, H, 32, 8]),
+        ("get_schedule_bool",    [SYSVAR_PROBE_SCHEDULE_ID, H, 16, 1]),
+        ("get_schedule_all",     [SYSVAR_PROBE_SCHEDULE_ID, H, 0, 33]),
+        ("get_schedule_over",    [SYSVAR_PROBE_SCHEDULE_ID, H, 0, 34]),
+        ("get_slot_hashes",      [SYSVAR_PROBE_SLOT_HASHES_ID, H, 0, 48]),
+        ("get_big_cu",           [SYSVAR_PROBE_SLOT_HASHES_ID, H, 0, 8000]),
+    ];
+    for (name, args) in generic {
+        cases.push(((*name).into(), 6, *args));
+    }
+    cases.push(("stake_total".into(), 7, [0, 0, 0, 0]));
+    cases.push(("stake_vote".into(), 7, [SYSVAR_PROBE_VOTE_KEY, 0, 0, 0]));
+    cases.push((
+        "stake_unaligned".into(),
+        7,
+        [SYSVAR_PROBE_VOTE_KEY + 1, 0, 0, 0],
+    ));
+    cases.push(("stake_unmapped".into(), 7, [BAD, 0, 0, 0]));
+    let mut failures = Vec::new();
+    for (name, op, args) in &cases {
+        if let Err(why) = run_sysvar_probe(&fs_vm, &ml_vm, id, *op, args, &[]) {
+            failures.push(format!("{name}: {why}"));
+        }
+    }
+    // Budgets around each getter's charge. `pre` is the CU up to the syscall.
+    let pre_ix = Instruction {
+        program_id: id,
+        accounts: vec![],
+        data: {
+            let mut d = vec![255u8, 0, 0, 0, 0, 0, 0, 0];
+            d.extend_from_slice(&[0u8; 32]);
+            d
+        },
+    };
+    let pre = ml_vm
+        .process_instruction(&pre_ix, &[])
+        .compute_units_consumed;
+    for op in [0u8, 1, 3] {
+        for budget in pre..pre + 220 {
+            let fs_b = svm_with(&[(id, elf.as_slice())]).with_cu_budget(budget);
+            let mut ml_b = mollusk_with(&[(id, elf.as_slice())]);
+            ml_b.compute_budget.compute_unit_limit = budget;
+            if let Err(why) = run_sysvar_probe(&fs_b, &ml_b, id, op, &[H, 0, 0, 0], &[]) {
+                failures.push(format!("budget op={op} budget=pre+{}: {why}", budget - pre));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "\n{} of {} cases diverged:\n{}",
+        failures.len(),
+        cases.len(),
+        failures.join("\n")
+    );
+}
+
+/// The wire form of mollusk's sysvars, for qedsvm's matching run.
+fn sysvar_wire(m: &Mollusk) -> qedsvm::SysvarWire {
+    let s = &m.sysvars;
+    qedsvm::SysvarWire {
+        clock: bincode::serialize(&s.clock).unwrap(),
+        rent: bincode::serialize(&s.rent).unwrap(),
+        epoch_schedule: bincode::serialize(&s.epoch_schedule).unwrap(),
+        epoch_rewards: bincode::serialize(&s.epoch_rewards).unwrap(),
+        last_restart_slot: bincode::serialize(&s.last_restart_slot).unwrap(),
+        slot_hashes: bincode::serialize(&s.slot_hashes).unwrap(),
+        stake_history: bincode::serialize(&s.stake_history).unwrap(),
+        total_stake: m.epoch_stake.values().sum(),
+        vote_stake: m
+            .epoch_stake
+            .iter()
+            .map(|(k, v)| (k.to_bytes(), *v))
+            .collect(),
+    }
+}
+
+/// #105: a warped clock, including a negative timestamp, reads the same through
+/// the typed getter and `sol_get_sysvar`.
+#[test]
+fn sysvar_getters_warped_matches_mollusk() {
+    const H: u64 = SYSVAR_PROBE_H;
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1051);
+    #[rustfmt::skip]
+    let cases: &[(&str, u8, [u64; 4])] = &[
+        ("clock_typed",  0, [H, 0, 0, 0]),
+        ("clock_all",    6, [SYSVAR_PROBE_CLOCK_ID, H, 0, 40]),
+        ("clock_ts",     6, [SYSVAR_PROBE_CLOCK_ID, H, 32, 8]),
+        ("clock_mid",    6, [SYSVAR_PROBE_CLOCK_ID, H, 4, 8]),
+        ("slot_hashes",  6, [SYSVAR_PROBE_SLOT_HASHES_ID, H, 0, 48]),
+        ("schedule",     2, [H, 0, 0, 0]),
+        ("rewards",      3, [H, 0, 0, 0]),
+        ("rent",         1, [H, 0, 0, 0]),
+        ("restart",      4, [H, 0, 0, 0]),
+        ("rent_all",     6, [SYSVAR_PROBE_RENT_ID, H, 0, 17]),
+        ("schedule_all", 6, [SYSVAR_PROBE_SCHEDULE_ID, H, 0, 33]),
+    ];
+    // Ids the fixture doesn't write, read from past the arguments in the
+    // instruction data: num_accounts, data_len, then 40 bytes of op and args.
+    const TRAILING_ID: u64 = 0x4_0000_0000 + 16 + 40;
+    let mut failures = Vec::new();
+    for timestamp in [1_700_000_000i64, -5] {
+        let mut ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+        ml_vm.warp_to_slot(1_000_000);
+        ml_vm.sysvars.clock.unix_timestamp = timestamp;
+        ml_vm.sysvars.clock.epoch_start_timestamp = timestamp - 1;
+        ml_vm.sysvars.rent.lamports_per_byte = 7000;
+        ml_vm.sysvars.last_restart_slot.last_restart_slot = 999;
+        ml_vm.sysvars.epoch_rewards.active = true;
+        ml_vm.sysvars.epoch_rewards.total_points = (1u128 << 100) + 3;
+        // Every field distinct, so a swapped pair of the same width shows.
+        // Deprecated upstream, but still in the layout both encodings serve.
+        #[allow(deprecated)]
+        {
+            ml_vm.sysvars.rent.burn_percent = 77;
+            ml_vm.sysvars.rent.exemption_threshold = [1, 2, 3, 4, 5, 6, 7, 8];
+        }
+        let schedule = &mut ml_vm.sysvars.epoch_schedule;
+        schedule.slots_per_epoch = 8192;
+        schedule.leader_schedule_slot_offset = 4096;
+        schedule.warmup = true;
+        schedule.first_normal_epoch = 14;
+        schedule.first_normal_slot = 524_256;
+        let rewards = &mut ml_vm.sysvars.epoch_rewards;
+        rewards.distribution_starting_block_height = 11;
+        rewards.num_partitions = 22;
+        rewards.parent_blockhash = [3u8; 32].into();
+        rewards.total_rewards = 33;
+        rewards.distributed_rewards = 44;
+        ml_vm.sysvars.stake_history.add(3, Default::default());
+        let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(sysvar_wire(&ml_vm));
+        for (name, op, args) in cases {
+            if let Err(why) = run_sysvar_probe(&fs_vm, &ml_vm, id, *op, args, &[]) {
+                failures.push(format!("{name} ts={timestamp}: {why}"));
+            }
+        }
+        for (name, sysvar, len) in [
+            (
+                "rewards_all",
+                solana_sdk_ids::sysvar::epoch_rewards::id(),
+                81,
+            ),
+            (
+                "stake_history",
+                solana_sdk_ids::sysvar::stake_history::id(),
+                40,
+            ),
+        ] {
+            let args = [TRAILING_ID, H, 0, len];
+            if let Err(why) = run_sysvar_probe(&fs_vm, &ml_vm, id, 6, &args, &sysvar.to_bytes()) {
+                failures.push(format!("{name} ts={timestamp}: {why}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// #105: `sol_get_epoch_stake` returns the environment's total and per-vote stake.
+#[test]
+fn epoch_stake_env_matches_mollusk() {
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1052);
+    let mut ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    ml_vm
+        .epoch_stake
+        .insert(Pubkey::new_from_array([7; 32]), 5000);
+    ml_vm
+        .epoch_stake
+        .insert(Pubkey::new_from_array([8; 32]), 2000);
+    let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(sysvar_wire(&ml_vm));
+    let mut failures = Vec::new();
+    for (name, a) in [
+        ("total", 0),
+        ("known", SYSVAR_PROBE_VOTE_KEY),
+        ("unknown", SYSVAR_PROBE_UNKNOWN_ID),
+    ] {
+        if let Err(why) = run_sysvar_probe(&fs_vm, &ml_vm, id, 7, &[a, 0, 0, 0], &[]) {
+            failures.push(format!("{name}: {why}"));
+        }
+    }
+    assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+}
+
+/// #105: Mollusk's default sysvars sent over the wire run like the built-in default.
+#[test]
+fn default_sysvar_wire_matches_mollusk() {
+    const H: u64 = SYSVAR_PROBE_H;
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1053);
+    let ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(sysvar_wire(&ml_vm));
+    #[rustfmt::skip]
+    let cases: &[(u8, [u64; 4])] = &[
+        (0, [H, 0, 0, 0]),
+        (1, [H, 0, 0, 0]),
+        (2, [H, 0, 0, 0]),
+        (3, [H, 0, 0, 0]),
+        (4, [H, 0, 0, 0]),
+        (6, [SYSVAR_PROBE_SCHEDULE_ID, H, 0, 33]),
+        (6, [SYSVAR_PROBE_SLOT_HASHES_ID, H, 0, 48]),
+    ];
+    for (op, args) in cases {
+        run_sysvar_probe(&fs_vm, &ml_vm, id, *op, args, &[]).unwrap();
+    }
+}
+
+/// #105: a malformed sysvar blob refuses to run rather than using a default.
+#[test]
+fn malformed_sysvar_wire_fails_closed() {
+    let elf = include_bytes!("fixtures/sysvar_getters_probe.so");
+    let id = pid(1054);
+    let ml_vm = mollusk_with(&[(id, elf.as_slice())]);
+    let good = sysvar_wire(&ml_vm);
+    let ix = Instruction {
+        program_id: id,
+        accounts: vec![],
+        data: vec![0; 40],
+    };
+    for bad in [
+        qedsvm::SysvarWire {
+            clock: vec![0; 39],
+            ..good.clone()
+        },
+        qedsvm::SysvarWire {
+            rent: vec![0; 24],
+            ..good.clone()
+        },
+        qedsvm::SysvarWire {
+            epoch_schedule: {
+                let mut b = good.epoch_schedule.clone();
+                b[16] = 2;
+                b
+            },
+            ..good.clone()
+        },
+    ] {
+        let fs_vm = svm_with(&[(id, elf.as_slice())]).with_sysvars(bad);
+        assert!(fs_vm.process_instruction(&ix, &[]).is_err());
+    }
 }

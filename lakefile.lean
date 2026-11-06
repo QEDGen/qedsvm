@@ -96,6 +96,7 @@ lean_lib Examples where
     -- Soundness gate: fails the build if any flagship theorem acquires a
     -- non-standard axiom (sorry / native_decide / crypto). Keep first.
     `AxiomAudit,
+    `VestingGate,
     `SyscallHashPin,
     `H2Pin,
     `M4Pin,
@@ -234,7 +235,7 @@ lean_lib Examples where
     -- bare, no `frame_right`). Shows the OOB arm scales across syscall families.
     `Generated.OobClockSysvarLifted,
     -- OobRentSysvar: the H6 scale-out of the OOB fault emitter to the rent
-    -- getter (17-byte execRent write region) — pure OobSyscall registration,
+    -- getter (24-byte execRent write region) — pure OobSyscall registration,
     -- no emitter changes.
     `Generated.OobRentSysvarLifted,
     -- OobSetReturnData: the register-sized-region OOB arm — the guarded

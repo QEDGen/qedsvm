@@ -67,15 +67,6 @@ so facts about them at a program's entry hold at its invoke. -/
   refine State.guardSlices_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl ?_
   cases result <;> rfl
 
-@[simp] theorem execRent_preserves_invokeDepth (s : State) :
-    (Sysvar.execRent s).invokeDepth = s.invokeDepth := by
-  simp only [Sysvar.execRent]; exact State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl rfl
-
-@[simp] theorem execEpochSchedule_preserves_invokeDepth (s : State) :
-    (Sysvar.execEpochSchedule s).invokeDepth = s.invokeDepth := by
-  simp only [Sysvar.execEpochSchedule]
-  exact State.guardWrite_proj_eq_of_k (·.invokeDepth) s _ _ _ rfl rfl
-
 @[simp] theorem execLogData_preserves_invokeDepth (s : State) :
     (Logging.execLogData s).invokeDepth = s.invokeDepth := by
   simp only [Logging.execLogData]
@@ -98,15 +89,6 @@ so facts about them at a program's entry hold at its invoke. -/
   refine State.guardRead_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
   refine State.guardSlices_proj_eq_of_k (·.origPrivs) s _ _ _ rfl ?_
   cases result <;> rfl
-
-@[simp] theorem execRent_preserves_origPrivs (s : State) :
-    (Sysvar.execRent s).origPrivs = s.origPrivs := by
-  simp only [Sysvar.execRent]; exact State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl rfl
-
-@[simp] theorem execEpochSchedule_preserves_origPrivs (s : State) :
-    (Sysvar.execEpochSchedule s).origPrivs = s.origPrivs := by
-  simp only [Sysvar.execEpochSchedule]
-  exact State.guardWrite_proj_eq_of_k (·.origPrivs) s _ _ _ rfl rfl
 
 @[simp] theorem execLogData_preserves_origPrivs (s : State) :
     (Logging.execLogData s).origPrivs = s.origPrivs := by

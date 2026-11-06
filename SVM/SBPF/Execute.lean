@@ -77,10 +77,10 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_get_rent_sysvar                         => Sysvar.cuRent
   | .sol_get_epoch_schedule_sysvar               => Sysvar.cuEpochSchedule
   | .sol_get_last_restart_slot                   => Sysvar.cuLastRestartSlot
-  | .sol_get_fees_sysvar                         => Sysvar.cuFees
+  | .sol_get_fees_sysvar                         => 0
   | .sol_get_epoch_rewards_sysvar                => Sysvar.cuEpochRewards
   | .sol_get_sysvar                              => Sysvar.cuGetSysvar s
-  | .sol_get_epoch_stake                         => Sysvar.cu
+  | .sol_get_epoch_stake                         => Sysvar.cuEpochStake s
   -- Return data — per-byte, see `ReturnData.cuSet` / `ReturnData.cuGet`.
   | .sol_set_return_data                         => ReturnData.cuSet s
   | .sol_get_return_data                         => ReturnData.cuGet s
@@ -143,7 +143,8 @@ def syscallCu (sc : Syscall) (s : State) : Nat :=
   | .sol_get_rent_sysvar                         => Sysvar.execRent s
   | .sol_get_epoch_schedule_sysvar               => Sysvar.execEpochSchedule s
   | .sol_get_last_restart_slot                   => Sysvar.execLastRestartSlot s
-  | .sol_get_fees_sysvar                         => Sysvar.execFees s
+  -- Unregistered under `all_enabled()` (`disable_fees_sysvar`).
+  | .sol_get_fees_sysvar                         => Misc.execUnknown s
   | .sol_get_epoch_rewards_sysvar                => Sysvar.execEpochRewards s
   | .sol_get_sysvar                              => Misc.execGetSysvar s
   | .sol_get_epoch_stake                         => Sysvar.execEpochStake s

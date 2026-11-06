@@ -47,7 +47,7 @@ unrolling via traces.
 
 **Runtime alignment.** Pinned: `solana-sbpf` 0.14.4, Mollusk
 `0.16.2` (agave 4.3: SIMD-0194 rent, mollusk `DEFAULT_CLOCK_SLOT = 1`, both
-mirrored in `SysvarData.lean` and pinned by `sysvar_buffer_pins.rs`),
+mirrored as the default `SysvarEnv` and pinned by `sysvar_buffer_pins.rs`),
 `cargo-build-sbf` 4.3.0, platform-tools 1.57; V3 fixture
 bytes are SHA-256 pinned (`tests/fixtures/sbpfv3_fixtures.sha256`, checked in
 CI). Agave 4.4's `solana-sbpf` 0.24.0 was reviewed and shows no V3 semantic
@@ -155,7 +155,7 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | --- | --- | --- |
 | `sol_log_` | Mechanical | Models the log call shape and CU bound used by generated lifts. |
 | `sol_memset_` | Mechanical | Includes blob and split-cell shapes used by generated lifts. General functional spec (`MemOps.execSet_ok`) and OOB fault triple (`call_sol_memset_oob_faults_spec`) in `MemOpsSpec.lean` / `MemOpsGeneral.lean`. |
-| `sol_get_sysvar` | Mechanical | Generic syscall plus the cell-shaped rent path used by generated lifts; not a full semantic model of every sysvar value. The output slice must be writable and the 32-byte id readable (`rr`), else `.accessViolation` (`sbpfv3_oob_get_sysvar_{out,id}.so`). |
+| `sol_get_sysvar` | Mechanical | Generated lifts use the cell-shaped rent path under the default environment. `call_sol_get_sysvar_spec` holds for any environment and in-range `(offset, len)`. In-band results (`r0 = 1`, `r0 = 2`) and faults for an output in the input region, an unwritable output or an unreadable id have their own triples in `SysvarGeneral.lean`. |
 | `sol_invoke_signed_rust` | Terminal (V0), bridged/composed (V3) | The proof-facing CPI in `step` is the fail-closed `Cpi.exec` stub (audit C5), so an invoke ends the walk (`.unsupportedInstruction` typed-fault terminal); the lifted prefix's post owns the caller-side envelope cells (`cpiEnvelope`, see below). V3 lifts extend across it via `<M>_cpi_bridge` and `lift_cpi_paths` (see "V3 caller paths across a CPI"). |
 | `sol_invoke_signed_c` | Terminal (V0), bridged/composed (V3) | Same as the Rust ABI (`cpiEnvelopeC` is the C-ABI envelope encoding); `sbpfv3_cpi_writer.so` is the C-ABI V3 fixture. |
 | `sol_sha256` | Mechanical | Single-slice success path: descriptor cells recover `(ptr, len)`, the digest is written to a framed `↦Bytes32` atom, `r0 := 0` (`call_sol_sha256_spec`). |
@@ -167,7 +167,8 @@ The Lean ISA includes a broad syscall enum. The lift currently emits proof oblig
 | `memcmp` | Mechanical | Two `↦Bytes` inputs + a 4-byte `↦U32` output at a 4-aligned `r4`; result `memcmpResultU32 p1 p2 n` (`call_sol_memcmp_spec`), the byte difference at the first mismatch (`memcmpResultU32_of_first`, `_of_eq`). An unaligned result faults `unalignedPointer` after the region checks; OOB inputs or result fault `accessViolation`. |
 | `sol_set_return_data` | Mechanical | One `↦Bytes` input (`[r1, r1+r2)` readable, `r2 ≤ MAX_RETURN_DATA`) copied into the framed `↦ReturnData` atom; `r0 := 0` (`call_sol_set_return_data_spec`). |
 | `sol_get_return_data` | Unsupported | Only the fault direction (`execGet_faults_oob`) is modeled; no success triple. |
-| Dedicated sysvar getters | Unsupported (success) | Only the generic `sol_get_sysvar` success path is modeled. The OOB fault direction of `sol_get_clock_sysvar` IS lifted as a `.accessViolation` `*_fault_correct` corollary (see Typed-Fault Corollaries). |
+| Dedicated sysvar getters | Hand-composed | Success triples for clock, rent, epoch schedule, epoch rewards and last restart slot hold for any environment (`SysvarGeneral.lean`, consumed by `VestingGate.lean`). qedlift doesn't emit these success paths yet; it emits their OOB faults (see Typed-Fault Corollaries). `sol_get_fees_sysvar` is unregistered under `all_enabled`, so it fails as an unknown syscall. |
+| `sol_get_epoch_stake` | Hand-composed | Triples for the null path (total stake), a readable vote key and an unreadable one, for any environment. |
 | `sol_get_stack_height` | Manual | Executes as one-based CPI height. Exact state/value and top-level guard contracts are kernel checked; the framed SL post is existential because `PartialState` does not own invocation depth. Nested V3 calls and caller restoration are differential-tested. Not emitted by `qedlift`. |
 | Other introspection syscalls | Unsupported | Not emitted by `qedlift` as proof obligations. |
 | `sol_alloc_free_` | Unsupported | Heap proofs use ordinary memory predicates instead. |
@@ -183,7 +184,7 @@ When a lifted path terminates in a typed fault rather than a clean `exit`, the l
 | `abort` / `sol_panic_` | `.abort` | Mechanical | Unconditional fault from any precondition; composed via `cuTripleWithinMem_seq_fault_pure` (`AbortCaller`). |
 | OOB `sol_secp256k1_recover` | `.accessViolation` | Mechanical | Read-region guard (`containsRange r1 32 = false`); the prefix post is framed into the single-register fault-spec pre and composed via the Mem-aware `cuTripleWithinMem_seq_fault` (`OobSecp256k1`). |
 | OOB `sol_get_clock_sysvar` | `.accessViolation` | Mechanical | Write-region guard (`containsWritable r1 40 = false`); single-atom prefix, fault spec applied directly (`OobClockSysvar`). |
-| OOB `sol_get_rent_sysvar` | `.accessViolation` | Mechanical | Write-region guard over the 17-byte `execRent` output; pure registry entry, zero emitter changes (`OobRentSysvar`). |
+| OOB `sol_get_rent_sysvar` | `.accessViolation` | Mechanical | Write-region guard over the 24-byte `execRent` output; pure registry entry, zero emitter changes (`OobRentSysvar`). |
 | OOB `sol_set_return_data` | `.accessViolation` | Mechanical | REGISTER-sized read region `[r1, r1+r2)`: the fault spec pins both registers and the literal length side conditions discharge `by decide` (`OobSetReturnData`). |
 | OOB `sol_create_program_address` | `.accessViolation` | Mechanical | NON-r1 region (program_id `[r3, r3+32)`): the emitter stably rotates the region register to the front of the lifted pre/post (`OobCreatePda`). |
 | OOB `sol_sha256` | `.accessViolation` | Mechanical | Hash-family digest output `[r3, r3+32)` — `hashWrite`'s first guard; generic `State.hashWrite_faults_oob` covers all four hashes (`OobSha256`). |

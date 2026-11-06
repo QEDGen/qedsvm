@@ -18,6 +18,8 @@ import SVM.SBPF.InstructionSpecs.Syscalls.MemOpsSpec
 import SVM.SBPF.InstructionSpecs.Syscalls.Mem
 import SVM.SBPF.InstructionSpecs.Syscalls.MemOpsGeneral
 import SVM.SBPF.InstructionSpecs.Syscalls.Sysvar
+import SVM.SBPF.InstructionSpecs.Syscalls.SysvarSpec
+import SVM.SBPF.InstructionSpecs.Syscalls.SysvarGeneral
 import SVM.SBPF.InstructionSpecs.Syscalls.Hash
 import SVM.SBPF.InstructionSpecs.Terminating
 import SVM.SBPF.InstructionSpecs.CallReturn

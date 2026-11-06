@@ -139,7 +139,7 @@ private def v0Run (text : ByteArray) : Option State := do
     { start := Memory.STACK_START, size := Runner.STACK_SIZE, writable := true }]
   let s₀ : State := { regs := { r10 := Memory.STACK_START + 0x1000 },
                       mem := Runner.loadBytesAt Runner.emptyMem text Memory.MM_REGION_SIZE,
-                      regions, pc := 0, cuBudget := 200 }
+                      regions := { regions }, pc := 0, cuBudget := 200 }
   return executeFn (Runner.fetchFromArray insns) s₀ 200
 
 /-- `lddw r2, MM_REGION_SIZE + lo; callx r2; exit; mov r0, 42; exit`. -/
@@ -911,44 +911,61 @@ example : Runner.runForExit stackHeightProgram = some 1 := by native_decide
 
 The sysvar getter writes 40 bytes (Clock layout) to `*r1`: the mollusk
 default `slot = 1` (`DEFAULT_CLOCK_SLOT`), every other field 0. Verify by
-pre-loading input with `0xFF` bytes and observing that they're overwritten
-after the syscall:
+storing `0xFF` in a stack buffer and observing it's overwritten after the
+syscall:
 
 ```
-  call sol_get_clock_sysvar     ; writes slot = 1, rest 0, at *r1 (= INPUT_START)
-  ldxb r0, [r1 + 5]              ; read byte 5 of the buffer (= 0 now)
+  mov64 r1, r10
+  add64 r1, -40
+  stb [r1 + off], 0xff
+  call sol_get_clock_sysvar     ; writes slot = 1, rest 0, at *r1
+  ldxb r0, [r1 + off]
   exit
 ```
 -/
 
-def clockSysvarDemo : ByteArray :=
+def clockSysvarByteDemo (off : UInt8) : ByteArray :=
+  let h := SyscallHash.sol_get_clock_sysvar_hash
+  ⟨#[0xbf, 0xa1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+     0x07, 0x01, 0x00, 0x00, 0xd8, 0xff, 0xff, 0xff,
+     0x72, 0x01, off, 0x00, 0xff, 0x00, 0x00, 0x00,
+     0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
+    0x71, 0x10, off, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]⟩
+
+example : Runner.runForExit (clockSysvarByteDemo 5) = some 0 := by native_decide
+
+/-- Byte 0: the slot's low byte = 1. -/
+example : Runner.runForExit (clockSysvarByteDemo 0) = some 1 := by native_decide
+
+/-- `call sol_get_clock_sysvar` with `r1 = INPUT_START` at entry: agave rejects an
+    output in the input region, even a writable one (#105). -/
+def clockSysvarInputDemo : ByteArray :=
   let h := SyscallHash.sol_get_clock_sysvar_hash
   ⟨#[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
-    -- ldxb r0, [r1 + 5]
-    0x71, 0x10, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
-    -- exit
     0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
   ]⟩
 
 example :
-    Runner.runForExit clockSysvarDemo
-      { input := padInput ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ 40 }
-      = some 0 := by
+    Runner.runForExit clockSysvarInputDemo
+      { input := padInput ⟨#[0xff]⟩ 40 } = some ERR_ACCESS_VIOLATION := by
   native_decide
 
-/-- Same program reading byte 0 (`ldxb r0, [r1 + 0]`): the slot's low byte = 1. -/
-def clockSysvarSlotDemo : ByteArray :=
-  let h := SyscallHash.sol_get_clock_sysvar_hash
-  ⟨#[0x85, 0x00, 0x00, 0x00] ++ hashLE h ++ #[
-    0x71, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x95, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-  ]⟩
+/-! ## Sysvars come from the environment (#105)
 
-example :
-    Runner.runForExit clockSysvarSlotDemo
-      { input := padInput ⟨#[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]⟩ 40 }
-      = some 1 := by
+`clockSlotProgram` returns the slot's low byte. It reads 77 under a warped
+environment and the default's 1 otherwise, directly and through a CPI. -/
+
+def clockSlotProgram : ByteArray := clockSysvarByteDemo 0
+
+def warpedSysvars : SysvarEnv :=
+  { SysvarEnv.molluskDefaults with clock := ⟨77, 0, 0, 0, 0⟩ }
+
+example : Runner.runForExit clockSlotProgram { sysvars := warpedSysvars } = some 77 := by
   native_decide
+
+example : Runner.runForExit clockSlotProgram = some 1 := by native_decide
 
 /-! ## Demo 22 — `sol_sha256` hashes "abc" and writes the 32-byte digest
 
@@ -1297,7 +1314,7 @@ private def v3FailingAccountElf : ByteArray :=
 private def v3CpiRollbackBytes : Option (Nat × Nat) := do
   let dataPtr := Memory.INPUT_START + 0x2000
   let callerMem := Runner.loadBytesAt Runner.emptyMem (Decode.bytesOfHex "11") dataPtr
-  let caller : State := { regs := default, mem := callerMem, regions := [], pc := 0 }
+  let caller : State := { regs := default, mem := callerMem, regions := default, pc := 0 }
   let acct : Runner.ParsedAcct :=
     { key := ⟨Array.replicate 32 0⟩
       owner := ⟨Array.replicate 32 0⟩
@@ -1330,6 +1347,19 @@ example : v3CpiRollbackBytes = some (0x99, 0x11) := by native_decide
 
 example :
     Runner.runForExit cpiCallerBytes { programRegistry := cpiRegistry } = some 0x77 := by
+  native_decide
+
+/-- A callee reads its caller's sysvars (#105). -/
+def cpiClockRegistry : Nat → Option ByteArray := fun n =>
+  if n = 0x42 then some clockSlotProgram else none
+
+example :
+    Runner.runForExit cpiCallerBytes
+      { programRegistry := cpiClockRegistry, sysvars := warpedSysvars } = some 77 := by
+  native_decide
+
+example :
+    Runner.runForExit cpiCallerBytes { programRegistry := cpiClockRegistry } = some 1 := by
   native_decide
 
 /-- Unknown program-id → CPI fails, caller's `r0` becomes 1, then the

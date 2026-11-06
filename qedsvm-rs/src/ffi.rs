@@ -52,6 +52,16 @@ extern "C" {
         cu_budget: u64,
     ) -> lean_obj_res;
 
+    /// Like `qedsvm_run_with_registry_and_pid` but also takes the sysvars (`SysvarWire::encode`).
+    pub fn qedsvm_run_with_sysvars(
+        elf: lean_obj_arg,
+        input: lean_obj_arg,
+        registry: lean_obj_arg,
+        pid_bytes: lean_obj_arg,
+        sysvars: lean_obj_arg,
+        cu_budget: u64,
+    ) -> lean_obj_res;
+
     /// Run `SVM.Native.Precompiles.dispatch` for ed25519/secp256k1/secp256r1 (agave bypasses BPF VM for these).
     /// Returns 16-byte ByteArray: [u64 LE r0, u64 LE cu_consumed].
     pub fn qedsvm_precompile_dispatch(

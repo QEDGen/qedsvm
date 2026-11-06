@@ -454,3 +454,31 @@ cp /tmp/qedsvm-memops-build/qedsvm_memops_probe.so qedsvm-rs/tests/fixtures/memo
 ```
 
 SHA-256: `fe30b750e835c276431f0499c3c27fcc900ab0db0ef1f5177cc0d22c60a25301`.
+
+## `sysvar_getters_probe.so`
+
+Regression for #105. `sysvar_getters_probe_src` (no accounts) reads instruction data
+`[op, 0 x7, a, b, c, d]` (u64 little-endian, absolute addresses) and calls a typed sysvar
+getter on `a` (ops 0 to 5: clock, rent, epoch schedule, epoch rewards, last restart slot,
+fees), `sol_get_sysvar(a, b, c, d)` (op 6) or `sol_get_epoch_stake(a)` (op 7). Op 255 makes
+no call, so its CU is the cost before the syscall. It first fills the heap window
+`[0x3_0000_0000, +0x2100)` with `(7i + 3) mod 251` through volatile stores and writes known
+ids at `+0x2000` (clock), `+0x2020` (rent), `+0x2040` (epoch schedule), `+0x2060` (slot
+hashes), `+0x2080` (vote key `[7; 32]`) and `+0x20a0` (unknown `[9; 32]`). After a successful
+call it returns the window's sha256 followed by the syscall's r0.
+
+`sysvar_getters_probe_matches_mollusk` runs each typed getter aligned, unaligned, in the input
+region, unmapped, in text and at the end of its region; `sol_get_sysvar` at partial offsets,
+at the size boundary, with zero length, an unknown id and an output equal to the id; and epoch
+stake on a null, known and unmapped key. It also sweeps budgets across three getters' charges.
+Outcome class, exact CU and return data must match, except that fees compares outcome class
+only: it is unregistered under `all_enabled`, and agave depletes the meter on that failure.
+
+Built with `cargo-build-sbf 4.5.0`, platform-tools v1.57 (Rust 1.95.0), sBPF V3 architecture:
+
+```sh
+cargo build-sbf --manifest-path qedsvm-rs/tests/fixtures/sysvar_getters_probe_src/Cargo.toml --arch v3 --sbf-out-dir /tmp/qedsvm-sysvar-getters-build
+cp /tmp/qedsvm-sysvar-getters-build/qedsvm_sysvar_getters_probe.so qedsvm-rs/tests/fixtures/sysvar_getters_probe.so
+```
+
+SHA-256: `21647a690691880276d1c664b44f45429e2ffb7a77dc82a303b49f746108bf45`.

@@ -49,6 +49,8 @@ pub(super) enum RegionClause {
     /// A V3 `callx`: the register's program address resolves, through the
     /// loaded text region, to `target` (`resolveCallx rt addr = some target`).
     Callx { addr: Expr, target: usize },
+    /// A sysvar read: the run's environment is `env` (`rt.sysvars = env`).
+    Sysvars { env: &'static str },
 }
 
 /// Walk-ordered `rr` clauses. `push` keeps the memory-access tuple form used
@@ -63,6 +65,10 @@ impl RegionWalk {
 
     pub(super) fn push_callx(&mut self, addr: Expr, target: usize) {
         self.0.push(RegionClause::Callx { addr, target });
+    }
+
+    pub(super) fn push_sysvars(&mut self, env: &'static str) {
+        self.0.push(RegionClause::Sysvars { env });
     }
 
     pub(super) fn pop(&mut self) -> Option<RegionClause> {

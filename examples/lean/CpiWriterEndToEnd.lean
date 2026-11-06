@@ -100,7 +100,7 @@ def calleeSubS (s : State) (fuel' : Nat) (pidB subInput : ByteArray) : State :=
   { regs        := { r1 := INPUT_START, r10 := STACK_START + 0x1000 }
     mem         := loadBytesAt (loadBytesAt (loadInput emptyMem subInput)
                      Sbpfv3CpiWriterCalleeLiftedText 0x100000000) ByteArray.empty 0
-    regions     := v3Regions calleeProgram subInput.size
+    regions     := { v3Regions calleeProgram subInput.size with sysvars := s.regions.sysvars }
     pc          := 0
     exitCode    := none
     log         := s.log
